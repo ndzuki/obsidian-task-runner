@@ -64,10 +64,10 @@ while [ $scan_round -lt $max_rounds ]; do
 
   echo "$tasks_json" | while IFS= read -r line; do
     [ -z "$line" ] && continue
-  task_id=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))")
-  project=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('project',''))")
-  new_project_flag=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('new_project',''))")
-  task_file=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('file_name',''))")
+  task_id=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+  project=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('project',''))" 2>/dev/null || true)
+  new_project_flag=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('new_project',''))" 2>/dev/null || true)
+  task_file=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('file_name',''))" 2>/dev/null || true)
 
   resolve_args=("$MAP_FILE" "$project")
   # Python print(True) → "True" (capital T), not "true"
