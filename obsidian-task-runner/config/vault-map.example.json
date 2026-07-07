@@ -1,12 +1,13 @@
 {
   "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。",
   "obsidian_vault": "/home/you/Obsidian/MainVault",
-  "projects": {
-    "example-project": {
+  "projects": [
+    {
+      "name": "example-project",
       "path": "/home/you/src/example-project",
       "git_remote": "github.com/you/example-project"
     }
-  },
+  ],
   "new_project_root": "/home/you/src",
   "templates": {
     "go-gin-microservice": {

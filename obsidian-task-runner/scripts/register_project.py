@@ -39,23 +39,30 @@ def register_project(
         print(f"Error reading {map_file}: {e}", file=sys.stderr)
         return False
 
-    projects = config.setdefault("projects", {})
+    projects = config.setdefault("projects", [])
 
-    if project_name in projects:
-        existing_path = projects[project_name].get("path", "")
-        if existing_path == project_path:
-            print(f"Project '{project_name}' already registered with same path")
-            return True
-        print(
-            f"Warning: Project '{project_name}' already exists with path "
-            f"'{existing_path}'. Overwriting with '{project_path}'.",
-            file=sys.stderr,
-        )
-
-    projects[project_name] = {
-        "path": project_path,
-        "git_remote": git_remote,
-    }
+    # Check for existing entry by name
+    for proj in projects:
+        if proj.get("name") == project_name:
+            existing_path = proj.get("path", "")
+            if existing_path == project_path:
+                print(f"Project '{project_name}' already registered with same path")
+                return True
+            print(
+                f"Warning: Project '{project_name}' already exists with path "
+                f"'{existing_path}'. Overwriting with '{project_path}'.",
+                file=sys.stderr,
+            )
+            proj["path"] = project_path
+            proj["git_remote"] = git_remote
+            break
+    else:
+        # Not found — append new entry
+        projects.append({
+            "name": project_name,
+            "path": project_path,
+            "git_remote": git_remote,
+        })
 
     try:
         with open(map_file, "w") as f:
