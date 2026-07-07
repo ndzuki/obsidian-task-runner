@@ -64,6 +64,11 @@ inotifywait -m -q -e close_write -e moved_to --format '%w%f' "${WATCH_DIRS[@]}" 
   fi
   last_run=$now
 
+  # 跳过临时文件和隐藏文件（editors 的临时文件、sed -i 的临时文件等）
+  case "$(basename "$changed_file")" in
+    .*|sed*|*.tmp|*.swp|*~) continue ;;
+  esac
+
   # 判断变更来源
   case "$changed_file" in
     "$TASKS_DIR"/*)
