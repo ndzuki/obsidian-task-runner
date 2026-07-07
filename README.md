@@ -174,6 +174,7 @@ obsidian-task-runner/              # skill（安装到 ~/.claude/skills/）
 │   ├── resolve_project_path.py    # 项目名 → 本地路径
 │   ├── register_project.py        # 注册新项目（原子写入 + 语法验证）
 │   ├── on_req_changed.py          # 需求变更 → 关联任务自动重置
+│   ├── on_req_changed.py          # 需求变更 → 关联任务自动重置
 │   ├── notify_on_status_change.sh # 桌面通知
 │   ├── task-runner-daemon.sh      # 调度脚本（flock 防并发）
 │   └── task-watcher.sh            # inotify 双目录监听
@@ -262,6 +263,20 @@ claude-task-watcher.service        # systemd 事件触发
 | L3 完整 | + API 规格 + 数据模型 | 直接生成 handler 和 struct |
 
 模板：`REQ-000-template.md`
+
+### 追加新需求
+
+在已有需求文档末尾追加时，**每个新需求必须是独立的 `##` 标题 section**：
+
+```markdown
+## 新增需求：操作审计日志
+- 记录所有 API 调用并持久化
+
+## 新增需求：Swagger API 文档
+- 使用 swaggo 生成 swagger.json
+```
+
+❌ 不要作为已有 section 的子项追加——Claude 会当作同一需求的细节而非独立需求。保存后 watcher 自动检测变化，找到关联任务并重新出计划。
 
 ## 维护命令
 
