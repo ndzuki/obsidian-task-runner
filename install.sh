@@ -240,7 +240,7 @@ if [ -d "$SKILL_INSTALL_DIR" ]; then
     ok "$SKILL_INSTALL_DIR 已存在，增量更新（保留 vault-map.json）"
   fi
 fi
-cp -r "$SRC_DIR/obsidian-task-runner" "$SKILL_INSTALL_DIR"
+cp -rT "$SRC_DIR/obsidian-task-runner" "$SKILL_INSTALL_DIR"
 chmod +x "$SKILL_INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
 chmod +x "$SKILL_INSTALL_DIR"/scripts/*.py 2>/dev/null || true
 ok "skill 已更新"
