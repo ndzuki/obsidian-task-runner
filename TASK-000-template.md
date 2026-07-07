@@ -8,6 +8,7 @@ template: ""
 # ── 状态流转（系统自动管理，不要手动改） ──
 status: ready
 plan_approved: false
+pending_req: false
 created: ""
 updated: ""
 completed: ""
