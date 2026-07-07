@@ -149,6 +149,7 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
             "template": fm.get("template", ""),
             "assignee": fm.get("assignee", "claude"),
             "auto_approve": fm.get("auto_approve", False),
+            "pending_req": fm.get("pending_req", False),
         })
 
     ready_tasks.sort(key=lambda t: (priority_order(t["priority"]), t["id"]))
