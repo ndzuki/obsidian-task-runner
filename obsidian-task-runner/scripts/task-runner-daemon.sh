@@ -71,6 +71,19 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
     continue
   fi
 
+  # 读取 plan_approved 判断是 Round 1 还是 Round 2，Round 2 时立刻通知
+  task_plan_approved=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('plan_approved',''))" 2>/dev/null || true)
+  task_title=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('title',''))" 2>/dev/null || true)
+
+  if [ "$task_plan_approved" = "True" ]; then
+    log "检测到 Round 2 任务（plan_approved=true），即将开始实现"
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-system \
+        "🚀 Task ${task_id}: 开始实现" \
+        "${task_title:-}\nClaude Code 正在执行，完成后会通知你" &
+    fi
+  fi
+
   log "开始处理 $task_id (project=$project, repo=$repo_dir, stage=$repo_status)"
 
   # acceptEdits 只会自动放行文件写入和 mkdir/touch/mv/cp,
