@@ -107,6 +107,13 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
    ```
 
 5. **按计划逐步实现**：
+   - **新项目特殊处理**：如果 `new_project: true`，脚手架创建完毕后，立刻注册到 vault-map.json，让后续任务能解析到这个项目：
+     ```bash
+     python3 ~/.claude/skills/obsidian-task-runner/scripts/register_project.py \
+       ~/.claude/skills/obsidian-task-runner/config/vault-map.json \
+       <project_name> \
+       <repo_dir>
+     ```
    - 每完成一步：检查代码编译通过、运行相关测试
    - 遵循项目现有的代码风格和约定
    - 把每一步的产出记录到「## 实现记录」section：
@@ -142,12 +149,6 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
      status=review \
      target_branch=task/<id>-<slug> \
      actual_hours=<实际耗时小时数>
-   ```
-
-   如果新项目首次实现，额外运行 register_project.py 注册项目：
-   ```bash
-   python3 ~/.claude/skills/obsidian-task-runner/scripts/register_project.py \
-     <vault_map_path> <project_name> <repo_dir>
    ```
 
 10. **退出**：输出 JSON 摘要，状态为 `review`。
