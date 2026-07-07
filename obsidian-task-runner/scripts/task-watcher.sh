@@ -28,6 +28,11 @@ log "开始监听 $TASKS_DIR"
 DEBOUNCE_SECONDS=5
 last_run=0
 
+# 注意: inotifywait | while read 创建了一个子 shell 管道。
+# last_run 变量在子 shell 内的修改不会传回父 shell,
+# 但因为 last_run 只在 while 循环体内读写,不需要在循环结束后使用,所以这里没问题。
+# 如果以后要在这里加循环后的逻辑并引用 last_run,需要改用 process substitution 或其他方式。
+#
 # close_write:文件保存完成(内容修改,比如 Obsidian 改了 status/plan_approved)
 # moved_to:一些编辑器用"写临时文件再 rename"的方式保存,表现为 moved_to
 inotifywait -m -q -e close_write -e moved_to --format '%f' "$TASKS_DIR" | while read -r changed_file; do

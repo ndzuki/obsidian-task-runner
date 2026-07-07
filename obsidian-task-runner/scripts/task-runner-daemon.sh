@@ -9,6 +9,11 @@ MAP_FILE="$SKILL_DIR/config/vault-map.json"
 LOG_DIR="$HOME/.claude/logs"
 mkdir -p "$LOG_DIR"
 
+# 防止并发:同一时间只允许一个 daemon 实例运行
+LOCKFILE="$LOG_DIR/task-runner.lock"
+exec 200>"$LOCKFILE"
+flock -n 200 || { echo "[$(date -Iseconds)] 已有 task-runner-daemon 实例在运行，跳过" >>"$LOG_DIR/task-runner.log"; exit 0; }
+
 log() { echo "[$(date -Iseconds)] $*" >>"$LOG_DIR/task-runner.log"; }
 
 if [ ! -f "$MAP_FILE" ]; then
@@ -20,6 +25,7 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
   task_id=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))")
   project=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('project',''))")
   new_project_flag=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('new_project',''))")
+  task_file=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('file_name',''))")
 
   resolve_args=("$MAP_FILE" "$project")
   if [ "$new_project_flag" = "true" ]; then
@@ -56,6 +62,11 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
     ) >>"$LOG_DIR/task-runner.log" 2>&1
   then
     log "$task_id 处理完成"
+
+    # Round 1 或 Round 2 完成后检查任务状态，如果到了 gate 就发桌面通知
+    if [ -n "$task_file" ] && [ -f "$VAULT/Tasks/$task_file" ]; then
+      "$SKILL_DIR/scripts/notify_on_status_change.sh" "$VAULT/Tasks/$task_file" &
+    fi
   else
     log "$task_id 处理失败,详情见上方日志"
   fi
