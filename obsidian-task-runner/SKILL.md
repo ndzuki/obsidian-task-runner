@@ -20,6 +20,7 @@ description: >
 2. **写回任务文档**：所有产出（计划、实现记录、验收结果）写入任务 markdown 文件
 3. **不推送代码**：git commit 到分支但不 push，不创建 PR，不合并
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
+5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
 
 ## 输入
 
