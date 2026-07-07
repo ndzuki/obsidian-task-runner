@@ -107,4 +107,6 @@ journalctl --user -u claude-task-runner.service -n 50
 
 ### 并发任务处理
 
-`task-runner-daemon.sh` 使用 flock 文件锁防止并发。如果系统重启后锁文件残留，daemon 会自动覆盖（锁与文件描述符绑定，进程退出后自动释放）。
+`task-runner-daemon.sh` 使用 flock 文件锁防止并发——同一时间只允许一个 daemon 实例运行。watcher 触发的新 daemon 遇到锁时会直接退出，但**当前运行的 daemon 会在处理完当前批次后自动重扫**（最多 3 轮），拾起中途被 `on_req_changed` 重置的任务。因此需求文档更新后即使 daemon 正忙，也不会丢失——最多延迟到当前 Claude session 完成后的一轮重扫。
+
+如果系统重启后锁文件残留，daemon 会自动覆盖（锁与文件描述符绑定，进程退出后自动释放）。
