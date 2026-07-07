@@ -145,16 +145,18 @@ install.sh                         # 一键安装
 
 ```json
 {
-  "projects": {
-    "my-backend": {
+  "projects": [
+    {
+      "name": "my-backend",
       "path": "/home/you/src/my-backend",
       "git_remote": "github.com/you/my-backend"
     },
-    "frontend-app": {
+    {
+      "name": "frontend-app",
       "path": "/home/you/src/frontend-app",
       "git_remote": "github.com/you/frontend-app"
     }
-  },
+  ],
   "new_project_root": "/home/you/src",
   "notifications": {
     "desktop": true

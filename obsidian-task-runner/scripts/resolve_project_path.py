@@ -36,16 +36,17 @@ def resolve_project_path(map_file: str, project_name: str, is_new: bool = False)
         result["error"] = f"Failed to parse {map_file}: {e}"
         return result
 
-    # Check existing projects
-    projects = config.get("projects", {})
-    if project_name in projects:
-        proj_path = projects[project_name].get("path", "")
-        if os.path.isdir(proj_path):
-            result["status"] = "existing"
-            result["path"] = proj_path
+    # Check existing projects (list format: [{name, path, git_remote}, ...])
+    projects = config.get("projects", [])
+    for proj in projects:
+        if proj.get("name") == project_name:
+            proj_path = proj.get("path", "")
+            if os.path.isdir(proj_path):
+                result["status"] = "existing"
+                result["path"] = proj_path
+                return result
+            result["error"] = f"Project '{project_name}' path '{proj_path}' does not exist on disk"
             return result
-        result["error"] = f"Project '{project_name}' path '{proj_path}' does not exist on disk"
-        return result
 
     # Check new project
     if is_new:
