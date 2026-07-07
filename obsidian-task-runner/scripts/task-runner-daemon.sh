@@ -15,14 +15,28 @@ VAULT="$OBSIDIAN_VAULT"
 SKILL_DIR="$HOME/.claude/skills/obsidian-task-runner"
 MAP_FILE="$SKILL_DIR/config/vault-map.json"
 LOG_DIR="$HOME/.claude/logs"
+LOG_FILE="$LOG_DIR/task-runner.log"
 mkdir -p "$LOG_DIR"
+
+# ── 日志轮转：超过 10MB 时归档，保留最近 5 个 ──
+rotate_log() {
+  local log="$1" max_size=$((10 * 1024 * 1024))  # 10MB
+  if [ -f "$log" ] && [ "$(stat -c%s "$log" 2>/dev/null || echo 0)" -gt "$max_size" ]; then
+    for i in 4 3 2 1; do
+      [ -f "${log}.$i" ] && mv "${log}.$i" "${log}.$((i+1))"
+    done
+    mv "$log" "${log}.1"
+    touch "$log"
+  fi
+}
+rotate_log "$LOG_FILE"
 
 # 防止并发:同一时间只允许一个 daemon 实例运行
 LOCKFILE="$LOG_DIR/task-runner.lock"
 exec 200>"$LOCKFILE"
-flock -n 200 || { echo "[$(date -Iseconds)] 已有 task-runner-daemon 实例在运行，跳过" >>"$LOG_DIR/task-runner.log"; exit 0; }
+flock -n 200 || { echo "[$(date -Iseconds)] 已有 task-runner-daemon 实例在运行，跳过" >>"$LOG_FILE"; exit 0; }
 
-log() { echo "[$(date -Iseconds)] $*" >>"$LOG_DIR/task-runner.log"; }
+log() { echo "[$(date -Iseconds)] $*" >>"$LOG_FILE"; }
 
 if [ ! -f "$MAP_FILE" ]; then
   log "缺少项目映射文件: $MAP_FILE(参考 config/vault-map.example.json 创建)"
