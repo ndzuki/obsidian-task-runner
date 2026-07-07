@@ -164,6 +164,7 @@ else
 import json
 with open('$MAP_FILE') as f:
     config = json.load(f)
+config['obsidian_vault'] = '$OBSIDIAN_VAULT'
 config['new_project_root'] = '$NEW_PROJECT_ROOT'
 config['notifications']['desktop'] = $py_notify
 config['poll_interval_minutes'] = $POLL_INTERVAL_MINUTES
@@ -178,33 +179,44 @@ fi
 # ── 6. 环境变量 + 目录 ──
 say "Step 6/7: 配置环境"
 
-# 探测 shell 并写入对应的语法
+# 根据当前 $SHELL 判断 shell 类型，写入对应的 rc 文件和语法
+detected_shell="$(basename "${SHELL:-bash}")"
 shell_rc=""
 shell_type="bash"
-for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
-  [ -f "$rc" ] && { shell_rc="$rc"; break; }
-done
-[ -z "$shell_rc" ] && shell_rc="$HOME/.bashrc"
 
-# 判断 shell 类型以写入正确语法
-case "$shell_rc" in
-  *fish*) shell_type="fish" ;;
-  *)      shell_type="bash" ;;
+case "$detected_shell" in
+  fish)
+    shell_rc="$HOME/.config/fish/config.fish"
+    shell_type="fish"
+    ;;
+  zsh)
+    shell_rc="$HOME/.zshrc"
+    shell_type="zsh"
+    ;;
+  *)
+    shell_rc="$HOME/.bashrc"
+    shell_type="bash"
+    ;;
 esac
+
+ok "检测到当前 shell: $detected_shell → 写入 $shell_rc"
+
+# 确保 rc 文件所在目录存在
+mkdir -p "$(dirname "$shell_rc")"
 
 if [ "$shell_type" = "fish" ]; then
   if grep -q "set -gx OBSIDIAN_VAULT" "$shell_rc" 2>/dev/null; then
     warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
   else
     echo "set -gx OBSIDIAN_VAULT \"$OBSIDIAN_VAULT\"" >> "$shell_rc"
-    ok "已写入 $shell_rc（fish 语法，新终端生效）"
+    ok "已写入 $shell_rc（fish 语法: set -gx OBSIDIAN_VAULT \"$OBSIDIAN_VAULT\"）"
   fi
 else
   if grep -q "^export OBSIDIAN_VAULT=" "$shell_rc" 2>/dev/null; then
     warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
   else
     echo "export OBSIDIAN_VAULT=\"$OBSIDIAN_VAULT\"" >> "$shell_rc"
-    ok "已写入 $shell_rc（新终端生效，当前终端可 source $shell_rc）"
+    ok "已写入 $shell_rc（bash/zsh 语法，当前终端可 source $shell_rc）"
   fi
 fi
 

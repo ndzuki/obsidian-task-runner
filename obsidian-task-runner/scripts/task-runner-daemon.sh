@@ -3,7 +3,15 @@
 # 拉起一次 headless Claude Code 会话。由 systemd timer 周期性调用,也可以手动跑一次做验证。
 set -euo pipefail
 
-VAULT="${OBSIDIAN_VAULT:?请先设置环境变量 OBSIDIAN_VAULT,指向 Obsidian 仓库根目录}"
+# OBSIDIAN_VAULT 优先从环境变量取；如果没设（比如手动跑），从 vault-map.json 读
+if [ -z "${OBSIDIAN_VAULT:-}" ]; then
+  _map="$HOME/.claude/skills/obsidian-task-runner/config/vault-map.json"
+  if [ -f "$_map" ]; then
+    OBSIDIAN_VAULT="$(python3 -c "import json,sys;print(json.load(open('$_map')).get('obsidian_vault',''))" 2>/dev/null)"
+  fi
+  [ -z "$OBSIDIAN_VAULT" ] && { echo "请设置 OBSIDIAN_VAULT 环境变量或在 vault-map.json 中配置 obsidian_vault" >&2; exit 1; }
+fi
+VAULT="$OBSIDIAN_VAULT"
 SKILL_DIR="$HOME/.claude/skills/obsidian-task-runner"
 MAP_FILE="$SKILL_DIR/config/vault-map.json"
 LOG_DIR="$HOME/.claude/logs"
