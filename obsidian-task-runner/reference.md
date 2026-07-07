@@ -10,10 +10,17 @@
                             ▲
                             │
 ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review ──→ done
-                           │                           │
-                           ▼                           ▼
-                        🔔 桌面通知                  🔔 桌面通知
-                     "请审阅计划"                "请 review 代码"
+  ▲        │                  ▲            │            │
+  │        ▼                  │            ▼            │
+  │     🔔 桌面通知           │         🔔 桌面通知      │
+  │   "请审阅计划"            │      "请 review 代码"    │
+  │                           │                          │
+  └── pending_req: true ──────┘                          │
+  (需求文档更新后自动触发，                                 │
+   停在 plan-review 等确认，                                │
+   即使任务已完成也适用)                                     │
+                                                          │
+  ←── 可在任意状态下更新需求文档 ←──────────────────────────┘
 ```
 
 ## 状态详解
@@ -40,6 +47,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `updated` | ISO8601 | 最后更新时间 |
 | `completed` | ISO8601 | 完成时间 |
 | `actual_hours` | float | 实际耗时 |
+| `pending_req` | bool | 需求文档在任务进行中/完成后有更新。daemon 拾起后自动重置为 ready 并重新出计划 |
 | `target_branch` | string | Git 分支名 |
 
 ### 人工填写
