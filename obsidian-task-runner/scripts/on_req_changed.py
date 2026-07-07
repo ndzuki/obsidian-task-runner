@@ -73,7 +73,7 @@ def update_frontmatter_field(file_path: str, field: str, new_value) -> bool:
     try:
         with open(file_path, "r") as f:
             content = f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
 
     if not content.startswith("---"):

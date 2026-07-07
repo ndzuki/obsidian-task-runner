@@ -277,18 +277,19 @@ else
   else
     py_notify="False"
   fi
+  # Pass values via argv to avoid shell injection into Python string literal
   python3 -c "
-import json
-with open('$MAP_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     config = json.load(f)
-config['obsidian_vault'] = '$OBSIDIAN_VAULT'
-config['new_project_root'] = '$NEW_PROJECT_ROOT'
-config['notifications']['desktop'] = $py_notify
-config['poll_interval_minutes'] = $POLL_INTERVAL_MINUTES
-with open('$MAP_FILE', 'w') as f:
+config['obsidian_vault'] = sys.argv[2]
+config['new_project_root'] = sys.argv[3]
+config['notifications']['desktop'] = sys.argv[4] == 'True'
+config['poll_interval_minutes'] = int(sys.argv[5])
+with open(sys.argv[1], 'w') as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
     f.write('\n')
-"
+" -- "$MAP_FILE" "$OBSIDIAN_VAULT" "$NEW_PROJECT_ROOT" "$py_notify" "$POLL_INTERVAL_MINUTES"
   ok "已生成 $MAP_FILE"
   warn "请编辑此文件，填入你的项目映射（projects 字段）"
 fi
@@ -361,31 +362,40 @@ if [ "$SYSTEMD_ENABLED" = true ]; then
 
   for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
     if [ -f "$SRC_DIR/$unit" ]; then
-      sed -e "s#__OBSIDIAN_VAULT_PATH__#$OBSIDIAN_VAULT#g" \
-          -e "s#__RUNNER_PATH__#$runner_path#g" \
-          "$SRC_DIR/$unit" > "$SYSTEMD_USER_DIR/$unit"
+      # Use Python for safe string replacement (avoids sed injection via path chars)
+      python3 -c "
+import sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+content = content.replace('__OBSIDIAN_VAULT_PATH__', sys.argv[2])
+content = content.replace('__RUNNER_PATH__', sys.argv[3])
+# Timer: replace poll interval placeholder or the default 30min literal
+content = content.replace('__POLL_INTERVAL_MINUTES__', sys.argv[4])
+content = content.replace('OnUnitActiveSec=30min', f'OnUnitActiveSec={sys.argv[4]}min')
+with open(sys.argv[5], 'w') as f:
+    f.write(content)
+" -- "$SRC_DIR/$unit" "$OBSIDIAN_VAULT" "$runner_path" "$POLL_INTERVAL_MINUTES" "$SYSTEMD_USER_DIR/$unit"
     else
       warn "$SRC_DIR/$unit 不存在，跳过"
     fi
   done
 
-  # 调整 timer 间隔
-  if [ -f "$SYSTEMD_USER_DIR/claude-task-runner.timer" ]; then
-    sed -i "s/OnUnitActiveSec=30min/OnUnitActiveSec=${POLL_INTERVAL_MINUTES}min/" \
-      "$SYSTEMD_USER_DIR/claude-task-runner.timer"
-  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user enable --now claude-task-runner.timer 2>/dev/null || \
+      warn "claude-task-runner.timer 注册失败，请手动检查"
+    ok "claude-task-runner.timer 已启用（每 ${POLL_INTERVAL_MINUTES} 分钟兜底轮询）"
 
-  systemctl --user daemon-reload
-  systemctl --user enable --now claude-task-runner.timer 2>/dev/null || \
-    warn "claude-task-runner.timer 注册失败，请手动检查"
-  ok "claude-task-runner.timer 已启用（每 ${POLL_INTERVAL_MINUTES} 分钟兜底轮询）"
-
-  if command -v inotifywait >/dev/null 2>&1; then
-    systemctl --user enable --now claude-task-watcher.service 2>/dev/null || \
-      warn "claude-task-watcher.service 注册失败，请手动检查"
-    ok "claude-task-watcher.service 已启用（Tasks/ 文件保存即触发）"
+    if command -v inotifywait >/dev/null 2>&1; then
+      systemctl --user enable --now claude-task-watcher.service 2>/dev/null || \
+        warn "claude-task-watcher.service 注册失败，请手动检查"
+      ok "claude-task-watcher.service 已启用（Tasks/ 文件保存即触发）"
+    else
+      warn "跳过 claude-task-watcher.service（缺 inotifywait）"
+    fi
   else
-    warn "跳过 claude-task-watcher.service（缺 inotifywait）"
+    warn "systemctl 不可用（非 systemd 环境），单元文件已生成但未注册"
+    warn "请手动运行: cd <项目目录> && claude -p \"/obsidian-task-runner\""
   fi
 else
   ok "跳过 systemd 注册（SYSTEMD_ENABLED=false），手动运行方式:"
