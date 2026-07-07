@@ -47,6 +47,14 @@ case "$STATUS" in
       "✅ Task ${TASK_ID}: 代码已实现" \
       "${TITLE}\n请 ${REVIEWER:-你} review 代码，确认无误后合并"
     ;;
+  implementing)
+    notify-send \
+      --urgency=normal \
+      --app-name="Claude Task Runner" \
+      --icon=emblem-system \
+      "⏳ Task ${TASK_ID}: 仍在执行中" \
+      "${TITLE}\n任务未正常结束（可能进程中断），请检查日志"
+    ;;
   error|failed)
     notify-send \
       --urgency=critical \
