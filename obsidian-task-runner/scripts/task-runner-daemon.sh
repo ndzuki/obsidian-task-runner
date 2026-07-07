@@ -44,7 +44,26 @@ if [ ! -f "$MAP_FILE" ]; then
   exit 1
 fi
 
-python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r line; do
+# 循环重扫:处理完当前批次后重新扫描,如果 on_req_changed 在 daemon 运行期间
+# 重置了任务,下一轮扫描会拾起——避免用户更新需求文档后因 daemon 忙碌而被忽略。
+# 最多重扫 3 轮,防止异常情况下无限循环。
+scan_round=0
+max_rounds=3
+
+while [ $scan_round -lt $max_rounds ]; do
+  scan_round=$((scan_round + 1))
+  tasks_json=$(python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" 2>>"$LOG_FILE")
+
+  if [ -z "$tasks_json" ]; then
+    log "第 $scan_round 轮扫描: 无待处理任务,退出"
+    break
+  fi
+
+  task_count=$(echo "$tasks_json" | wc -l)
+  log "第 $scan_round 轮扫描: 发现 $task_count 个待处理任务"
+
+  echo "$tasks_json" | while IFS= read -r line; do
+    [ -z "$line" ] && continue
   task_id=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))")
   project=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('project',''))")
   new_project_flag=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('new_project',''))")
@@ -164,4 +183,7 @@ print('yes' if m else 'no')
   else
     log "$task_id 处理失败,详情见上方日志"
   fi
-done
+  done  # end inner: while read line (tasks in current batch)
+
+  log "第 $scan_round 轮扫描完成"
+done  # end outer: while scan_round < max_rounds (re-scan loop)
