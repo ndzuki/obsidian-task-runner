@@ -171,9 +171,9 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
                 "old_status": status,
             })
             print(f"  {task_id} ({filename}): {status} → ready（需求已更新，重新出计划）")
-        elif status in ("implementing", "review"):
-            # Task is mid-execution or awaiting review — mark as pending,
-            # daemon will auto-trigger new Round 1 after current work completes
+        elif status in ("implementing", "review", "done"):
+            # Task is mid-execution, awaiting review, or completed —
+            # mark as pending, daemon will auto-trigger new Round 1
             update_frontmatter_field(task_path, "pending_req", True)
             affected.append({
                 "task_id": task_id,
@@ -181,7 +181,7 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
                 "action": "pending_req",
                 "old_status": status,
             })
-            print(f"  {task_id} ({filename}): status={status}，已标记 pending_req（当前任务完成后自动重新出计划）")
+            print(f"  {task_id} ({filename}): status={status}，已标记 pending_req（自动重新出计划）")
         else:
             affected.append({
                 "task_id": task_id,
