@@ -39,10 +39,12 @@ target_env: staging
 # <!-- 标题 -->
 
 ## 需求摘要
-<!-- 从 req_doc 复制摘要，或简要说明要做什么 -->
+<!-- 从 Requirements/<req_doc>.md 复制摘要，或简要说明要做什么 -->
+<!-- 需求文档模板: 复制 REQ-000-template.md 到 Requirements/ 下 -->
 
 ## 验收标准
 <!-- 逐条列出可验证的验收条件，task-verifier 会按此清单核实 -->
+<!-- 也可以指向需求文档中的验收标准 section -->
 - [ ] 
 - [ ] 
 

@@ -63,7 +63,18 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 
 **目标**：理解需求，生成可执行的实现计划。
 
-1. **读需求文档**：根据 `req_doc` 字段读 `$OBSIDIAN_VAULT/<req_doc>`。如果 `req_doc` 为空，从任务文档的「需求摘要」section 提取需求。
+1. **读需求文档**：根据 `req_doc` 字段读 `$OBSIDIAN_VAULT/<req_doc>`。
+   - 需求文档通常是标准化的模板结构（基于 `REQ-000-template.md`），包含这些 section：
+     - `## 背景 & 动机` → 理解为什么做
+     - `## 功能需求` → FR-1, FR-2... 用 Given-When-Then 描述
+     - `## 非功能性需求` → 性能/安全/可用性指标
+     - `## 技术约束` → 语言、框架、数据库等硬性限制
+     - `## 验收标准` → AC-1, AC-2... 可验证条件
+     - `## API 规格` → 接口契约（如涉及）
+     - `## 数据模型` → 实体定义（如涉及）
+     - `## 风险 & 边界` → 已知风险、不在范围内的东西
+   - 如果 `req_doc` 为空，从任务文档的「需求摘要」section 提取需求。
+   - 如果需求文档缺失关键信息（如技术约束、验收标准），在生成计划时标注为「信息缺失，需要人工补充」。
 
 2. **分析项目上下文**：
    - 如果项目已有代码（`status: existing`）：读目录结构、`go.mod`/`package.json`/`Makefile`、现有代码风格、测试框架

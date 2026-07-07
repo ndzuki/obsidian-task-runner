@@ -134,6 +134,7 @@ obsidian-task-runner/              # skill（安装到 ~/.claude/skills/）
 
 agents/task-verifier.md            # 验收 subagent
 TASK-000-template.md               # 新任务模板
+REQ-000-template.md                # 标准化需求模板
 install.sh                         # 一键安装
 ```
 
