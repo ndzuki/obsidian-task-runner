@@ -86,6 +86,7 @@ def update_frontmatter_field(file_path: str, field: str, new_value) -> bool:
     body = content[end + 3:]
 
     new_fm_lines = []
+    found = False
     for line in fm_text.split("\n"):
         stripped = line.strip()
         if re.match(rf"^{field}\s*:", stripped):
@@ -95,8 +96,18 @@ def update_frontmatter_field(file_path: str, field: str, new_value) -> bool:
                 new_fm_lines.append(f'{field}: "{new_value}"')
             else:
                 new_fm_lines.append(f"{field}: {new_value}")
+            found = True
         else:
             new_fm_lines.append(line)
+
+    # Append new field at end of frontmatter if not found
+    if not found:
+        if isinstance(new_value, bool):
+            new_fm_lines.append(f"{field}: {str(new_value).lower()}")
+        elif isinstance(new_value, str):
+            new_fm_lines.append(f'{field}: "{new_value}"')
+        else:
+            new_fm_lines.append(f"{field}: {new_value}")
 
     new_content = "---\n" + "\n".join(new_fm_lines) + "\n---" + body
     try:
