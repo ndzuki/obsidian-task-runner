@@ -67,7 +67,8 @@ def register_project(
                 file=sys.stderr,
             )
             proj["path"] = project_path
-            proj["git_remote"] = git_remote
+            if git_remote:
+                proj["git_remote"] = git_remote
             updated = True
             break
     else:

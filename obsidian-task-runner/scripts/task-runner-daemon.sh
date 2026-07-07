@@ -3,16 +3,17 @@
 # 拉起一次 headless Claude Code 会话。由 systemd timer 周期性调用,也可以手动跑一次做验证。
 set -euo pipefail
 
+SKILL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
+
 # OBSIDIAN_VAULT 优先从环境变量取；如果没设（比如手动跑），从 vault-map.json 读
 if [ -z "${OBSIDIAN_VAULT:-}" ]; then
-  _map="$HOME/.claude/skills/obsidian-task-runner/config/vault-map.json"
+  _map="$SKILL_DIR/config/vault-map.json"
   if [ -f "$_map" ]; then
     OBSIDIAN_VAULT="$(python3 -c "import json,sys;print(json.load(open('$_map')).get('obsidian_vault',''))" 2>/dev/null)"
   fi
   [ -z "$OBSIDIAN_VAULT" ] && { echo "请设置 OBSIDIAN_VAULT 环境变量或在 vault-map.json 中配置 obsidian_vault" >&2; exit 1; }
 fi
 VAULT="$OBSIDIAN_VAULT"
-SKILL_DIR="$HOME/.claude/skills/obsidian-task-runner"
 MAP_FILE="$SKILL_DIR/config/vault-map.json"
 LOG_DIR="$HOME/.claude/logs"
 LOG_FILE="$LOG_DIR/task-runner.log"
@@ -50,7 +51,8 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
   task_file=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('file_name',''))")
 
   resolve_args=("$MAP_FILE" "$project")
-  if [ "$new_project_flag" = "true" ]; then
+  # Python print(True) → "True" (capital T), not "true"
+  if [ "$new_project_flag" = "True" ]; then
     resolve_args+=(--new-project)
   fi
 
@@ -110,7 +112,7 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
 import re
 with open('$task_path') as f:
     content = f.read()
-fm = content.split('---')[1] if content.startswith('---') else ''
+fm = content.split('---', 2)[1] if content.startswith('---') else ''
 m = re.search(r'pending_req\s*:\s*true', fm, re.IGNORECASE)
 print('yes' if m else 'no')
 " 2>/dev/null || echo "no")

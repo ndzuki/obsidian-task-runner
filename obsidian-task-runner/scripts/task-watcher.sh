@@ -4,9 +4,11 @@
 # systemd timer 保留作为兜底——防止 inotify 事件丢失或同步延迟。
 set -euo pipefail
 
+SKILL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
+
 # OBSIDIAN_VAULT 优先从环境变量取；如果没设（比如手动跑），从 vault-map.json 读
 if [ -z "${OBSIDIAN_VAULT:-}" ]; then
-  _map="$HOME/.claude/skills/obsidian-task-runner/config/vault-map.json"
+  _map="$SKILL_DIR/config/vault-map.json"
   if [ -f "$_map" ]; then
     OBSIDIAN_VAULT="$(python3 -c "import json,sys;print(json.load(open('$_map')).get('obsidian_vault',''))" 2>/dev/null)"
   fi
@@ -15,7 +17,6 @@ fi
 VAULT="$OBSIDIAN_VAULT"
 TASKS_DIR="$VAULT/Tasks"
 REQS_DIR="$VAULT/Requirements"
-SKILL_DIR="$HOME/.claude/skills/obsidian-task-runner"
 LOG_DIR="$HOME/.claude/logs"
 LOG_FILE="$LOG_DIR/task-watcher.log"
 mkdir -p "$LOG_DIR"

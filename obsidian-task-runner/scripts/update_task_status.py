@@ -10,6 +10,7 @@ Handles the automatic timestamp fields:
 import sys
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 
 
@@ -93,12 +94,27 @@ def update_task_status(task_path: str, updates: dict) -> bool:
 
     new_content = "---\n" + "\n".join(new_fm_lines) + "\n---" + body
 
+    # Atomic write: temp file → fsync → rename (prevents corruption on crash)
+    tmp_path = None
     try:
-        with open(task_path, "w") as f:
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(task_path),
+            prefix="." + os.path.basename(task_path) + ".",
+            suffix=".tmp",
+        )
+        with os.fdopen(tmp_fd, "w") as f:
             f.write(new_content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, task_path)
         return True
     except OSError as e:
         print(f"Error writing {task_path}: {e}", file=sys.stderr)
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return False
 
 
