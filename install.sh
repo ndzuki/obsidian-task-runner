@@ -1,42 +1,50 @@
 #!/usr/bin/env bash
-# Obsidian Task Runner — 一键安装脚本
+# Obsidian Task Runner — 一键安装/卸载脚本
 #
-# 交互模式: ./install.sh
-# 非交互模式:
-#   OBSIDIAN_VAULT=/path/to/vault \
-#   NEW_PROJECT_ROOT=/path/to/projects \
-#   ./install.sh --non-interactive
+# 安装（交互）:     ./install.sh
+# 安装（非交互）:   OBSIDIAN_VAULT=... ./install.sh --non-interactive
+# 强制覆盖安装:     ./install.sh --force
+# 完全卸载:         ./install.sh --uninstall
+# 卸载（含配置）:   ./install.sh --uninstall --force
 set -euo pipefail
+
+# ── 常量 ──
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_INSTALL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
+AGENTS_HOME="$HOME/.claude/agents"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+LOG_DIR="$HOME/.claude/logs"
+MAP_FILE="$SKILL_INSTALL_DIR/config/vault-map.json"
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
+warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
+ok()   { printf '\033[1;32mOK\033[0m %s\n' "$1"; }
+err()  { printf '\033[1;31mERR\033[0m %s\n' "$1"; }
 
 # ── 参数解析 ──
 NON_INTERACTIVE=false
 FORCE=false
+UNINSTALL=false
 for arg in "$@"; do
   case "$arg" in
     --non-interactive) NON_INTERACTIVE=true ;;
     --force) FORCE=true ;;
+    --uninstall) UNINSTALL=true ;;
     --help|-h)
       cat <<'HELP'
-Usage: ./install.sh [--non-interactive] [--force]
+Usage:
+  ./install.sh                       交互式安装
+  ./install.sh --non-interactive     非交互安装（通过环境变量配置）
+  ./install.sh --force               强制覆盖所有文件（含 vault-map.json）
+  ./install.sh --uninstall           卸载（保留 vault-map.json 和日志）
+  ./install.sh --uninstall --force   完全卸载（删除所有配置和日志）
 
-交互模式（默认）:
-  ./install.sh
-  逐步询问所有配置项。
-
-非交互模式（适合 CI / 脚本化部署）:
-  OBSIDIAN_VAULT=/path/to/vault \
-  NEW_PROJECT_ROOT=/path/to/projects \
-  NOTIFY_ENABLED=true \
-  POLL_INTERVAL_MINUTES=30 \
-  SYSTEMD_ENABLED=true \
-  ./install.sh --non-interactive
-
-环境变量:
-  OBSIDIAN_VAULT          Obsidian Vault 根目录（非交互模式必需）
+安装环境变量:
+  OBSIDIAN_VAULT          Obsidian Vault 根目录
   NEW_PROJECT_ROOT        新项目默认创建目录（默认 $HOME/src）
-  NOTIFY_ENABLED          是否启用桌面通知（默认 true）
+  NOTIFY_ENABLED          启用桌面通知（默认 true）
   POLL_INTERVAL_MINUTES   systemd 定时器间隔分钟数（默认 30）
-  SYSTEMD_ENABLED         是否注册 systemd 服务（默认 true）
+  SYSTEMD_ENABLED         注册 systemd 服务（默认 true）
   SKILL_INSTALL_DIR       skill 安装路径（默认 ~/.claude/skills/obsidian-task-runner）
 HELP
       exit 0
@@ -44,20 +52,107 @@ HELP
   esac
 done
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_INSTALL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
-AGENTS_HOME="$HOME/.claude/agents"
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-LOG_DIR="$HOME/.claude/logs"
+# ══════════════════════════════════════════════════════════════════════════════
+# 卸载逻辑
+# ══════════════════════════════════════════════════════════════════════════════
+if [ "$UNINSTALL" = true ]; then
+  echo ""
+  say "Obsidian Task Runner — 卸载"
+  echo ""
 
-say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
-warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
-ok()   { printf '\033[1;32mOK\033[0m %s\n' "$1"; }
-err()  { printf '\033[1;31mERR\033[0m %s\n' "$1"; }
+  # 确认（交互模式下）
+  if [ "$NON_INTERACTIVE" = false ] && [ "$FORCE" = false ]; then
+    read -r -p "确认卸载 obsidian-task-runner? [y/N] " reply
+    [[ "$reply" =~ ^[Yy]$ ]] || { ok "已取消"; exit 0; }
+  fi
+
+  # 1. 停用 systemd 单元
+  say "停用 systemd 单元"
+  for unit in claude-task-runner.timer claude-task-watcher.service; do
+    if systemctl --user is-enabled "$unit" &>/dev/null; then
+      systemctl --user disable --now "$unit" 2>/dev/null || true
+      ok "已停用 $unit"
+    else
+      ok "$unit 未启用，跳过"
+    fi
+  done
+  systemctl --user daemon-reload 2>/dev/null || true
+
+  # 2. 删除 systemd 单元文件
+  say "清理 systemd 单元文件"
+  for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
+    if [ -f "$SYSTEMD_USER_DIR/$unit" ]; then
+      rm "$SYSTEMD_USER_DIR/$unit"
+      ok "已删除 $SYSTEMD_USER_DIR/$unit"
+    else
+      ok "$unit 不存在，跳过"
+    fi
+  done
+
+  # 3. 删除 skill
+  say "删除 skill"
+  if [ -d "$SKILL_INSTALL_DIR" ]; then
+    rm -rf "$SKILL_INSTALL_DIR"
+    ok "已删除 $SKILL_INSTALL_DIR"
+  else
+    ok "skill 目录不存在，跳过"
+  fi
+
+  # 4. 删除 task-verifier
+  say "删除 task-verifier subagent"
+  if [ -f "$AGENTS_HOME/task-verifier.md" ]; then
+    rm "$AGENTS_HOME/task-verifier.md"
+    ok "已删除 $AGENTS_HOME/task-verifier.md"
+  else
+    ok "task-verifier.md 不存在，跳过"
+  fi
+
+  # 5. 清理日志（--force 时删除）
+  if [ "$FORCE" = true ]; then
+    say "清理日志"
+    if [ -d "$LOG_DIR" ]; then
+      rm -rf "$LOG_DIR"
+      ok "已删除 $LOG_DIR"
+    fi
+  else
+    ok "保留日志目录 $LOG_DIR（用 --force 同时删除）"
+  fi
+
+  # 6. 提示清理 shell rc 中的环境变量
+  say "环境变量"
+  found_in_rc=false
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
+    if [ -f "$rc" ] && grep -q "OBSIDIAN_VAULT" "$rc" 2>/dev/null; then
+      warn "$rc 中包含 OBSIDIAN_VAULT，请手动删除那一行"
+      found_in_rc=true
+    fi
+  done
+  [ "$found_in_rc" = false ] && ok "shell rc 中未发现 OBSIDIAN_VAULT"
+
+  echo ""
+  say "卸载完成"
+  [ "$FORCE" = false ] && warn "vault-map.json 和日志已保留，如需完全清除请用 --uninstall --force"
+  exit 0
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 安装逻辑
+# ══════════════════════════════════════════════════════════════════════════════
 
 echo ""
 say "Obsidian Task Runner — 安装"
 echo ""
+
+# 检查是否已安装（重运行时给出清晰提示）
+ALREADY_INSTALLED=false
+[ -d "$SKILL_INSTALL_DIR" ] && ALREADY_INSTALLED=true
+
+if [ "$ALREADY_INSTALLED" = true ] && [ "$FORCE" = false ]; then
+  warn "检测到已有安装: $SKILL_INSTALL_DIR"
+  warn "将增量更新 skill 文件，但保留 vault-map.json 和 task-verifier.md"
+  warn "如需强制覆盖全部文件请用 --force，如需卸载请用 --uninstall"
+  echo ""
+fi
 
 # ── 1. 依赖检查 ──
 say "Step 1/7: 检查依赖"
@@ -104,11 +199,22 @@ if [ "$NON_INTERACTIVE" = true ]; then
   ok "非交互模式: POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES}min"
   ok "非交互模式: SYSTEMD_ENABLED=$SYSTEMD_ENABLED"
 else
-  read -r -p "Obsidian Vault 根目录 [$HOME/Documents/Obsidian/MainVault]: " vault_input
-  OBSIDIAN_VAULT="${vault_input:-$HOME/Documents/Obsidian/MainVault}"
+  # 如果已安装且 vault-map.json 存在，读取旧值作为默认值
+  default_vault="$HOME/Documents/Obsidian/MainVault"
+  default_new_root="$HOME/src"
+  if [ -f "$MAP_FILE" ]; then
+    read_old_vault="$(python3 -c "import json;print(json.load(open('$MAP_FILE')).get('obsidian_vault',''))" 2>/dev/null || true)"
+    read_old_root="$(python3 -c "import json;print(json.load(open('$MAP_FILE')).get('new_project_root',''))" 2>/dev/null || true)"
+    [ -n "$read_old_vault" ] && default_vault="$read_old_vault"
+    [ -n "$read_old_root" ] && default_new_root="$read_old_root"
+    ok "检测到已有配置，回车使用旧值"
+  fi
 
-  read -r -p "新项目默认创建目录 [$HOME/src]: " new_root_input
-  NEW_PROJECT_ROOT="${new_root_input:-$HOME/src}"
+  read -r -p "Obsidian Vault 根目录 [$default_vault]: " vault_input
+  OBSIDIAN_VAULT="${vault_input:-$default_vault}"
+
+  read -r -p "新项目默认创建目录 [$default_new_root]: " new_root_input
+  NEW_PROJECT_ROOT="${new_root_input:-$default_new_root}"
 
   read -r -p "启用桌面通知? [Y/n]: " notify_input
   NOTIFY_ENABLED=true
@@ -126,33 +232,44 @@ fi
 say "Step 3/7: 安装 skill 到 $SKILL_INSTALL_DIR"
 
 mkdir -p "$(dirname "$SKILL_INSTALL_DIR")"
-if [ -d "$SKILL_INSTALL_DIR" ] && [ "$FORCE" = false ]; then
-  warn "$SKILL_INSTALL_DIR 已存在，增量更新（用 --force 强制覆盖）"
+if [ -d "$SKILL_INSTALL_DIR" ]; then
+  if [ "$FORCE" = true ]; then
+    warn "强制覆盖 $SKILL_INSTALL_DIR"
+    rm -rf "$SKILL_INSTALL_DIR"
+  else
+    ok "$SKILL_INSTALL_DIR 已存在，增量更新（保留 vault-map.json）"
+  fi
 fi
 cp -r "$SRC_DIR/obsidian-task-runner" "$SKILL_INSTALL_DIR"
 chmod +x "$SKILL_INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
 chmod +x "$SKILL_INSTALL_DIR"/scripts/*.py 2>/dev/null || true
-ok "skill 已安装"
+ok "skill 已更新"
 
 # ── 4. 安装 task-verifier subagent ──
 say "Step 4/7: 安装 task-verifier subagent"
 
 mkdir -p "$AGENTS_HOME"
 if [ -f "$AGENTS_HOME/task-verifier.md" ] && [ "$FORCE" = false ]; then
-  warn "$AGENTS_HOME/task-verifier.md 已存在，跳过（用 --force 覆盖）"
+  ok "$AGENTS_HOME/task-verifier.md 已存在，跳过（用 --force 覆盖）"
 else
   cp "$SRC_DIR/agents/task-verifier.md" "$AGENTS_HOME/"
-  ok "task-verifier.md 已安装"
+  if [ "$FORCE" = true ]; then
+    ok "task-verifier.md 已强制覆盖"
+  else
+    ok "task-verifier.md 已安装"
+  fi
 fi
 
 # ── 5. 生成 vault-map.json ──
 say "Step 5/7: 配置 vault-map.json"
 
-MAP_FILE="$SKILL_INSTALL_DIR/config/vault-map.json"
 if [ -f "$MAP_FILE" ] && [ "$FORCE" = false ]; then
-  warn "$MAP_FILE 已存在，不覆盖。如需更新请手动编辑"
+  ok "$MAP_FILE 已存在，不覆盖。如需重新生成请用 --force"
 else
-  # 从 example 生成，替换为实际值
+  if [ "$FORCE" = true ] && [ -f "$MAP_FILE" ]; then
+    warn "强制覆盖 $MAP_FILE（旧文件备份到 ${MAP_FILE}.bak）"
+    cp "$MAP_FILE" "${MAP_FILE}.bak"
+  fi
   cp "$SKILL_INSTALL_DIR/config/vault-map.example.json" "$MAP_FILE"
   # bash bool → Python bool
   if [ "${NOTIFY_ENABLED,,}" = "true" ]; then
@@ -206,14 +323,14 @@ mkdir -p "$(dirname "$shell_rc")"
 
 if [ "$shell_type" = "fish" ]; then
   if grep -q "set -gx OBSIDIAN_VAULT" "$shell_rc" 2>/dev/null; then
-    warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
+    ok "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
   else
     echo "set -gx OBSIDIAN_VAULT \"$OBSIDIAN_VAULT\"" >> "$shell_rc"
     ok "已写入 $shell_rc（fish 语法: set -gx OBSIDIAN_VAULT \"$OBSIDIAN_VAULT\"）"
   fi
 else
   if grep -q "^export OBSIDIAN_VAULT=" "$shell_rc" 2>/dev/null; then
-    warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
+    ok "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
   else
     echo "export OBSIDIAN_VAULT=\"$OBSIDIAN_VAULT\"" >> "$shell_rc"
     ok "已写入 $shell_rc（bash/zsh 语法，当前终端可 source $shell_rc）"
@@ -299,7 +416,8 @@ cat <<SUMMARY
      cd <某个项目目录>
      claude -p "/obsidian-task-runner <task_id>"
 
-详细文档: $SRC_DIR/README.md
-问题反馈: https://github.com/ndzuki/obsidian-task-runner/issues
+卸载:
+  ./install.sh --uninstall          保留配置和日志
+  ./install.sh --uninstall --force  完全清除
 
 SUMMARY
