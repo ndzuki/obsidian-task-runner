@@ -1,0 +1,19 @@
+# vault-map.json contains local paths — never commit real one
+config/vault-map.json
+
+# systemd unit files with substituted paths
+*.service.subst
+*.timer.subst
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
