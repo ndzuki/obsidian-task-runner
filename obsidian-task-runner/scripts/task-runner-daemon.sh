@@ -102,6 +102,50 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
     if [ -n "$task_file" ] && [ -f "$VAULT/Tasks/$task_file" ]; then
       "$SKILL_DIR/scripts/notify_on_status_change.sh" "$VAULT/Tasks/$task_file" &
     fi
+
+    # 检查是否有待处理的需求变更（Round 2 期间需求文档被更新了）
+    task_path="$VAULT/Tasks/$task_file"
+    if [ -n "$task_file" ] && [ -f "$task_path" ]; then
+      pending=$(python3 -c "
+import re
+with open('$task_path') as f:
+    content = f.read()
+fm = content.split('---')[1] if content.startswith('---') else ''
+m = re.search(r'pending_req\s*:\s*true', fm, re.IGNORECASE)
+print('yes' if m else 'no')
+" 2>/dev/null || echo "no")
+
+      if [ "$pending" = "yes" ]; then
+        log "$task_id 检测到 pending_req（需求在此期间有更新），自动触发新 Round 1"
+        if command -v notify-send >/dev/null 2>&1; then
+          notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-refresh \
+            "🔄 Task ${task_id}: 需求变更已并入" \
+            "${task_title:-}\n当前工作已完成，自动根据新需求重新出计划" &
+        fi
+
+        # 重置任务状态，清除 pending_req
+        python3 "$SKILL_DIR/scripts/update_task_status.py" "$task_path" \
+          status=ready plan_approved=false pending_req=false 2>>"$LOG_DIR/task-runner.log" || true
+
+        # 立即进入新 Round 1（在同一次 daemon 运行中链式处理）
+        log "$task_id 开始链式处理（pending_req → Round 1）"
+        if (
+            cd "$repo_dir"
+            claude -p "/obsidian-task-runner $task_id" \
+              --permission-mode acceptEdits \
+              --allowedTools "Bash(git *),Bash(make *),Bash(go *),Bash(golangci-lint *),Bash(goimports *),Bash(python3 *),Read,Edit,Grep,Glob" \
+              --output-format json
+          ) >>"$LOG_DIR/task-runner.log" 2>&1
+        then
+          log "$task_id 链式 Round 1 完成（新计划已生成）"
+          if [ -f "$task_path" ]; then
+            "$SKILL_DIR/scripts/notify_on_status_change.sh" "$task_path" &
+          fi
+        else
+          log "$task_id 链式 Round 1 失败"
+        fi
+      fi
+    fi
   else
     log "$task_id 处理失败,详情见上方日志"
   fi
