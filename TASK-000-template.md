@@ -1,0 +1,56 @@
+---
+id: ""
+title: ""
+project: ""
+new_project: false
+template: ""
+
+# ── 状态流转（系统自动管理，不要手动改） ──
+status: ready
+plan_approved: false
+created: ""
+updated: ""
+completed: ""
+
+# ── 优先级 & 排期 ──
+priority: P2
+due_date: ""
+estimated_hours: 0
+actual_hours: 0
+
+# ── 人员 & 分工 ──
+assignee: claude
+reviewer: ""
+
+# ── 范围 & 分类 ──
+req_doc: ""
+component: ""
+tags: []
+epic: ""
+parent: ""
+blocks: []
+blocked_by: []
+
+# ── 环境 & 部署 ──
+target_branch: ""
+target_env: staging
+---
+
+# <!-- 标题 -->
+
+## 需求摘要
+<!-- 从 req_doc 复制摘要，或简要说明要做什么 -->
+
+## 验收标准
+<!-- 逐条列出可验证的验收条件，task-verifier 会按此清单核实 -->
+- [ ] 
+- [ ] 
+
+## 实现计划
+<!-- 🤖 Round 1: Claude 自动填充 -->
+
+## 实现记录
+<!-- 🤖 Round 2: Claude 自动填充 -->
+
+## 验收记录
+<!-- 🤖 Claude + task-verifier 自动填充 -->
