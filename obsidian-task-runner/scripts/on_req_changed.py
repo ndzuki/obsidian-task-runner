@@ -125,14 +125,25 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
             continue
 
         task_req = fm.get("req_doc", "")
-        # Match: task.req_doc == "Requirements/xxx.md" or just "xxx.md"
         if not task_req:
             continue
-        task_req_normalized = task_req.replace("\\", "/")
-        req_normalized = req_rel_path.replace("\\", "/")
+
+        # Normalize: strip .md suffix on both sides, backslash → slash
+        def norm(p: str) -> str:
+            p = p.replace("\\", "/")
+            if p.endswith(".md"):
+                p = p[:-3]
+            return p
+
+        task_req_normalized = norm(task_req)
+        req_normalized = norm(req_rel_path)
+
+        # Match by name (ignoring extension), or by full relative path
+        task_name = os.path.basename(task_req_normalized)
+        req_name = os.path.basename(req_normalized)
         if not (task_req_normalized == req_normalized or
-                task_req_normalized.endswith("/" + req_normalized) or
-                req_normalized.endswith("/" + task_req_normalized)):
+                task_name == req_name or
+                task_req_normalized.endswith("/" + req_name)):
             continue
 
         task_id = fm.get("id", "?")
