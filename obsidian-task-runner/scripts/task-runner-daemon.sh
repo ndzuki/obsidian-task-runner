@@ -86,6 +86,22 @@ python3 "$SKILL_DIR/scripts/find_ready_tasks.py" "$VAULT" | while IFS= read -r l
     fi
   fi
 
+  # 如果是因 pending_req 被唤醒的（状态不是 ready/plan-review+approved），先重置
+  task_status=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || true)
+  task_pending=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('pending_req',''))" 2>/dev/null || true)
+  task_path="$VAULT/Tasks/$task_file"
+
+  if [ "$task_pending" = "True" ] && [ "$task_status" != "ready" ] && [ "$task_status" != "plan-review" ]; then
+    log "$task_id 因 pending_req 唤醒（当前 status=$task_status），重置为 ready 并重新出计划"
+    python3 "$SKILL_DIR/scripts/update_task_status.py" "$task_path" \
+      status=ready pending_req=false plan_approved=false 2>>"$LOG_DIR/task-runner.log" || true
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-refresh \
+        "🔄 Task ${task_id}: 需求变更已并入" \
+        "${task_title:-}\n自动根据新需求重新出计划" &
+    fi
+  fi
+
   log "开始处理 $task_id (project=$project, repo=$repo_dir, stage=$repo_status)"
 
   # acceptEdits 只会自动放行文件写入和 mkdir/touch/mv/cp,
