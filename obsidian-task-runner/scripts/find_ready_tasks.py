@@ -101,10 +101,15 @@ def is_ready(frontmatter: dict) -> bool:
     """Check if a task is ready for processing."""
     status = frontmatter.get("status", "ready")
     plan_approved = frontmatter.get("plan_approved", False)
+    pending_req = frontmatter.get("pending_req", False)
 
     if status == "ready":
         return True
     if status == "plan-review" and plan_approved is True:
+        return True
+    # Req doc was updated while task was implementing/review/done —
+    # needs re-planning regardless of current status
+    if pending_req is True:
         return True
     return False
 
