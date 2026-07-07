@@ -63,6 +63,8 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 
 **目标**：理解需求，生成可执行的实现计划。
 
+**重要**：如果任务文档的「## 实现记录」或「## 验收记录」section 已有内容（说明这是因需求变更触发的**重新出计划**），则 Round 1 生成计划后**必须停在 `plan-review`**，等待人工确认。不得因为"代码已经实现过了"就跳过 plan-review 直接进入 review。即使 `auto_approve: true`，重新出计划场景下也必须停在 plan-review。
+
 1. **读需求文档**：根据 `req_doc` 字段读 `$OBSIDIAN_VAULT/<req_doc>`。
    - 需求文档可以是**任意格式**——一句话描述到完整结构化模板都行：
      - **L1 极简**（只有「要做什么」+「完成标准」）：从自然语言提取功能点，根据技术约束或项目惯例推断缺失信息，标注为「推断」
@@ -163,6 +165,7 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 
 如果 `auto_approve: true` 且 `new_project != true`：
 - Round 1 完成后不退出，直接继续 Round 2
+- **例外**：如果「## 实现记录」section 已有内容（重新出计划场景），即使 `auto_approve: true` 也必须停在 `plan-review`
 - 两个阶段的输出分别写入对应 section
 - 仍然更新两次状态（`plan-review` → `implementing` → `review`），保留完整记录
 
