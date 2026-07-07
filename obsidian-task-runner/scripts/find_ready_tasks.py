@@ -135,6 +135,10 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
         if not is_ready(fm):
             continue
 
+        # Skip templates — tasks with empty project field
+        if not fm.get("project", ""):
+            continue
+
         ready_tasks.append({
             "id": fm.get("id", ""),
             "title": fm.get("title", ""),
