@@ -5,7 +5,15 @@
 # 这台机器上 Claude Code 进程重启期间错过事件、或 Syncthing 同步延迟到达等情况。
 set -euo pipefail
 
-VAULT="${OBSIDIAN_VAULT:?请先设置环境变量 OBSIDIAN_VAULT,指向 Obsidian 仓库根目录}"
+# OBSIDIAN_VAULT 优先从环境变量取；如果没设（比如手动跑），从 vault-map.json 读
+if [ -z "${OBSIDIAN_VAULT:-}" ]; then
+  _map="$HOME/.claude/skills/obsidian-task-runner/config/vault-map.json"
+  if [ -f "$_map" ]; then
+    OBSIDIAN_VAULT="$(python3 -c "import json,sys;print(json.load(open('$_map')).get('obsidian_vault',''))" 2>/dev/null)"
+  fi
+  [ -z "$OBSIDIAN_VAULT" ] && { echo "请设置 OBSIDIAN_VAULT 环境变量或在 vault-map.json 中配置 obsidian_vault" >&2; exit 1; }
+fi
+VAULT="$OBSIDIAN_VAULT"
 TASKS_DIR="$VAULT/Tasks"
 SKILL_DIR="$HOME/.claude/skills/obsidian-task-runner"
 LOG_DIR="$HOME/.claude/logs"
