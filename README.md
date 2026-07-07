@@ -98,6 +98,8 @@ claude -p "/obsidian-task-runner"
 
 ## 工作流
 
+### 主流程：从需求到交付
+
 ```
 你                                   Claude Code
 ─────────────────────────────────────────────────────
@@ -112,21 +114,35 @@ claude -p "/obsidian-task-runner"
                          →          9. 🔔 "🚀 开始实现"
                          →          10. 写代码、测试、lint
                          →          11. task-verifier 验收
-                         →          12. git commit
+                         →          12. git commit 到分支
                          →          13. status=review
                          →          14. 🔔 "代码已实现，请 review"
-15. Review 代码，合并
-16. 设 status=done
+15. Review 代码，merge 分支
+16. 设 status=done ✅
 ```
 
-**更新需求文档时**：
+### 需求变更流程：任何时候更新需求文档
 
 ```
-17. 编辑 Requirements/xxx.md，保存
-                         →          18. 自动找到关联任务
-                         →          19. 重置为 ready（强制重新出计划）
-                         →          20. 回到步骤 3
+编辑 Requirements/xxx.md，保存
+        │
+        ▼ (秒级)
+  on_req_changed.py 找到关联任务
+        │
+        ├── status=ready/plan-review → 直接重置为 ready
+        ├── status=implementing → 标记 pending_req，等实现完自动接上
+        └── status=review/done → 标记 pending_req，自动重新出计划
+              │
+              ▼
+         Round 1 重新出计划 → 停在 plan-review → 🔔 "请审阅"
+              │
+         (不会自动跳到 Round 2——即使 auto_approve: true)
 ```
+
+**关键行为**：
+- 重新出计划**永远停在 `plan-review`**，等人工确认——不会因为"代码已经实现过了"就跳过
+- `done` 状态的任务更新需求后也会被拾起，不会遗漏
+- 桌面通知覆盖：计划生成、开始实现、实现完成、需求变更并入、执行失败
 
 ## 通知时间线
 
@@ -135,6 +151,7 @@ claude -p "/obsidian-task-runner"
 | Round 1 完成 | 📋 Task #001: 计划已生成，请审阅 | 打开 Obsidian 看计划 |
 | Round 2 开始 | 🚀 Task #001: 开始实现 | Claude 已启动，正在写代码 |
 | Round 2 完成 | ✅ Task #001: 代码已实现，请 review | 切到分支 review 代码 |
+| 需求变更并入 | 🔄 Task #001: 需求变更已并入 | 需求文档更新了，自动重新出计划 |
 | 执行失败 | ❌ Task #001: 执行失败 | 检查日志排错 |
 
 ## 监控执行进度
@@ -300,11 +317,19 @@ claude -p "/obsidian-task-runner [task_id]"
 
 ### 更新需求文档后任务没有刷新？
 
-watcher 会同时监听 `Tasks/` 和 `Requirements/`。更新需求文档保存后，`on_req_changed.py` 自动找到 `req_doc` 字段匹配的任务，重置为 `ready`。确认：
+watcher 同时监听 `Tasks/` 和 `Requirements/`。更新需求文档保存后：
+- 任务在 `ready`/`plan-review` → 直接重置为 `ready`
+- 任务在 `implementing`/`review`/`done` → 标记 `pending_req: true`，等 daemon 拾起
 
-```bash
-tail -f ~/.claude/logs/task-watcher.log
-```
+确认：`tail -f ~/.claude/logs/task-watcher.log`
+
+### 需求变更后的重新出计划会停在 plan-review 吗？
+
+会。即使任务之前已经完成 Round 2，或者 `auto_approve: true`，**重新出计划场景下永远停在 `plan-review`**，必须人工确认 `plan_approved: true` 才进入 Round 2。这是为了防止需求变更后 Claude 自作主张跳过审阅。
+
+### 完成后更新需求文档，任务会重新处理吗？
+
+会。`done` 状态的任务更新需求文档后会被标记 `pending_req: true`，daemon 自动拾起、重置为 `ready`、重新出计划并停在 `plan-review`。
 
 ### 查看运行状态
 
