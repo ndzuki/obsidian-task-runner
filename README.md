@@ -6,21 +6,25 @@
 
 你在 Obsidian 里整理好需求和任务，保存文件后，Claude Code 自动：
 
-1. **读需求文档** — 理解要做什么
-2. **出实现计划** — 写回任务文档
-3. **等你确认** — 设 `plan_approved: true` 并保存
-4. **自动实现** — 写代码、跑测试、lint、提交到分支
-5. **桌面通知** — 提醒你 review
+1. **发现任务** — 扫描 `Tasks/` 目录，找到 `status: ready` 或 `plan_approved: true` 的任务
+2. **读需求文档** — 理解要做什么（支持一句话到完整结构化的任意格式）
+3. **出实现计划** — Round 1 生成分步骤计划，写回任务文档
+4. **等你确认** — 🔔 桌面通知提醒，在 Obsidian 中设 `plan_approved: true` 并保存
+5. **自动实现** — Round 2 写代码、跑测试、lint、提交到分支
+6. **需求联动** — 更新 `Requirements/` 下的需求文档后，关联任务自动重置，重新出计划
+7. **完成通知** — 🔔 桌面通知提醒 review
 
-不需要离开 Obsidian，不需要手动切终端 `git checkout -b`、写代码、跑测试——Claude Code 在后台自动完成。
+不需要离开 Obsidian，不需要手动切终端——Claude Code 在后台自动完成。
 
 ## 工作原理
 
 ```
-Obsidian Tasks/ 文件保存
+Obsidian Tasks/ 或 Requirements/ 文件保存
         │
         ▼
-  inotifywait 检测变化 (秒级触发)
+  inotifywait 检测变化 (秒级触发，同时监听两个目录)
+        │
+        ├── Requirements/ 变化 → on_req_changed.py 找关联任务 → 重置为 ready
         │
         ▼
   find_ready_tasks.py 发现可处理任务
@@ -28,10 +32,10 @@ Obsidian Tasks/ 文件保存
         ▼
   claude -p /obsidian-task-runner (headless)
         │
-        ├── Round 1: 读需求 → 出计划 → 状态: plan-review → 🔔 桌面通知
-        │     👤 你在 Obsidian 审阅计划，设 plan_approved: true
+        ├── Round 1: 读需求 → 出计划 → status=plan-review → 🔔 "请审阅"
+        │     👤 在 Obsidian 审阅计划，设 plan_approved: true
         │
-        └── Round 2: 实现代码 → 测试/lint → 验收 → git commit → 🔔 桌面通知
+        └── Round 2: 🔔 "开始实现" → 写代码 → 测试/lint → 验收 → git commit → 🔔 "请 review"
 ```
 
 systemd timer 每 30 分钟兜底扫描，防止 inotify 事件丢失。
@@ -44,8 +48,8 @@ systemd timer 每 30 分钟兜底扫描，防止 inotify 事件丢失。
 - Python 3.8+
 - Git
 - Linux + systemd
-- （可选）`inotify-tools` — 实现事件触发；不装也能用定时轮询
-- （可选）`libnotify` — 桌面通知
+- （可选）`inotify-tools` — 事件触发；不装也能用定时轮询
+- （可选）`libnotify` — 桌面通知（须配合 notification daemon：dunst / mako 等）
 
 ### 一键安装
 
@@ -55,7 +59,9 @@ cd obsidian-task-runner
 ./install.sh
 ```
 
-### 非交互安装
+脚本自动检测你的 shell（bash/zsh/fish），写入正确的环境变量语法。
+
+### 非交互安装（CI / 脚本化）
 
 ```bash
 OBSIDIAN_VAULT=/home/you/Obsidian/Vault \
@@ -63,26 +69,27 @@ NEW_PROJECT_ROOT=/home/you/src \
 ./install.sh --non-interactive
 ```
 
-支持的环境变量见下方[配置说明](#配置说明)。
-
 ### 创建第一个任务
 
 ```bash
+# 1. 复制任务模板
 cp TASK-000-template.md "$OBSIDIAN_VAULT/Tasks/TASK-001-你的任务.md"
+
+# 2. 编辑 YAML frontmatter
+#    id: "001"
+#    title: "实现用户登录 API"
+#    project: "my-backend"           # vault-map.json 中的项目 key
+#    req_doc: "Requirements/用户登录API.md"
+#    assignee: claude
+
+# 3. 写需求文档（三选一，写多少都行）
+cp REQ-000-template.md "$OBSIDIAN_VAULT/Requirements/用户登录API.md"
+#    L1 极简：标题 + 一段话 + 完成标准
+#    L2 标准：+ 功能列表 + 技术约束
+#    L3 完整：+ API 规格 + 数据模型
 ```
 
-编辑 YAML frontmatter：
-
-```yaml
-id: "001"
-title: "实现用户登录 API"
-project: "my-backend"              # vault-map.json 中的项目 key
-req_doc: "Requirements/用户登录API.md"
-priority: P2
-assignee: claude
-```
-
-在 `Requirements/` 下写对应的需求文档。保存后如果 systemd 开着，几秒内就会自动触发；也可以手动跑：
+保存后，几秒内自动触发。也可以手动：
 
 ```bash
 cd /path/to/your/project
@@ -94,26 +101,49 @@ claude -p "/obsidian-task-runner"
 ```
 你                                   Claude Code
 ─────────────────────────────────────────────────────
-1. 复制模板创建任务
-2. 写需求文档
-3. 保存任务文件
-                         →          4. 发现任务 (ready)
-                         →          5. 读需求，出计划
-                         →          6. 写回计划，status=plan-review
-                         →          7. 🔔 桌面通知
-8. 在 Obsidian 审阅计划
-9. 设 plan_approved: true
-10. 保存
-                         →          11. 发现任务 (plan-review + approved)
-                         →          12. 实现代码
-                         →          13. 运行测试/lint
-                         →          14. task-verifier 验收
-                         →          15. git commit
-                         →          16. status=review
-                         →          17. 🔔 桌面通知
-18. Review 代码，合并
-19. 设 status=done
+1. 复制模板，创建任务 + 需求文档
+2. 保存
+                         →          3. 发现任务 (ready)
+                         →          4. 读需求，出计划
+                         →          5. 写回计划，status=plan-review
+                         →          6. 🔔 "计划已生成，请审阅"
+7. 在 Obsidian 审阅计划
+8. 设 plan_approved: true，保存
+                         →          9. 🔔 "🚀 开始实现"
+                         →          10. 写代码、测试、lint
+                         →          11. task-verifier 验收
+                         →          12. git commit
+                         →          13. status=review
+                         →          14. 🔔 "代码已实现，请 review"
+15. Review 代码，合并
+16. 设 status=done
 ```
+
+**更新需求文档时**：
+
+```
+17. 编辑 Requirements/xxx.md，保存
+                         →          18. 自动找到关联任务
+                         →          19. 重置为 ready（强制重新出计划）
+                         →          20. 回到步骤 3
+```
+
+## 通知时间线
+
+| 时机 | 通知 | 含义 |
+|------|------|------|
+| Round 1 完成 | 📋 Task #001: 计划已生成，请审阅 | 打开 Obsidian 看计划 |
+| Round 2 开始 | 🚀 Task #001: 开始实现 | Claude 已启动，正在写代码 |
+| Round 2 完成 | ✅ Task #001: 代码已实现，请 review | 切到分支 review 代码 |
+| 执行失败 | ❌ Task #001: 执行失败 | 检查日志排错 |
+
+## 监控执行进度
+
+| 方式 | 命令 | 说明 |
+|------|------|------|
+| 实时日志 | `tail -f ~/.claude/logs/task-runner.log` | Claude 每一步输出 |
+| 任务文件 | 在 Obsidian 中打开对应 Task | `## 实现记录` 逐步填充 |
+| systemd | `journalctl --user -fu claude-task-runner` | 服务层日志 |
 
 ## 目录结构
 
@@ -125,17 +155,21 @@ obsidian-task-runner/              # skill（安装到 ~/.claude/skills/）
 │   ├── find_ready_tasks.py        # 发现可处理任务
 │   ├── update_task_status.py      # 更新 YAML frontmatter
 │   ├── resolve_project_path.py    # 项目名 → 本地路径
-│   ├── register_project.py        # 注册新项目
+│   ├── register_project.py        # 注册新项目（原子写入 + 语法验证）
+│   ├── on_req_changed.py          # 需求变更 → 关联任务自动重置
 │   ├── notify_on_status_change.sh # 桌面通知
-│   ├── task-runner-daemon.sh      # 调度脚本
-│   └── task-watcher.sh            # inotify 监听
+│   ├── task-runner-daemon.sh      # 调度脚本（flock 防并发）
+│   └── task-watcher.sh            # inotify 双目录监听
 └── config/
     └── vault-map.example.json     # 项目映射模板
 
 agents/task-verifier.md            # 验收 subagent
-TASK-000-template.md               # 新任务模板
-REQ-000-template.md                # 标准化需求模板
-install.sh                         # 一键安装
+TASK-000-template.md               # 新任务模板（JIRA 风格字段）
+REQ-000-template.md                # 需求模板（L1/L2/L3 渐进式）
+install.sh                         # 一键安装/卸载
+claude-task-runner.service         # systemd 兜底轮询
+claude-task-runner.timer           # systemd 定时器
+claude-task-watcher.service        # systemd 事件触发
 ```
 
 ## 配置说明
@@ -146,6 +180,7 @@ install.sh                         # 一键安装
 
 ```json
 {
+  "obsidian_vault": "/home/you/Obsidian/MainVault",
   "projects": [
     {
       "name": "my-backend",
@@ -166,11 +201,14 @@ install.sh                         # 一键安装
 }
 ```
 
-- `projects` — 已有项目名 → 本地绝对路径的映射
-- `new_project_root` — 新项目统一创建在哪个目录下
-- `templates` — 新项目脚手架模板定义
-- `notifications.desktop` — 是否弹桌面通知
-- `poll_interval_minutes` — systemd timer 兜底轮询间隔
+| 字段 | 说明 |
+|------|------|
+| `obsidian_vault` | Obsidian Vault 根目录（daemon 在无环境变量时的 fallback） |
+| `projects` | 项目列表，每个含 `name`、`path`、`git_remote` |
+| `new_project_root` | 新项目统一创建目录 |
+| `templates` | 新项目脚手架模板定义 |
+| `notifications.desktop` | 是否弹桌面通知 |
+| `poll_interval_minutes` | systemd timer 兜底轮询间隔 |
 
 ### 环境变量
 
@@ -193,8 +231,38 @@ install.sh                         # 一键安装
 | `plan_approved` | bool | **人工 Gate**，设 `true` 触发 Round 2 |
 | `auto_approve` | bool | 跳过人工确认（新项目无效） |
 | `new_project` | bool | 从零创建新项目 |
-| `project` | string | vault-map.json 的项目 key |
-| `req_doc` | string | 需求文档相对路径 |
+| `project` | string | vault-map.json 的 `projects[].name` |
+| `req_doc` | string | 需求文档相对路径（如 `Requirements/xxx.md`） |
+
+### 需求文档格式
+
+支持三种层次，写多少都行：
+
+| 层次 | 内容 | Claude 处理方式 |
+|------|------|----------------|
+| L1 极简 | 标题 + 一段话 + 完成标准 | 从自然语言提取功能点，推断技术栈 |
+| L2 标准 | + 功能列表 + 技术约束 | 逐条映射 FR 到实现步骤 |
+| L3 完整 | + API 规格 + 数据模型 | 直接生成 handler 和 struct |
+
+模板：`REQ-000-template.md`
+
+## 维护命令
+
+```bash
+# 更新 skill（git pull 后必做）
+./install.sh --non-interactive
+
+# 重启 watcher（skill 更新后）
+systemctl --user restart claude-task-watcher.service
+
+# 卸载
+./install.sh --uninstall             # 保留配置和日志
+./install.sh --uninstall --force      # 完全清除
+```
+
+## 日志
+
+日志位于 `~/.claude/logs/`，超过 10MB 自动轮转，保留最近 5 个备份（`.1` ~ `.5`）。
 
 ## 安全边界
 
@@ -205,26 +273,22 @@ install.sh                         # 一键安装
 - 新项目的脚手架创建 — 永远停在 Round 1 等人工确认
 - 删除文件或分支 — 只增不改
 
-## 通知机制
-
-两个 Gate 都会发桌面通知（需要 `notify-send`）：
-
-- Round 1 完成 → `📋 Task #003: 计划已生成，请审阅`
-- Round 2 完成 → `✅ Task #003: 代码已实现，请 review`
-- 执行失败 → `❌ Task #003: 执行失败`
-
 ## 常见问题
 
 ### 任务没有被自动处理？
 
 1. 检查 status 是 `ready` 还是 `plan-review` + `plan_approved: true`
 2. 检查 `assignee` 是否包含 `claude`
-3. 确认 `project` 在 vault-map.json 中有映射，或 `new_project: true`
+3. 确认 `project` 在 vault-map.json 的 `projects` 列表中存在，或 `new_project: true`
 4. `tail -f ~/.claude/logs/task-runner.log`
 
 ### 没有桌面通知？
 
-安装 `libnotify`：`sudo pacman -S libnotify`（Arch）或 `sudo apt install libnotify-bin`（Debian/Ubuntu）。确认有 notification daemon 在运行（dunst、mako 等）。
+安装 `libnotify`：`sudo pacman -S libnotify`（Arch）或 `sudo apt install libnotify-bin`（Debian/Ubuntu）。确认 notification daemon 在运行：
+
+```bash
+pgrep -a dunst || pgrep -a mako || echo "notification daemon 未运行"
+```
 
 ### 如何只用手动模式？
 
@@ -234,6 +298,14 @@ install.sh                         # 一键安装
 claude -p "/obsidian-task-runner [task_id]"
 ```
 
+### 更新需求文档后任务没有刷新？
+
+watcher 会同时监听 `Tasks/` 和 `Requirements/`。更新需求文档保存后，`on_req_changed.py` 自动找到 `req_doc` 字段匹配的任务，重置为 `ready`。确认：
+
+```bash
+tail -f ~/.claude/logs/task-watcher.log
+```
+
 ### 查看运行状态
 
 ```bash
@@ -241,7 +313,7 @@ claude -p "/obsidian-task-runner [task_id]"
 systemctl --user status claude-task-watcher.service
 systemctl --user list-timers | grep claude-task-runner
 
-# 日志
+# 实时日志
 tail -f ~/.claude/logs/task-watcher.log
 tail -f ~/.claude/logs/task-runner.log
 
