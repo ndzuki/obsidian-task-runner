@@ -1,129 +1,255 @@
-# Obsidian → Claude Code 自动化任务流水线
+# Obsidian Task Runner
 
-## 目录里有什么
+让 [Claude Code](https://docs.claude.com) 自动读取 Obsidian Vault 中的需求和任务文档，理解要求后自行开发实现到代码交付。
+
+## 这是什么
+
+你在 Obsidian 里整理好需求和任务，保存文件后，Claude Code 自动：
+
+1. **读需求文档** — 理解要做什么
+2. **出实现计划** — 写回任务文档
+3. **等你确认** — 设 `plan_approved: true` 并保存
+4. **自动实现** — 写代码、跑测试、lint、提交到分支
+5. **桌面通知** — 提醒你 review
+
+不需要离开 Obsidian，不需要手动切终端 `git checkout -b`、写代码、跑测试——Claude Code 在后台自动完成。
+
+## 工作原理
 
 ```
-obsidian-task-runner/          # Claude Code skill(个人级)
-├── SKILL.md
-├── reference.md
-├── scripts/
-│   ├── find_ready_tasks.py
-│   ├── update_task_status.py
-│   ├── resolve_project_path.py
-│   ├── register_project.py
-│   ├── task-runner-daemon.sh     # 兜底轮询:扫一遍所有可处理任务
-│   └── task-watcher.sh           # 事件触发:Tasks/ 文件一保存就立刻跑
-└── config/
-    └── vault-map.example.json
-
-agents/task-verifier.md        # 验收 subagent(个人级,或放到具体项目 .claude/agents/ 下)
-TASK-000-template.md           # 新任务时复制这个模板
-install.sh                     # 一键安装脚本
-claude-task-runner.service     # systemd 用户服务(兜底轮询,由 timer 触发)
-claude-task-runner.timer       # systemd 定时器(默认 30 分钟一次)
-claude-task-watcher.service    # systemd 用户服务(事件触发,常驻监听)
+Obsidian Tasks/ 文件保存
+        │
+        ▼
+  inotifywait 检测变化 (秒级触发)
+        │
+        ▼
+  find_ready_tasks.py 发现可处理任务
+        │
+        ▼
+  claude -p /obsidian-task-runner (headless)
+        │
+        ├── Round 1: 读需求 → 出计划 → 状态: plan-review → 🔔 桌面通知
+        │     👤 你在 Obsidian 审阅计划，设 plan_approved: true
+        │
+        └── Round 2: 实现代码 → 测试/lint → 验收 → git commit → 🔔 桌面通知
 ```
 
-## 一键安装
+systemd timer 每 30 分钟兜底扫描，防止 inotify 事件丢失。
+
+## 快速开始
+
+### 前置要求
+
+- [Claude Code](https://docs.claude.com) CLI（`claude` 命令可用）
+- Python 3.8+
+- Git
+- Linux + systemd
+- （可选）`inotify-tools` — 实现事件触发；不装也能用定时轮询
+- （可选）`libnotify` — 桌面通知
+
+### 一键安装
 
 ```bash
+git clone https://github.com/ndzuki/obsidian-task-runner.git
+cd obsidian-task-runner
 ./install.sh
 ```
 
-会做这些事:检查 `claude`/`python3`/`git`/`inotifywait` 是否都在;把 skill 装到 `~/.claude/skills/obsidian-task-runner`;把 `task-verifier` 装到 `~/.claude/agents/`(如果你已经有自己的版本不会覆盖);生成 `vault-map.json`(如果还没有);交互式问你 Obsidian Vault 路径,写进 `~/.bashrc`/`~/.zshrc` 并建好 `Tasks/`/`Requirements/` 目录;探测 `claude`/`go` 等命令的实际路径,填进 systemd 单元的 `PATH`;注册并启动 `claude-task-runner.timer`(兜底轮询)和 `claude-task-watcher.service`(事件触发,前提是装了 `inotify-tools`)。
+### 非交互安装
 
-跑完之后还有两件事需要你自己做:编辑 `vault-map.json` 填真实的项目路径映射,以及 `source` 一下你的 shell rc 文件让 `OBSIDIAN_VAULT` 生效。脚本可以重复运行,不会覆盖你已经改过的 `vault-map.json` 或已存在的 `task-verifier.md`。
+```bash
+OBSIDIAN_VAULT=/home/you/Obsidian/Vault \
+NEW_PROJECT_ROOT=/home/you/src \
+./install.sh --non-interactive
+```
 
-## Tasks/ 一保存就触发,是怎么做到的
+支持的环境变量见下方[配置说明](#配置说明)。
 
-`claude-task-watcher.service` 是个常驻进程,用 `inotifywait` 盯着 `Tasks/` 目录的 `close_write`(文件保存完成)事件——你在 Obsidian 里把某个任务的 `plan_approved` 改成 `true` 并保存,几秒内(5 秒防抖,避免编辑器一次保存触发好几次)就会拉起一次 `claude -p`。`claude-task-runner.timer` 保留作为**兜底**,每 30 分钟整体扫一遍,防的是:inotify 事件在服务重启的间隙丢失、或者 Vault 通过 Syncthing 从另一台机器同步过来时,文件变化没有经过这台机器的本地写入路径。两者不冲突,可以同时开着。
+### 创建第一个任务
 
-## 手动安装(不想用脚本,或想理解每一步在干什么)
+```bash
+cp TASK-000-template.md "$OBSIDIAN_VAULT/Tasks/TASK-001-你的任务.md"
+```
 
-<details>
-<summary>展开查看手动步骤</summary>
+编辑 YAML frontmatter：
 
-1. **安装 skill**
-   ```bash
-   mkdir -p ~/.claude/skills
-   cp -r obsidian-task-runner ~/.claude/skills/
-   chmod +x ~/.claude/skills/obsidian-task-runner/scripts/*.sh
-   ```
+```yaml
+id: "001"
+title: "实现用户登录 API"
+project: "my-backend"              # vault-map.json 中的项目 key
+req_doc: "Requirements/用户登录API.md"
+priority: P2
+assignee: claude
+```
 
-2. **配置项目映射**
-   ```bash
-   cp ~/.claude/skills/obsidian-task-runner/config/vault-map.example.json \
-      ~/.claude/skills/obsidian-task-runner/config/vault-map.json
-   # 编辑 vault-map.json:
-   #   projects        把已有项目的 project 字段值映射到本机仓库绝对路径
-   #   new_project_root 新项目统一建在哪个目录下(任务标了 new_project: true 时用)
-   ```
+在 `Requirements/` 下写对应的需求文档。保存后如果 systemd 开着，几秒内就会自动触发；也可以手动跑：
 
-3. **安装/更新 task-verifier subagent**
-   ```bash
-   mkdir -p ~/.claude/agents
-   cp agents/task-verifier.md ~/.claude/agents/
-   ```
-   如果你在某个项目里已经有更定制化的 `task-verifier`,把项目版本(`.claude/agents/task-verifier.md`)留着即可——项目级会覆盖个人级同名 subagent。
+```bash
+cd /path/to/your/project
+claude -p "/obsidian-task-runner"
+```
 
-4. **在 Obsidian Vault 里建好目录**
-   ```
-   YourVault/
-   ├── Requirements/
-   └── Tasks/
-   ```
-   新任务复制 `TASK-000-template.md` 改名放进 `Tasks/`。
+## 工作流
 
-5. **设置环境变量**(写进 `~/.bashrc` 或 `~/.zshrc`)
-   ```bash
-   export OBSIDIAN_VAULT="$HOME/Documents/Obsidian/MainVault"
-   ```
+```
+你                                   Claude Code
+─────────────────────────────────────────────────────
+1. 复制模板创建任务
+2. 写需求文档
+3. 保存任务文件
+                         →          4. 发现任务 (ready)
+                         →          5. 读需求，出计划
+                         →          6. 写回计划，status=plan-review
+                         →          7. 🔔 桌面通知
+8. 在 Obsidian 审阅计划
+9. 设 plan_approved: true
+10. 保存
+                         →          11. 发现任务 (plan-review + approved)
+                         →          12. 实现代码
+                         →          13. 运行测试/lint
+                         →          14. task-verifier 验收
+                         →          15. git commit
+                         →          16. status=review
+                         →          17. 🔔 桌面通知
+18. Review 代码，合并
+19. 设 status=done
+```
 
-6. **手动验证一次流程**(先不要接 systemd,确认跑得通)
-   ```bash
-   cd /path/to/some/project   # 对应 vault-map.json 里某个 project 的仓库
-   claude -p "/obsidian-task-runner" --permission-mode acceptEdits
-   ```
-   这一步会:找到优先级最高的可处理任务 → 读需求文档 → 出计划、写进任务文档、状态改成 `plan-review` → 结束(除非该任务 `auto_approve: true` 且不是新项目)。打开任务文件确认计划没问题后,把 `plan_approved` 改成 `true`,再跑一次同样的命令,这次会真正开始实现。
+## 目录结构
 
-7. **接上 systemd(定时兜底 + 事件触发)**
-   ```bash
-   mkdir -p ~/.config/systemd/user
-   # 把两个 unit 文件里的 __OBSIDIAN_VAULT_PATH__ 和 __RUNNER_PATH__ 替换成实际值
-   sed -e "s#__OBSIDIAN_VAULT_PATH__#$OBSIDIAN_VAULT#g" \
-       -e "s#__RUNNER_PATH__#$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin#g" \
-       claude-task-runner.service > ~/.config/systemd/user/claude-task-runner.service
-   sed -e "s#__OBSIDIAN_VAULT_PATH__#$OBSIDIAN_VAULT#g" \
-       -e "s#__RUNNER_PATH__#$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin#g" \
-       claude-task-watcher.service > ~/.config/systemd/user/claude-task-watcher.service
-   cp claude-task-runner.timer ~/.config/systemd/user/
+```
+obsidian-task-runner/              # skill（安装到 ~/.claude/skills/）
+├── SKILL.md                       # 核心：两轮状态机指令
+├── reference.md                   # 参考：状态流转、字段、故障排查
+├── scripts/
+│   ├── find_ready_tasks.py        # 发现可处理任务
+│   ├── update_task_status.py      # 更新 YAML frontmatter
+│   ├── resolve_project_path.py    # 项目名 → 本地路径
+│   ├── register_project.py        # 注册新项目
+│   ├── notify_on_status_change.sh # 桌面通知
+│   ├── task-runner-daemon.sh      # 调度脚本
+│   └── task-watcher.sh            # inotify 监听
+└── config/
+    └── vault-map.example.json     # 项目映射模板
 
-   systemctl --user daemon-reload
-   systemctl --user enable --now claude-task-runner.timer
-   systemctl --user enable --now claude-task-watcher.service   # 需要先装 inotify-tools
-   ```
-   检查状态:`systemctl --user list-timers | grep claude-task-runner`、`systemctl --user status claude-task-watcher.service`。日志在 `~/.claude/logs/task-runner.log` 和 `~/.claude/logs/task-watcher.log`。
+agents/task-verifier.md            # 验收 subagent
+TASK-000-template.md               # 新任务模板
+install.sh                         # 一键安装
+```
 
-</details>
+## 配置说明
 
-## 这一版修复了什么(自查记录)
+### vault-map.json
 
-对照 Claude Code 官方文档核实后,发现并修复了几处会导致流水线在无人值守时直接卡死或行为不符预期的问题:
+安装后位于 `~/.claude/skills/obsidian-task-runner/config/vault-map.json`：
 
-1. **命令名不对**:skill 目录叫 `obsidian-task-runner`,实际生效的命令是 `/obsidian-task-runner`,而不是文档里原来写的 `/scan-tasks`(命令名由 skill 所在目录名决定,`name` 字段只是展示名)。已统一替换。
-2. **headless 权限不够**:`--permission-mode acceptEdits` 只会自动放行文件写入和 `mkdir/touch/mv/cp`,`git`/`make`/`go`/`golangci-lint`/`goimports` 这类命令仍需要显式 `--allowedTools`,否则无人值守跑到这些命令时会直接中止。已在 `task-runner-daemon.sh` 里补上。
-3. **systemd 环境缺 PATH**:`systemctl --user` 启动的进程不会读取 `~/.bashrc`,如果 `claude`/`go`/`golangci-lint` 装在非系统默认路径(比如 npm 全局前缀),定时任务会因为找不到命令而失败。已在 `claude-task-runner.service` 里加了 `PATH`,但你需要根据自己机器上 `which claude`、`which golangci-lint` 的实际路径核对一下这行是否需要调整。
-4. **"等你确认"这个设计在 headless 下根本不成立**:`claude -p` 是一次性调用,进程跑完就退出,不存在"停在对话里等人回复"这回事。已经改成两轮状态机:第一轮出计划、写进任务文档、状态改 `plan-review` 就结束;人工把 `plan_approved` 改成 `true` 后,下一轮才真正实现。详见 `reference.md`。
-5. **没有"从零建项目"的路径**:原来 `project` 不在 `vault-map.json` 里就直接跳过,没有任何创建新仓库的机制。新增 `resolve_project_path.py` / `register_project.py` 和任务的 `new_project` 字段来补这个缺口——新建项目的脚手架方案永远需要人工确认,不受 `auto_approve` 影响。
-6. **发现延迟**:最初只有 30 分钟/15 分钟一次的定时轮询,`plan_approved` 改成 `true` 后最多要等到下个整点才会被捡起来。新增 `claude-task-watcher.service`,用 `inotifywait` 盯 `Tasks/` 目录,文件一保存(几秒防抖后)就立刻触发,定时轮询降级为兜底。同时提供 `install.sh` 把这几处安装、路径探测、systemd 注册都自动化掉,减少手动踩坑的机会。
+```json
+{
+  "projects": {
+    "my-backend": {
+      "path": "/home/you/src/my-backend",
+      "git_remote": "github.com/you/my-backend"
+    },
+    "frontend-app": {
+      "path": "/home/you/src/frontend-app",
+      "git_remote": "github.com/you/frontend-app"
+    }
+  },
+  "new_project_root": "/home/you/src",
+  "notifications": {
+    "desktop": true
+  },
+  "poll_interval_minutes": 30
+}
+```
 
-## 关于"全自动"的边界
+- `projects` — 已有项目名 → 本地绝对路径的映射
+- `new_project_root` — 新项目统一创建在哪个目录下
+- `templates` — 新项目脚手架模板定义
+- `notifications.desktop` — 是否弹桌面通知
+- `poll_interval_minutes` — systemd timer 兜底轮询间隔
 
-- 定时任务会自动:发现可处理任务 → 解析项目路径(已有项目直接用,全新项目先建空目录)→ 读需求 → 出计划、写进任务文档、状态改 `plan-review`(`auto_approve:true` 且非新项目时跳过这一步)→ 人工确认后的下一轮:写代码 → 跑测试/lint → 调 task-verifier → 提交到 `task/<id>-<slug>` 分支 → 把状态推进到 `review`。
-- **不会自动**:`git push`、发起/合并 PR、把状态标记成 `done`;新建项目的脚手架方案也永远需要人工确认。这几步留给你在 `review`(或 `plan-review`)里手动确认。
-- 如果某个已有项目的任务你确实信得过、想全程无人值守跑到 review,把它的 frontmatter 设 `auto_approve: true` 即可,单独控制,不影响其他任务;新建项目不受此开关影响。
+### 环境变量
 
-## 后续可以加的东西
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OBSIDIAN_VAULT` | 交互提问 | Obsidian Vault 根目录 |
+| `NEW_PROJECT_ROOT` | `$HOME/src` | 新项目默认创建目录 |
+| `NOTIFY_ENABLED` | `true` | 是否启用桌面通知 |
+| `POLL_INTERVAL_MINUTES` | `30` | 定时轮询间隔 |
+| `SYSTEMD_ENABLED` | `true` | 是否注册 systemd 服务 |
+| `SKILL_INSTALL_DIR` | `~/.claude/skills/obsidian-task-runner` | skill 安装路径 |
 
-- 想要"完成后自动发 PR、等 CI 通过再提醒你 review",可以在第 9 步之后加一个 `gh pr create --draft`,但仍建议保留 draft PR 而不是直接合并。
-- 如果之后想让审查这一步也交给 Claude Code 的 code review 能力,可以在人工确认前先跑一遍 `/code-review` 或接入 Security Review 插件,作为 task-verifier 的补充,而不是替代。
+### Task 文档字段
+
+完整字段说明见 [`reference.md`](obsidian-task-runner/reference.md)。关键字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | enum | `ready` → `plan-review` → `implementing` → `review` → `done` |
+| `plan_approved` | bool | **人工 Gate**，设 `true` 触发 Round 2 |
+| `auto_approve` | bool | 跳过人工确认（新项目无效） |
+| `new_project` | bool | 从零创建新项目 |
+| `project` | string | vault-map.json 的项目 key |
+| `req_doc` | string | 需求文档相对路径 |
+
+## 安全边界
+
+以下操作**不会**自动执行：
+
+- `git push` / 创建 PR / 合并 — 保留在本地分支
+- 将任务标记为 `done` — 需要人工确认后手动改
+- 新项目的脚手架创建 — 永远停在 Round 1 等人工确认
+- 删除文件或分支 — 只增不改
+
+## 通知机制
+
+两个 Gate 都会发桌面通知（需要 `notify-send`）：
+
+- Round 1 完成 → `📋 Task #003: 计划已生成，请审阅`
+- Round 2 完成 → `✅ Task #003: 代码已实现，请 review`
+- 执行失败 → `❌ Task #003: 执行失败`
+
+## 常见问题
+
+### 任务没有被自动处理？
+
+1. 检查 status 是 `ready` 还是 `plan-review` + `plan_approved: true`
+2. 检查 `assignee` 是否包含 `claude`
+3. 确认 `project` 在 vault-map.json 中有映射，或 `new_project: true`
+4. `tail -f ~/.claude/logs/task-runner.log`
+
+### 没有桌面通知？
+
+安装 `libnotify`：`sudo pacman -S libnotify`（Arch）或 `sudo apt install libnotify-bin`（Debian/Ubuntu）。确认有 notification daemon 在运行（dunst、mako 等）。
+
+### 如何只用手动模式？
+
+设置 `SYSTEMD_ENABLED=false` 或跳过 systemd 步骤。手动触发：
+
+```bash
+claude -p "/obsidian-task-runner [task_id]"
+```
+
+### 查看运行状态
+
+```bash
+# systemd 服务
+systemctl --user status claude-task-watcher.service
+systemctl --user list-timers | grep claude-task-runner
+
+# 日志
+tail -f ~/.claude/logs/task-watcher.log
+tail -f ~/.claude/logs/task-runner.log
+
+# systemd journal
+journalctl --user -u claude-task-watcher.service -n 50
+```
+
+## 贡献
+
+MIT License。欢迎 Issue 和 PR。
+
+## License
+
+MIT © 2026 ndzuki and contributors

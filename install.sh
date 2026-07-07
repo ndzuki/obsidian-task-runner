@@ -1,24 +1,66 @@
 #!/usr/bin/env bash
-# 一键安装 obsidian-task-runner:skill、task-verifier subagent、vault-map 配置、
-# 环境变量、systemd 定时兜底(claude-task-runner.timer)+ 事件触发(claude-task-watcher.service)。
+# Obsidian Task Runner — 一键安装脚本
 #
-# 用法: 在解压出来的这个目录里直接跑
-#   ./install.sh
-#
-# 可以反复运行——每一步都做了存在性检查,不会覆盖你已经改过的 vault-map.json。
+# 交互模式: ./install.sh
+# 非交互模式:
+#   OBSIDIAN_VAULT=/path/to/vault \
+#   NEW_PROJECT_ROOT=/path/to/projects \
+#   ./install.sh --non-interactive
 set -euo pipefail
 
+# ── 参数解析 ──
+NON_INTERACTIVE=false
+FORCE=false
+for arg in "$@"; do
+  case "$arg" in
+    --non-interactive) NON_INTERACTIVE=true ;;
+    --force) FORCE=true ;;
+    --help|-h)
+      cat <<'HELP'
+Usage: ./install.sh [--non-interactive] [--force]
+
+交互模式（默认）:
+  ./install.sh
+  逐步询问所有配置项。
+
+非交互模式（适合 CI / 脚本化部署）:
+  OBSIDIAN_VAULT=/path/to/vault \
+  NEW_PROJECT_ROOT=/path/to/projects \
+  NOTIFY_ENABLED=true \
+  POLL_INTERVAL_MINUTES=30 \
+  SYSTEMD_ENABLED=true \
+  ./install.sh --non-interactive
+
+环境变量:
+  OBSIDIAN_VAULT          Obsidian Vault 根目录（非交互模式必需）
+  NEW_PROJECT_ROOT        新项目默认创建目录（默认 $HOME/src）
+  NOTIFY_ENABLED          是否启用桌面通知（默认 true）
+  POLL_INTERVAL_MINUTES   systemd 定时器间隔分钟数（默认 30）
+  SYSTEMD_ENABLED         是否注册 systemd 服务（默认 true）
+  SKILL_INSTALL_DIR       skill 安装路径（默认 ~/.claude/skills/obsidian-task-runner）
+HELP
+      exit 0
+      ;;
+  esac
+done
+
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_HOME="$HOME/.claude/skills/obsidian-task-runner"
+SKILL_INSTALL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
 AGENTS_HOME="$HOME/.claude/agents"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+LOG_DIR="$HOME/.claude/logs"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
 ok()   { printf '\033[1;32mOK\033[0m %s\n' "$1"; }
+err()  { printf '\033[1;31mERR\033[0m %s\n' "$1"; }
 
-# ---------- 1. 依赖检查 ----------
-say "检查依赖"
+echo ""
+say "Obsidian Task Runner — 安装"
+echo ""
+
+# ── 1. 依赖检查 ──
+say "Step 1/7: 检查依赖"
 
 missing=()
 for bin in python3 git claude; do
@@ -30,73 +72,128 @@ for bin in python3 git claude; do
 done
 
 if [ "${#missing[@]}" -gt 0 ]; then
-  warn "缺少以下命令,请先安装再重新运行本脚本: ${missing[*]}"
-  warn "claude 的安装方式请参考 https://docs.claude.com (docs.claude.com) 的 Claude Code 安装说明"
+  err "缺少以下命令: ${missing[*]}"
+  err "claude 安装: https://docs.claude.com (docs.claude.com)"
   exit 1
 fi
 
 if ! command -v inotifywait >/dev/null 2>&1; then
-  warn "缺少 inotifywait(用于事件触发,没有它只能靠定时兜底轮询)"
-  if command -v pacman >/dev/null 2>&1; then
-    read -r -p "检测到 pacman,现在用 sudo pacman -S inotify-tools 安装吗? [y/N] " reply
-    if [[ "$reply" =~ ^[Yy]$ ]]; then
-      sudo pacman -S --needed inotify-tools
-    else
-      warn "跳过安装,事件触发(claude-task-watcher.service)这一步会失败,只有 timer 兜底还能用"
-    fi
-  else
-    warn "非 pacman 系统,请手动安装 inotify-tools 对应的包"
+  warn "缺少 inotifywait（没有它只能用定时轮询，做不到文件保存后即时触发）"
+  if [ "$NON_INTERACTIVE" = false ] && command -v pacman >/dev/null 2>&1; then
+    read -r -p "现在用 sudo pacman -S inotify-tools 安装? [y/N] " reply
+    [[ "$reply" =~ ^[Yy]$ ]] && sudo pacman -S --needed inotify-tools
   fi
 fi
 
-# ---------- 2. 安装 skill / agent ----------
-say "安装 skill 到 $SKILL_HOME"
-mkdir -p "$HOME/.claude/skills"
-cp -r "$SRC_DIR/obsidian-task-runner" "$HOME/.claude/skills/"
-chmod +x "$SKILL_HOME"/scripts/*.sh
-ok "skill 已安装(含 task-runner-daemon.sh / task-watcher.sh / 各 python 脚本)"
+if ! command -v notify-send >/dev/null 2>&1; then
+  warn "缺少 notify-send（桌面通知不可用，状态变更时不会弹提醒）"
+fi
 
-say "安装 task-verifier subagent 到 $AGENTS_HOME"
+# ── 2. 询问或读取配置 ──
+say "Step 2/7: 配置"
+
+if [ "$NON_INTERACTIVE" = true ]; then
+  OBSIDIAN_VAULT="${OBSIDIAN_VAULT:?非交互模式必须设置 OBSIDIAN_VAULT 环境变量}"
+  NEW_PROJECT_ROOT="${NEW_PROJECT_ROOT:-$HOME/src}"
+  NOTIFY_ENABLED="${NOTIFY_ENABLED:-true}"
+  POLL_INTERVAL_MINUTES="${POLL_INTERVAL_MINUTES:-30}"
+  SYSTEMD_ENABLED="${SYSTEMD_ENABLED:-true}"
+  ok "非交互模式: OBSIDIAN_VAULT=$OBSIDIAN_VAULT"
+  ok "非交互模式: NEW_PROJECT_ROOT=$NEW_PROJECT_ROOT"
+  ok "非交互模式: NOTIFY_ENABLED=$NOTIFY_ENABLED"
+  ok "非交互模式: POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES}min"
+  ok "非交互模式: SYSTEMD_ENABLED=$SYSTEMD_ENABLED"
+else
+  read -r -p "Obsidian Vault 根目录 [$HOME/Documents/Obsidian/MainVault]: " vault_input
+  OBSIDIAN_VAULT="${vault_input:-$HOME/Documents/Obsidian/MainVault}"
+
+  read -r -p "新项目默认创建目录 [$HOME/src]: " new_root_input
+  NEW_PROJECT_ROOT="${new_root_input:-$HOME/src}"
+
+  read -r -p "启用桌面通知? [Y/n]: " notify_input
+  NOTIFY_ENABLED=true
+  [[ "$notify_input" =~ ^[Nn]$ ]] && NOTIFY_ENABLED=false
+
+  read -r -p "systemd 定时轮询间隔(分钟) [30]: " interval_input
+  POLL_INTERVAL_MINUTES="${interval_input:-30}"
+
+  read -r -p "注册 systemd 服务? [Y/n]: " systemd_input
+  SYSTEMD_ENABLED=true
+  [[ "$systemd_input" =~ ^[Nn]$ ]] && SYSTEMD_ENABLED=false
+fi
+
+# ── 3. 安装 skill ──
+say "Step 3/7: 安装 skill 到 $SKILL_INSTALL_DIR"
+
+mkdir -p "$(dirname "$SKILL_INSTALL_DIR")"
+if [ -d "$SKILL_INSTALL_DIR" ] && [ "$FORCE" = false ]; then
+  warn "$SKILL_INSTALL_DIR 已存在，增量更新（用 --force 强制覆盖）"
+fi
+cp -r "$SRC_DIR/obsidian-task-runner" "$SKILL_INSTALL_DIR"
+chmod +x "$SKILL_INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
+chmod +x "$SKILL_INSTALL_DIR"/scripts/*.py 2>/dev/null || true
+ok "skill 已安装"
+
+# ── 4. 安装 task-verifier subagent ──
+say "Step 4/7: 安装 task-verifier subagent"
+
 mkdir -p "$AGENTS_HOME"
-if [ -f "$AGENTS_HOME/task-verifier.md" ]; then
-  warn "$AGENTS_HOME/task-verifier.md 已存在,不覆盖(如需更新请手动比对差异)"
+if [ -f "$AGENTS_HOME/task-verifier.md" ] && [ "$FORCE" = false ]; then
+  warn "$AGENTS_HOME/task-verifier.md 已存在，跳过（用 --force 覆盖）"
 else
   cp "$SRC_DIR/agents/task-verifier.md" "$AGENTS_HOME/"
   ok "task-verifier.md 已安装"
 fi
 
-# ---------- 3. vault-map.json ----------
-MAP_FILE="$SKILL_HOME/config/vault-map.json"
-if [ -f "$MAP_FILE" ]; then
-  warn "$MAP_FILE 已存在,不覆盖"
+# ── 5. 生成 vault-map.json ──
+say "Step 5/7: 配置 vault-map.json"
+
+MAP_FILE="$SKILL_INSTALL_DIR/config/vault-map.json"
+if [ -f "$MAP_FILE" ] && [ "$FORCE" = false ]; then
+  warn "$MAP_FILE 已存在，不覆盖。如需更新请手动编辑"
 else
-  cp "$SKILL_HOME/config/vault-map.example.json" "$MAP_FILE"
-  warn "已从示例生成 $MAP_FILE,里面的仓库路径是占位示例,记得改成你自己的项目映射"
+  # 从 example 生成，替换为实际值
+  cp "$SKILL_INSTALL_DIR/config/vault-map.example.json" "$MAP_FILE"
+  # 用 python3 精确替换 JSON 字段
+  python3 -c "
+import json
+with open('$MAP_FILE') as f:
+    config = json.load(f)
+config['new_project_root'] = '$NEW_PROJECT_ROOT'
+config['notifications']['desktop'] = ${NOTIFY_ENABLED,,}
+config['poll_interval_minutes'] = $POLL_INTERVAL_MINUTES
+with open('$MAP_FILE', 'w') as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+"
+  ok "已生成 $MAP_FILE"
+  warn "请编辑此文件，填入你的项目映射（projects 字段）"
 fi
 
-# ---------- 4. OBSIDIAN_VAULT 环境变量 ----------
-say "配置 OBSIDIAN_VAULT 环境变量"
-default_vault="$HOME/Documents/Obsidian/MainVault"
-read -r -p "Obsidian Vault 根目录路径 [$default_vault]: " vault_input
-VAULT_PATH="${vault_input:-$default_vault}"
+# ── 6. 环境变量 + 目录 ──
+say "Step 6/7: 配置环境"
 
-if [ ! -d "$VAULT_PATH" ]; then
-  warn "$VAULT_PATH 目前不存在,继续安装,但记得之后要么建好这个目录要么改成正确路径"
-fi
+# 探测 shell rc 文件
+shell_rc=""
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
+  [ -f "$rc" ] && { shell_rc="$rc"; break; }
+done
+[ -z "$shell_rc" ] && shell_rc="$HOME/.bashrc"
 
-shell_rc="$HOME/.bashrc"
-[ -n "${ZSH_VERSION:-}" ] && shell_rc="$HOME/.zshrc"
 if grep -q "^export OBSIDIAN_VAULT=" "$shell_rc" 2>/dev/null; then
-  warn "$shell_rc 里已经有 OBSIDIAN_VAULT,不重复添加,如需修改请手动编辑"
+  warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
 else
-  echo "export OBSIDIAN_VAULT=\"$VAULT_PATH\"" >> "$shell_rc"
-  ok "已写入 $shell_rc(新开的终端才会生效;当前终端可以 source $shell_rc)"
+  echo "export OBSIDIAN_VAULT=\"$OBSIDIAN_VAULT\"" >> "$shell_rc"
+  ok "已写入 $shell_rc（新终端生效，当前终端可 source $shell_rc）"
 fi
-mkdir -p "$VAULT_PATH/Tasks" "$VAULT_PATH/Requirements"
-ok "确保 Tasks/ 和 Requirements/ 目录存在"
 
-# ---------- 5. systemd 用户单元 ----------
-say "配置 systemd --user 定时兜底 + 事件触发"
+mkdir -p "$OBSIDIAN_VAULT/Tasks" "$OBSIDIAN_VAULT/Requirements"
+mkdir -p "$NEW_PROJECT_ROOT"
+mkdir -p "$LOG_DIR"
+ok "目录已创建: Tasks/ Requirements/ $NEW_PROJECT_ROOT/ ~/.claude/logs/"
+
+# ── 7. systemd ──
+say "Step 7/7: 配置 systemd"
 
 # 尽量探测常见的额外 bin 目录,拼进 systemd 服务用的 PATH(systemd --user 不读 ~/.bashrc)
 extra_paths=()
@@ -105,38 +202,67 @@ for p in "$HOME/.npm-global/bin" "$HOME/go/bin" "$HOME/.local/bin" "$(go env GOP
 done
 runner_path="$(IFS=:; echo "${extra_paths[*]}"):/usr/local/bin:/usr/bin:/bin"
 
-mkdir -p "$SYSTEMD_USER_DIR"
-for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
-  sed -e "s#__OBSIDIAN_VAULT_PATH__#$VAULT_PATH#g" \
-      -e "s#__RUNNER_PATH__#$runner_path#g" \
-      "$SRC_DIR/$unit" > "$SYSTEMD_USER_DIR/$unit"
-done
-ok "systemd 单元已写入 $SYSTEMD_USER_DIR(PATH=$runner_path)"
+if [ "$SYSTEMD_ENABLED" = true ]; then
+  mkdir -p "$SYSTEMD_USER_DIR"
 
-systemctl --user daemon-reload
-systemctl --user enable --now claude-task-runner.timer
-ok "claude-task-runner.timer 已启用(30 分钟兜底轮询一次)"
+  for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
+    if [ -f "$SRC_DIR/$unit" ]; then
+      sed -e "s#__OBSIDIAN_VAULT_PATH__#$OBSIDIAN_VAULT#g" \
+          -e "s#__RUNNER_PATH__#$runner_path#g" \
+          "$SRC_DIR/$unit" > "$SYSTEMD_USER_DIR/$unit"
+    else
+      warn "$SRC_DIR/$unit 不存在，跳过"
+    fi
+  done
 
-if command -v inotifywait >/dev/null 2>&1; then
-  systemctl --user enable --now claude-task-watcher.service
-  ok "claude-task-watcher.service 已启用(Tasks/ 文件一保存就立刻触发)"
+  # 调整 timer 间隔
+  if [ -f "$SYSTEMD_USER_DIR/claude-task-runner.timer" ]; then
+    sed -i "s/OnUnitActiveSec=30min/OnUnitActiveSec=${POLL_INTERVAL_MINUTES}min/" \
+      "$SYSTEMD_USER_DIR/claude-task-runner.timer"
+  fi
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now claude-task-runner.timer 2>/dev/null || \
+    warn "claude-task-runner.timer 注册失败，请手动检查"
+  ok "claude-task-runner.timer 已启用（每 ${POLL_INTERVAL_MINUTES} 分钟兜底轮询）"
+
+  if command -v inotifywait >/dev/null 2>&1; then
+    systemctl --user enable --now claude-task-watcher.service 2>/dev/null || \
+      warn "claude-task-watcher.service 注册失败，请手动检查"
+    ok "claude-task-watcher.service 已启用（Tasks/ 文件保存即触发）"
+  else
+    warn "跳过 claude-task-watcher.service（缺 inotifywait）"
+  fi
 else
-  warn "跳过 claude-task-watcher.service(缺 inotifywait),之后装好了再手动:"
-  warn "  systemctl --user enable --now claude-task-watcher.service"
+  ok "跳过 systemd 注册（SYSTEMD_ENABLED=false），手动运行方式:"
+  ok "  cd <项目目录> && claude -p \"/obsidian-task-runner\""
 fi
 
-# ---------- 6. 完成 ----------
-echo
-say "安装完成"
+# ── 完成 ──
+echo ""
+say "安装完成！"
 cat <<SUMMARY
-后续要做的事:
-  1. 编辑 $MAP_FILE,把 project 字段值映射到你本机的仓库绝对路径,并设置 new_project_root
-  2. source $shell_rc(或开一个新终端),让 OBSIDIAN_VAULT 生效
-  3. 复制 $SRC_DIR/TASK-000-template.md 到 $VAULT_PATH/Tasks/ 建第一个任务
-  4. 查看运行状态:
-       systemctl --user status claude-task-watcher.service
-       systemctl --user list-timers | grep claude-task-runner
-  5. 看日志:
-       tail -f ~/.claude/logs/task-watcher.log
-       tail -f ~/.claude/logs/task-runner.log
+
+后续步骤:
+  1. 编辑 $MAP_FILE
+     填入你的项目映射（projects 字段），把示例改成实际路径
+  2. source $shell_rc  或开新终端，让 OBSIDIAN_VAULT 生效
+  3. 创建第一个任务:
+     cp $SRC_DIR/TASK-000-template.md $OBSIDIAN_VAULT/Tasks/TASK-001-你的任务.md
+     编辑 frontmatter: id, title, project, req_doc
+  4. 写需求文档:
+     \$EDITOR $OBSIDIAN_VAULT/Requirements/<需求文档>.md
+  5. 查看运行状态:
+     systemctl --user status claude-task-watcher.service
+     systemctl --user list-timers | grep claude-task-runner
+  6. 查看日志:
+     tail -f $LOG_DIR/task-watcher.log
+     tail -f $LOG_DIR/task-runner.log
+  7. 手动测试一次（不依赖 systemd）:
+     cd <某个项目目录>
+     claude -p "/obsidian-task-runner <task_id>"
+
+详细文档: $SRC_DIR/README.md
+问题反馈: https://github.com/ndzuki/obsidian-task-runner/issues
+
 SUMMARY
