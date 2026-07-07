@@ -173,18 +173,34 @@ fi
 # ── 6. 环境变量 + 目录 ──
 say "Step 6/7: 配置环境"
 
-# 探测 shell rc 文件
+# 探测 shell 并写入对应的语法
 shell_rc=""
+shell_type="bash"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
   [ -f "$rc" ] && { shell_rc="$rc"; break; }
 done
 [ -z "$shell_rc" ] && shell_rc="$HOME/.bashrc"
 
-if grep -q "^export OBSIDIAN_VAULT=" "$shell_rc" 2>/dev/null; then
-  warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
+# 判断 shell 类型以写入正确语法
+case "$shell_rc" in
+  *fish*) shell_type="fish" ;;
+  *)      shell_type="bash" ;;
+esac
+
+if [ "$shell_type" = "fish" ]; then
+  if grep -q "set -gx OBSIDIAN_VAULT" "$shell_rc" 2>/dev/null; then
+    warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
+  else
+    echo "set -gx OBSIDIAN_VAULT \"$OBSIDIAN_VAULT\"" >> "$shell_rc"
+    ok "已写入 $shell_rc（fish 语法，新终端生效）"
+  fi
 else
-  echo "export OBSIDIAN_VAULT=\"$OBSIDIAN_VAULT\"" >> "$shell_rc"
-  ok "已写入 $shell_rc（新终端生效，当前终端可 source $shell_rc）"
+  if grep -q "^export OBSIDIAN_VAULT=" "$shell_rc" 2>/dev/null; then
+    warn "$shell_rc 中已有 OBSIDIAN_VAULT，不重复添加"
+  else
+    echo "export OBSIDIAN_VAULT=\"$OBSIDIAN_VAULT\"" >> "$shell_rc"
+    ok "已写入 $shell_rc（新终端生效，当前终端可 source $shell_rc）"
+  fi
 fi
 
 mkdir -p "$OBSIDIAN_VAULT/Tasks" "$OBSIDIAN_VAULT/Requirements"
@@ -197,9 +213,13 @@ say "Step 7/7: 配置 systemd"
 
 # 尽量探测常见的额外 bin 目录,拼进 systemd 服务用的 PATH(systemd --user 不读 ~/.bashrc)
 extra_paths=()
-for p in "$HOME/.npm-global/bin" "$HOME/go/bin" "$HOME/.local/bin" "$(go env GOPATH 2>/dev/null)/bin"; do
-  [ -n "$p" ] && [ -d "$p" ] && extra_paths+=("$p")
+for p in "$HOME/.npm-global/bin" "$HOME/go/bin" "$HOME/.local/bin"; do
+  [ -d "$p" ] && extra_paths+=("$p")
 done
+# 如果 Go 可用，追加 GOPATH/bin
+if go_bin="$(go env GOPATH 2>/dev/null)/bin" && [ -d "$go_bin" ]; then
+  extra_paths+=("$go_bin")
+fi
 runner_path="$(IFS=:; echo "${extra_paths[*]}"):/usr/local/bin:/usr/bin:/bin"
 
 if [ "$SYSTEMD_ENABLED" = true ]; then

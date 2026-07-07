@@ -5,8 +5,8 @@
 # Usage: notify_on_status_change.sh <task_file_path> [previous_status]
 set -euo pipefail
 
-TASK_FILE="${1:?Usage: notify_on_status_change.sh <task_file_path> [previous_status]}"
-PREV_STATUS="${2:-}"
+TASK_FILE="${1:?Usage: notify_on_status_change.sh <task_file_path>}"
+# Note: second positional param reserved for future status-change-aware notifications
 
 command -v notify-send >/dev/null 2>&1 || exit 0  # silent skip if no notify-send
 
@@ -45,7 +45,7 @@ case "$STATUS" in
       --app-name="Claude Task Runner" \
       --icon=emblem-default \
       "✅ Task ${TASK_ID}: 代码已实现" \
-      "${TITLE}\n请 review 代码，确认无误后合并"
+      "${TITLE}\n请 ${REVIEWER:-你} review 代码，确认无误后合并"
     ;;
   error|failed)
     notify-send \
