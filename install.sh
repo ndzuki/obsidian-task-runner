@@ -405,7 +405,8 @@ cat <<SUMMARY
      cp $SRC_DIR/TASK-000-template.md $OBSIDIAN_VAULT/Tasks/TASK-001-你的任务.md
      编辑 frontmatter: id, title, project, req_doc
   4. 写需求文档:
-     \$EDITOR $OBSIDIAN_VAULT/Requirements/<需求文档>.md
+     cp $SRC_DIR/REQ-000-template.md $OBSIDIAN_VAULT/Requirements/你的需求.md
+     按模板填写: 背景、功能需求(FR-N)、技术约束、验收标准(AC-N)
   5. 查看运行状态:
      systemctl --user status claude-task-watcher.service
      systemctl --user list-timers | grep claude-task-runner
