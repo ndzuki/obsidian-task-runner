@@ -154,13 +154,18 @@ if [ -f "$MAP_FILE" ] && [ "$FORCE" = false ]; then
 else
   # 从 example 生成，替换为实际值
   cp "$SKILL_INSTALL_DIR/config/vault-map.example.json" "$MAP_FILE"
-  # 用 python3 精确替换 JSON 字段
+  # bash bool → Python bool
+  if [ "${NOTIFY_ENABLED,,}" = "true" ]; then
+    py_notify="True"
+  else
+    py_notify="False"
+  fi
   python3 -c "
 import json
 with open('$MAP_FILE') as f:
     config = json.load(f)
 config['new_project_root'] = '$NEW_PROJECT_ROOT'
-config['notifications']['desktop'] = ${NOTIFY_ENABLED,,}
+config['notifications']['desktop'] = $py_notify
 config['poll_interval_minutes'] = $POLL_INTERVAL_MINUTES
 with open('$MAP_FILE', 'w') as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
