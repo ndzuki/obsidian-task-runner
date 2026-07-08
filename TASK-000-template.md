@@ -11,6 +11,7 @@ plan_approved: false
 merge_approved: false
 pending_req: false
 off_peak_only: false
+use_aigateway: false
 created: ""
 updated: ""
 completed: ""

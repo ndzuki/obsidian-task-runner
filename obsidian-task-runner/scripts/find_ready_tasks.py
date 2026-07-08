@@ -194,6 +194,7 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
             "auto_approve": fm.get("auto_approve", False),
             "pending_req": fm.get("pending_req", False),
             "off_peak_only": fm.get("off_peak_only", False),
+            "use_aigateway": fm.get("use_aigateway", False),
         })
 
     ready_tasks.sort(key=lambda t: (priority_order(t["priority"]), t["id"]))
