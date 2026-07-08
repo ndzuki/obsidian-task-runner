@@ -310,13 +310,14 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 ### 特殊情况：switch_settings 模型切换
 
 如果任务 frontmatter 中 `switch_settings: true`：
-- daemon 在调用 `claude -p` 之前自动将 `~/.claude/settings.json` 替换为 `~/.claude/settings_aigateway.json`
+- daemon 使用 `~/.claude/claude-gateway.sh` 代替 `claude` 执行任务
+- wrapper 脚本动态注入 `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` 环境变量
+- 通过 `--settings settings_aigateway.json` 指定模型/插件/hooks 配置（不污染原始 settings.json）
 - 适用于 DeepSeek 模型不可用时切换到备选模型（如 GPT-5.5）
-- 任务完成后（无论成功或失败）自动恢复原始 `settings.json`
-- 备份文件为 `~/.claude/settings.json.taskrunner.bak`
-- 切换逻辑包裹所有 `claude -p` 调用点（主处理路径 + pending_req 链式处理路径）
-- 如果原始 `settings.json` 不存在，则直接复制 settings_aigateway.json（恢复时需手动处理）
+- 无需备份/恢复 settings.json，无 race condition
+- 主处理路径 + pending_req 链式处理路径统一使用同一 wrapper 逻辑
 - Round 1 和 Round 2 / Merge Phase 都受此字段影响——与 off_peak_only 不同，switch_settings 对所有阶段生效
+- 前提：`~/.claude/claude-gateway.sh` 存在且可执行
 
 ## 输出格式
 
