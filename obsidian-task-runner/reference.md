@@ -85,7 +85,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `blocked_by` | list | | 被哪些任务 ID 阻塞 |
 | `auto_approve` | bool | | 是否跳过 plan-review gate（新项目无效） |
 | `off_peak_only` | bool | | Round 2 仅低峰执行（避开北京时间 9-12、14-18），节省 token 费用 |
-| `use_aigateway` | bool | | 动态切换 settings.json，使用备选模型（如 GPT-5.5） |
+| `switch_settings` | bool | | 动态切换 settings.json，使用备选模型（如 GPT-5.5） |
 | `target_env` | string | | 部署环境 |
 
 ## vault-map.json 配置参考

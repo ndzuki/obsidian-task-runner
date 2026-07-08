@@ -307,16 +307,16 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 - 如果 `parent` 字段非空：检查父任务状态，如果父任务不在 `review` 或 `done`，设置为 `blocked` 并说明原因
 - 如果 `blocked_by` 非空：检查所有依赖任务，如果有任何一个不在 `done` 或 `review`，设置为 `blocked` 并列出未完成的依赖
 
-### 特殊情况：use_aigateway 模型切换
+### 特殊情况：switch_settings 模型切换
 
-如果任务 frontmatter 中 `use_aigateway: true`：
+如果任务 frontmatter 中 `switch_settings: true`：
 - daemon 在调用 `claude -p` 之前自动将 `~/.claude/settings.json` 替换为 `~/.claude/settings_aigateway.json`
 - 适用于 DeepSeek 模型不可用时切换到备选模型（如 GPT-5.5）
 - 任务完成后（无论成功或失败）自动恢复原始 `settings.json`
 - 备份文件为 `~/.claude/settings.json.taskrunner.bak`
 - 切换逻辑包裹所有 `claude -p` 调用点（主处理路径 + pending_req 链式处理路径）
 - 如果原始 `settings.json` 不存在，则直接复制 settings_aigateway.json（恢复时需手动处理）
-- Round 1 和 Round 2 / Merge Phase 都受此字段影响——与 off_peak_only 不同，use_aigateway 对所有阶段生效
+- Round 1 和 Round 2 / Merge Phase 都受此字段影响——与 off_peak_only 不同，switch_settings 对所有阶段生效
 
 ## 输出格式
 
