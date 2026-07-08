@@ -97,7 +97,7 @@ while [ $scan_round -lt $max_rounds ]; do
   task_pending=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('pending_req',''))" 2>/dev/null || true)
   task_plan_approved=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('plan_approved',''))" 2>/dev/null || true)
   task_merge_approved=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('merge_approved',''))" 2>/dev/null || true)
-  task_use_aigateway=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('use_aigateway',''))" 2>/dev/null || true)
+  task_switch_settings=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('switch_settings',''))" 2>/dev/null || true)
   task_path="$VAULT/Tasks/$task_file"
 
   # pending_req 检查必须在 plan_approved 之前——
@@ -129,8 +129,8 @@ while [ $scan_round -lt $max_rounds ]; do
 
   log "开始处理 $task_id (project=$project, repo=$repo_dir, stage=$repo_status)"
 
-  # ── use_aigateway: 动态切换 settings.json ──
-  # 当任务设置了 use_aigateway 且备选配置文件存在时:
+  # ── switch_settings: 动态切换 settings.json ──
+  # 当任务设置了 switch_settings 且备选配置文件存在时:
   #   1. 备份原始 settings.json
   #   2. 用 settings_aigateway.json 替换
   #   3. 调用 claude（使用 AIGateway / 备选模型）
@@ -138,7 +138,7 @@ while [ $scan_round -lt $max_rounds ]; do
   AIGATEWAY_SETTINGS="$HOME/.claude/settings_aigateway.json"
   ORIG_SETTINGS="$HOME/.claude/settings.json"
   SETTINGS_BAK="$HOME/.claude/settings.json.taskrunner.bak"
-  if [ "$task_use_aigateway" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
+  if [ "$task_switch_settings" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
     if [ -f "$ORIG_SETTINGS" ]; then
       cp "$ORIG_SETTINGS" "$SETTINGS_BAK"
       cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
@@ -199,8 +199,8 @@ print('yes' if m else 'no')
         # 立即进入新 Round 1（在同一次 daemon 运行中链式处理）
         log "$task_id 开始链式处理（pending_req → Round 1）"
 
-        # ── use_aigateway: 链式处理也需要切换 settings.json ──
-        if [ "$task_use_aigateway" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
+        # ── switch_settings: 链式处理也需要切换 settings.json ──
+        if [ "$task_switch_settings" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
           if [ -f "$ORIG_SETTINGS" ]; then
             cp "$ORIG_SETTINGS" "$SETTINGS_BAK"
             cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
