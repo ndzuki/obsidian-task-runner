@@ -8,7 +8,9 @@ template: ""
 # ── 状态流转（系统自动管理，不要手动改） ──
 status: ready
 plan_approved: false
+merge_approved: false
 pending_req: false
+off_peak_only: false
 created: ""
 updated: ""
 completed: ""
