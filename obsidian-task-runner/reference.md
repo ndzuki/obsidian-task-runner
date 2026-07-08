@@ -3,24 +3,27 @@
 ## 状态流转
 
 ```
-           ┌──────────────────────────────────┐
-           │          人工 Gate                │
-           │   设 plan_approved: true + 保存   │
-           └──────────────────────────────────┘
+           ┌──────────────────────────────────────┐
+           │          人工 Gate (1)                │
+           │   设 plan_approved: true + 保存       │
+           └──────────────────────────────────────┘
                             ▲
                             │
-ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review ──→ done
+ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review ──→ Merge ──→ done
   ▲        │                  ▲            │            │
-  │        ▼                  │            ▼            │
-  │     🔔 桌面通知           │         🔔 桌面通知      │
-  │   "请审阅计划"            │      "请 review 代码"    │
-  │                           │                          │
-  └── pending_req: true ──────┘                          │
-  (需求文档更新后自动触发，                                 │
-   停在 plan-review 等确认，                                │
-   即使任务已完成也适用)                                     │
-                                                          │
-  ←── 可在任意状态下更新需求文档 ←──────────────────────────┘
+  │        ▼                  │            ▼            ▼
+  │     🔔 桌面通知           │         🔔 桌面通知   ╔═══════════════════╗
+  │   "请审阅计划"            │      "请 review 代码"  ║  人工 Gate (2)    ║
+  │                           │                       ║ merge_approved:   ║
+  └── pending_req: true ──────┘                       ║   true            ║
+  (需求文档更新后自动触发)                               ╚═════════╤═════════╝
+                                                                  │
+                                                             Merge Phase
+                                                                  │
+                                                            ├── 成功 → done
+                                                            └── 冲突 → conflict
+                                                                         │
+                                                                 人工解决 → done
 ```
 
 ## 状态详解
@@ -30,8 +33,9 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `ready` | 新建任务，等待处理 | 人工（模板默认） | Round 1 自动启动 |
 | `plan-review` | 计划已生成，等待人工批准 | Claude（Round 1） | 人工审阅计划 |
 | `implementing` | 正在实现代码 | Claude（Round 2 开始） | 自动进行 |
-| `review` | 代码已实现，等待人工 review | Claude（Round 2 完成） | 人工 review 代码 |
-| `done` | 已完成合并 | 人工 | 结束 |
+| `review` | 代码已实现，等待人工 review | Claude（Round 2 完成） | 人工 review 代码，确认后设 merge_approved: true |
+| `conflict` | 合并冲突，需人工解决 | Claude（Merge Phase） | 人工解决冲突，重新设 merge_approved: true 重试 |
+| `done` | 已完成合并并推送 | Claude（Merge Phase 成功） | 结束 |
 | `error` | 执行失败 | Claude（异常时） | 人工排查日志 |
 | `blocked` | 被其他任务阻塞 | 人工 | 等待依赖解决 |
 
@@ -43,12 +47,14 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 |------|------|------|
 | `status` | enum | 见上方状态流转表 |
 | `plan_approved` | bool | Round 2 的钥匙，人工设为 true |
+| `merge_approved` | bool | 自动合并的钥匙，人工 review 通过后设为 true |
 | `created` | ISO8601 | 文件首次创建时间 |
 | `updated` | ISO8601 | 最后更新时间 |
 | `completed` | ISO8601 | 完成时间 |
 | `actual_hours` | float | 实际耗时 |
 | `pending_req` | bool | 需求文档在任务进行中/完成后有更新。daemon 拾起后自动重置为 ready 并重新出计划 |
-| `target_branch` | string | Git 分支名 |
+| `target_branch` | string | Git 分支名，由 Round 2 自动设置，Merge Phase 使用 |
+| `pr_url` | string | PR 链接，Round 2 创建 PR 后自动设置，review 阶段供人工 review |
 
 ### 人工填写
 
@@ -72,6 +78,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `blocks` | list | | 阻塞哪些任务 ID |
 | `blocked_by` | list | | 被哪些任务 ID 阻塞 |
 | `auto_approve` | bool | | 是否跳过 plan-review gate（新项目无效） |
+| `off_peak_only` | bool | | Round 2 仅低峰执行（避开北京时间 9-12、14-18），节省 token 费用 |
 | `target_env` | string | | 部署环境 |
 
 ## vault-map.json 配置参考
@@ -82,10 +89,11 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 
 ### 任务没有被自动处理
 
-1. 检查 status 是否为 `ready` 或 (`plan-review` 且 `plan_approved: true`)
-2. 检查 assignee 是否为 `claude` 或 `claude+human`
-3. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
-4. 看日志：`tail -f ~/.claude/logs/task-runner.log`
+1. 检查 status 是否为 `ready` 或 (`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
+2. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
+3. 检查 assignee 是否为 `claude` 或 `claude+human`
+4. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
+5. 看日志：`tail -f ~/.claude/logs/task-runner.log`
 
 ### systemd 服务没有启动
 

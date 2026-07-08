@@ -171,10 +171,13 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
                 "old_status": status,
             })
             print(f"  {task_id} ({filename}): {status} → ready（需求已更新，重新出计划）")
-        elif status in ("implementing", "review", "done"):
+        elif status in ("implementing", "review", "conflict", "done"):
             # Task is mid-execution, awaiting review, or completed —
-            # mark as pending, daemon will auto-trigger new Round 1
+            # mark as pending, daemon will auto-trigger new Round 1.
+            # Also clear merge_approved to prevent stale approval from
+            # auto-triggering merge after re-implementation.
             update_frontmatter_field(task_path, "pending_req", True)
+            update_frontmatter_field(task_path, "merge_approved", False)
             affected.append({
                 "task_id": task_id,
                 "file": filename,
