@@ -5,7 +5,7 @@ description: >
   两轮状态机：Round 1 出计划、Round 2 写代码。
   支持自动发现可处理任务、解析项目路径、创建新项目脚手架、
   运行测试和 lint、提交到分支。
-  当用户在 Obsidian 中设 plan_approved: true 时自动触发下一轮。
+  当用户在 Obsidian 中设 plan_approved: true 时自动触发 Round 2；设 merge_approved: true 时自动执行合并。
   当用户提到"自动执行 Obsidian 任务"、"从 Obsidian 拉任务开发"、
   "自动实现需求文档"、"task runner" 时使用本 skill。
 ---
@@ -16,9 +16,9 @@ description: >
 
 ## 核心约束
 
-1. **只推进一轮**：Round 1 或 Round 2，不要在一次调用中跨越人工 Gate
-2. **写回任务文档**：所有产出（计划、实现记录、验收结果）写入任务 markdown 文件
-3. **不推送代码**：git commit 到分支但不 push，不创建 PR，不合并
+1. **只推进一轮**：Round 1 或 Round 2 或 Merge Phase，不要在一次调用中跨越人工 Gate
+2. **写回任务文档**：所有产出（计划、实现记录、验收结果、合并记录）写入任务 markdown 文件
+3. **只在 Merge Phase 推送**：Round 1 和 Round 2 期间不推送代码、不创建 PR、不合并。Merge Phase（Step 6）负责 git merge、git push 和分支清理
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
 
@@ -49,16 +49,19 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 
 ### Step 3: 判断当前阶段
 
-解析任务文档的 YAML frontmatter，关注 `status` 和 `plan_approved`：
+解析任务文档的 YAML frontmatter，关注 `status`、`plan_approved` 和 `merge_approved`：
 
-| 当前状态 | plan_approved | 动作 |
-|----------|---------------|------|
-| `ready` 或无 | — | 走 Round 1 |
-| `plan-review` | `true` | 走 Round 2 |
-| `plan-review` | 非 `true` | 输出 "等待人工批准" 并退出 |
-| `review` | — | 输出 "任务已在 review 状态，等待人工 review" 并退出 |
-| `done` | — | 输出 "任务已完成" 并退出 |
-| `implementing` | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
+| 当前状态 | plan_approved | merge_approved | 动作 |
+|----------|---------------|----------------|------|
+| `ready` 或无 | — | — | 走 Round 1 |
+| `plan-review` | `true` | — | 走 Round 2 |
+| `plan-review` | 非 `true` | — | 输出 "等待人工批准" 并退出 |
+| `review` | — | `true` | 走 Merge Phase |
+| `review` | — | 非 `true` / 无 | 输出 "任务已在 review 状态，等待人工 review" 并退出 |
+| `conflict` | — | `true` | 走 Merge Phase（重新尝试合并） |
+| `conflict` | — | 非 `true` / 无 | 输出 "任务存在合并冲突，请解决后重新设置 merge_approved: true" 并退出 |
+| `done` | — | — | 输出 "任务已完成" 并退出 |
+| `implementing` | — | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
 
 ### Step 4: Round 1 — 出计划
 
@@ -149,6 +152,26 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
    Co-Authored-By: Claude <noreply@anthropic.com>"
    ```
 
+7.5. **推送分支并创建 PR**：
+   ```bash
+   git push -u origin task/<id>-<slug>
+   PR_URL=$(gh pr create \
+     --title "<title>" \
+     --body "实现任务 #<id> 的计划
+
+   ## 验收记录
+   详见任务文档「## 验收记录」section
+
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)" \
+     --base main \
+     --head task/<id>-<slug>)
+   if [ -n "$PR_URL" ]; then
+     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+       <task_path> pr_url="$PR_URL"
+   fi
+   ```
+   如果 `gh` 不可用（未安装或未认证），跳过 PR 创建，仅执行 `git push`。
+
 8. **写回验收记录**：将测试结果、lint 结果、验收标准核实情况写入「## 验收记录」section。
 
 9. **更新状态**：
@@ -161,6 +184,108 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
    ```
 
 10. **退出**：输出 JSON 摘要，状态为 `review`。
+
+### Step 6: Merge Phase — 自动合并
+
+**目标**：将已通过人工 review 的代码合并到主分支并推送。触发条件：`status: review` 且 `merge_approved: true`，或 `status: conflict` 且 `merge_approved: true`（重新尝试合并）。
+
+1. **读取分支信息**：从 frontmatter 读取 `target_branch`。如果该字段为空，输出 "target_branch 缺失，无法合并" 并退出。
+
+2. **进入项目目录**：cd 到 vault-map.json 解析出的项目路径。
+
+3. **确定默认分支**：
+   ```bash
+   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+   DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+   ```
+
+4. **确保工作区干净并拉取最新**：
+   ```bash
+   git fetch origin
+   git checkout "$DEFAULT_BRANCH"
+   git pull origin "$DEFAULT_BRANCH"
+   ```
+
+5. **检查 feature 分支是否存在**：
+   ```bash
+   if git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
+     echo "feature 分支存在，执行合并"
+   else
+     echo "feature 分支已不存在（可能已被手动删除），跳过合并直接标记完成"
+     # 跳到步骤 7 的"成功"路径
+   fi
+   ```
+
+6. **合并 feature 分支**：
+   ```bash
+   git merge --no-ff "$TARGET_BRANCH" -m "merge: <title> (#<id>)"
+   ```
+
+7. **处理合并结果**：
+
+   **合并成功**：
+   - Push：`git push origin "$DEFAULT_BRANCH"`
+   - 删除远程 feature 分支：`git push origin --delete "$TARGET_BRANCH"`
+   - 删除本地 feature 分支：`git branch -d "$TARGET_BRANCH"`
+   - 更新状态：
+     ```bash
+     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+       <task_path> status=done merge_approved=false
+     ```
+   - 在「## 实现记录」section 追加合并记录：
+     ```markdown
+     ### 合并
+     - 分支: `<target_branch>` → `<default_branch>`
+     - 合并时间: <本地时间>
+     - 状态: 成功
+     ```
+
+   **合并冲突**：
+   - 记录冲突文件列表：`git diff --name-only --diff-filter=U`
+   - 中止合并：`git merge --abort`
+   - 切回 feature 分支：`git checkout "$TARGET_BRANCH"`
+   - 更新状态：
+     ```bash
+     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+       <task_path> status=conflict merge_approved=false
+     ```
+   - 在任务文档新建「## 合并冲突」section，写入：
+     - 冲突文件列表
+     - 目标分支和 feature 分支名称
+     - 解决指引："请手动解决上述冲突后，`git add` + `git commit` + `git push`，完成后重新设置 `merge_approved: true`"
+
+8. **退出**：输出 JSON 摘要：
+
+   成功时：
+   ```json
+   {
+     "task_id": "<id>",
+     "title": "<title>",
+     "phase": "merge",
+     "status_after": "done",
+     "summary": "已合并 <target_branch> → <default_branch> 并推送"
+   }
+   ```
+
+   冲突时：
+   ```json
+   {
+     "task_id": "<id>",
+     "title": "<title>",
+     "phase": "merge",
+     "status_after": "conflict",
+     "summary": "合并冲突，存在 <N> 个冲突文件，请手动解决"
+   }
+   ```
+
+### 特殊情况：低峰执行（off_peak_only）
+
+如果 `off_peak_only: true`：
+- Round 1 不受影响——随时执行
+- Round 2 只在**北京时间低峰时段**执行（00:00-09:00, 12:00-14:00, 18:00-24:00）
+- 高峰时段（09:00-12:00, 14:00-18:00）：即使 `plan_approved: true`，`find_ready_tasks.py` 也不返回该任务，daemon 日志输出延迟信息。等到下一次扫描（timer 间隔或 watcher 触发）进入低峰后自动执行
+- 适用于 token 费用敏感的场景（如 DeepSeek 高峰定价为低峰 2x）
+- 不影响 Merge Phase（Merge Phase token 消耗极少）
 
 ### 特殊情况：auto_approve
 
@@ -193,6 +318,17 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
   "round": 1,
   "status_after": "plan-review",
   "summary": "生成了 3 步实现计划"
+}
+```
+
+Merge Phase 的输出字段使用 `phase` 代替 `round`：
+```json
+{
+  "task_id": "003",
+  "title": "用户登录模块：JWT 鉴权",
+  "phase": "merge",
+  "status_after": "done",
+  "summary": "已合并 task/003-user-login → main 并推送"
 }
 ```
 

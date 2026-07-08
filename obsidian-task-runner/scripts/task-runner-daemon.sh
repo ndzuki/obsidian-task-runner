@@ -96,6 +96,7 @@ while [ $scan_round -lt $max_rounds ]; do
   task_status=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || true)
   task_pending=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('pending_req',''))" 2>/dev/null || true)
   task_plan_approved=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('plan_approved',''))" 2>/dev/null || true)
+  task_merge_approved=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('merge_approved',''))" 2>/dev/null || true)
   task_path="$VAULT/Tasks/$task_file"
 
   # pending_req 检查必须在 plan_approved 之前——
@@ -103,13 +104,20 @@ while [ $scan_round -lt $max_rounds ]; do
   if [ "$task_pending" = "True" ] && [ "$task_status" != "ready" ] && [ "$task_status" != "plan-review" ]; then
     log "$task_id 因 pending_req 唤醒（当前 status=$task_status），重置为 ready 并重新出计划"
     python3 "$SKILL_DIR/scripts/update_task_status.py" "$task_path" \
-      status=ready pending_req=false plan_approved=false 2>>"$LOG_DIR/task-runner.log" || true
+      status=ready pending_req=false plan_approved=false merge_approved=false 2>>"$LOG_DIR/task-runner.log" || true
     if command -v notify-send >/dev/null 2>&1; then
       notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-refresh \
         "🔄 Task ${task_id}: 需求变更已并入" \
         "${task_title:-}\n自动根据新需求重新出计划" &
     fi
-  elif [ "$task_plan_approved" = "True" ]; then
+  elif [ "$task_merge_approved" = "True" ] && { [ "$task_status" = "review" ] || [ "$task_status" = "conflict" ]; }; then
+    log "检测到 Merge 任务（merge_approved=true），即将执行自动合并"
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-system \
+        "🔀 Task ${task_id}: 开始合并" \
+        "${task_title:-}\n正在将功能分支合并到主分支" &
+    fi
+  elif [ "$task_plan_approved" = "True" ] && [ "$task_status" = "plan-review" ]; then
     log "检测到 Round 2 任务（plan_approved=true），即将开始实现"
     if command -v notify-send >/dev/null 2>&1; then
       notify-send --urgency=normal --app-name="Claude Task Runner" --icon=emblem-system \
@@ -159,7 +167,7 @@ print('yes' if m else 'no')
 
         # 重置任务状态，清除 pending_req
         python3 "$SKILL_DIR/scripts/update_task_status.py" "$task_path" \
-          status=ready plan_approved=false pending_req=false 2>>"$LOG_DIR/task-runner.log" || true
+          status=ready plan_approved=false pending_req=false merge_approved=false 2>>"$LOG_DIR/task-runner.log" || true
 
         # 立即进入新 Round 1（在同一次 daemon 运行中链式处理）
         log "$task_id 开始链式处理（pending_req → Round 1）"

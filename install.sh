@@ -362,19 +362,24 @@ if [ "$SYSTEMD_ENABLED" = true ]; then
 
   for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
     if [ -f "$SRC_DIR/$unit" ]; then
-      # Use Python for safe string replacement (avoids sed injection via path chars)
+      # Use Python for safe string replacement (avoids sed injection via path chars).
+      # Pass values via environment variables to avoid shell quoting issues.
+      _SRC_UNIT="$SRC_DIR/$unit" \
+      _OBSIDIAN_VAULT="$OBSIDIAN_VAULT" \
+      _RUNNER_PATH="$runner_path" \
+      _POLL_INTERVAL="$POLL_INTERVAL_MINUTES" \
+      _DEST_UNIT="$SYSTEMD_USER_DIR/$unit" \
       python3 -c "
-import sys
-with open(sys.argv[1]) as f:
+import os
+with open(os.environ['_SRC_UNIT']) as f:
     content = f.read()
-content = content.replace('__OBSIDIAN_VAULT_PATH__', sys.argv[2])
-content = content.replace('__RUNNER_PATH__', sys.argv[3])
-# Timer: replace poll interval placeholder or the default 30min literal
-content = content.replace('__POLL_INTERVAL_MINUTES__', sys.argv[4])
-content = content.replace('OnUnitActiveSec=30min', f'OnUnitActiveSec={sys.argv[4]}min')
-with open(sys.argv[5], 'w') as f:
+content = content.replace('__OBSIDIAN_VAULT_PATH__', os.environ['_OBSIDIAN_VAULT'])
+content = content.replace('__RUNNER_PATH__', os.environ['_RUNNER_PATH'])
+content = content.replace('__POLL_INTERVAL_MINUTES__', os.environ['_POLL_INTERVAL'])
+content = content.replace('OnUnitActiveSec=30min', f\"OnUnitActiveSec={os.environ['_POLL_INTERVAL']}min\")
+with open(os.environ['_DEST_UNIT'], 'w') as f:
     f.write(content)
-" -- "$SRC_DIR/$unit" "$OBSIDIAN_VAULT" "$runner_path" "$POLL_INTERVAL_MINUTES" "$SYSTEMD_USER_DIR/$unit"
+"
     else
       warn "$SRC_DIR/$unit 不存在，跳过"
     fi

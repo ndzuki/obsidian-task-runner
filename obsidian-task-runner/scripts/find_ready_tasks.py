@@ -4,6 +4,11 @@
 A task is "ready" when:
   - status == "ready" (fresh task, Round 1 needed)
   - status == "plan-review" AND plan_approved == true (Round 2 needed)
+  - status == "review" AND merge_approved == true (merge phase needed)
+  - status == "conflict" AND merge_approved == true (retry merge)
+
+Round 2 tasks with off_peak_only: true are deferred during Beijing peak hours
+(09:00-12:00, 14:00-18:00 CST) to reduce token costs.
 
 Output is sorted by priority (P0 first), then by creation date.
 """
@@ -12,7 +17,7 @@ import json
 import os
 import sys
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -101,17 +106,38 @@ def is_ready(frontmatter: dict) -> bool:
     """Check if a task is ready for processing."""
     status = frontmatter.get("status", "ready")
     plan_approved = frontmatter.get("plan_approved", False)
+    merge_approved = frontmatter.get("merge_approved", False)
     pending_req = frontmatter.get("pending_req", False)
 
     if status == "ready":
         return True
     if status == "plan-review" and plan_approved is True:
         return True
+    if status == "review" and merge_approved is True:
+        return True
+    if status == "conflict" and merge_approved is True:
+        return True
     # Req doc was updated while task was implementing/review/done —
     # needs re-planning regardless of current status
     if pending_req is True:
         return True
     return False
+
+
+def is_off_peak() -> bool:
+    """Check if current Beijing time (CST, UTC+8) is in off-peak hours.
+
+    DeepSeek peak pricing: 09:00-12:00 and 14:00-18:00 CST.
+    Returns True only during off-peak (cheaper) hours.
+    """
+    cst = timezone(timedelta(hours=8))
+    now_cst = datetime.now(cst)
+    hour = now_cst.hour
+    if 9 <= hour < 12:   # morning peak
+        return False
+    if 14 <= hour < 18:  # afternoon peak
+        return False
+    return True
 
 
 def find_ready_tasks(vault_path: str) -> list[dict]:
@@ -139,6 +165,18 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
         if not fm.get("project", ""):
             continue
 
+        # Defer off-peak-only Round 2 tasks during peak hours
+        status = fm.get("status", "ready")
+        plan_approved = fm.get("plan_approved", False)
+        off_peak_only = fm.get("off_peak_only", False)
+        if (status == "plan-review" and plan_approved is True
+                and off_peak_only is True and not is_off_peak()):
+            task_id = fm.get("id", "?")
+            print(f"  {task_id} ({filename}): Round 2 因 off_peak_only 延迟"
+                  f"（当前北京时间 {datetime.now(timezone(timedelta(hours=8))).strftime('%H:%M')}"
+                  f"，高峰时段）", file=sys.stderr)
+            continue
+
         ready_tasks.append({
             "id": fm.get("id", ""),
             "title": fm.get("title", ""),
@@ -149,11 +187,13 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
             "file_name": filename,
             "status": fm.get("status", "ready"),
             "plan_approved": fm.get("plan_approved", False),
+            "merge_approved": fm.get("merge_approved", False),
             "req_doc": fm.get("req_doc", ""),
             "template": fm.get("template", ""),
             "assignee": fm.get("assignee", "claude"),
             "auto_approve": fm.get("auto_approve", False),
             "pending_req": fm.get("pending_req", False),
+            "off_peak_only": fm.get("off_peak_only", False),
         })
 
     ready_tasks.sort(key=lambda t: (priority_order(t["priority"]), t["id"]))

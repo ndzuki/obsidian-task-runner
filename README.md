@@ -6,13 +6,14 @@
 
 你在 Obsidian 里整理好需求和任务，保存文件后，Claude Code 自动：
 
-1. **发现任务** — 扫描 `Tasks/` 目录，找到 `status: ready` 或 `plan_approved: true` 的任务
+1. **发现任务** — 扫描 `Tasks/` 目录，找到 `status: ready`、`plan_approved: true` 或 `merge_approved: true` 的任务
 2. **读需求文档** — 理解要做什么（支持一句话到完整结构化的任意格式）
 3. **出实现计划** — Round 1 生成分步骤计划，写回任务文档
 4. **等你确认** — 🔔 桌面通知提醒，在 Obsidian 中设 `plan_approved: true` 并保存
 5. **自动实现** — Round 2 写代码、跑测试、lint、提交到分支
 6. **需求联动** — 更新 `Requirements/` 下的需求文档后，关联任务自动重置，重新出计划
-7. **完成通知** — 🔔 桌面通知提醒 review
+7. **等你 Review** — 🔔 桌面通知提醒 review 代码，确认后设 `merge_approved: true` 并保存
+8. **自动合并** — Merge Phase 合并到主分支、`git push`、删除 feature 分支、标记 `done`
 
 不需要离开 Obsidian，不需要手动切终端——Claude Code 在后台自动完成。
 
@@ -35,7 +36,11 @@ Obsidian Tasks/ 或 Requirements/ 文件保存
         ├── Round 1: 读需求 → 出计划 → status=plan-review → 🔔 "请审阅"
         │     👤 在 Obsidian 审阅计划，设 plan_approved: true
         │
-        └── Round 2: 🔔 "开始实现" → 写代码 → 测试/lint → 验收 → git commit → 🔔 "请 review"
+        ├── Round 2: 🔔 "开始实现" → 写代码 → 测试/lint → 验收 → git commit → 🔔 "请 review"
+        │     👤 Review 代码，设 merge_approved: true
+        │
+        └── Merge Phase: 🔔 "开始合并" → git merge → git push → 删除分支 → status=done → 🔔 "已完成"
+              └── 冲突 → status=conflict → 🔔 "合并冲突，请手动解决"
 ```
 
 systemd timer 每 30 分钟兜底扫描，防止 inotify 事件丢失。
@@ -117,8 +122,14 @@ claude -p "/obsidian-task-runner"
                          →          12. git commit 到分支
                          →          13. status=review
                          →          14. 🔔 "代码已实现，请 review"
-15. Review 代码，merge 分支
-16. 设 status=done ✅
+15. Review 代码
+16. 设 merge_approved: true，保存
+                         →          17. 🔔 "🔀 开始合并"
+                         →          18. git merge + git push
+                         →          19. 删除 feature 分支
+                         →          20. status=done
+                         →          21. 🔔 "🎉 已完成，代码已推送"
+22. 查看 MR/PR ✅
 ```
 
 ### 需求变更流程：任何时候更新需求文档
@@ -151,6 +162,10 @@ claude -p "/obsidian-task-runner"
 | Round 1 完成 | 📋 Task #001: 计划已生成，请审阅 | 打开 Obsidian 看计划 |
 | Round 2 开始 | 🚀 Task #001: 开始实现 | Claude 已启动，正在写代码 |
 | Round 2 完成 | ✅ Task #001: 代码已实现，请 review | 切到分支 review 代码 |
+| PR 已创建 | 📬 Task #001: PR 已创建 | 打开 GitHub 查看 Pull Request |
+| Merge 开始 | 🔀 Task #001: 开始合并 | 正在合并并推送到主分支 |
+| Merge 成功 | 🎉 Task #001: 已完成 | 代码已推送，分支已清理 |
+| Merge 冲突 | ⚠️ Task #001: 合并冲突 | 手动解决冲突后重新设 merge_approved: true |
 | 需求变更并入 | 🔄 Task #001: 需求变更已并入 | 需求文档更新了，自动重新出计划 |
 | 执行失败 | ❌ Task #001: 执行失败 | 检查日志排错 |
 
@@ -245,12 +260,15 @@ claude-task-watcher.service        # systemd 事件触发
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `status` | enum | `ready` → `plan-review` → `implementing` → `review` → `done` |
-| `plan_approved` | bool | **人工 Gate**，设 `true` 触发 Round 2 |
-| `auto_approve` | bool | 跳过人工确认（新项目无效） |
+| `status` | enum | `ready` → `plan-review` → `implementing` → `review` → `done`；还有 `conflict`（合并冲突）、`error`（异常）、`blocked`（依赖阻塞） |
+| `plan_approved` | bool | **人工 Gate #1**，设 `true` 触发 Round 2 |
+| `merge_approved` | bool | **人工 Gate #2**，设 `true` 触发自动合并（Merge Phase） |
+| `auto_approve` | bool | 跳过 plan-review 人工确认（新项目无效） |
+| `off_peak_only` | bool | Round 2 仅低峰执行（避开北京时间 9-12、14-18），降低 token 费用 |
 | `new_project` | bool | 从零创建新项目 |
 | `project` | string | vault-map.json 的 `projects[].name` |
 | `req_doc` | string | 需求文档相对路径（如 `Requirements/xxx.md`） |
+| `target_branch` | string | Round 2 自动设置，Merge Phase 使用的 feature 分支名 |
 
 ### 需求文档格式
 
@@ -300,16 +318,16 @@ systemctl --user restart claude-task-watcher.service
 
 以下操作**不会**自动执行：
 
-- `git push` / 创建 PR / 合并 — 保留在本地分支
-- 将任务标记为 `done` — 需要人工确认后手动改
+- 创建 PR / 合并 — 保留在本地分支（除非 `merge_approved: true` 进入 Merge Phase）
+- 将任务标记为 `done` — 需要人工 review 通过后设 `merge_approved: true`
 - 新项目的脚手架创建 — 永远停在 Round 1 等人工确认
-- 删除文件或分支 — 只增不改
+- 删除文件或分支 — 只增不改（Merge Phase 中删除 feature 分支除外）
 
 ## 常见问题
 
 ### 任务没有被自动处理？
 
-1. 检查 status 是 `ready` 还是 `plan-review` + `plan_approved: true`
+1. 检查 status 是 `ready`、`plan-review` + `plan_approved: true`、还是 `review`/`conflict` + `merge_approved: true`
 2. 检查 `assignee` 是否包含 `claude`
 3. 确认 `project` 在 vault-map.json 的 `projects` 列表中存在，或 `new_project: true`
 4. `tail -f ~/.claude/logs/task-runner.log`

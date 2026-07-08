@@ -28,6 +28,7 @@ STATUS=$(extract_field "status")
 TASK_ID=$(extract_field "id")
 TITLE=$(extract_field "title")
 REVIEWER=$(extract_field "reviewer")
+PR_URL=$(extract_field "pr_url")
 
 # Only notify on gate states
 case "$STATUS" in
@@ -45,7 +46,32 @@ case "$STATUS" in
       --app-name="Claude Task Runner" \
       --icon=emblem-default \
       "✅ Task ${TASK_ID}: 代码已实现" \
-      "${TITLE}\n请 ${REVIEWER:-你} review 代码，确认无误后合并"
+      "${TITLE}\n请 ${REVIEWER:-你} review 代码，确认无误后设 merge_approved: true 自动合并"
+    # If a PR was created, also send PR notification
+    if [ -n "${PR_URL:-}" ]; then
+      notify-send \
+        --urgency=normal \
+        --app-name="Claude Task Runner" \
+        --icon=emblem-shared \
+        "📬 Task ${TASK_ID}: PR 已创建" \
+        "${TITLE}\n${PR_URL}\n请 review PR，确认后设 merge_approved: true"
+    fi
+    ;;
+  conflict)
+    notify-send \
+      --urgency=critical \
+      --app-name="Claude Task Runner" \
+      --icon=emblem-important \
+      "⚠️ Task ${TASK_ID}: 合并冲突" \
+      "${TITLE}\n自动合并失败，存在冲突文件，请手动解决后重新设置 merge_approved: true"
+    ;;
+  done)
+    notify-send \
+      --urgency=normal \
+      --app-name="Claude Task Runner" \
+      --icon=emblem-favorite \
+      "🎉 Task ${TASK_ID}: 已完成" \
+      "${TITLE}\n代码已合并并推送至远程仓库"
     ;;
   implementing)
     notify-send \
