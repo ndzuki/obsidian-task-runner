@@ -10,20 +10,26 @@
                             ▲
                             │
 ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review ──→ Merge ──→ done
-  ▲        │                  ▲            │            │
-  │        ▼                  │            ▼            ▼
-  │     🔔 桌面通知           │         🔔 桌面通知   ╔═══════════════════╗
-  │   "请审阅计划"            │      "请 review 代码"  ║  人工 Gate (2)    ║
-  │                           │                       ║ merge_approved:   ║
-  └── pending_req: true ──────┘                       ║   true            ║
-  (需求文档更新后自动触发)                               ╚═════════╤═════════╝
-                                                                  │
-                                                             Merge Phase
-                                                                  │
-                                                            ├── 成功 → done
-                                                            └── 冲突 → conflict
-                                                                         │
-                                                                 人工解决 → done
+  ▲        │                                │            │
+  │        ▼                                ▼            ▼
+  │     🔔 桌面通知                      🔔 桌面通知   ╔═══════════════════╗
+  │   "请审阅计划"                    "请 review 代码"  ║  人工 Gate (2)    ║
+  │                                                    ║ merge_approved:   ║
+  │                                                    ║   true            ║
+  │                                                    ╚═════════╤═════════╝
+  │                                                                  │
+  └── pending_req: true ─────────────────────────────────────────────┘
+  (需求文档更新后自动重置 status=ready，                             Merge Phase
+   重新走 Round 1 → plan-review 流程)                                     │
+                                                                     ├── 成功 → done
+                                                                     └── 冲突 → conflict
+                                                                                  │
+                                                                     ┌────────────┘
+                                                                     │
+                                                                     ├── merge_approved: true
+                                                                     │    → 重试 Merge Phase
+                                                                     └── 或手动 git push 后
+                                                                          设 status: done
 ```
 
 ## 状态详解
