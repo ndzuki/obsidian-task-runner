@@ -269,6 +269,7 @@ claude-task-watcher.service        # systemd 事件触发
 | `project` | string | vault-map.json 的 `projects[].name` |
 | `req_doc` | string | 需求文档相对路径（如 `Requirements/xxx.md`） |
 | `target_branch` | string | Round 2 自动设置，Merge Phase 使用的 feature 分支名 |
+| `pr_url` | string | Round 2 创建 PR 后自动设置，review 阶段供查看 PR |
 
 ### 需求文档格式
 
@@ -318,7 +319,8 @@ systemctl --user restart claude-task-watcher.service
 
 以下操作**不会**自动执行：
 
-- 创建 PR / 合并 — 保留在本地分支（除非 `merge_approved: true` 进入 Merge Phase）
+- 合并到主分支 — 仅当人工 review 通过后设 `merge_approved: true` 才进入 Merge Phase
+- PR 在 Round 2 提交代码后自动创建（需 `gh` CLI），review 阶段可查看
 - 将任务标记为 `done` — 需要人工 review 通过后设 `merge_approved: true`
 - 新项目的脚手架创建 — 永远停在 Round 1 等人工确认
 - 删除文件或分支 — 只增不改（Merge Phase 中删除 feature 分支除外）
@@ -328,9 +330,10 @@ systemctl --user restart claude-task-watcher.service
 ### 任务没有被自动处理？
 
 1. 检查 status 是 `ready`、`plan-review` + `plan_approved: true`、还是 `review`/`conflict` + `merge_approved: true`
-2. 检查 `assignee` 是否包含 `claude`
-3. 确认 `project` 在 vault-map.json 的 `projects` 列表中存在，或 `new_project: true`
-4. `tail -f ~/.claude/logs/task-runner.log`
+2. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
+3. 检查 `assignee` 是否包含 `claude`
+4. 确认 `project` 在 vault-map.json 的 `projects` 列表中存在，或 `new_project: true`
+5. `tail -f ~/.claude/logs/task-runner.log`
 
 ### 没有桌面通知？
 
