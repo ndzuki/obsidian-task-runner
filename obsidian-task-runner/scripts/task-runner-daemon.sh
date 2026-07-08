@@ -129,43 +129,30 @@ while [ $scan_round -lt $max_rounds ]; do
 
   log "开始处理 $task_id (project=$project, repo=$repo_dir, stage=$repo_status)"
 
-  # ── switch_settings: 动态切换 settings.json ──
-  # 当任务设置了 switch_settings 且备选配置文件存在时:
-  #   1. 备份原始 settings.json
-  #   2. 用 settings_aigateway.json 替换
-  #   3. 调用 claude（使用 AIGateway / 备选模型）
-  #   4. 恢复原始 settings.json（无论成功失败都恢复）
-  AIGATEWAY_SETTINGS="$HOME/.claude/settings_aigateway.json"
-  ORIG_SETTINGS="$HOME/.claude/settings.json"
-  SETTINGS_BAK="$HOME/.claude/settings.json.taskrunner.bak"
-  if [ "$task_switch_settings" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
-    if [ -f "$ORIG_SETTINGS" ]; then
-      cp "$ORIG_SETTINGS" "$SETTINGS_BAK"
-      cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
-      log "$task_id: 已切换到 AIGateway settings（备选模型）"
-    else
-      log "$task_id: 原始 settings.json 不存在，直接使用 AIGateway settings"
-      cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
-    fi
+  # ── switch_settings: 使用 Gateway wrapper 脚本 ──
+  # 当任务设置了 switch_settings 且 wrapper 脚本存在时，
+  # 使用 claude-gateway.sh 代替 claude 执行。
+  # wrapper 动态注入 ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL 环境变量，
+  # 通过 --settings 指定 settings_aigateway.json（保留模型/插件/hooks 配置）。
+  GATEWAY_SCRIPT="$HOME/.claude/claude-gateway.sh"
+  if [ "$task_switch_settings" = "True" ] && [ -x "$GATEWAY_SCRIPT" ]; then
+    CLAUDE_CMD="$GATEWAY_SCRIPT"
+    log "$task_id: 使用 AIGateway wrapper 执行（claude-gateway.sh）"
+  else
+    CLAUDE_CMD="claude"
   fi
 
   # acceptEdits 只会自动放行文件写入和 mkdir/touch/mv/cp,
   # git/make/go/golangci-lint/goimports 仍需显式 allowedTools,否则 headless 运行到这些命令时会直接中止。
   if (
       cd "$repo_dir"
-      claude -p "/obsidian-task-runner $task_id" \
+      $CLAUDE_CMD -p "/obsidian-task-runner $task_id" \
         --permission-mode acceptEdits \
         --allowedTools "Bash(git *),Bash(make *),Bash(go *),Bash(golangci-lint *),Bash(goimports *),Bash(python3 *),Read,Edit,Grep,Glob" \
         --output-format json
     ) >>"$LOG_DIR/task-runner.log" 2>&1
   then
     log "$task_id 处理完成"
-
-    # 恢复原始 settings.json（无论 claude 成功或失败）
-    if [ -f "$SETTINGS_BAK" ]; then
-      mv "$SETTINGS_BAK" "$ORIG_SETTINGS"
-      log "$task_id: 已恢复原始 settings.json"
-    fi
 
     # Round 1 或 Round 2 完成后检查任务状态，如果到了 gate 就发桌面通知
     if [ -n "$task_file" ] && [ -f "$VAULT/Tasks/$task_file" ]; then
@@ -199,20 +186,9 @@ print('yes' if m else 'no')
         # 立即进入新 Round 1（在同一次 daemon 运行中链式处理）
         log "$task_id 开始链式处理（pending_req → Round 1）"
 
-        # ── switch_settings: 链式处理也需要切换 settings.json ──
-        if [ "$task_switch_settings" = "True" ] && [ -f "$AIGATEWAY_SETTINGS" ]; then
-          if [ -f "$ORIG_SETTINGS" ]; then
-            cp "$ORIG_SETTINGS" "$SETTINGS_BAK"
-            cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
-            log "$task_id: 链式处理已切换到 AIGateway settings"
-          else
-            cp "$AIGATEWAY_SETTINGS" "$ORIG_SETTINGS"
-          fi
-        fi
-
         if (
             cd "$repo_dir"
-            claude -p "/obsidian-task-runner $task_id" \
+            $CLAUDE_CMD -p "/obsidian-task-runner $task_id" \
               --permission-mode acceptEdits \
               --allowedTools "Bash(git *),Bash(make *),Bash(go *),Bash(golangci-lint *),Bash(goimports *),Bash(python3 *),Read,Edit,Grep,Glob" \
               --output-format json
@@ -225,22 +201,10 @@ print('yes' if m else 'no')
         else
           log "$task_id 链式 Round 1 失败"
         fi
-
-        # 恢复原始 settings.json（链式处理完成后）
-        if [ -f "$SETTINGS_BAK" ]; then
-          mv "$SETTINGS_BAK" "$ORIG_SETTINGS"
-          log "$task_id: 链式处理已恢复原始 settings.json"
-        fi
       fi
     fi
   else
     log "$task_id 处理失败,详情见上方日志"
-
-    # 恢复原始 settings.json（即使 claude 失败也要恢复）
-    if [ -f "$SETTINGS_BAK" ]; then
-      mv "$SETTINGS_BAK" "$ORIG_SETTINGS"
-      log "$task_id: claude 调用失败，已恢复原始 settings.json"
-    fi
   fi
   done  # end inner: while read line (tasks in current batch)
 
