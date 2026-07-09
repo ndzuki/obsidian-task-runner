@@ -74,7 +74,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `priority` | P0-P4 | | 优先级，默认 P2 |
 | `due_date` | date | | 截止日期 |
 | `estimated_hours` | float | | 预估工时 |
-| `assignee` | string | | claude / human / claude+human |
+| `assignee` | string | | 委派执行 agent：`codex`（Codex CLI）/ `claude`（Claude Code）/ `claude+human`（Claude Code + 人工 review） |
 | `reviewer` | string | | 代码审查人 |
 | `req_doc` | string | ✅ | Requirements/ 下的需求文档路径 |
 | `component` | string | | 影响组件 |
@@ -85,7 +85,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 | `blocked_by` | list | | 被哪些任务 ID 阻塞 |
 | `auto_approve` | bool | | 是否跳过 plan-review gate（新项目无效） |
 | `off_peak_only` | bool | | Round 2 仅低峰执行（避开北京时间 9-12、14-18），节省 token 费用 |
-| `switch_settings` | bool | | 使用 `~/.claude/claude-gateway.sh` wrapper 执行，动态注入 API key 并切换到备选模型（如 GPT-5.5） |
+| `switch_settings` | bool | | ⛔ 已弃用，改由 `assignee` 字段选择 agent。仅在 `assignee: claude` 路径下仍有残留效果（claude-gateway.sh wrapper） |
 | `target_env` | string | | 部署环境 |
 
 ## vault-map.json 配置参考
@@ -98,7 +98,7 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 
 1. 检查 status 是否为 `ready` 或 (`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
 2. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
-3. 检查 assignee 是否为 `claude` 或 `claude+human`
+3. 检查 `assignee` 是否设置正确：`codex` 使用 Codex CLI，`claude`/`claude+human` 使用 Claude Code
 4. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
 5. 看日志：`tail -f ~/.claude/logs/task-runner.log`
 
