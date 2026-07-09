@@ -58,16 +58,17 @@ last_run=0
 # 同时监听 Tasks/ 和 Requirements/ 的 close_write + moved_to 事件
 # --format 输出完整路径，方便区分是哪个目录
 inotifywait -m -q -e close_write -e moved_to --format '%w%f' "${WATCH_DIRS[@]}" | while read -r changed_file; do
+  # 跳过临时文件和隐藏文件（editors 的临时文件、sed -i 的 sedXXXXXX 临时文件等）。
+  # 必须先过滤再 debounce，否则临时文件事件会更新时间戳，紧随其后的真实文件事件会被吞掉。
+  case "$(basename "$changed_file")" in
+    .*|sed??????|*.tmp|*.swp|*~) continue ;;
+  esac
+
   now=$(date +%s)
   if (( now - last_run < DEBOUNCE_SECONDS )); then
     continue
   fi
   last_run=$now
-
-  # 跳过临时文件和隐藏文件（editors 的临时文件、sed -i 的 sedXXXXXX 临时文件等）
-  case "$(basename "$changed_file")" in
-    .*|sed??????|*.tmp|*.swp|*~) continue ;;
-  esac
 
   # 判断变更来源
   case "$changed_file" in
