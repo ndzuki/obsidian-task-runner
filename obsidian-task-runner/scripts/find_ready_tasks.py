@@ -108,6 +108,11 @@ def is_ready(frontmatter: dict) -> bool:
     plan_approved = frontmatter.get("plan_approved", False)
     merge_approved = frontmatter.get("merge_approved", False)
     pending_req = frontmatter.get("pending_req", False)
+    assignee = frontmatter.get("assignee", "")
+
+    # assignee must be set — daemon won't pick up tasks without one
+    if not assignee or not assignee.strip():
+        return False
 
     if status == "ready":
         return True
@@ -190,7 +195,7 @@ def find_ready_tasks(vault_path: str) -> list[dict]:
             "merge_approved": fm.get("merge_approved", False),
             "req_doc": fm.get("req_doc", ""),
             "template": fm.get("template", ""),
-            "assignee": fm.get("assignee", "claude"),
+            "assignee": fm.get("assignee", ""),
             "auto_approve": fm.get("auto_approve", False),
             "pending_req": fm.get("pending_req", False),
             "off_peak_only": fm.get("off_peak_only", False),
