@@ -144,8 +144,10 @@ def build_task_markdown(
     # Tags as YAML list
     tags_block = "\n".join(f"  - {t}" for t in tags) if tags else "  - "
 
-    # Status: ready if project is set, otherwise blocked
-    status = "ready" if project else "blocked"
+    # Auto-created tasks always start blocked because assignee is intentionally
+    # left empty. Once the user fills required fields, the daemon auto-promotes
+    # the task to ready and starts Round 1.
+    status = "blocked"
 
     body = f"""# TASK-{task_id}: {title}
 
@@ -169,7 +171,7 @@ def build_task_markdown(
 | `plan_approved` | `false` | 人工 Gate #1 |
 | `merge_approved` | `false` | 人工 Gate #2 |
 
-> ⚠️ **`assignee` 为空时 daemon 不会拾取此任务。** 请在 frontmatter 中填写 `assignee: codex` 或 `assignee: claude`，然后保存。{'' if project else chr(10) + chr(10) + '> ⚠️ **`project` 为空，任务状态为 `blocked`。** 请填写 `project` 字段后把 `status` 改为 `ready`。'}
+> ⚠️ **任务已暂停在 `blocked`。** 请在 frontmatter 中补齐必填字段；补齐后保存，daemon 会自动进入 Round 1，无需手动把 `status` 改成 `ready`。{'' if project else chr(10) + chr(10) + '> ⚠️ **`project` 为空。** 请填写 `project` 字段。'}
 
 ## 实现计划
 <!-- 🤖 Round 1: agent 自动填充 -->
@@ -267,7 +269,7 @@ def create_task_for_requirement(vault_path: str, req_rel_path: str) -> dict | No
         return None
 
     task_id = parsed[0]
-    print(f"  {task_id} ({target_name}): 自动创建任务文档（status=ready）")
+    print(f"  {task_id} ({target_name}): 自动创建任务文档（status=blocked）")
     return {"task_id": task_id, "file": target_name, "action": "create_task"}
 
 

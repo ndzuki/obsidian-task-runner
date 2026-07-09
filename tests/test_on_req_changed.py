@@ -51,7 +51,7 @@ class AutoCreateTaskTests(unittest.TestCase):
         f = on_req_changed.task_filename_for_req("Requirements/REQ-007-foo.md")
         self.assertEqual(f, "TASK-007-foo.md")
 
-    # ── auto-create with project → status ready ──
+    # ── auto-create with project → status blocked until assignee is filled ──
 
     def test_create_task_from_new_req_with_project(self):
         self._write_req(
@@ -70,10 +70,11 @@ class AutoCreateTaskTests(unittest.TestCase):
         self.assertIn('id: "042"', task)
         self.assertIn('project: "my-project"', task)
         self.assertIn('priority: P0', task)
-        self.assertIn('status: "ready"', task)
+        self.assertIn('status: "blocked"', task)
         self.assertIn('plan_approved: false', task)
         self.assertIn('merge_approved: false', task)
         self.assertIn('assignee: ""', task)   # user must fill
+        self.assertIn("补齐后保存，daemon 会自动进入 Round 1", task)
         self.assertIn("Build it.", task)
         self.assertIn("AC-1: works", task)
 

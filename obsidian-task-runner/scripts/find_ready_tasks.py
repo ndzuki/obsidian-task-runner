@@ -102,6 +102,37 @@ def priority_order(priority: str) -> int:
     return order.get(priority.upper(), 2)
 
 
+def is_valid_assignee(assignee: str) -> bool:
+    """Return whether assignee maps to a supported agent backend."""
+    return assignee.strip() in {"codex", "claude", "claude+human"}
+
+
+def is_empty_list_value(value) -> bool:
+    """Handle both parsed YAML lists and inline [] from the lightweight parser."""
+    return value in (None, "", "[]", []) or (
+        isinstance(value, list) and len(value) == 0
+    )
+
+
+def is_auto_unblockable(frontmatter: dict) -> bool:
+    """Check whether a blocked task is blocked only by missing user fields.
+
+    Auto-created TASK files start as blocked because required fields such as
+    assignee/project may be missing. Once the user fills those fields and there
+    are no dependency blockers, the daemon should pick the task up and advance
+    it to Round 1 without requiring the user to manually set status=ready.
+    """
+    if frontmatter.get("status", "ready") != "blocked":
+        return False
+    if not frontmatter.get("project", ""):
+        return False
+    if not is_valid_assignee(str(frontmatter.get("assignee", ""))):
+        return False
+    if not is_empty_list_value(frontmatter.get("blocked_by", [])):
+        return False
+    return True
+
+
 def is_ready(frontmatter: dict) -> bool:
     """Check if a task is ready for processing."""
     status = frontmatter.get("status", "ready")
@@ -114,6 +145,8 @@ def is_ready(frontmatter: dict) -> bool:
     if not assignee or not assignee.strip():
         return False
 
+    if is_auto_unblockable(frontmatter):
+        return True
     if status == "ready":
         return True
     if status == "plan-review" and plan_approved is True:

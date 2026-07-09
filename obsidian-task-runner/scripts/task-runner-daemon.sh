@@ -84,6 +84,8 @@ run_task_agent() {
   local repo_dir="$2"
   local task_switch_settings="$3"
   local task_assignee="$4"
+  local task_status="$5"
+  local task_merge_approved="$6"
 
   # 按任务 assignee 字段选择 agent；未设置或无法识别时回退到 TASK_RUNNER_AGENT
   local agent
@@ -98,7 +100,17 @@ run_task_agent() {
       # --ask-for-approval 是全局 flag，必须在 exec 之前
       local codex_global_args
       codex_global_args=(--ask-for-approval "$CODEX_APPROVAL_POLICY")
-      if [ "$CODEX_BYPASS_APPROVALS_AND_SANDBOX" = "true" ]; then
+      # merge_approved=true 是人工明确授权：Codex Merge Phase 可执行
+      # git push、gh pr create、gh pr merge / git merge 以及分支清理。
+      # 该授权只对 review/conflict 的 Merge Phase 生效；Round 1/Round 2
+      # 仍保持常规 sandbox，避免提前推送或合并。
+      local codex_merge_authorized=false
+      if [ "$task_merge_approved" = "True" ] \
+        && { [ "$task_status" = "review" ] || [ "$task_status" = "conflict" ]; }; then
+        codex_merge_authorized=true
+      fi
+      if [ "$CODEX_BYPASS_APPROVALS_AND_SANDBOX" = "true" ] \
+        || [ "$codex_merge_authorized" = "true" ]; then
         codex_global_args+=(--dangerously-bypass-approvals-and-sandbox)
       fi
 
@@ -114,7 +126,7 @@ run_task_agent() {
         codex_exec_args+=(--model "$CODEX_MODEL")
       fi
 
-      log "$task_id: 使用 Codex 执行（assignee=$task_assignee, approval=$CODEX_APPROVAL_POLICY, sandbox=$CODEX_SANDBOX）"
+      log "$task_id: 使用 Codex 执行（assignee=$task_assignee, approval=$CODEX_APPROVAL_POLICY, sandbox=$CODEX_SANDBOX, merge_authorized=$codex_merge_authorized）"
       codex "${codex_global_args[@]}" "${codex_exec_args[@]}" "$(make_codex_prompt "$task_id")"
       ;;
 
@@ -212,6 +224,17 @@ while [ $scan_round -lt $max_rounds ]; do
   task_assignee=$(echo "$line" | python3 -c "import json,sys;print(json.load(sys.stdin).get('assignee','claude'))" 2>/dev/null || true)
   task_path="$VAULT/Tasks/$task_file"
 
+  # Auto-created tasks start as blocked while required fields are missing.
+  # find_ready_tasks.py only returns blocked tasks when the user has filled
+  # project + supported assignee and there are no dependency blockers. Promote
+  # them to ready before invoking the agent so the skill enters Round 1.
+  if [ "$task_status" = "blocked" ]; then
+    log "$task_id: 必填字段已补齐，自动解除 blocked → ready"
+    python3 "$SKILL_DIR/scripts/update_task_status.py" "$task_path" \
+      status=ready 2>>"$LOG_DIR/task-runner.log" || true
+    task_status="ready"
+  fi
+
   # pending_req 检查必须在 plan_approved 之前——
   # 避免先弹 "开始实现" 再弹 "需求变更已并入"，误导用户
   if [ "$task_pending" = "True" ] && [ "$task_status" != "ready" ] && [ "$task_status" != "plan-review" ]; then
@@ -241,7 +264,7 @@ while [ $scan_round -lt $max_rounds ]; do
 
   log "开始处理 $task_id (project=$project, repo=$repo_dir, stage=$repo_status)"
 
-  if run_task_agent "$task_id" "$repo_dir" "$task_switch_settings" "$task_assignee" >>"$LOG_DIR/task-runner.log" 2>&1
+  if run_task_agent "$task_id" "$repo_dir" "$task_switch_settings" "$task_assignee" "$task_status" "$task_merge_approved" >>"$LOG_DIR/task-runner.log" 2>&1
   then
     log "$task_id 处理完成"
 
@@ -277,7 +300,7 @@ print('yes' if m else 'no')
         # 立即进入新 Round 1（在同一次 daemon 运行中链式处理）
         log "$task_id 开始链式处理（pending_req → Round 1）"
 
-        if run_task_agent "$task_id" "$repo_dir" "$task_switch_settings" "$task_assignee" >>"$LOG_DIR/task-runner.log" 2>&1
+        if run_task_agent "$task_id" "$repo_dir" "$task_switch_settings" "$task_assignee" "$task_status" "$task_merge_approved" >>"$LOG_DIR/task-runner.log" 2>&1
         then
           log "$task_id 链式 Round 1 完成（新计划已生成）"
           if [ -f "$task_path" ]; then
