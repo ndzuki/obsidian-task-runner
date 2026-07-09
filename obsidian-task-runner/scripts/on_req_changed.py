@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Handle requirement document changes by updating related tasks.
+"""Handle requirement changes by updating or auto-creating related tasks.
 
-When a Requirements/*.md file changes, find all tasks that reference it
-(via the "req_doc" frontmatter field) and update them accordingly:
-
-  - ready / plan-review → reset to ready (forces re-plan with updated reqs)
-  - implementing / review / done → warn but don't change (already too far)
-
-This ensures Claude re-reads the updated requirements on the next scan.
+When a Requirements/*.md file changes:
+  - If a matching task already exists (via req_doc), reset/pending as before.
+  - If no matching task AND filename matches REQ-<id>-<slug>.md,
+    auto-create TASK-<id>-<slug>.md. assignee is left empty — user must fill
+    before any agent can pick up the task.
 """
 
 import json
 import os
 import re
 import sys
+from datetime import datetime, timezone, timedelta
+
+# Only auto-create for files matching REQ-<id>-<slug>.md
+REQ_FILENAME_RE = re.compile(r"^REQ-(?P<id>\d+)-(?P<slug>.+)\.md$")
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -66,6 +68,207 @@ def parse_frontmatter(text: str) -> dict:
     if in_list and current_key:
         result[current_key] = current_list
     return result
+
+
+# ── filename parsing ──
+
+def parse_req_filename(req_rel_path: str) -> tuple | None:
+    """Parse REQ-<id>-<slug>.md and return (id, slug) or None."""
+    filename = os.path.basename(req_rel_path.replace("\\", "/"))
+    m = REQ_FILENAME_RE.match(filename)
+    return (m.group("id"), m.group("slug")) if m else None
+
+
+def task_filename_for_req(req_rel_path: str) -> str | None:
+    """Derive task filename from requirement path."""
+    parsed = parse_req_filename(req_rel_path)
+    if parsed is None:
+        return None
+    return f"TASK-{parsed[0]}-{parsed[1]}.md"
+
+
+# ── markdown helpers ──
+
+def _first_heading(content: str) -> str:
+    """Extract first-level heading text."""
+    for line in content.splitlines():
+        if line.startswith("# ") and not line.startswith("## "):
+            return line[2:].strip()
+    return ""
+
+
+def _extract_section(content: str, *headings: str) -> list[str]:
+    """Extract lines from a named H2 section until the next H2."""
+    lines = content.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("## ") and any(
+            stripped[3:].strip() == h for h in headings
+        ):
+            start = i + 1
+            break
+    if start is None:
+        return []
+    result = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        if line.strip():
+            result.append(line.rstrip())
+    return result
+
+
+# ── TASK document builder ──
+
+def build_task_markdown(
+    req_path: str, req_content: str, req_fm: dict, now_iso: str
+) -> str:
+    """Render a complete TASK-<id>-<slug>.md from a requirement document."""
+    parsed = parse_req_filename(req_path)
+    if parsed is None:
+        return ""
+    task_id, slug = parsed
+
+    project = req_fm.get("project", "")
+    priority = req_fm.get("priority", "P2")
+    epic = req_fm.get("epic", "")
+    tags = req_fm.get("tags", [])
+    reviewer = req_fm.get("reviewer", "")
+    target_env = req_fm.get("target_env", "staging")
+
+    title = _first_heading(req_content) or slug.replace("-", " ").title()
+    summary_lines = _extract_section(req_content, "要做什么")
+    ac_lines = _extract_section(req_content, "完成标准", "验收标准")
+
+    # Tags as YAML list
+    tags_block = "\n".join(f"  - {t}" for t in tags) if tags else "  - "
+
+    # Status: ready if project is set, otherwise blocked
+    status = "ready" if project else "blocked"
+
+    body = f"""# TASK-{task_id}: {title}
+
+## 需求摘要
+
+{chr(10).join(summary_lines) if summary_lines else '<!-- 请从需求文档补充摘要 -->'}
+
+## 验收标准
+
+{chr(10).join(ac_lines) if ac_lines else '- [ ] 请补充可验证的验收标准'}
+
+## 人工 Review 提醒
+
+自动从 `Requirements/{os.path.basename(req_path)}` 生成。请确认以下字段：
+
+| 字段 | 当前值 | 需要填？ |
+|------|--------|---------|
+| `project` | `{project or '（空）'}` | {'✅' if project else '🔴 必填'} |
+| `assignee` | （空） | 🔴 必填（codex / claude / claude+human） |
+| `off_peak_only` | `false` | 可选 |
+| `plan_approved` | `false` | 人工 Gate #1 |
+| `merge_approved` | `false` | 人工 Gate #2 |
+
+> ⚠️ **`assignee` 为空时 daemon 不会拾取此任务。** 请在 frontmatter 中填写 `assignee: codex` 或 `assignee: claude`，然后保存。{'' if project else chr(10) + chr(10) + '> ⚠️ **`project` 为空，任务状态为 `blocked`。** 请填写 `project` 字段后把 `status` 改为 `ready`。'}
+
+## 实现计划
+<!-- 🤖 Round 1: agent 自动填充 -->
+
+## 实现记录
+<!-- 🤖 Round 2: agent 自动填充 -->
+
+## 验收记录
+<!-- 🤖 agent + task-verifier 自动填充 -->
+"""
+
+    # Build frontmatter
+    tags_fm = (
+        "tags:\n" + "\n".join(f"  - {t}" for t in tags)
+        if tags
+        else "tags: []"
+    )
+    fm = f"""---
+id: "{task_id}"
+title: "{title}"
+project: "{project}"
+new_project: false
+template: ""
+status: "{status}"
+plan_approved: false
+merge_approved: false
+pending_req: false
+off_peak_only: false
+created: "{now_iso}"
+updated: "{now_iso}"
+completed: ""
+priority: {priority}
+due_date: ""
+estimated_hours: 0
+actual_hours: 0
+assignee: ""
+reviewer: "{reviewer}"
+req_doc: Requirements/{os.path.basename(req_path)}
+component: ""
+{tags_fm}
+epic: "{epic}"
+parent: ""
+blocks: []
+blocked_by: []
+target_branch: ""
+target_env: {target_env}
+---
+"""
+
+    return fm + body
+
+
+# ── TASK file I/O ──
+
+def create_task_for_requirement(vault_path: str, req_rel_path: str) -> dict | None:
+    """Auto-create a TASK file for a new requirement. Returns action dict or None."""
+    parsed = parse_req_filename(req_rel_path)
+    if parsed is None:
+        return None
+
+    tasks_dir = os.path.join(vault_path, "Tasks")
+    os.makedirs(tasks_dir, exist_ok=True)
+
+    target_name = task_filename_for_req(req_rel_path)
+    task_path = os.path.join(tasks_dir, target_name)
+    if os.path.exists(task_path):
+        return None  # don't overwrite
+
+    # Read requirement
+    req_path = os.path.join(vault_path, req_rel_path)
+    try:
+        with open(req_path, "r") as f:
+            req_content = f.read()
+    except OSError:
+        return None
+
+    req_fm = parse_frontmatter(req_content)
+
+    cst = timezone(timedelta(hours=8))
+    now_iso = datetime.now(cst).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    task_md = build_task_markdown(req_rel_path, req_content, req_fm, now_iso)
+    if not task_md:
+        return None
+
+    # Atomic write via temp file
+    tmp_path = task_path + ".tmp." + str(os.getpid())
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(task_md)
+        os.replace(tmp_path, task_path)
+    except OSError:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        return None
+
+    task_id = parsed[0]
+    print(f"  {task_id} ({target_name}): 自动创建任务文档（status=ready）")
+    return {"task_id": task_id, "file": target_name, "action": "create_task"}
 
 
 def update_frontmatter_field(file_path: str, field: str, new_value) -> bool:
@@ -195,6 +398,12 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
             print(f"  {task_id} ({filename}): status={status}，已跳过（请手动评估）",
                   file=sys.stderr)
 
+    # Fallback: if no existing task, try auto-creating one
+    if not affected:
+        created = create_task_for_requirement(vault_path, req_rel_path)
+        if created:
+            affected = [created]
+
     return affected
 
 
@@ -220,8 +429,16 @@ def main():
         print("  没有关联的任务")
     else:
         reset_count = sum(1 for a in affected if a["action"] == "reset_to_ready")
+        created_count = sum(1 for a in affected if a["action"] == "create_task")
         warn_count = sum(1 for a in affected if a["action"] == "warn_only")
-        print(f"\n处理完成: {reset_count} 个任务已重置为 ready, {warn_count} 个任务因状态靠后仅警告")
+        parts = []
+        if reset_count:
+            parts.append(f"{reset_count} 个任务已重置为 ready")
+        if created_count:
+            parts.append(f"{created_count} 个任务已新建")
+        if warn_count:
+            parts.append(f"{warn_count} 个任务因状态靠后仅警告")
+        print(f"\n处理完成: {', '.join(parts)}")
 
     # Output JSON for daemon consumption
     print(json.dumps(affected, ensure_ascii=False))
