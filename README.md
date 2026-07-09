@@ -106,27 +106,29 @@ claude -p "/obsidian-task-runner"
 ### 主流程：从需求到交付
 
 ```
-你                                   Claude Code
+你                                   Claude Code / Codex
 ─────────────────────────────────────────────────────
-1. 复制模板，创建任务 + 需求文档
+1. 在 Vault/Requirements/ 创建 REQ-xxx.md
 2. 保存
-                         →          3. 发现任务 (ready)
-                         →          4. 读需求，出计划
-                         →          5. 写回计划，status=plan-review
-                         →          6. 🔔 "计划已生成，请审阅"
-7. 在 Obsidian 审阅计划
-8. 设 plan_approved: true，保存
-                         →          9. 🔔 "🚀 开始实现"
-                         →          10. 写代码、测试、lint
-                         →          11. task-verifier 验收
-                         →          12. git commit 到分支
-                         →          13. status=review
-                         →          14. 🔔 "代码已实现，请 review"
-15. Review 代码
-16. 设 merge_approved: true，保存
-                         →          17. 🔔 "🔀 开始合并"
-                         →          18. git merge + git push
-                         →          19. 删除 feature 分支
+                         →          3. 自动创建 TASK-xxx.md（assignee 留空）
+4. 填写 assignee: codex 或 claude，保存
+                         →          5. 发现任务 (ready)
+                         →          6. Round 1: 读需求，出计划
+                         →          7. 写回计划，status=plan-review
+                         →          8. 🔔 "计划已生成，请审阅"
+9. 在 Obsidian 审阅计划
+10. 设 plan_approved: true，保存
+                         →          11. 🔔 "🚀 开始实现"
+                         →          12. Round 2: 写代码、测试、lint
+                         →          13. task-verifier 验收
+                         →          14. git commit 到分支
+                         →          15. status=review
+                         →          16. 🔔 "代码已实现，请 review"
+17. Review 代码
+18. 设 merge_approved: true，保存
+                         →          19. 🔔 "🔀 开始合并"
+                         →          20. Merge: git merge + git push
+                         →          21. 删除 feature 分支
                          →          20. status=done
                          →          21. 🔔 "🎉 已完成，代码已推送"
 22. 查看 MR/PR ✅
@@ -386,6 +388,16 @@ daemon 会按 `assignee` 字段为每个任务选择对应 agent 执行。未设
 前提条件（Claude Code 路径 + `claude-gateway.sh`）：
 1. `~/.claude/claude-gateway.sh` 存在且可执行
 2. `~/.claude/settings_aigateway.json` 存在且配置正确
+
+### 如何从新需求文档自动创建任务？
+
+在 `Requirements/` 下创建 `REQ-<id>-<slug>.md` 格式的文件并保存即可。系统自动：
+
+1. 在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`
+2. 从需求文档自动提取标题、摘要、验收标准、项目名、标签等
+3. `assignee` 留空——你必须填写 `codex` 或 `claude` 后任务才会被拾取
+
+> 💡 文件名必须匹配 `REQ-<id>-<slug>.md`（如 `REQ-002-user-login.md`），否则只记录 warning 不自动创建。
 
 ### 查看运行状态
 

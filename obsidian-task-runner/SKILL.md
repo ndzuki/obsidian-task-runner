@@ -322,6 +322,17 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 - daemon 仅在 `assignee: claude` 路径下检查 `switch_settings`，用于切换到 aigateway wrapper（`claude-gateway.sh`）
 - 前提：`~/.claude/claude-gateway.sh` 存在且可执行
 
+### 特殊情况：新需求自动创建 TASK
+
+当用户在 `Requirements/` 下新建 `REQ-<id>-<slug>.md` 文件时：
+- `on_req_changed.py` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`
+- 自动填充字段：`id`、`title`、`project`、`priority`、`tags`、`epic`、`req_doc`、`reviewer`
+- **`assignee` 留空**——必须由用户填写 `codex` / `claude` / `claude+human` 后 daemon 才会拾取
+- `project` 为空时生成 `status: blocked`，提示用户补全后改 `ready`
+- `project` 已填时生成 `status: ready`，用户填完 `assignee` 后自动进入 Round 1
+- 已存在关联任务时不重复创建，按原有变更逻辑处理（reset / pending_req）
+- 文件名不匹配 `REQ-<id>-<slug>.md` 的需求文档不自动创建 TASK（只记录 warning）
+
 ## 输出格式
 
 每次执行结束输出简短 JSON 摘要（用于日志解析）：

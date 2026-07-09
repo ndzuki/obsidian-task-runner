@@ -96,11 +96,18 @@ ready ──→ Round 1 ──→ plan-review ──→ Round 2 ──→ review
 
 ### 任务没有被自动处理
 
-1. 检查 status 是否为 `ready` 或 (`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
-2. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
-3. 检查 `assignee` 是否设置正确：`codex` 使用 Codex CLI，`claude`/`claude+human` 使用 Claude Code
+1. 检查 `assignee` **不为空**——这是最常见的原因：自动创建的任务 `assignee` 为空，daemon 会跳过。填写 `codex` / `claude` / `claude+human` 后保存即触发
+2. 检查 status 是否为 `ready`（且 `assignee` 非空）或 (`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
+3. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
 4. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
 5. 看日志：`tail -f ~/.claude/logs/task-runner.log`
+
+### 新建需求文档没有自动生成任务
+
+1. 确认文件名格式为 `REQ-<id>-<slug>.md`（如 `REQ-002-user-login.md`）
+2. 确认保存后 watcher 检测到了变更：`tail -f ~/.claude/logs/task-watcher.log`
+3. 如果已存在关联任务（通过 `req_doc` 匹配），不会重复创建，只会更新
+4. 手动重试：`python3 ~/.claude/skills/obsidian-task-runner/scripts/on_req_changed.py <vault> <req_file>`
 
 ### systemd 服务没有启动
 
