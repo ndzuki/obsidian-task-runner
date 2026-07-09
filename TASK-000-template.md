@@ -22,8 +22,9 @@ estimated_hours: 0
 actual_hours: 0
 
 # ── 人员 & Agent 委派 ──
-# assignee: codex (Codex CLI) | claude (Claude Code) | claude+human
-assignee: claude
+# 🔴 必填！codex (Codex CLI) | claude (Claude Code) | claude+human
+# 留空则 daemon 不会拾取此任务
+assignee: ""
 reviewer: ""
 
 # ── 范围 & 分类 ──
