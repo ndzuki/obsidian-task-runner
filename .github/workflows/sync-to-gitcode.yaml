@@ -8,6 +8,8 @@ on:
 jobs:
   gitcode-sync:
     runs-on: ubuntu-latest
+    env:
+      GITCODE_USER: ndmizuki
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,7 +20,7 @@ jobs:
         run: |
           # 格式化 GitCode 的远程仓库地址，带上用户名和 Token 鉴权
           # 假设你的 GitCode 仓库路径为 gitcode.com/你的用户名/你的仓库名.git
-          REMOTE_URL="https://${{ secrets.GITCODE_USER }}:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ secrets.GITCODE_USER }}/${{ github.event.repository.name }}.git"
+          REMOTE_URL="https://${{ GITCODE_USER }}:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ GITCODE_USER }}/${{ github.event.repository.name }}.git"
 
           # 强制将本地全部分支与标签推送到 GitCode
           git push --mirror "$REMOTE_URL"
