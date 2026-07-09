@@ -307,16 +307,19 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 - 如果 `parent` 字段非空：检查父任务状态，如果父任务不在 `review` 或 `done`，设置为 `blocked` 并说明原因
 - 如果 `blocked_by` 非空：检查所有依赖任务，如果有任何一个不在 `done` 或 `review`，设置为 `blocked` 并列出未完成的依赖
 
-### 特殊情况：switch_settings 模型切换
+### 特殊情况：assignee 字段委派 Agent
 
-如果任务 frontmatter 中 `switch_settings: true`：
-- daemon 使用 `~/.claude/claude-gateway.sh` 代替 `claude` 执行任务
-- wrapper 脚本动态注入 `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` 环境变量
-- 通过 `--settings settings_aigateway.json` 指定模型/插件/hooks 配置（不污染原始 settings.json）
-- 适用于 DeepSeek 模型不可用时切换到备选模型（如 GPT-5.5）
-- 无需备份/恢复 settings.json，无 race condition
-- 主处理路径 + pending_req 链式处理路径统一使用同一 wrapper 逻辑
-- Round 1 和 Round 2 / Merge Phase 都受此字段影响——与 off_peak_only 不同，switch_settings 对所有阶段生效
+每个任务通过 frontmatter 的 `assignee` 字段决定由哪个 Agent 执行：
+
+| assignee | Agent | 说明 |
+|----------|-------|------|
+| `codex` | Codex CLI | 后台非交互模式，通过 prompt 引导读取 SKILL.md 后执行 |
+| `claude` | Claude Code | 原生 Skill 机制，自动加载 SKILL.md |
+| `claude+human` | Claude Code | 同 `claude`，human 仅参与 review gate |
+| 未设置 / 其他 | 回退 `TASK_RUNNER_AGENT` | 默认 `codex`，可通过环境变量覆盖 |
+
+**弃用字段**：`switch_settings` 已被 `assignee` 取代。旧字段仍可识别但不再推荐：
+- daemon 仅在 `assignee: claude` 路径下检查 `switch_settings`，用于切换到 aigateway wrapper（`claude-gateway.sh`）
 - 前提：`~/.claude/claude-gateway.sh` 存在且可执行
 
 ## 输出格式

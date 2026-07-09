@@ -11,7 +11,6 @@ plan_approved: false
 merge_approved: false
 pending_req: false
 off_peak_only: false
-switch_settings: false
 created: ""
 updated: ""
 completed: ""
@@ -22,7 +21,8 @@ due_date: ""
 estimated_hours: 0
 actual_hours: 0
 
-# ── 人员 & 分工 ──
+# ── 人员 & Agent 委派 ──
+# assignee: codex (Codex CLI) | claude (Claude Code) | claude+human
 assignee: claude
 reviewer: ""
 
