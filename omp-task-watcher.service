@@ -1,11 +1,11 @@
 [Unit]
-Description=Obsidian Task Watcher — 监听 Tasks/ 和 Requirements/ 文件变化,触发 OMP 处理
+Description=Obsidian Task Watcher — 监听文件变化,触发 OMP 处理
 
 [Service]
 Type=simple
 Environment=OBSIDIAN_VAULT=__OBSIDIAN_VAULT_PATH__
 Environment=PATH=__RUNNER_PATH__
-ExecStart=%h/.omp/skills/obsidian-task-runner/scripts/task-watcher.sh
+ExecStart=%h/.local/bin/otg daemon
 Restart=on-failure
 RestartSec=10
 

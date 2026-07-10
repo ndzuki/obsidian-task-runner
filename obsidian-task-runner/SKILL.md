@@ -34,7 +34,7 @@ description: >
 
 如果没有提供 task_id：
 ```bash
-python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN_VAULT
+otg find-ready $OBSIDIAN_VAULT
 ```
 取第一行 JSON 的 `file_path`，读该文件。如果没有 ready 任务，输出 "没有可处理的任务" 并退出。
 
@@ -95,7 +95,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
 
    a) 用 `update_task_status.py` 更新 frontmatter：
       ```bash
-      python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+      otg update-status \
         <task_path> status=plan-review plan_version=<新版本号>
       ```
 
@@ -140,14 +140,14 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
 
 4. **设置状态为 implementing**：
    ```bash
-   python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+   otg update-status \
      <task_path> status=implementing
    ```
 
 5. **按计划逐步实现**：
    - **新项目特殊处理**：如果 `new_project: true`，脚手架创建完毕后，立刻注册到 vault-map.json，让后续任务能解析到这个项目：
      ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/register_project.py \
+     otg register-project \
        ~/.omp/skills/obsidian-task-runner/config/vault-map.json \
        <project_name> \
        <repo_dir>
@@ -214,7 +214,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
 
 11. **更新状态**：
     ```bash
-    python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+    otg update-status \
       <task_path> \
       status=review \
       target_branch=task/<id>-<slug> \
@@ -276,7 +276,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
          --base "$DEFAULT_BRANCH" \
          --head "$TARGET_BRANCH")
      fi
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+     otg update-status \
        <task_path> pr_url="$PR_URL"
    else
      echo "gh CLI 不可用，回退到本地 git merge"
@@ -305,7 +305,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
    **合并成功**：
    - 更新状态：
      ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+     otg update-status \
        <task_path> status=done merge_approved=false
      ```
    - 在「## 实现记录」section 追加合并记录：
@@ -330,7 +330,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      - 不强行合并；等待用户处理冲突后重新设置 `merge_approved: true`
    - 更新状态：
      ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+     otg update-status \
        <task_path> status=conflict merge_approved=false
      ```
    - 在任务文档新建「## 合并冲突」section，写入：
@@ -449,13 +449,14 @@ Merge Phase 的输出字段使用 `phase` 代替 `round`：
 
 ## 关键路径
 
-所有工具脚本都在 `~/.omp/skills/obsidian-task-runner/scripts/` 下：
-- `find_ready_tasks.py` — 发现可处理任务
-- `update_task_status.py` — 更新 frontmatter 字段
-- `resolve_project_path.py` — 项目名 → 本地路径
-- `register_project.py` — 注册新项目
-
-配置文件在 `~/.omp/skills/obsidian-task-runner/config/vault-map.json`。
+所有功能由单一 Go 二进制 `otg` 提供：
+- `otg find-ready <vault>` — 发现可处理任务
+- `otg update-status <task> key=val...` — 更新 frontmatter 字段
+- `otg resolve-path <map> <project>` — 项目名 → 本地路径
+- `otg register-project <map> <name> <dir>` — 注册新项目
+- `otg on-req-changed <vault> <req>` — 需求变更处理
+- `otg daemon` — 启动常驻守护进程
+- `otg install` — 一键安装
 
 ## 参考文档
 

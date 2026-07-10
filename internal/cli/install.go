@@ -1,41 +1,82 @@
 package cli
 
 import (
-	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/install"
 	"github.com/spf13/cobra"
+)
+
+var (
+	installForce    bool
+	installDryRun   bool
+	installVault    string
+	installNewRoot  string
+	installNotif    bool
+	installPoll     int
+	installSystemd  bool
+	installSkipDeps bool
 )
 
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install skill to ~/.omp/skills/ and configure systemd",
-	Long: `Install the obsidian-task-runner skill to ~/.omp/skills/,
-create the OMP agent symlink, generate vault-map.json, and
-optionally configure systemd units.
+	Long: `Installs the obsidian-task-runner skill to ~/.omp/skills/,
+creates the OMP agent symlink, generates vault-map.json, configures
+shell environment, and optionally registers systemd units.
 
-Environment:
-  OBSIDIAN_VAULT        Obsidian vault path (required)
-  NEW_PROJECT_ROOT       New project root (default: $HOME/src)
-  NOTIFY_ENABLED         Enable desktop notifications (default: true)
-  POLL_INTERVAL_MINUTES  Poll interval (default: 30)
-  SYSTEMD_ENABLED        Register systemd units (default: true)
-  SKILL_INSTALL_DIR      Install path (default: ~/.omp/skills/...)`,
+Environment variables can also be used to configure installation:
+  OBSIDIAN_VAULT, NEW_PROJECT_ROOT, NOTIFY_ENABLED,
+  POLL_INTERVAL_MINUTES, SYSTEMD_ENABLED, SKILL_INSTALL_DIR`,
 	RunE: runInstall,
 }
 
-var dryRun bool
-
 func runInstall(cmd *cobra.Command, args []string) error {
-	if dryRun {
-		fmt.Println("[DRY RUN] Would install skill to ~/.omp/skills/obsidian-task-runner")
-		fmt.Println("[DRY RUN] Would create OMP agent symlink")
-		fmt.Println("[DRY RUN] Would generate vault-map.json")
-		fmt.Println("[DRY RUN] Would configure systemd")
-		return nil
+	home, _ := os.UserHomeDir()
+
+	vault := installVault
+	if v := os.Getenv("OBSIDIAN_VAULT"); v != "" && vault == "" {
+		vault = v
 	}
-	return fmt.Errorf("install subcommand: full implementation in Phase 4")
+	if vault == "" {
+		vault = filepath.Join(home, "Documents", "Obsidian", "MainVault")
+	}
+
+	newRoot := installNewRoot
+	if v := os.Getenv("NEW_PROJECT_ROOT"); v != "" && newRoot == "" {
+		newRoot = v
+	}
+	if newRoot == "" {
+		newRoot = filepath.Join(home, "src")
+	}
+
+	skillDir := os.Getenv("SKILL_INSTALL_DIR")
+	if skillDir == "" {
+		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
+	}
+
+	opts := install.Options{
+		ObsidianVault:   vault,
+		NewProjectRoot:  newRoot,
+		SkillInstallDir: skillDir,
+		NotifyEnabled:   installNotif,
+		PollIntervalMin: installPoll,
+		SystemdEnabled:  installSystemd,
+		Force:           installForce,
+		DryRun:          installDryRun,
+	}
+
+	return install.Run(opts)
 }
 
 func init() {
-	installCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "Preview changes without applying")
+	installCmd.Flags().BoolVarP(&installDryRun, "dry-run", "n", false, "Preview changes without applying")
+	installCmd.Flags().BoolVar(&installForce, "force", false, "Force overwrite of all files")
+	installCmd.Flags().StringVar(&installVault, "vault", "", "Obsidian vault path")
+	installCmd.Flags().StringVar(&installNewRoot, "new-project-root", "", "New project root directory")
+	installCmd.Flags().BoolVar(&installNotif, "notifications", true, "Enable desktop notifications")
+	installCmd.Flags().IntVar(&installPoll, "poll-interval", 30, "Polling interval in minutes")
+	installCmd.Flags().BoolVar(&installSystemd, "systemd", true, "Register systemd units")
+	rootCmd.AddCommand(installCmd)
 }
