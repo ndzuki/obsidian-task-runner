@@ -6,6 +6,11 @@ When a Requirements/*.md file changes:
   - If no matching task AND filename matches REQ-<id>-<slug>.md,
     auto-create TASK-<id>-<slug>.md. assignee is left empty — user must fill
     before any agent can pick up the task.
+
+Note on model dispatch: this script only creates files and updates frontmatter;
+it does not invoke any AI model directly.  When the daemon later dispatches the
+task, it routes by assignee: deepseek → deepseek-v4-pro, gpt → gpt-5.5.
+Lightweight operations (new REQ → TASK creation) use deepseek-v4-flash.
 """
 
 import json
@@ -166,7 +171,7 @@ def build_task_markdown(
 | 字段 | 当前值 | 需要填？ |
 |------|--------|---------|
 | `project` | `{project or '（空）'}` | {'✅' if project else '🔴 必填'} |
-| `assignee` | （空） | 🔴 必填（codex / claude / claude+human） |
+| `assignee` | （空） | 🔴 必填（deepseek / gpt） |
 | `off_peak_only` | `false` | 可选 |
 | `plan_approved` | `false` | 人工 Gate #1 |
 | `merge_approved` | `false` | 人工 Gate #2 |
@@ -366,7 +371,7 @@ def on_req_changed(vault_path: str, req_rel_path: str) -> list[dict]:
         status = fm.get("status", "ready")
 
         if status in ("ready", "plan-review"):
-            # Reset to ready — Claude will re-read updated req in next scan
+            # Reset to ready — agent will re-read updated req in next scan
             update_frontmatter_field(task_path, "status", "ready")
             update_frontmatter_field(task_path, "plan_approved", False)
             affected.append({

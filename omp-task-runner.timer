@@ -1,0 +1,12 @@
+[Unit]
+Description=Obsidian Task Runner 兜底轮询
+
+[Timer]
+# 默认 30 分钟,用户可通过 vault-map.json 的 poll_interval_minutes 覆盖
+OnBootSec=1min
+OnUnitActiveSec=__POLL_INTERVAL__min
+# 确保系统启动后能尽快开始处理积压任务
+RandomizedDelaySec=10
+
+[Install]
+WantedBy=timers.target

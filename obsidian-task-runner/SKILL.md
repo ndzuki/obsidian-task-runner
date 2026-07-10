@@ -10,15 +10,13 @@ description: >
   "自动实现需求文档"、"task runner" 时使用本 skill。
 ---
 
-# Obsidian Task Runner
-
-你是 Obsidian → Claude Code 自动化流水线的执行引擎。你的工作是在一次 `claude -p` 调用中完成一轮状态推进，然后退出，不发生交互。
+你是 Obsidian → OMP 自动化流水线的执行引擎。你的工作是在一次 OMP 调用中完成一轮状态推进，然后退出，不发生交互。
 
 ## 核心约束
 
 1. **只推进一轮**：Round 1 或 Round 2 或 Merge Phase，不要在一次调用中跨越人工 Gate
 2. **写回任务文档**：所有产出（计划、实现记录、验收结果、合并记录）写入任务 markdown 文件
-3. **只在 Merge Phase 推送**：Round 1 和 Round 2 期间不推送代码、不创建 PR、不合并。Merge Phase（Step 6）负责 git merge、git push 和分支清理
+3. **只在 Merge Phase 推送/PR/合并**：Round 1 和 Round 2 期间不推送代码、不创建 PR、不合并。Merge Phase（Step 6）在 `merge_approved: true` 授权后负责 `git push`、`gh pr create`、merge、push 默认分支和分支清理
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
 
@@ -36,13 +34,13 @@ description: >
 
 如果没有提供 task_id：
 ```bash
-python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN_VAULT
+python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN_VAULT
 ```
 取第一行 JSON 的 `file_path`，读该文件。如果没有 ready 任务，输出 "没有可处理的任务" 并退出。
 
 ### Step 2: 读取配置
 
-读取 `~/.claude/skills/obsidian-task-runner/config/vault-map.json`：
+读取 `~/.omp/skills/obsidian-task-runner/config/vault-map.json`：
 - 获取项目的本地路径
 - 获取 new_project_root 配置
 - 获取通知偏好
@@ -60,8 +58,14 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 | `review` | — | 非 `true` / 无 | 输出 "任务已在 review 状态，等待人工 review" 并退出 |
 | `conflict` | — | `true` | 走 Merge Phase（重新尝试合并） |
 | `conflict` | — | 非 `true` / 无 | 输出 "任务存在合并冲突，请解决后重新设置 merge_approved: true" 并退出 |
+| `blocked` | — | — | 如果必填字段已补齐且无 `blocked_by` 依赖，先自动改为 `ready` 再走 Round 1；否则输出缺失字段/依赖并退出 |
 | `done` | — | — | 输出 "任务已完成" 并退出 |
 | `implementing` | — | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
+
+`blocked` 自动解除条件：
+- `project` 非空（或 `new_project: true` 且可通过 `new_project_root` 解析目标目录）
+- `assignee` 是 `deepseek` / `gpt`
+- `blocked_by` 为空
 
 ### Step 4: Round 1 — 出计划
 
@@ -90,7 +94,7 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 4. **写回任务文档**：
    - 用 `update_task_status.py` 更新 frontmatter：
      ```bash
-     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
        <task_path> status=plan-review
      ```
    - 将计划内容写入任务文档的「## 实现计划」section（替换 `<!-- 🤖 Round 1: Claude 自动填充 -->` 注释）
@@ -114,15 +118,15 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 
 4. **设置状态为 implementing**：
    ```bash
-   python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
      <task_path> status=implementing
    ```
 
 5. **按计划逐步实现**：
    - **新项目特殊处理**：如果 `new_project: true`，脚手架创建完毕后，立刻注册到 vault-map.json，让后续任务能解析到这个项目：
      ```bash
-     python3 ~/.claude/skills/obsidian-task-runner/scripts/register_project.py \
-       ~/.claude/skills/obsidian-task-runner/config/vault-map.json \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/register_project.py \
+       ~/.omp/skills/obsidian-task-runner/config/vault-map.json \
        <project_name> \
        <repo_dir>
      ```
@@ -152,44 +156,34 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
    Co-Authored-By: Claude <noreply@anthropic.com>"
    ```
 
-7.5. **推送分支并创建 PR**：
-   ```bash
-   git push -u origin task/<id>-<slug>
-   PR_URL=$(gh pr create \
-     --title "<title>" \
-     --body "实现任务 #<id> 的计划
-
-   ## 验收记录
-   详见任务文档「## 验收记录」section
-
-   🤖 Generated with [Claude Code](https://claude.com/claude-code)" \
-     --base main \
-     --head task/<id>-<slug>)
-   if [ -n "$PR_URL" ]; then
-     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
-       <task_path> pr_url="$PR_URL"
-   fi
-   ```
-   如果 `gh` 不可用（未安装或未认证），跳过 PR 创建，仅执行 `git push`。
+7.5. **不要推送或创建 PR**：
+   - Round 2 只负责本地实现、测试、lint 和本地 commit。
+   - 不执行 `git push`。
+   - 不执行 `gh pr create`。
+   - 不合并默认分支。
+   - 用户 review 后设 `merge_approved: true`，Merge Phase 才执行 push、PR 和 merge。
 
 8. **写回验收记录**：将测试结果、lint 结果、验收标准核实情况写入「## 验收记录」section。
 
 9. **更新状态**：
    ```bash
-   python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
      <task_path> \
      status=review \
      target_branch=task/<id>-<slug> \
      actual_hours=<实际耗时小时数>
    ```
 
-10. **退出**：输出 JSON 摘要，状态为 `review`。
+10. **退出**：输出 JSON 摘要，状态为 `review`。如果 `merge_approved` 仍为 `false`，通知用户 review 代码，并由用户决定是否手动创建 PR/merge 或设 `merge_approved: true` 交给 agent 自动处理。
 
-### Step 6: Merge Phase — 自动合并
+### Step 6: Merge Phase — 自动 PR + 合并
 
-**目标**：将已通过人工 review 的代码合并到主分支并推送。触发条件：`status: review` 且 `merge_approved: true`，或 `status: conflict` 且 `merge_approved: true`（重新尝试合并）。
+**目标**：在人工 review 授权后，推送 feature 分支、创建/复用 GitHub PR，并合并到默认分支。触发条件：`status: review` 且 `merge_approved: true`，或 `status: conflict` 且 `merge_approved: true`（重新尝试合并）。
 
-1. **读取分支信息**：从 frontmatter 读取 `target_branch`。如果该字段为空，输出 "target_branch 缺失，无法合并" 并退出。
+`merge_approved: true` 是明确授权：
+- 当 `assignee: deepseek` 时，使用 deepseek-v4-pro 执行 git push、gh pr create、gh pr merge / git merge、git push origin <default_branch> 和 feature 分支清理。
+- 当 `assignee: gpt` 时，使用 gpt-5.5 执行上述操作。
+- 如果 `merge_approved: false`，不得自动 push、创建 PR 或 merge；只停在 `review` 并提醒用户处理。
 
 2. **进入项目目录**：cd 到 vault-map.json 解析出的项目路径。
 
@@ -199,37 +193,70 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
    DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
    ```
 
-4. **确保工作区干净并拉取最新**：
+4. **确保工作区干净并拉取最新默认分支**：
    ```bash
    git fetch origin
    git checkout "$DEFAULT_BRANCH"
    git pull origin "$DEFAULT_BRANCH"
    ```
 
-5. **检查 feature 分支是否存在**：
+5. **检查并推送 feature 分支**：
    ```bash
    if git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
-     echo "feature 分支存在，执行合并"
+     git checkout "$TARGET_BRANCH"
+     git push -u origin "$TARGET_BRANCH"
    else
-     echo "feature 分支已不存在（可能已被手动删除），跳过合并直接标记完成"
-     # 跳到步骤 7 的"成功"路径
+     echo "target_branch 缺失或本地不存在，无法自动 PR/合并"
+     exit 1
    fi
    ```
 
-6. **合并 feature 分支**：
+6. **创建或复用 GitHub PR**：
    ```bash
-   git merge --no-ff "$TARGET_BRANCH" -m "merge: <title> (#<id>)"
+   if command -v gh >/dev/null 2>&1; then
+     PR_URL=$(gh pr view "$TARGET_BRANCH" --json url --jq .url 2>/dev/null || true)
+     if [ -z "$PR_URL" ]; then
+       PR_URL=$(gh pr create \
+         --title "<title>" \
+         --body "实现任务 #<id> 的计划
+
+   ## 验收记录
+   详见任务文档「## 验收记录」section
+
+   🤖 Generated with Obsidian Task Runner" \
+         --base "$DEFAULT_BRANCH" \
+         --head "$TARGET_BRANCH")
+     fi
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+       <task_path> pr_url="$PR_URL"
+   else
+     echo "gh CLI 不可用，回退到本地 git merge"
+   fi
    ```
 
-7. **处理合并结果**：
+7. **合并 feature 分支**：
+   - 如果 `gh` 可用且 PR 已创建/可访问，优先执行：
+     ```bash
+     gh pr merge "$TARGET_BRANCH" --merge --delete-branch
+     git checkout "$DEFAULT_BRANCH"
+     git pull --ff-only origin "$DEFAULT_BRANCH"
+     git branch -d "$TARGET_BRANCH" 2>/dev/null || true
+     ```
+   - 如果 `gh` 不可用，回退为本地合并：
+     ```bash
+     git checkout "$DEFAULT_BRANCH"
+     git merge --no-ff "$TARGET_BRANCH" -m "merge: <title> (#<id>)"
+     git push origin "$DEFAULT_BRANCH"
+     git push origin --delete "$TARGET_BRANCH" || true
+     git branch -d "$TARGET_BRANCH"
+     ```
+
+8. **处理合并结果**：
 
    **合并成功**：
-   - Push：`git push origin "$DEFAULT_BRANCH"`
-   - 删除远程 feature 分支：`git push origin --delete "$TARGET_BRANCH"`
-   - 删除本地 feature 分支：`git branch -d "$TARGET_BRANCH"`
    - 更新状态：
      ```bash
-     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
        <task_path> status=done merge_approved=false
      ```
    - 在「## 实现记录」section 追加合并记录：
@@ -241,12 +268,16 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
      ```
 
    **合并冲突**：
-   - 记录冲突文件列表：`git diff --name-only --diff-filter=U`
-   - 中止合并：`git merge --abort`
-   - 切回 feature 分支：`git checkout "$TARGET_BRANCH"`
+   - 如果是本地 `git merge` 产生冲突：
+     - 记录冲突文件列表：`git diff --name-only --diff-filter=U`
+     - 中止合并：`git merge --abort`
+     - 切回 feature 分支：`git checkout "$TARGET_BRANCH"`
+   - 如果是 `gh pr merge` 返回不可合并：
+     - 记录 PR URL、默认分支、feature 分支和 `gh pr status` / `gh pr view` 的关键信息
+     - 不强行合并；等待用户处理冲突后重新设置 `merge_approved: true`
    - 更新状态：
      ```bash
-     python3 ~/.claude/skills/obsidian-task-runner/scripts/update_task_status.py \
+     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
        <task_path> status=conflict merge_approved=false
      ```
    - 在任务文档新建「## 合并冲突」section，写入：
@@ -254,7 +285,7 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
      - 目标分支和 feature 分支名称
      - 解决指引："请手动解决上述冲突后，`git add` + `git commit` + `git push`，完成后重新设置 `merge_approved: true`"
 
-8. **退出**：输出 JSON 摘要：
+9. **退出**：输出 JSON 摘要：
 
    成功时：
    ```json
@@ -305,35 +336,36 @@ python3 ~/.claude/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSID
 ### 特殊情况：子任务与依赖
 
 - 如果 `parent` 字段非空：检查父任务状态，如果父任务不在 `review` 或 `done`，设置为 `blocked` 并说明原因
-- 如果 `blocked_by` 非空：检查所有依赖任务，如果有任何一个不在 `done` 或 `review`，设置为 `blocked` 并列出未完成的依赖
+### 特殊情况：assignee 字段 -> OMP 模型映射
 
-### 特殊情况：assignee 字段委派 Agent
+每个任务通过 frontmatter 的 `assignee` 字段决定使用的 OMP 模型：
 
-每个任务通过 frontmatter 的 `assignee` 字段决定由哪个 Agent 执行：
+| assignee | 模型 | Round 1 | Round 2 | Merge Phase | 说明 |
+|----------|------|---------|---------|-------------|------|
+| `deepseek` | deepseek-v4-pro | 出计划 | 实现代码 | 合并 | OMP 使用 deepseek/deepseek-v4-pro:xhigh |
+| `gpt` | gpt-5.5 | 出计划 | 实现代码 | 合并 | OMP 使用 gateway/gpt-5.5:xhigh |
+| 未设置 / 其他 | 回退 `TASK_RUNNER_AGENT` | — | — | — | 默认 `deepseek`，可通过环境变量覆盖 |
 
-| assignee | Agent | 说明 |
-|----------|-------|------|
-| `codex` | Codex CLI | 后台非交互模式，通过 prompt 引导读取 SKILL.md 后执行 |
-| `claude` | Claude Code | 原生 Skill 机制，自动加载 SKILL.md |
-| `claude+human` | Claude Code | 同 `claude`，human 仅参与 review gate |
-| 未设置 / 其他 | 回退 `TASK_RUNNER_AGENT` | 默认 `codex`，可通过环境变量覆盖 |
+**Round 1 & Round 2 使用同一模型**（由 `assignee` 决定）：
+- `assignee=deepseek` → 两阶段均由 `deepseek-v4-pro` 完成
+- `assignee=gpt` → 两阶段均由 `gpt-5.5` 完成
 
-**弃用字段**：`switch_settings` 已被 `assignee` 取代。旧字段仍可识别但不再推荐：
-- daemon 仅在 `assignee: claude` 路径下检查 `switch_settings`，用于切换到 aigateway wrapper（`claude-gateway.sh`）
-- 前提：`~/.claude/claude-gateway.sh` 存在且可执行
+**轻量任务使用 flash**（不需要人工 gate 的辅助工作）：
+- 新需求文档创建后自动生成 TASK 文档：`deepseek-v4-flash`
+- 其余后台轻量任务（状态更新、通知等）：`deepseek-v4-flash`
+
+**弃用字段**：`switch_settings` 已被移除。`codex` / `claude` / `claude+human` 不再支持。
 
 ### 特殊情况：新需求自动创建 TASK
 
 当用户在 `Requirements/` 下新建 `REQ-<id>-<slug>.md` 文件时：
-- `on_req_changed.py` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`
+- `on_req_changed.py` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`（使用 deepseek-v4-flash 完成）
 - 自动填充字段：`id`、`title`、`project`、`priority`、`tags`、`epic`、`req_doc`、`reviewer`
-- **`assignee` 留空**——必须由用户填写 `codex` / `claude` / `claude+human` 后 daemon 才会拾取
-- `project` 为空时生成 `status: blocked`，提示用户补全后改 `ready`
-- `project` 已填时生成 `status: ready`，用户填完 `assignee` 后自动进入 Round 1
+- **`assignee` 留空**，且新 TASK 默认 `status: blocked`——必须由用户填写 `project`（若缺失）和 `assignee: deepseek|gpt`
+- 用户补齐必填字段并保存后，daemon 自动解除 `blocked` → `ready` 并根据 `assignee` 启动对应模型执行 Round 1；用户不需要手动改 `status`
+- 如果 `blocked_by` 非空，仍保持 `blocked`，直到依赖完成或用户清空依赖
 - 已存在关联任务时不重复创建，按原有变更逻辑处理（reset / pending_req）
 - 文件名不匹配 `REQ-<id>-<slug>.md` 的需求文档不自动创建 TASK（只记录 warning）
-
-## 输出格式
 
 每次执行结束输出简短 JSON 摘要（用于日志解析）：
 
@@ -360,13 +392,13 @@ Merge Phase 的输出字段使用 `phase` 代替 `round`：
 
 ## 关键路径
 
-所有工具脚本都在 `~/.claude/skills/obsidian-task-runner/scripts/` 下：
+所有工具脚本都在 `~/.omp/skills/obsidian-task-runner/scripts/` 下：
 - `find_ready_tasks.py` — 发现可处理任务
 - `update_task_status.py` — 更新 frontmatter 字段
 - `resolve_project_path.py` — 项目名 → 本地路径
 - `register_project.py` — 注册新项目
 
-配置文件在 `~/.claude/skills/obsidian-task-runner/config/vault-map.json`。
+配置文件在 `~/.omp/skills/obsidian-task-runner/config/vault-map.json`。
 
 ## 参考文档
 

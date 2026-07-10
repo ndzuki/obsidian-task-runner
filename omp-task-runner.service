@@ -5,7 +5,6 @@ Description=扫描 Obsidian Vault 并处理可执行的 OMP 任务(兜底轮询,
 Type=oneshot
 Environment=OBSIDIAN_VAULT=__OBSIDIAN_VAULT_PATH__
 # systemd --user 的 PATH 是干净的,不会读取 ~/.bashrc。
-# systemd --user 的 PATH 是干净的,不会读取 ~/.bashrc。
 # install.sh 会尝试自动探测 omp 的路径填进来;如果探测不准,按 `which omp` 等结果手动改这一行。
 Environment=PATH=__RUNNER_PATH__
 ExecStart=%h/.omp/skills/obsidian-task-runner/scripts/task-runner-daemon.sh

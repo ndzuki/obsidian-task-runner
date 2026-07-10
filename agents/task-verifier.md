@@ -25,7 +25,7 @@ tools: Read, Bash, Grep, Glob
 
 ### Step 2: 进入项目目录并切换分支
 
-1. 从 `~/.claude/skills/obsidian-task-runner/config/vault-map.json` 解析项目路径
+1. 从 `~/.omp/skills/obsidian-task-runner/config/vault-map.json` 解析项目路径
 2. cd 进入项目目录
 3. 切换到 target_branch：
    ```bash

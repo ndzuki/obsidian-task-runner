@@ -104,7 +104,7 @@ def priority_order(priority: str) -> int:
 
 def is_valid_assignee(assignee: str) -> bool:
     """Return whether assignee maps to a supported agent backend."""
-    return assignee.strip() in {"codex", "claude", "claude+human"}
+    return assignee.strip() in {"deepseek", "gpt"}
 
 
 def is_empty_list_value(value) -> bool:
