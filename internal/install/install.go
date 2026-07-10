@@ -62,8 +62,7 @@ func Run(opts Options) error {
 
 	// 7. Create required directories
 	if !d {
-		os.MkdirAll(filepath.Join(opts.ObsidianVault, "Tasks"), 0755)
-		os.MkdirAll(filepath.Join(opts.ObsidianVault, "Requirements"), 0755)
+		os.MkdirAll(filepath.Join(opts.ObsidianVault, "Projects"), 0755)
 		os.MkdirAll(opts.NewProjectRoot, 0755)
 	}
 
@@ -269,7 +268,7 @@ RandomizedDelaySec=10
 WantedBy=timers.target
 `, opts.PollIntervalMin),
 		"omp-task-watcher.service": fmt.Sprintf(`[Unit]
-Description=Obsidian Task Watcher — 监听 Tasks/ 和 Requirements/ 文件变化,触发 OMP 处理
+Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发 OMP 处理
 
 [Service]
 Type=simple

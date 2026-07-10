@@ -30,8 +30,9 @@ func TestIsValidAssignee(t *testing.T) {
 
 func TestIsAutoUnblockable(t *testing.T) {
 	dir := t.TempDir()
-	tasksDir := filepath.Join(dir, "Tasks")
-	os.Mkdir(tasksDir, 0755)
+	projDir := filepath.Join(dir, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	os.MkdirAll(tasksDir, 0755)
 
 	path := writeTask(tasksDir, "TASK-001.md", `
 id: "001"
@@ -69,9 +70,9 @@ blocked_by: []
 
 func TestFindReadyTasks(t *testing.T) {
 	dir := t.TempDir()
-	tasksDir := filepath.Join(dir, "Tasks")
-	os.Mkdir(tasksDir, 0755)
+	tasksDir := filepath.Join(dir, "Projects", "001-test", "Tasks")
 
+	os.MkdirAll(tasksDir, 0755)
 	// Ready task
 	writeTask(tasksDir, "TASK-001-ready.md", `
 id: "001"
