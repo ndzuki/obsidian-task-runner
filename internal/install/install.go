@@ -29,7 +29,7 @@ func Run(opts Options) error {
 	d := opts.DryRun
 
 	// 1. Check dependencies
-	for _, bin := range []string{"python3", "git", "omp"} {
+	for _, bin := range []string{"git", "omp"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("missing dependency: %s", bin)
 		}

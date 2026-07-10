@@ -46,48 +46,46 @@ systemd timer 每 30 分钟兜底扫描，防止 inotify 事件丢失。
 ### 前置要求
 
 - [OMP (Oh My Pi)](https://github.com/ndzuki/oh-my-pi) CLI（`omp` 命令可用）
-- Python 3.8+
+- Go 1.24+（仅构建需要，运行时零依赖）
 - Git
 - Linux + systemd
-- （可选）`inotify-tools` — 事件触发；不装也能用定时轮询
 - （可选）`libnotify` — 桌面通知（须配合 notification daemon：dunst / mako 等）
 
 ```bash
 git clone https://github.com/ndzuki/obsidian-task-runner.git
 cd obsidian-task-runner
-./install.sh
+make build && make install       # 编译 + 安装到 ~/.local/bin/
+otg install                      # 安装 skill 到 ~/.omp/skills/
 ```
 
-脚本自动检测你的 shell（bash/zsh/fish），写入正确的环境变量语法。
+`otg install` 自动检测 shell（bash/zsh/fish），创建 OMP symlink，生成 vault-map.json，注册 systemd 单元。
 
-### 非交互安装（CI / 脚本化）
+### 环境变量安装（CI / 脚本化）
 
 ```bash
 OBSIDIAN_VAULT=/home/you/Obsidian/Vault \
 NEW_PROJECT_ROOT=/home/you/src \
-./install.sh --non-interactive
+otg install
 ```
 
 ### 创建第一个任务
 
 ```bash
 # 1. 复制任务模板
-#    assignee: deepseek            # 或 gpt（使用 gpt-5.5）
+cp TASK-000-template.md "$OBSIDIAN_VAULT/Tasks/TASK-001-你的任务.md"
+# 编辑 frontmatter: id, title, project, req_doc
+#    assignee: deepseek            # 或 gpt
 
-3. 写需求文档（三选一，写多少都行）
+# 2. 写需求文档
 cp REQ-000-template.md "$OBSIDIAN_VAULT/Requirements/用户登录API.md"
-#    L1 极简：标题 + 一段话 + 完成标准
-#    L2 标准：+ 功能列表 + 技术约束
-#    L3 完整：+ API 规格 + 数据模型
 ```
 
-保存后，几秒内自动触发。也可以手动：
+保存后几秒内自动触发。也可以手动：
 
 ```bash
 cd /path/to/your/project
 omp -m "deepseek/deepseek-v4-pro:xhigh" -p "/obsidian-task-runner"
 ```
-保存后，几秒内自动触发。也可以手动：
 
 ## 工作流
 
@@ -175,32 +173,30 @@ omp -m "deepseek/deepseek-v4-pro:xhigh" -p "/obsidian-task-runner"
 
 完整的业务流程详解见 [`docs/workflow.md`](docs/workflow.md) — 包含架构图、状态机、时序图、模型映射表、权限模型和关键规则。
 
-## 目录结构
-
 ```
-obsidian-task-runner/              # skill（安装到 ~/.omp/skills/）
-├── SKILL.md                       # 核心：两轮状态机指令
-├── reference.md                   # 参考：状态流转、字段、故障排查
-├── scripts/
-│   ├── find_ready_tasks.py        # 发现可处理任务
-│   ├── update_task_status.py      # 更新 YAML frontmatter
-│   ├── resolve_project_path.py    # 项目名 → 本地路径
-│   ├── register_project.py        # 注册新项目（原子写入 + 语法验证）
-│   ├── on_req_changed.py          # 需求变更 → 关联任务自动重置
-│   ├── on_req_changed.py          # 需求变更 → 关联任务自动重置
-│   ├── notify_on_status_change.sh # 桌面通知
-│   ├── task-runner-daemon.sh      # 调度脚本（flock 防并发）
-│   └── task-watcher.sh            # inotify 双目录监听
-└── config/
-    └── vault-map.example.json     # 项目映射模板
-
-agents/task-verifier.md            # 验收 subagent
-TASK-000-template.md               # 新任务模板（JIRA 风格字段）
-REQ-000-template.md                # 需求模板（L1/L2/L3 渐进式）
-install.sh                         # 一键安装/卸载
-omp-task-runner.service         # systemd 兜底轮询
-omp-task-runner.timer           # systemd 定时器
-omp-task-watcher.service        # systemd 事件触发
+obsidian-task-runner/
+├── cmd/otg/                    # Go 入口
+├── internal/
+│   ├── cli/                    # cobra 子命令
+│   ├── daemon/                 # 常驻守护 + OMP 调度
+│   ├── watch/                  # fsnotify 文件监听
+│   ├── notify/                 # 桌面通知
+│   ├── task/                   # 任务发现 + 需求变更
+│   ├── project/                # vault-map 操作
+│   └── install/                # 安装逻辑
+├── pkg/yamlfrontmatter/        # YAML frontmatter 解析
+├── obsidian-task-runner/       # skill 文件（安装到 ~/.omp/skills/）
+│   ├── SKILL.md
+│   ├── reference.md
+│   ├── scripts/                # 旧脚本（兼容性保留）
+│   └── config/
+├── agents/task-verifier.md
+├── TASK-000-template.md
+├── REQ-000-template.md
+├── install.sh                  # 薄包装 → otg install
+├── Makefile
+├── omp-*.service               # systemd 单元
+└── .github/workflows/          # CI + E2E
 ```
 
 ## 配置说明
@@ -300,15 +296,16 @@ omp-task-watcher.service        # systemd 事件触发
 ## 维护命令
 
 ```bash
-# 更新 skill（git pull 后必做）
-./install.sh --non-interactive
+# 更新 skill（git pull 后）
+make build && make install
+otg install --force
 
-# 重启 watcher（skill 更新后）
+# 重启 daemon
 systemctl --user restart omp-task-watcher.service
 
-# 卸载
-./install.sh --uninstall             # 保留配置和日志
-./install.sh --uninstall --force      # 完全清除
+# 手动运行
+otg daemon --once                 # 单次扫描
+otg find-ready $OBSIDIAN_VAULT    # 列出就绪任务
 ```
 
 ## 日志
