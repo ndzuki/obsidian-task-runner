@@ -1,6 +1,6 @@
 module github.com/ndzuki/obsidian-task-runner
 
-go 1.26.4
+go 1.24
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
