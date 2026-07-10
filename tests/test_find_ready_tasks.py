@@ -39,7 +39,7 @@ id: "004"
 title: "Chezmoi Auto Sync"
 project: autoworkflow
 status: blocked
-assignee: codex
+assignee: deepseek
 priority: P2
 blocked_by: []
 """,
@@ -50,7 +50,7 @@ blocked_by: []
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0]["id"], "004")
         self.assertEqual(tasks[0]["status"], "blocked")
-        self.assertEqual(tasks[0]["assignee"], "codex")
+        self.assertEqual(tasks[0]["assignee"], "deepseek")
 
     def test_blocked_task_without_assignee_is_not_discovered(self):
         self._write_task(
@@ -78,7 +78,7 @@ id: "004"
 title: "Chezmoi Auto Sync"
 project: autoworkflow
 status: blocked
-assignee: codex
+assignee: deepseek
 priority: P2
 blocked_by:
   - "001"

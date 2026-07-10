@@ -1,5 +1,5 @@
 [Unit]
-Description=监听 Obsidian Tasks 目录变化,文件一保存就立刻触发 Claude Code 任务扫描
+Description=Obsidian Task Watcher — 监听 Tasks/ 和 Requirements/ 文件变化,触发 OMP 处理
 
 [Service]
 Type=simple

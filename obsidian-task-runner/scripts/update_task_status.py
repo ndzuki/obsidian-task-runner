@@ -11,11 +11,11 @@ import sys
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 def update_task_status(task_path: str, updates: dict) -> bool:

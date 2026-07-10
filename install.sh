@@ -10,10 +10,10 @@ set -euo pipefail
 
 # ── 常量 ──
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_INSTALL_DIR="${SKILL_INSTALL_DIR:-$HOME/.claude/skills/obsidian-task-runner}"
-AGENTS_HOME="$HOME/.claude/agents"
+SKILL_INSTALL_DIR="${SKILL_INSTALL_DIR:-$HOME/.omp/skills/obsidian-task-runner}"
+AGENTS_HOME="$HOME/.omp/agents"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-LOG_DIR="$HOME/.claude/logs"
+LOG_DIR="$HOME/.omp/logs"
 MAP_FILE="$SKILL_INSTALL_DIR/config/vault-map.json"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
@@ -45,7 +45,7 @@ Usage:
   NOTIFY_ENABLED          启用桌面通知（默认 true）
   POLL_INTERVAL_MINUTES   systemd 定时器间隔分钟数（默认 30）
   SYSTEMD_ENABLED         注册 systemd 服务（默认 true）
-  SKILL_INSTALL_DIR       skill 安装路径（默认 ~/.claude/skills/obsidian-task-runner）
+  SKILL_INSTALL_DIR       skill 安装路径（默认 ~/.omp/skills/obsidian-task-runner）
 HELP
       exit 0
       ;;
@@ -68,7 +68,7 @@ if [ "$UNINSTALL" = true ]; then
 
   # 1. 停用 systemd 单元
   say "停用 systemd 单元"
-  for unit in claude-task-runner.timer claude-task-watcher.service; do
+  for unit in omp-task-runner.timer omp-task-watcher.service; do
     if systemctl --user is-enabled "$unit" &>/dev/null; then
       systemctl --user disable --now "$unit" 2>/dev/null || true
       ok "已停用 $unit"
@@ -80,7 +80,7 @@ if [ "$UNINSTALL" = true ]; then
 
   # 2. 删除 systemd 单元文件
   say "清理 systemd 单元文件"
-  for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
+  for unit in omp-task-runner.service omp-task-runner.timer omp-task-watcher.service; do
     if [ -f "$SYSTEMD_USER_DIR/$unit" ]; then
       rm "$SYSTEMD_USER_DIR/$unit"
       ok "已删除 $SYSTEMD_USER_DIR/$unit"
@@ -158,7 +158,7 @@ fi
 say "Step 1/7: 检查依赖"
 
 missing=()
-for bin in python3 git claude; do
+for bin in python3 git omp; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     missing+=("$bin")
   else
@@ -168,7 +168,9 @@ done
 
 if [ "${#missing[@]}" -gt 0 ]; then
   err "缺少以下命令: ${missing[*]}"
-  err "claude 安装: https://docs.claude.com (docs.claude.com)"
+  err "请先安装缺失的依赖:"
+  err "  arch: pacman -S python git"
+  err "  omp: 请参考项目文档安装 Oh My Pi"
   exit 1
 fi
 
@@ -341,7 +343,7 @@ fi
 mkdir -p "$OBSIDIAN_VAULT/Tasks" "$OBSIDIAN_VAULT/Requirements"
 mkdir -p "$NEW_PROJECT_ROOT"
 mkdir -p "$LOG_DIR"
-ok "目录已创建: Tasks/ Requirements/ $NEW_PROJECT_ROOT/ ~/.claude/logs/"
+ok "目录已创建: Tasks/ Requirements/ $NEW_PROJECT_ROOT/ ~/.omp/logs/"
 
 # ── 7. systemd ──
 say "Step 7/7: 配置 systemd"
@@ -360,7 +362,7 @@ runner_path="$(IFS=:; echo "${extra_paths[*]}"):/usr/local/bin:/usr/bin:/bin"
 if [ "$SYSTEMD_ENABLED" = true ]; then
   mkdir -p "$SYSTEMD_USER_DIR"
 
-  for unit in claude-task-runner.service claude-task-runner.timer claude-task-watcher.service; do
+  for unit in omp-task-runner.service omp-task-runner.timer omp-task-watcher.service; do
     if [ -f "$SRC_DIR/$unit" ]; then
       # Use Python for safe string replacement (avoids sed injection via path chars).
       # Pass values via environment variables to avoid shell quoting issues.
@@ -387,24 +389,23 @@ with open(os.environ['_DEST_UNIT'], 'w') as f:
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload
-    systemctl --user enable --now claude-task-runner.timer 2>/dev/null || \
-      warn "claude-task-runner.timer 注册失败，请手动检查"
-    ok "claude-task-runner.timer 已启用（每 ${POLL_INTERVAL_MINUTES} 分钟兜底轮询）"
+    systemctl --user enable --now omp-task-runner.timer 2>/dev/null || \
+      warn "omp-task-runner.timer 注册失败，请手动检查"
+    ok "omp-task-runner.timer 已启用（每 ${POLL_INTERVAL_MINUTES} 分钟兜底轮询）"
 
     if command -v inotifywait >/dev/null 2>&1; then
-      systemctl --user enable --now claude-task-watcher.service 2>/dev/null || \
-        warn "claude-task-watcher.service 注册失败，请手动检查"
-      ok "claude-task-watcher.service 已启用（Tasks/ 文件保存即触发）"
+      systemctl --user enable --now omp-task-watcher.service 2>/dev/null || \
+        warn "omp-task-watcher.service 注册失败，请手动检查"
+      ok "omp-task-watcher.service 已启用（Tasks/ 文件保存即触发）"
     else
-      warn "跳过 claude-task-watcher.service（缺 inotifywait）"
+      warn "跳过 omp-task-watcher.service（缺 inotifywait）"
     fi
   else
     warn "systemctl 不可用（非 systemd 环境），单元文件已生成但未注册"
-    warn "请手动运行: cd <项目目录> && claude -p \"/obsidian-task-runner\""
+    warn "请手动运行: cd <项目目录> && omp -p \"/obsidian-task-runner\""
   fi
-else
   ok "跳过 systemd 注册（SYSTEMD_ENABLED=false），手动运行方式:"
-  ok "  cd <项目目录> && claude -p \"/obsidian-task-runner\""
+  ok "  cd <项目目录> && omp -m \"\$OMP_MODEL\" -p \"/obsidian-task-runner\""
 fi
 
 # ── 完成 ──
@@ -421,16 +422,15 @@ cat <<SUMMARY
      编辑 frontmatter: id, title, project, req_doc
   4. 写需求文档:
      cp $SRC_DIR/REQ-000-template.md $OBSIDIAN_VAULT/Requirements/你的需求.md
-     按模板填写: 背景、功能需求(FR-N)、技术约束、验收标准(AC-N)
   5. 查看运行状态:
-     systemctl --user status claude-task-watcher.service
-     systemctl --user list-timers | grep claude-task-runner
+     systemctl --user status omp-task-watcher.service
+     systemctl --user list-timers | grep omp-task-runner
   6. 查看日志:
      tail -f $LOG_DIR/task-watcher.log
      tail -f $LOG_DIR/task-runner.log
   7. 手动测试一次（不依赖 systemd）:
      cd <某个项目目录>
-     claude -p "/obsidian-task-runner <task_id>"
+     omp -m "deepseek/deepseek-v4-pro:xhigh" -p "/obsidian-task-runner <task_id>"
 
 卸载:
   ./install.sh --uninstall          保留配置和日志

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Send desktop notification based on task status after Claude Code finishes.
-# Called by task-runner-daemon.sh after claude -p returns.
+# Send desktop notification based on task status after OMP finishes.
+# Called by task-runner-daemon.sh after OMP processing.
 #
 # Usage: notify_on_status_change.sh <task_file_path> [previous_status]
 set -euo pipefail
@@ -35,7 +35,7 @@ case "$STATUS" in
   plan-review)
     notify-send \
       --urgency=normal \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=dialog-information \
       "📋 Task ${TASK_ID}: 计划已生成" \
       "${TITLE}\n请审阅计划，确认后设 plan_approved: true 并保存"
@@ -43,7 +43,7 @@ case "$STATUS" in
   review)
     notify-send \
       --urgency=normal \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=emblem-default \
       "✅ Task ${TASK_ID}: 代码已实现" \
       "${TITLE}\n请 ${REVIEWER:-你} review 代码，确认无误后设 merge_approved: true 自动合并"
@@ -51,7 +51,7 @@ case "$STATUS" in
     if [ -n "${PR_URL:-}" ]; then
       notify-send \
         --urgency=normal \
-        --app-name="Claude Task Runner" \
+        --app-name="OMP Task Runner" \
         --icon=emblem-shared \
         "📬 Task ${TASK_ID}: PR 已创建" \
         "${TITLE}\n${PR_URL}\n请 review PR，确认后设 merge_approved: true"
@@ -60,7 +60,7 @@ case "$STATUS" in
   conflict)
     notify-send \
       --urgency=critical \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=emblem-important \
       "⚠️ Task ${TASK_ID}: 合并冲突" \
       "${TITLE}\n自动合并失败，存在冲突文件，请手动解决后重新设置 merge_approved: true"
@@ -68,7 +68,7 @@ case "$STATUS" in
   done)
     notify-send \
       --urgency=normal \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=emblem-favorite \
       "🎉 Task ${TASK_ID}: 已完成" \
       "${TITLE}\n代码已合并并推送至远程仓库"
@@ -76,7 +76,7 @@ case "$STATUS" in
   implementing)
     notify-send \
       --urgency=normal \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=emblem-system \
       "⏳ Task ${TASK_ID}: 仍在执行中" \
       "${TITLE}\n任务未正常结束（可能进程中断），请检查日志"
@@ -84,10 +84,10 @@ case "$STATUS" in
   error|failed)
     notify-send \
       --urgency=critical \
-      --app-name="Claude Task Runner" \
+      --app-name="OMP Task Runner" \
       --icon=dialog-error \
       "❌ Task ${TASK_ID}: 执行失败" \
-      "${TITLE}\n请检查日志: ~/.claude/logs/task-runner.log"
+      "${TITLE}\n请检查日志: ~/.omp/logs/task-runner.log"
     ;;
   *)
     # No notification for other statuses

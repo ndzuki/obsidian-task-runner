@@ -21,6 +21,22 @@ class TaskRunnerDaemonTests(unittest.TestCase):
         self.assertLess(blocked_check_index, run_agent_index)
         self.assertLess(ready_update_index, run_agent_index)
 
+    def test_omp_merge_phase_detection(self):
+        """merge_approved=true triggers Merge Phase detection for review/conflict status."""
+        script = DAEMON.read_text()
+
+        # The daemon should detect merge-approved tasks
+        self.assertIn('[ "$task_merge_approved" = "True" ]', script)
+        self.assertIn('[ "$task_status" = "review" ]', script)
+        self.assertIn('[ "$task_status" = "conflict" ]', script)
+        # It should log the merge phase start
+        self.assertIn("Merge Phase", script)
+        self.assertIn('case "$task_assignee" in', script)
+        self.assertIn('deepseek)', script)
+        self.assertIn('gpt)', script)
+        self.assertIn('model="$OMP_MODEL_DEEPSEEK"', script)
+        self.assertIn('model="$OMP_MODEL_GPT"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

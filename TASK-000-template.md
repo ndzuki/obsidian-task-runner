@@ -22,7 +22,7 @@ estimated_hours: 0
 actual_hours: 0
 
 # ── 人员 & Agent 委派 ──
-# 🔴 必填！codex (Codex CLI) | claude (Claude Code) | claude+human
+# 🔴 必填！deepseek (deepseek-v4-pro) | gpt (gpt-5.5)
 # 留空则 daemon 不会拾取此任务
 assignee: ""
 reviewer: ""
