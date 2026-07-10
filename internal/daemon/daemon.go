@@ -156,7 +156,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		model := r.selectModel(t.Assignee)
 		isMerge := t.MergeApproved && (t.Status == "review" || t.Status == "conflict")
 
-		args := []string{"-m", model}
+		args := []string{"--model", model}
 		if isMerge {
 			args = append(args, "--approval-mode", "yolo")
 			r.logger.Printf("task %s: Merge Phase authorized", t.ID)
