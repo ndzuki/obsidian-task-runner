@@ -126,75 +126,70 @@ func IsOffPeak() bool {
 }
 
 // FindReadyTasks scans the vault's Tasks/ directory and returns ready tasks.
+// FindReadyTasks scans vault's Projects/*/Tasks/ directories and returns ready tasks.
 func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
-	tasksDir := filepath.Join(vaultPath, "Tasks")
-	entries, err := os.ReadDir(tasksDir)
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	projEntries, err := os.ReadDir(projectsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read Tasks dir: %w", err)
+		return nil, fmt.Errorf("read Projects dir: %w", err)
 	}
 
 	var ready []ReadyTask
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+	for _, proj := range projEntries {
+		if !proj.IsDir() {
 			continue
 		}
-		filePath := filepath.Join(tasksDir, entry.Name())
-		data, err := os.ReadFile(filePath)
+		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
 		if err != nil {
 			continue
 		}
-
-		fm, err := yamlfrontmatter.Parse(data)
-		if err != nil || fm == nil {
-			continue
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			filePath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			if !IsReady(fm) {
+				continue
+			}
+			if fm.Project == "" {
+				continue
+			}
+			if fm.Status == "plan-review" && fm.PlanApproved && fm.OffPeakOnly && !IsOffPeak() {
+				now := time.Now().In(time.FixedZone("CST", 8*3600))
+				fmt.Fprintf(os.Stderr, "  %s (%s): Round 2 delayed by off_peak_only (CST %s, peak)\n",
+					fm.ID, entry.Name(), now.Format("15:04"))
+				continue
+			}
+			ready = append(ready, ReadyTask{
+				ID: fm.ID, Title: fm.Title, Project: fm.Project,
+				NewProject: fm.NewProject, Priority: fm.Priority,
+				FilePath: filePath, FileName: entry.Name(),
+				Status: fm.Status, PlanApproved: fm.PlanApproved,
+				MergeApproved: fm.MergeApproved, ReqDoc: fm.ReqDoc,
+				Template: fm.Template, Assignee: fm.Assignee,
+				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
+				OffPeakOnly: fm.OffPeakOnly,
+			})
 		}
-		if !IsReady(fm) {
-			continue
-		}
-		if fm.Project == "" {
-			continue // skip templates
-		}
-
-		// Defer off-peak-only Round 2 tasks during peak
-		if fm.Status == "plan-review" && fm.PlanApproved && fm.OffPeakOnly && !IsOffPeak() {
-			now := time.Now().In(time.FixedZone("CST", 8*3600))
-			fmt.Fprintf(os.Stderr, "  %s (%s): Round 2 delayed by off_peak_only (CST %s, peak)\n",
-				fm.ID, entry.Name(), now.Format("15:04"))
-			continue
-		}
-
-		ready = append(ready, ReadyTask{
-			ID:            fm.ID,
-			Title:         fm.Title,
-			Project:       fm.Project,
-			NewProject:    fm.NewProject,
-			Priority:      fm.Priority,
-			FilePath:      filePath,
-			FileName:      entry.Name(),
-			Status:        fm.Status,
-			PlanApproved:  fm.PlanApproved,
-			MergeApproved: fm.MergeApproved,
-			ReqDoc:        fm.ReqDoc,
-			Template:      fm.Template,
-			Assignee:      fm.Assignee,
-			AutoApprove:   fm.AutoApprove,
-			PendingReq:    fm.PendingReq,
-			OffPeakOnly:   fm.OffPeakOnly,
-		})
 	}
-
 	sort.Slice(ready, func(i, j int) bool {
 		pi := priorityOrder(ready[i].Priority)
 		pj := priorityOrder(ready[j].Priority)
-		if pi != pj {
-			return pi < pj
-		}
+		if pi != pj { return pi < pj }
 		return ready[i].ID < ready[j].ID
 	})
-
 	return ready, nil
 }
 

@@ -44,23 +44,23 @@ type AffectedResult struct {
 
 // OnReqChanged processes a requirement file change and updates affected tasks.
 func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
-	tasksDir := filepath.Join(vaultPath, "Tasks")
-	if _, err := os.Stat(tasksDir); os.IsNotExist(err) {
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
 		return nil
 	}
 
 	var affected []AffectedResult
-
-	entries, _ := os.ReadDir(tasksDir)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		taskPath := filepath.Join(tasksDir, entry.Name())
-		data, err := os.ReadFile(taskPath)
-		if err != nil {
-			continue
-		}
+	projEntries, _ := os.ReadDir(projectsDir)
+	for _, proj := range projEntries {
+		if !proj.IsDir() { continue }
+		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil { continue }
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") { continue }
+			taskPath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(taskPath)
+			if err != nil { continue }
 		fm, err := yamlfrontmatter.Parse(data)
 		if err != nil || fm == nil {
 			continue
@@ -107,6 +107,7 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 			fmt.Fprintf(os.Stderr, "  %s (%s): status=%s，已跳过（请手动评估）\n", fm.ID, entry.Name(), fm.Status)
 		}
 	}
+	}
 
 	// Fallback: auto-create task if no existing task matched
 	if len(affected) == 0 {
@@ -143,13 +144,16 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 		return nil
 	}
 
-	tasksDir := filepath.Join(vaultPath, "Tasks")
+	projectDir := fmt.Sprintf("%s-%s", id, slug)
+	tasksDir := filepath.Join(vaultPath, "Projects", projectDir, "Tasks")
+	reqDir := filepath.Join(vaultPath, "Projects", projectDir, "Requirements")
 	targetName := TaskFilenameForReq(reqRelPath)
 	if targetName == "" {
 		return nil
 	}
+	os.MkdirAll(tasksDir, 0755)
+	os.MkdirAll(reqDir, 0755)
 
-	// Don't overwrite existing
 	if _, err := os.Stat(filepath.Join(tasksDir, targetName)); err == nil {
 		return nil
 	}
@@ -332,26 +336,28 @@ func extractSection(content string, headings ...string) string {
 
 // createNoteForReq creates a NOTE document alongside the TASK.
 func createNoteForReq(vaultPath, reqRelPath, id, title, project, now string) {
-	notesDir := filepath.Join(vaultPath, "Notes")
+	_, slug := ParseReqFilename(reqRelPath)
+	projectDir := fmt.Sprintf("%s-%s", id, slug)
+	notesDir := filepath.Join(vaultPath, "Projects", projectDir, "Notes")
 	os.MkdirAll(notesDir, 0755)
 
 	noteName := fmt.Sprintf("NOTE-%s-%s.md", id, strings.ToLower(strings.ReplaceAll(title, " ", "-")))
 	notePath := filepath.Join(notesDir, noteName)
 
-	// Don't overwrite
 	if _, err := os.Stat(notePath); err == nil {
-		return
+		return // don't overwrite
 	}
 
-	reqRel := reqRelPath
 	taskName := TaskFilenameForReq(reqRelPath)
+	relReq := fmt.Sprintf("Requirements/%s", filepath.Base(reqRelPath))
+	relTask := fmt.Sprintf("Tasks/%s", taskName)
 
 	noteMD := fmt.Sprintf(`---
 project: "%s"
 type: context
 tags: []
 req_ref: %s
-task_ref: Tasks/%s
+task_ref: %s
 status: active
 superseded_by: ""
 created: "%s"
@@ -364,12 +370,12 @@ updated: "%s"
 自动创建于需求 [[%s]]。
 
 ## 内容
-需求摘要参见关联任务文档 [[Tasks/%s]] 的「需求摘要」section。
+需求摘要参见关联任务文档 [[%s]] 的「需求摘要」section。
 
 ## 关联
 - 需求: [[%s]]
-- 任务: [[Tasks/%s]]
-`, project, reqRel, taskName, now, now, id, title, reqRel, taskName, reqRel, taskName)
+- 任务: [[%s]]
+`, project, relReq, relTask, now, now, id, title, relReq, relTask, relReq, relTask)
 
 	if err := os.WriteFile(notePath, []byte(noteMD), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "  Note: failed to create %s: %v\n", noteName, err)
