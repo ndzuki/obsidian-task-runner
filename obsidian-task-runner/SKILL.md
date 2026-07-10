@@ -413,16 +413,34 @@ otg find-ready $OBSIDIAN_VAULT
 
 **弃用字段**：`switch_settings` 已被移除。`codex` / `claude` / `claude+human` 不再支持。
 
-### 特殊情况：新需求自动创建 TASK
+### 特殊情况：新需求自动创建 TASK + NOTE
 
 当用户在 `Requirements/` 下新建 `REQ-<id>-<slug>.md` 文件时：
-- `on_req_changed.py` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`（使用 deepseek-v4-flash 完成）
+- `otg on-req-changed` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`
+- **同时**在 `Notes/` 下创建 `NOTE-<id>-<slug>.md`（项目记忆文档）
+- 三者通过 id 和 frontmatter 双向关联（`req_ref` ↔ `task_ref`）
 - 自动填充字段：`id`、`title`、`project`、`priority`、`tags`、`epic`、`req_doc`、`reviewer`
-- **`assignee` 留空**，且新 TASK 默认 `status: blocked`——必须由用户填写 `project`（若缺失）和 `assignee: deepseek|gpt`
-- 用户补齐必填字段并保存后，daemon 自动解除 `blocked` → `ready` 并根据 `assignee` 启动对应模型执行 Round 1；用户不需要手动改 `status`
-- 如果 `blocked_by` 非空，仍保持 `blocked`，直到依赖完成或用户清空依赖
-- 已存在关联任务时不重复创建，按原有变更逻辑处理（reset / pending_req）
-- 文件名不匹配 `REQ-<id>-<slug>.md` 的需求文档不自动创建 TASK（只记录 warning）
+- **`assignee` 留空**，且新 TASK 默认 `status: blocked`
+- 用户补齐必填字段并保存后，daemon 自动解除 `blocked` → `ready`
+- 文件名不匹配 `REQ-<id>-<slug>.md` 的需求文档不自动创建（只记录 warning）
+
+### 特殊情况：项目记忆管理（Notes/）
+
+Agent 在执行过程中自主维护 `Notes/` 下的记忆文档：
+
+**何时创建/更新**：
+- Round 1 出计划时：产生技术选型/架构决策 → 创建 `type: decision` note
+- Round 2 实现时：发现坑/模式 → 创建 `type: bug` 或 `type: pattern` note
+- Merge 完成时：更新相关 note 状态
+
+**格式**：ADR-lite，frontmatter + 四段式（背景/内容/原因/影响）
+
+**关联规则**：
+- 每个 note 必须引用 `req_ref` 和 `task_ref`
+- 如果新决策替代旧决策，旧 note 的 `status` 改为 `superseded`，`superseded_by` 指向新 note
+- Agent 出计划前先扫描 Notes/，在计划中引用已有决策作为依据
+
+**禁止**：不创建与需求/任务无关的 note
 
 每次执行结束输出简短 JSON 摘要（用于日志解析）：
 
