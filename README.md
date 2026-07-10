@@ -59,7 +59,20 @@ project: my-backend
 # daemon 自动发现 → Round 1 出计划 → 等你确认
 ```
 
----
+### 安装后的文件布局
+
+| 路径 | 说明 |
+|------|------|
+| `~/.local/bin/otg` | Go 二进制（5.3MB 静态编译） |
+| `~/.omp/skills/obsidian-task-runner/` | Skill 目录（SKILL.md + config） |
+| `~/.omp/skills/.../config/vault-map.json` | 项目映射 + 模型配置 |
+| `~/.omp/agent/skills/obsidian-task-runner` | → 上者的 symlink（OMP 读取端） |
+| `~/.omp/logs/otg-daemon.log` | 守护日志（10MB 轮转，gzip 压缩，30 天清除） |
+| `~/.config/systemd/user/omp-task-*` | systemd 单元文件 |
+| `~/.config/nvim/snippets/markdown.lua` | Neovim snippets（`oreq`/`otask`/`onote`） |
+| `~/Vault/Tasks/` | 任务文档（Agent 自动创建+更新） |
+| `~/Vault/Notes/` | 项目记忆（Agent 自动创建+维护） |
+| `~/Vault/Requirements/` | 需求文档（用户编写） |
 
 ## 两轮状态机
 
@@ -82,12 +95,17 @@ project: my-backend
 
 ## 模型路由
 
-| assignee | Round 1 | Round 2 | Merge | 轻量任务 |
-|----------|---------|---------|-------|----------|
-| `deepseek` | deepseek-v4-pro | deepseek-v4-pro | deepseek-v4-pro | — |
-| `gpt` | gpt-5.5 | gpt-5.5 | gpt-5.5 | — |
-| — | — | — | — | deepseek-v4-flash |
+`assignee` → OMP 模型标识，由 `vault-map.json` 的 `models` 字段解析：
 
+| assignee | OMP 模型标识 | 说明 |
+|----------|-------------|------|
+| `deepseek` | `deepseek/deepseek-v4-pro:xhigh` | 默认主力 |
+| `gpt` | `gateway/gpt-5.5:xhigh` | GPT 替代 |
+| `flash` | `deepseek/deepseek-v4-flash` | 轻量任务 + 未知回退 |
+| `gemini` | `google/gemini-2.5-pro` | 内置 |
+| `claude` | `anthropic/claude-sonnet-4-20250514` | 内置 |
+| `minimax` | `minimax/minimax-m1` | 内置 |
+| *任意 key* | 用户自定义 | 编辑 `models` 字段扩展 |
 ---
 
 ## `otg` 命令

@@ -10,20 +10,19 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ObsidianVault     string       `json:"obsidian_vault"`
-	NewProjectRoot    string       `json:"new_project_root"`
-	Projects          []Project    `json:"projects"`
-	Notifications     NotifConfig  `json:"notifications"`
-	PollIntervalMin   int          `json:"poll_interval_minutes"`
+	ObsidianVault   string      `json:"obsidian_vault"`
+	NewProjectRoot  string      `json:"new_project_root"`
+	Projects        []Project   `json:"projects"`
+	Notifications   NotifConfig `json:"notifications"`
+	PollIntervalMin int         `json:"poll_interval_minutes"`
 
-	// OMP model overrides
-	OMPModelDeepSeek string `json:"omp_model_deepseek"`
-	OMPModelGPT      string `json:"omp_model_gpt"`
-	OMPModelFlash    string `json:"omp_model_flash"`
-	OMPCmd           string `json:"omp_cmd"`
+	// Models maps assignee keys to OMP model identifiers.
+	Models map[string]string `json:"models"`
+
+	OMPCmd string `json:"omp_cmd"`
 	LogDir string `json:"log_dir,omitempty"`
 
-	// Skill install dir
+	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
 }
 
@@ -39,18 +38,42 @@ type NotifConfig struct {
 	Desktop bool `json:"desktop"`
 }
 
+// DefaultModels returns the built-in model mappings.
+func DefaultModels() map[string]string {
+	return map[string]string{
+		"deepseek": "deepseek/deepseek-v4-pro:xhigh",
+		"gpt":      "gateway/gpt-5.5:xhigh",
+		"flash":    "deepseek/deepseek-v4-flash",
+		"gemini":   "google/gemini-2.5-pro",
+		"claude":   "anthropic/claude-sonnet-4-20250514",
+		"minimax":  "minimax/minimax-m1",
+	}
+}
+
+// ModelReference returns a human-readable model reference table.
+func ModelReference() string {
+	return `| assignee | 模型标识 |
+|----------|---------|
+| deepseek | deepseek/deepseek-v4-pro:xhigh |
+| gpt      | gateway/gpt-5.5:xhigh |
+| flash    | deepseek/deepseek-v4-flash |
+| gemini   | google/gemini-2.5-pro |
+| claude   | anthropic/claude-sonnet-4-20250514 |
+| minimax  | minimax/minimax-m1 |
+
+通过 vault-map.json 的 models 字段扩展或覆盖。`
+}
+
 // Defaults returns a Config with default values.
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		NewProjectRoot:    filepath.Join(home, "src"),
-		PollIntervalMin:   30,
-		SkillInstallDir:   filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
-		OMPModelDeepSeek:  "deepseek/deepseek-v4-pro:xhigh",
-		OMPModelGPT:       "gateway/gpt-5.5:xhigh",
-		OMPModelFlash:     "deepseek/deepseek-v4-flash",
-		OMPCmd:            "omp",
-		Notifications:     NotifConfig{Desktop: true},
+		NewProjectRoot:  filepath.Join(home, "src"),
+		PollIntervalMin: 30,
+		SkillInstallDir: filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		Models:          DefaultModels(),
+		OMPCmd:          "omp",
+		Notifications:   NotifConfig{Desktop: true},
 	}
 }
 
@@ -66,7 +89,6 @@ func Load(mapPath string) (*Config, error) {
 	data, err := os.ReadFile(mapPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return defaults, no vault-map yet
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", mapPath, err)
@@ -75,18 +97,14 @@ func Load(mapPath string) (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", mapPath, err)
 	}
 
+	// Ensure models is never nil
+	if cfg.Models == nil {
+		cfg.Models = DefaultModels()
+	}
+
 	// Env overrides
 	if v := os.Getenv("OBSIDIAN_VAULT"); v != "" {
 		cfg.ObsidianVault = v
-	}
-	if v := os.Getenv("OMP_MODEL_DEEPSEEK"); v != "" {
-		cfg.OMPModelDeepSeek = v
-	}
-	if v := os.Getenv("OMP_MODEL_GPT"); v != "" {
-		cfg.OMPModelGPT = v
-	}
-	if v := os.Getenv("OMP_MODEL_FLASH"); v != "" {
-		cfg.OMPModelFlash = v
 	}
 	if v := os.Getenv("OMP_CMD"); v != "" {
 		cfg.OMPCmd = v
@@ -95,7 +113,20 @@ func Load(mapPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// ResolveProject returns the local path for a project name, or an error.
+// Model returns the OMP model identifier for an assignee key.
+// Falls back to the "flash" model if the assignee is unknown.
+func (c *Config) Model(assignee string) string {
+	if m, ok := c.Models[assignee]; ok && m != "" {
+		return m
+	}
+	// Fallback to flash
+	if flash, ok := c.Models["flash"]; ok {
+		return flash
+	}
+	return "deepseek/deepseek-v4-flash"
+}
+
+// ResolveProject returns the local path for a project name.
 func (c *Config) ResolveProject(name string) (string, error) {
 	for _, p := range c.Projects {
 		if p.Name == name {

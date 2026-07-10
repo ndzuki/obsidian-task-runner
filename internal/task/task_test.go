@@ -20,11 +20,8 @@ func TestIsValidAssignee(t *testing.T) {
 	if !IsValidAssignee("deepseek") {
 		t.Error("deepseek should be valid")
 	}
-	if !IsValidAssignee("gpt") {
-		t.Error("gpt should be valid")
-	}
-	if IsValidAssignee("codex") {
-		t.Error("codex should NOT be valid")
+	if !IsValidAssignee("gemini") {
+		t.Error("gemini should be valid (any non-empty)")
 	}
 	if IsValidAssignee("") {
 		t.Error("empty should NOT be valid")

@@ -23,8 +23,9 @@ estimated_hours: 0
 actual_hours: 0
 
 # ── 人员 & 模型委派 ──
-# 🔴 必填！deepseek (deepseek-v4-pro) | gpt (gpt-5.5)
+# 🔴 必填！任意支持的 assignee key（deepseek | gpt | gemini | claude | minimax...）
 # 留空则 daemon 不会拾取此任务
+# 模型映射: vault-map.json → models 字段
 assignee: ""
 reviewer: ""
 
