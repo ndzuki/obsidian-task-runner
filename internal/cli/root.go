@@ -112,5 +112,4 @@ func isDigits(s string) bool {
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(updateStatusCmd)
-	rootCmd.AddCommand(installCmd)
 }
