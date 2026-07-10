@@ -68,6 +68,7 @@ project: my-backend
 | `~/.omp/skills/.../config/vault-map.json` | 项目映射 + 模型配置 |
 | `~/.omp/agent/skills/obsidian-task-runner` | → 上者的 symlink（OMP 读取端） |
 | `~/.omp/logs/otg-daemon.log` | 守护日志（10MB 轮转，gzip 压缩，30 天清除） |
+| `~/.omp/logs/tasks/` | Agent 审计日志（按任务/阶段分文件） |
 | `~/.config/systemd/user/omp-task-*` | systemd 单元文件 |
 | `~/.config/nvim/snippets/markdown.lua` | Neovim snippets（`oreq`/`otask`/`onote`） |
 | `~/Vault/Tasks/` | 任务文档（Agent 自动创建+更新） |
