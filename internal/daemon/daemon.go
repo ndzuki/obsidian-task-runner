@@ -1,4 +1,3 @@
-// Package daemon provides the core task-runner daemon with fsnotify integration.
 package daemon
 
 import (
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/logutil"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
@@ -20,22 +20,23 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-// Runner orchestrates the task-runner daemon.
 type Runner struct {
-	cfg    *config.Config
-	logger *log.Logger
+	cfg       *config.Config
+	logger    *log.Logger
+	logWriter *logutil.RotatingWriter
 }
 
-// New creates a new Runner.
 func New(cfg *config.Config) *Runner {
-	return &Runner{
-		cfg:    cfg,
-		logger: log.New(os.Stderr, "", log.LstdFlags),
-	}
+	return &Runner{cfg: cfg}
 }
 
 // Run starts the daemon in long-running mode with fsnotify.
 func (r *Runner) Run(ctx context.Context) error {
+	if err := r.initLogging(); err != nil {
+		return fmt.Errorf("init logging: %w", err)
+	}
+	defer r.logWriter.Close()
+
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
@@ -80,10 +81,31 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // RunOnce runs a single scan cycle and exits.
 func (r *Runner) RunOnce() error {
+	if err := r.initLogging(); err != nil {
+		return fmt.Errorf("init logging: %w", err)
+	}
+	defer r.logWriter.Close()
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
 	return r.scanAndProcess()
+}
+
+func (r *Runner) initLogging() error {
+	logDir := r.cfg.LogDir
+	if logDir == "" {
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, ".omp", "logs")
+	}
+	logPath := filepath.Join(logDir, "otg-daemon.log")
+
+	w, err := logutil.NewRotatingWriter(logPath, 10, 5, 30) // 10MB, 5 files, 30 days
+	if err != nil {
+		return err
+	}
+	r.logWriter = w
+	r.logger = log.New(w, "", log.LstdFlags)
+	return nil
 }
 
 func (r *Runner) scanAndProcess() error {

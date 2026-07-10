@@ -124,7 +124,7 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 }
 
 func atomicWriteJSON(path string, data []byte) error {
-	tmp, err := os.CreateTemp("", "otg-register-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-register-")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
