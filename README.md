@@ -169,6 +169,21 @@ omp -m "deepseek/deepseek-v4-pro:xhigh" -p "/obsidian-task-runner"
 | 任务文件 | 在 Obsidian 中打开对应 Task | `## 实现记录` 逐步填充 |
 | systemd | `journalctl --user -fu omp-task-runner` | 服务层日志 |
 
+## `otg` 命令参考
+
+| 命令 | 功能 |
+|------|------|
+| `otg install` | 一键安装 skill + 配置 systemd |
+| `otg daemon` | 常驻守护（fsnotify + 定时扫描） |
+| `otg daemon --once` | 单次扫描（systemd timer 用） |
+| `otg find-ready <vault>` | 列出就绪任务（NDJSON） |
+| `otg on-req-changed <vault> <req>` | 需求变更处理 + 自动创建 TASK |
+| `otg update-status <task> key=val` | 原子更新 YAML frontmatter |
+| `otg resolve-path <map> <project>` | 项目名 → 本地路径 |
+| `otg register-project <map> <name> <dir>` | 注册新项目到 vault-map.json |
+| `otg version` | 版本信息 |
+| `otg install --dry-run` | 预览安装变更 |
+
 ## 业务流程图
 
 完整的业务流程详解见 [`docs/workflow.md`](docs/workflow.md) — 包含架构图、状态机、时序图、模型映射表、权限模型和关键规则。
