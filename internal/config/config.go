@@ -21,6 +21,7 @@ type Config struct {
 	OMPModelGPT      string `json:"omp_model_gpt"`
 	OMPModelFlash    string `json:"omp_model_flash"`
 	OMPCmd           string `json:"omp_cmd"`
+	LogDir string `json:"log_dir,omitempty"`
 
 	// Skill install dir
 	SkillInstallDir string `json:"-"`

@@ -9,6 +9,7 @@ import (
 var (
 	daemonOnce    bool
 	daemonMapFile string
+	daemonLogDir  string
 )
 
 var daemonCmd = &cobra.Command{
@@ -25,6 +26,9 @@ With --once, runs a single scan cycle and exits (for systemd timer).`,
 		if err != nil {
 			return err
 		}
+		if daemonLogDir != "" {
+			cfg.LogDir = daemonLogDir
+		}
 		r := daemon.New(cfg)
 		if daemonOnce {
 			return r.RunOnce()
@@ -36,5 +40,6 @@ With --once, runs a single scan cycle and exits (for systemd timer).`,
 func init() {
 	daemonCmd.Flags().BoolVar(&daemonOnce, "once", false, "Run a single scan cycle and exit")
 	daemonCmd.Flags().StringVar(&daemonMapFile, "map-file", "", "Path to vault-map.json")
+	daemonCmd.Flags().StringVar(&daemonLogDir, "log-dir", "", "Log directory (default: ~/.omp/logs)")
 	rootCmd.AddCommand(daemonCmd)
 }
