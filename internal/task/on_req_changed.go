@@ -287,6 +287,8 @@ target_env: staging
 	}
 
 	fmt.Printf("  %s (%s): 自动创建任务文档（status=blocked）\n", id, targetName)
+	// Also create a NOTE for project memory
+	createNoteForReq(vaultPath, reqRelPath, id, title, project, now)
 	return &AffectedResult{
 		TaskID: id, File: targetName, Action: "create_task",
 	}
@@ -326,6 +328,54 @@ func extractSection(content string, headings ...string) string {
 		return "<!-- 请从需求文档补充摘要 -->"
 	}
 	return strings.Join(lines, "\n")
+}
+
+// createNoteForReq creates a NOTE document alongside the TASK.
+func createNoteForReq(vaultPath, reqRelPath, id, title, project, now string) {
+	notesDir := filepath.Join(vaultPath, "Notes")
+	os.MkdirAll(notesDir, 0755)
+
+	noteName := fmt.Sprintf("NOTE-%s-%s.md", id, strings.ToLower(strings.ReplaceAll(title, " ", "-")))
+	notePath := filepath.Join(notesDir, noteName)
+
+	// Don't overwrite
+	if _, err := os.Stat(notePath); err == nil {
+		return
+	}
+
+	reqRel := reqRelPath
+	taskName := TaskFilenameForReq(reqRelPath)
+
+	noteMD := fmt.Sprintf(`---
+project: "%s"
+type: context
+tags: []
+req_ref: %s
+task_ref: Tasks/%s
+status: active
+superseded_by: ""
+created: "%s"
+updated: "%s"
+---
+
+# NOTE-%s: %s
+
+## 背景
+自动创建于需求 [[%s]]。
+
+## 内容
+需求摘要参见关联任务文档 [[Tasks/%s]] 的「需求摘要」section。
+
+## 关联
+- 需求: [[%s]]
+- 任务: [[Tasks/%s]]
+`, project, reqRel, taskName, now, now, id, title, reqRel, taskName, reqRel, taskName)
+
+	if err := os.WriteFile(notePath, []byte(noteMD), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  Note: failed to create %s: %v\n", noteName, err)
+		return
+	}
+	fmt.Printf("  📝 %s: 自动创建记忆文档\n", noteName)
 }
 
 // PrintAffected outputs affected results as JSON.
