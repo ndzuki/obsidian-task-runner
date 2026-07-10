@@ -1,0 +1,94 @@
+name: E2E
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go build -o otg ./cmd/otg/
+
+      - name: E2E — task workflow
+        run: |
+          set -euo pipefail
+          VAULT=$(mktemp -d)
+          mkdir -p "$VAULT/Tasks" "$VAULT/Requirements"
+
+          # Create requirement
+          cat > "$VAULT/Requirements/REQ-001-e2e.md" << 'EOF'
+          ---
+          id: "001"
+          title: E2E Test
+          priority: P0
+          project: e2e-test
+          ---
+          ## 要做什么
+          E2E validation of task processing.
+          ## 完成标准
+          - [ ] Works
+          EOF
+
+          # Create task manually (simulating on_req_changed)
+          cat > "$VAULT/Tasks/TASK-001-e2e.md" << 'TASKEOF'
+          ---
+          id: "001"
+          title: "E2E Test"
+          project: "e2e-test"
+          status: ready
+          plan_approved: false
+          merge_approved: false
+          plan_version: 0
+          assignee: "deepseek"
+          req_doc: "Requirements/REQ-001-e2e.md"
+          created: "2026-07-10T00:00:00+08:00"
+          updated: "2026-07-10T00:00:00+08:00"
+          completed: ""
+          ---
+          # E2E Test Task
+
+          ## 执行摘要
+          | 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
+          |------|------|---------|------|--------|
+          | 1 | Round 1 | v1 | ⏳ 待开始 | — |
+
+          ## 实现计划
+          ### v1 · 2026-07-10
+
+          ## 实现记录
+          ### Round 1 · 2026-07-10
+
+          ## 验收记录
+          ### Round 1 · 2026-07-10
+
+          ## 变更记录
+          1. `2026-07-10T00:00:00+08:00` — 任务创建，等待就绪
+          TASKEOF
+
+          # Test update-status → plan-review
+          ./otg update-status "$VAULT/Tasks/TASK-001-e2e.md" status=plan-review plan_version=1
+
+          # Verify frontmatter was updated
+          grep -q 'status: plan-review' "$VAULT/Tasks/TASK-001-e2e.md" || { echo "FAIL: status not updated"; exit 1; }
+          grep -q 'plan_version: 1' "$VAULT/Tasks/TASK-001-e2e.md" || { echo "FAIL: plan_version not updated"; exit 1; }
+
+          # Test update-status → done
+          ./otg update-status "$VAULT/Tasks/TASK-001-e2e.md" status=done merge_approved=false
+
+          grep -q 'status: done' "$VAULT/Tasks/TASK-001-e2e.md" || { echo "FAIL: status not updated to done"; exit 1; }
+          grep -q 'merge_approved: false' "$VAULT/Tasks/TASK-001-e2e.md" || { echo "FAIL: merge_approved not set"; exit 1; }
+
+          # Verify timestamp was auto-set
+          grep -q 'updated: "' "$VAULT/Tasks/TASK-001-e2e.md" || { echo "FAIL: updated timestamp missing"; exit 1; }
+
+          echo "E2E PASS"
+
+      - name: E2E — install dry-run
+        run: |
+          ./otg install --dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: install --dry-run"; exit 1; }
+          echo "install dry-run PASS"
