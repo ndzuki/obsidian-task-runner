@@ -96,7 +96,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 1. 确认文件名格式为 `REQ-<id>-<slug>.md`（如 `REQ-002-user-login.md`）
 2. 确认保存后 watcher 检测到了变更：`tail -f ~/.omp/logs/task-watcher.log`
 3. 如果已存在关联任务（通过 `req_doc` 匹配），不会重复创建，只会更新
-4. 手动重试：`python3 ~/.omp/skills/obsidian-task-runner/scripts/on_req_changed.py <vault> <req_file>`
+4. 手动重试：`otg on-req-changed <vault> <req_file>`
 
 ### systemd 服务没有启动
 
