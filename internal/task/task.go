@@ -51,12 +51,10 @@ func priorityOrder(p string) int {
 }
 
 // IsValidAssignee returns true for supported assignees.
+// IsValidAssignee returns true for any non-empty assignee.
+// The actual model is resolved at execution time from vault-map.json's models table.
 func IsValidAssignee(a string) bool {
-	switch a {
-	case "deepseek", "gpt":
-		return true
-	}
-	return false
+	return a != ""
 }
 
 // isEmptyList returns true if the value is nil or an empty slice.

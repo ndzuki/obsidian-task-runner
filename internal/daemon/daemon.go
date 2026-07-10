@@ -208,14 +208,7 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 }
 
 func (r *Runner) selectModel(assignee string) string {
-	switch assignee {
-	case "deepseek":
-		return r.cfg.OMPModelDeepSeek
-	case "gpt":
-		return r.cfg.OMPModelGPT
-	default:
-		return r.cfg.OMPModelFlash
-	}
+	return r.cfg.Model(assignee)
 }
 
 // SignalContext returns a context cancelled on SIGINT/SIGTERM.

@@ -9,12 +9,14 @@
     }
   ],
   "new_project_root": "/home/you/src",
-  "templates": {
-    "go-gin-microservice": {
-      "description": "Gin + Kustomize + kind 标准微服务",
-      "scaffold_skill": "cloud-native-go",
-      "structure": ["cmd/", "internal/", "api/", "deployments/"]
-    }
+  "models": {
+    "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
+    "deepseek": "deepseek/deepseek-v4-pro:xhigh",
+    "gpt":      "gateway/gpt-5.5:xhigh",
+    "flash":    "deepseek/deepseek-v4-flash",
+    "gemini":   "google/gemini-2.5-pro",
+    "claude":   "anthropic/claude-sonnet-4-20250514",
+    "minimax":  "minimax/minimax-m1"
   },
   "notifications": {
     "desktop": true,

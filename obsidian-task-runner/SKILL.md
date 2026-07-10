@@ -393,25 +393,28 @@ otg find-ready $OBSIDIAN_VAULT
 ### 特殊情况：子任务与依赖
 
 - 如果 `parent` 字段非空：检查父任务状态，如果父任务不在 `review` 或 `done`，设置为 `blocked` 并说明原因
-### 特殊情况：assignee 字段 -> OMP 模型映射
+### 特殊情况：assignee 字段 → 模型映射
 
-每个任务通过 frontmatter 的 `assignee` 字段决定使用的 OMP 模型：
+每个任务通过 frontmatter 的 `assignee` 字段选择模型。实际 OMP 模型标识由 vault-map.json 的 `models` 字段解析：
 
-| assignee | 模型 | Round 1 | Round 2 | Merge Phase | 说明 |
-|----------|------|---------|---------|-------------|------|
-| `deepseek` | deepseek-v4-pro | 出计划 | 实现代码 | 合并 | OMP 使用 deepseek/deepseek-v4-pro:xhigh |
-| `gpt` | gpt-5.5 | 出计划 | 实现代码 | 合并 | OMP 使用 gateway/gpt-5.5:xhigh |
-| 未设置 / 其他 | 回退 `TASK_RUNNER_AGENT` | — | — | — | 默认 `deepseek`，可通过环境变量覆盖 |
+```
+vault-map.json → models 字段:
+  "deepseek" → "deepseek/deepseek-v4-pro:xhigh"
+  "gpt"      → "gateway/gpt-5.5:xhigh"
+  "gemini"   → "google/gemini-2.5-pro"
+  "claude"   → "anthropic/claude-sonnet-4-20250514"
+  "minimax"  → "minimax/minimax-m1"
+  "flash"    → "deepseek/deepseek-v4-flash"  ← 未知 assignee 的回退
+  ...
+```
 
-**Round 1 & Round 2 使用同一模型**（由 `assignee` 决定）：
-- `assignee=deepseek` → 两阶段均由 `deepseek-v4-pro` 完成
-- `assignee=gpt` → 两阶段均由 `gpt-5.5` 完成
+**规则**：
+- `assignee` 为 `models` 的 key → daemon 使用对应模型执行
+- `assignee` 不在 `models` 中 → 回退到 `flash` 模型
+- `assignee` 为空 → 任务不会被 daemon 拾取
+- `models` 可通过 vault-map.json 扩展或覆盖，用户自由添加新模型
 
-**轻量任务使用 flash**（不需要人工 gate 的辅助工作）：
-- 新需求文档创建后自动生成 TASK 文档：`deepseek-v4-flash`
-- 其余后台轻量任务（状态更新、通知等）：`deepseek-v4-flash`
-
-**弃用字段**：`switch_settings` 已被移除。`codex` / `claude` / `claude+human` 不再支持。
+**Round 1 & Round 2 使用同一模型**（由 `assignee` 决定）。轻量任务（新需求自动创建 TASK、状态更新）使用 `flash` 模型。
 
 ### 特殊情况：新需求自动创建 TASK + NOTE
 
