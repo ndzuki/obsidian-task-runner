@@ -117,9 +117,9 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
       ```
       如有历史轮次，保留其行。
 
-   d) **追加变更记录**：在 `## 变更记录` section 末尾追加一行：
+   d) **追加变更记录**：在 `## 变更记录` section 末尾追加一行（序号为当前最大序号 + 1）：
       ```
-      {N}. `{ISO8601}` — Round 1 完成，计划 v{N} 生成，等待审阅
+      <N+1>. `{ISO8601}` — Round 1 完成，计划 v{plan_version} 生成，等待审阅
       ```
 
    e) 对于新项目，在计划末尾加醒目的提醒："⚠️ 这是新项目的脚手架方案，请确认后设 plan_approved: true 才会真正创建文件"
@@ -207,9 +207,9 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
    | {N} | Round 2 | v{plan_version} | ✅ review | <当前时间> |
    ```
 
-10. **追加变更记录**：在 `## 变更记录` section 末尾追加一行：
+10. **追加变更记录**：在 `## 变更记录` section 末尾追加一行（序号为当前最大序号 + 1）：
     ```
-    {N+1}. `{ISO8601}` — Round 2 完成，代码已提交到 `task/<id>-<slug>`，等待 review
+    <N+1>. `{ISO8601}` — Round 2 完成，代码已提交到 `task/<id>-<slug>`，等待 review
     ```
 
 11. **更新状态**：
@@ -315,9 +315,9 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      - 合并时间: <本地时间>
      - 状态: 成功
      ```
-   - 追加变更记录：
+   - 追加变更记录（序号为当前最大序号 + 1）：
      ```
-     {N+1}. `{ISO8601}` — Merge Phase 成功，`<target_branch>` → `<default_branch>` 已合并并推送
+     <N+1>. `{ISO8601}` — Merge Phase 成功，`<target_branch>` → `<default_branch>` 已合并并推送
      ```
 
    **合并冲突**：
@@ -337,9 +337,9 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      - 冲突文件列表
      - 目标分支和 feature 分支名称
      - 解决指引："请手动解决上述冲突后，`git add` + `git commit` + `git push`，完成后重新设置 `merge_approved: true`"
-   - 追加变更记录：
+   - 追加变更记录（序号为当前最大序号 + 1）：
      ```
-     {N+1}. `{ISO8601}` — Merge Phase 失败，<N> 个冲突文件，等待人工解决
+     <N+1>. `{ISO8601}` — Merge Phase 失败，<N> 个冲突文件，等待人工解决
      ```
 
 9. **退出**：输出 JSON 摘要：

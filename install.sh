@@ -263,7 +263,7 @@ else
 fi
 
 # ── 5. 生成 vault-map.json ──
-say "Step 5/7: 配置 vault-map.json"
+say "Step 5/8: 配置 vault-map.json"
 
 if [ -f "$MAP_FILE" ] && [ "$FORCE" = false ]; then
   ok "$MAP_FILE 已存在，不覆盖。如需重新生成请用 --force"
@@ -296,8 +296,19 @@ with open(sys.argv[1], 'w') as f:
   warn "请编辑此文件，填入你的项目映射（projects 字段）"
 fi
 
+
+# ── 5.5. 创建 OMP agent skill symlink ──
+say "Step 6/8: 配置 OMP 技能 symlink"
+OMP_AGENT_SKILLS="$HOME/.omp/agent/skills"
+mkdir -p "$OMP_AGENT_SKILLS"
+if [ -L "$OMP_AGENT_SKILLS/obsidian-task-runner" ] || [ ! -e "$OMP_AGENT_SKILLS/obsidian-task-runner" ]; then
+  ln -sfn "$SKILL_INSTALL_DIR" "$OMP_AGENT_SKILLS/obsidian-task-runner"
+  ok "symlink $OMP_AGENT_SKILLS/obsidian-task-runner → $SKILL_INSTALL_DIR"
+else
+  warn "$OMP_AGENT_SKILLS/obsidian-task-runner 已存在但不是 symlink，跳过"
+fi
 # ── 6. 环境变量 + 目录 ──
-say "Step 6/7: 配置环境"
+say "Step 7/8: 配置环境"
 
 # 根据当前 $SHELL 判断 shell 类型，写入对应的 rc 文件和语法
 detected_shell="$(basename "${SHELL:-bash}")"
@@ -346,7 +357,7 @@ mkdir -p "$LOG_DIR"
 ok "目录已创建: Tasks/ Requirements/ $NEW_PROJECT_ROOT/ ~/.omp/logs/"
 
 # ── 7. systemd ──
-say "Step 7/7: 配置 systemd"
+say "Step 8/8: 配置 systemd"
 
 # 尽量探测常见的额外 bin 目录,拼进 systemd 服务用的 PATH(systemd --user 不读 ~/.bashrc)
 extra_paths=()
