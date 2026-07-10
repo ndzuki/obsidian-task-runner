@@ -171,6 +171,10 @@ omp -m "deepseek/deepseek-v4-pro:xhigh" -p "/obsidian-task-runner"
 | 任务文件 | 在 Obsidian 中打开对应 Task | `## 实现记录` 逐步填充 |
 | systemd | `journalctl --user -fu omp-task-runner` | 服务层日志 |
 
+## 业务流程图
+
+完整的业务流程详解见 [`docs/workflow.md`](docs/workflow.md) — 包含架构图、状态机、时序图、模型映射表、权限模型和关键规则。
+
 ## 目录结构
 
 ```

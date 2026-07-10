@@ -36,6 +36,9 @@ class TaskRunnerDaemonTests(unittest.TestCase):
         self.assertIn('gpt)', script)
         self.assertIn('model="$OMP_MODEL_DEEPSEEK"', script)
         self.assertIn('model="$OMP_MODEL_GPT"', script)
+        # Headless approval modes
+        self.assertIn("--auto-approve", script)
+        self.assertIn("--approval-mode yolo", script)
 
 
 if __name__ == "__main__":
