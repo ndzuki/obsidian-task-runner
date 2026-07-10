@@ -220,6 +220,18 @@ REQ-001-login.md  ──→  TASK-001-login.md  ──→  NOTE-001-login.md
 
 > **用户不需要写 note** — Agent 在 Round 1/2 自动创建和维护，你只需要审计。
 
+### 推荐 Obsidian 插件
+
+增强项目管理可视化：
+
+| 插件 | 用途 |
+|------|------|
+| [Dataview](https://github.com/blacksmithgu/obsidian-dataview) | 查询 frontmatter 生成动态仪表板 |
+| [Obsidian Git](https://github.com/Vinzent03/obsidian-git) | 自动 commit/push vault 版本控制 |
+| [Kanban](https://github.com/mgmeyers/obsidian-kanban) | Markdown-backed 看板视图 |
+
+安装 Dataview 后，打开 `Tasks-Dashboard.md` 即可看到全项目任务状态一览。
+
 ---
 
 ## 配置
