@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -30,7 +31,6 @@ func New(cfg *config.Config) *Runner {
 	return &Runner{cfg: cfg}
 }
 
-// Run starts the daemon in long-running mode with fsnotify.
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
@@ -79,7 +79,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// RunOnce runs a single scan cycle and exits.
 func (r *Runner) RunOnce() error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
@@ -99,7 +98,7 @@ func (r *Runner) initLogging() error {
 	}
 	logPath := filepath.Join(logDir, "otg-daemon.log")
 
-	w, err := logutil.NewRotatingWriter(logPath, 10, 5, 30) // 10MB, 5 files, 30 days
+	w, err := logutil.NewRotatingWriter(logPath, 10, 5, 30)
 	if err != nil {
 		return err
 	}
@@ -115,15 +114,11 @@ func (r *Runner) scanAndProcess() error {
 		return err
 	}
 	if len(tasks) == 0 {
-		r.logger.Println("scan: no ready tasks")
 		return nil
 	}
-
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
-
 	for round := 0; round < 3; round++ {
-		processed := r.processBatch(tasks)
-		if processed == 0 {
+		if r.processBatch(tasks) == 0 {
 			break
 		}
 		tasks, _ = task.FindReadyTasks(r.cfg.ObsidianVault)
@@ -142,14 +137,12 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			r.logger.Printf("task %s: %v", t.ID, err)
 			continue
 		}
-
 		taskPath := filepath.Join(r.cfg.ObsidianVault, "Tasks", t.FileName)
 
 		if t.Status == "blocked" {
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready"})
 			t.Status = "ready"
 		}
-
 		if t.PendingReq && t.Status != "ready" && t.Status != "plan-review" {
 			r.logger.Printf("task %s: pending_req → resetting to ready", t.ID)
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{
@@ -176,12 +169,41 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		}
 		args = append(args, "-p", "/obsidian-task-runner "+t.ID)
 
+		// Task audit log
+		logDir := r.cfg.LogDir
+		if logDir == "" {
+			home, _ := os.UserHomeDir()
+			logDir = filepath.Join(home, ".omp", "logs")
+		}
+		taskLogDir := filepath.Join(logDir, "tasks")
+		os.MkdirAll(taskLogDir, 0755)
+
+		phase := "round1"
+		if isMerge {
+			phase = "merge"
+		} else if t.Status == "plan-review" {
+			phase = "round2"
+		}
+		ts := time.Now().Format("20060102-150405")
+		logPath := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s-%s.log", t.ID, ts, phase))
+
+		f, err := os.Create(logPath)
+		if f != nil {
+			header := fmt.Sprintf("# TASK-%s %s\n# model=%s phase=%s time=%s\n\n", t.ID, t.Title, model, phase, time.Now().Format(time.RFC3339))
+			f.WriteString(header)
+		}
+
 		cmd := exec.Command(r.cfg.OMPCmd, args...)
 		cmd.Dir = repoDir
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
+		if f != nil {
+			cmd.Stdout = io.MultiWriter(f, os.Stderr)
+			cmd.Stderr = io.MultiWriter(f, os.Stderr)
+		} else {
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+		}
 
-		r.logger.Printf("task %s: executing OMP (model=%s, merge=%v)", t.ID, model, isMerge)
+		r.logger.Printf("task %s: executing OMP (model=%s, merge=%v, log=%s)", t.ID, model, isMerge, logPath)
 		if err := cmd.Run(); err != nil {
 			r.logger.Printf("task %s: OMP failed: %v", t.ID, err)
 		} else {
@@ -189,6 +211,9 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			if _, err := os.Stat(taskPath); err == nil {
 				notify.StatusNotify(taskPath)
 			}
+		}
+		if f != nil {
+			f.Close()
 		}
 		processed++
 	}
@@ -211,7 +236,6 @@ func (r *Runner) selectModel(assignee string) string {
 	return r.cfg.Model(assignee)
 }
 
-// SignalContext returns a context cancelled on SIGINT/SIGTERM.
 func SignalContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
