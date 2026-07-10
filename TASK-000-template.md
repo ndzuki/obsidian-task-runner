@@ -11,6 +11,7 @@ plan_approved: false
 merge_approved: false
 pending_req: false
 off_peak_only: false
+plan_version: 0
 created: ""
 updated: ""
 completed: ""
@@ -21,7 +22,7 @@ due_date: ""
 estimated_hours: 0
 actual_hours: 0
 
-# ── 人员 & Agent 委派 ──
+# ── 人员 & 模型委派 ──
 # 🔴 必填！deepseek (deepseek-v4-pro) | gpt (gpt-5.5)
 # 留空则 daemon 不会拾取此任务
 assignee: ""
@@ -44,20 +45,45 @@ target_env: staging
 # <!-- 标题 -->
 
 ## 需求摘要
-<!-- 从 Requirements/<req_doc>.md 复制摘要，或简要说明要做什么 -->
-<!-- 需求文档模板: 复制 REQ-000-template.md 到 Requirements/ 下 -->
+<!-- 从 Requirements/<req_doc>.md 复制摘要，或简要说明 -->
+<!-- 需求文档模板: REQ-000-template.md -->
 
 ## 验收标准
-<!-- 逐条列出可验证的验收条件，task-verifier 会按此清单核实 -->
-<!-- 也可以指向需求文档中的验收标准 section -->
+<!-- 可验证的验收条件，task-verifier 会按此清单核实 -->
 - [ ] 
 - [ ] 
+
+---
+
+## 执行摘要
+<!-- 🤖 Agent 自动维护 — 当前状态快照 -->
+| 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
+|------|------|---------|------|--------|
+| 1 | Round 1 | v1 | ⏳ 待开始 | — |
+
+---
 
 ## 实现计划
-<!-- 🤖 Round 1: Claude 自动填充 -->
+<!-- 🤖 Round 1 生成。重新出计划时追加新版本，不覆盖旧版 -->
+### v1 · 2026-07-10
+<!-- 初始计划 -->
+
+---
 
 ## 实现记录
-<!-- 🤖 Round 2: Claude 自动填充 -->
+<!-- 🤖 Round 2 填充。每个执行轮次追加 dated 子节 -->
+### Round 1 · 2026-07-10
+<!-- 初始实现 -->
+
+---
 
 ## 验收记录
-<!-- 🤖 Claude + task-verifier 自动填充 -->
+<!-- 🤖 task-verifier 填充。每轮验收追加 dated 子节 -->
+### Round 1 · 2026-07-10
+<!-- 初始验收 -->
+
+---
+
+## 变更记录
+<!-- 🤖 Agent 自动追加 — 不可变审计日志 -->
+1. `2026-07-10T10:00:00+08:00` — 任务创建，等待就绪

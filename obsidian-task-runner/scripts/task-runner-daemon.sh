@@ -97,20 +97,21 @@ run_task_agent() {
       ;;
   esac
 
-  log "$task_id: 使用 OMP 执行（assignee=$task_assignee, model=$model_name）"
-
-  # merge_approved=true 时，Merge Phase 可执行 git push/gh pr create 等操作
-  local is_merge_phase=false
+  local approval_flag="--auto-approve"
+  local approval_label="auto-approve"
   if [ "$task_merge_approved" = "True" ] \
     && { [ "$task_status" = "review" ] || [ "$task_status" = "conflict" ]; }; then
-    is_merge_phase=true
+    approval_flag="--approval-mode yolo"
+    approval_label="yolo（完整 git/gh/merge 权限）"
     log "$task_id: Merge Phase — 授权执行 git push/gh pr create/merge"
   fi
 
-  # OMP 调用：cd 到项目目录，用对应模型执行 task
+  log "$task_id: 使用 OMP headless 执行（assignee=$task_assignee, model=$model_name, approval=$approval_label）"
+
+  # OMP 调用：cd 到项目目录，用对应模型 headless 执行 task
   (
     cd "$repo_dir"
-    $OMP_CMD -m "$model" -p "/obsidian-task-runner $task_id"
+    $OMP_CMD -m "$model" $approval_flag -p "/obsidian-task-runner $task_id"
   )
 }
 

@@ -91,22 +91,44 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
    - 标注关键决策点（需要人工确认的地方）
    - 如果项目已有 task-verifier，列出验收标准的映射
 
-4. **写回任务文档**：
-   - 用 `update_task_status.py` 更新 frontmatter：
-     ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
-       <task_path> status=plan-review
-     ```
-   - 将计划内容写入任务文档的「## 实现计划」section（替换 `<!-- 🤖 Round 1: Claude 自动填充 -->` 注释）
-   - 对于新项目，额外在计划末尾加一句醒目的提醒："⚠️ 这是新项目的脚手架方案，请确认后设 plan_approved: true 才会真正创建文件"
+4. **写回任务文档（版本化，不覆盖）**：
 
-5. **退出**：输出 JSON 摘要，状态为 `plan-review`。
+   a) 用 `update_task_status.py` 更新 frontmatter：
+      ```bash
+      python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+        <task_path> status=plan-review plan_version=<新版本号>
+      ```
+
+   b) **追加计划版本**：在 `## 实现计划` section 末尾追加新子节，**不替换旧版**：
+      ```markdown
+      ### v{N} · YYYY-MM-DD
+      > 基于需求文档: <req_doc>
+      > 变更原因: 初始计划 / 需求变更重新出计划
+
+      <计划内容...>
+      ```
+      其中 `{N}` = 当前 `plan_version`（初始为 1，重新出计划时递增）。
+
+   c) **更新 `## 执行摘要` 状态表**：替换该表格内容为最新状态：
+      ```
+      | 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
+      |------|------|---------|------|--------|
+      | 1 | Round 1 | v{N} | ✅ plan-review | <当前时间> |
+      ```
+      如有历史轮次，保留其行。
+
+   d) **追加变更记录**：在 `## 变更记录` section 末尾追加一行：
+      ```
+      {N}. `{ISO8601}` — Round 1 完成，计划 v{N} 生成，等待审阅
+      ```
+
+   e) 对于新项目，在计划末尾加醒目的提醒："⚠️ 这是新项目的脚手架方案，请确认后设 plan_approved: true 才会真正创建文件"
 
 ### Step 5: Round 2 — 实现
 
 **目标**：按批准的计划实现代码并提交。
 
-1. **读批准的计划**：从任务文档的「## 实现计划」section 读取。
+1. **读批准的计划**：从任务文档的「## 实现计划」section 读取当前最新版本（最后一个 `### v{N}` 子节）。
 
 2. **进入项目目录**：cd 到 vault-map.json 解析出的项目路径。
 
@@ -118,7 +140,7 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
 
 4. **设置状态为 implementing**：
    ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+   python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
      <task_path> status=implementing
    ```
 
@@ -132,13 +154,19 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      ```
    - 每完成一步：检查代码编译通过、运行相关测试
    - 遵循项目现有的代码风格和约定
-   - 把每一步的产出记录到「## 实现记录」section：
+   - 把每一步的产出追加到「## 实现记录」的当前 round 子节下。**创建 dated 子节**`### Round {N} · YYYY-MM-DD`：
      ```markdown
-     ### Step N: <步骤描述>
-     - 创建/修改: <文件列表>
-     - 测试结果: <PASS/FAIL>
-     - 耗时: <分钟>
+     ### Round {N} · YYYY-MM-DD
+     > 计划版本: v{plan_version}
+     > 分支: task/<id>-<slug>
+     >
+     > #### Step 1: <步骤描述>
+     > - 创建/修改: <文件列表>
+     > - 测试结果: PASS/FAIL
+     >
+     > #### Step 2: ...
      ```
+     如果该子节已存在（需求变更重新实现），追加在已有子节内而非外层新建。
 
 6. **质量检查**：
    - 运行测试：`make test` 或 `go test ./...` 或项目等效命令
@@ -163,18 +191,37 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
    - 不合并默认分支。
    - 用户 review 后设 `merge_approved: true`，Merge Phase 才执行 push、PR 和 merge。
 
-8. **写回验收记录**：将测试结果、lint 结果、验收标准核实情况写入「## 验收记录」section。
+8. **写回验收记录（版本化子节）**：
+   - 在「## 验收记录」section 追加 dated 子节，**不覆盖旧版**：
+     ```markdown
+     ### Round {N} · YYYY-MM-DD
+     > 计划版本: v{plan_version}
+     >
+     - 测试结果: PASS/FAIL
+     - lint 结果: PASS/FAIL
+     - task-verifier: <逐条核实结果>
+     ```
 
-9. **更新状态**：
-   ```bash
-     python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
-     <task_path> \
-     status=review \
-     target_branch=task/<id>-<slug> \
-     actual_hours=<实际耗时小时数>
+9. **更新 `## 执行摘要` 状态表**：添加或更新当前轮次行：
+   ```
+   | {N} | Round 2 | v{plan_version} | ✅ review | <当前时间> |
    ```
 
-10. **退出**：输出 JSON 摘要，状态为 `review`。如果 `merge_approved` 仍为 `false`，通知用户 review 代码，并由用户决定是否手动创建 PR/merge 或设 `merge_approved: true` 交给 agent 自动处理。
+10. **追加变更记录**：在 `## 变更记录` section 末尾追加一行：
+    ```
+    {N+1}. `{ISO8601}` — Round 2 完成，代码已提交到 `task/<id>-<slug>`，等待 review
+    ```
+
+11. **更新状态**：
+    ```bash
+    python3 ~/.omp/skills/obsidian-task-runner/scripts/update_task_status.py \
+      <task_path> \
+      status=review \
+      target_branch=task/<id>-<slug> \
+      actual_hours=<实际耗时小时数>
+    ```
+
+12. **退出**：输出 JSON 摘要，状态为 `review`。如果 `merge_approved` 仍为 `false`，通知用户 review 代码，并由用户决定是否手动创建 PR/merge 或设 `merge_approved: true` 交给 agent 自动处理。
 
 ### Step 6: Merge Phase — 自动 PR + 合并
 
@@ -184,6 +231,8 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
 - 当 `assignee: deepseek` 时，使用 deepseek-v4-pro 执行 git push、gh pr create、gh pr merge / git merge、git push origin <default_branch> 和 feature 分支清理。
 - 当 `assignee: gpt` 时，使用 gpt-5.5 执行上述操作。
 - 如果 `merge_approved: false`，不得自动 push、创建 PR 或 merge；只停在 `review` 并提醒用户处理。
+
+**headless 执行权限**：Merge Phase 由 daemon 以 `--approval-mode yolo` 启动，agent 拥有所有 tool 的完整执行权限，可以直接执行 `git push`、`gh pr create`、`gh pr merge`、分支清理等操作，无需人工交互确认。Round 1 / Round 2 以 `--auto-approve` 启动，自动审批文件写入和命令执行，但用户设 `plan_approved: true` / `merge_approved: true` 本身即代表授权。
 
 2. **进入项目目录**：cd 到 vault-map.json 解析出的项目路径。
 
@@ -266,6 +315,10 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      - 合并时间: <本地时间>
      - 状态: 成功
      ```
+   - 追加变更记录：
+     ```
+     {N+1}. `{ISO8601}` — Merge Phase 成功，`<target_branch>` → `<default_branch>` 已合并并推送
+     ```
 
    **合并冲突**：
    - 如果是本地 `git merge` 产生冲突：
@@ -284,6 +337,10 @@ python3 ~/.omp/skills/obsidian-task-runner/scripts/find_ready_tasks.py $OBSIDIAN
      - 冲突文件列表
      - 目标分支和 feature 分支名称
      - 解决指引："请手动解决上述冲突后，`git add` + `git commit` + `git push`，完成后重新设置 `merge_approved: true`"
+   - 追加变更记录：
+     ```
+     {N+1}. `{ISO8601}` — Merge Phase 失败，<N> 个冲突文件，等待人工解决
+     ```
 
 9. **退出**：输出 JSON 摘要：
 

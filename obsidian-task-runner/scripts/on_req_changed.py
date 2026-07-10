@@ -178,15 +178,35 @@ def build_task_markdown(
 
 > ⚠️ **任务已暂停在 `blocked`。** 请在 frontmatter 中补齐必填字段；补齐后保存，daemon 会自动进入 Round 1，无需手动把 `status` 改成 `ready`。{'' if project else chr(10) + chr(10) + '> ⚠️ **`project` 为空。** 请填写 `project` 字段。'}
 
+## 执行摘要
+<!-- 🤖 Agent 自动维护 — 当前状态快照 -->
+| 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
+|------|------|---------|------|--------|
+| 1 | — | v0 | ⏳ blocked（等待填字段） | —
+
+---
+
 ## 实现计划
-<!-- 🤖 Round 1: agent 自动填充 -->
+<!-- 🤖 Round 1 生成。重新出计划时追加新版本，不覆盖旧版 -->
+### v1 · PENDING
+
+---
 
 ## 实现记录
-<!-- 🤖 Round 2: agent 自动填充 -->
+<!-- 🤖 Round 2 填充。每个执行轮次追加 dated 子节 -->
+
+---
 
 ## 验收记录
-<!-- 🤖 agent + task-verifier 自动填充 -->
+<!-- 🤖 task-verifier 填充。每轮验收追加 dated 子节 -->
+
+---
+
+## 变更记录
+<!-- 🤖 Agent 自动追加 — 不可变审计日志 -->
+1. `{now_iso}` — 任务创建，等待就绪
 """
+
 
     # Build frontmatter
     tags_fm = (
@@ -208,6 +228,7 @@ off_peak_only: false
 created: "{now_iso}"
 updated: "{now_iso}"
 completed: ""
+plan_version: 0
 priority: {priority}
 due_date: ""
 estimated_hours: 0
