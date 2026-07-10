@@ -8,6 +8,7 @@ package yamlfrontmatter
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -144,7 +145,7 @@ func Update(path string, updates map[string]interface{}) error {
 }
 // atomicWrite writes data to a temporary file, fsyncs, and renames.
 func atomicWrite(path string, data []byte) error {
-	tmp, err := os.CreateTemp("", "otg-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
