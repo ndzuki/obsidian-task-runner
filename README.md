@@ -166,9 +166,44 @@ obsidian-task-runner/
 └── Makefile
 ```
 
----
+## TASK 字段参考
 
-## 项目记忆 (Notes/)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 唯一编号 |
+| `title` | string | 任务标题 |
+| `project` | string | vault-map.json 项目 key |
+| `assignee` | string | 模型 key → vault-map `models` 表解析 |
+| `status` | enum | `blocked` → `ready` → `plan-review` → `implementing` → `review` → `done` / `conflict` |
+| `plan_approved` | bool | Gate #1：设为 true 触发 Round 2 |
+| `merge_approved` | bool | Gate #2：设为 true 触发自动 PR + merge |
+| `plan_version` | int | 计划版本号，Agent 自动递增 |
+| `req_doc` | string | 关联需求文档路径（如 `Requirements/REQ-001.md`） |
+| `priority` | P0-P4 | 优先级，默认 P2 |
+| `auto_approve` | bool | 跳过 plan-review gate（新项目无效） |
+| `off_peak_only` | bool | Round 2 仅北京低峰执行 |
+| `pending_req` | bool | 需求变更标记，Agent 管理 |
+| `new_project` | bool | 从零创建新项目 |
+| `target_branch` | string | Git 分支名，Round 2 自动设置 |
+| `estimated_hours` | float | 预估工时 |
+| `actual_hours` | float | 实际耗时 |
+| `blocked_by` | list | 依赖任务 ID 列表 |
+| `tags` | list | 标签 |
+| `epic` | string | 所属史诗 |
+
+完整见 [`reference.md`](obsidian-task-runner/reference.md)。
+
+## NOTE 字段参考
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `project` | string | 所属项目 |
+| `type` | enum | `decision` / `pattern` / `bug` / `context` |
+| `status` | enum | `active` / `superseded` / `resolved` |
+| `req_ref` | string | 关联需求文档 |
+| `task_ref` | string | 关联任务文档 |
+| `superseded_by` | string | 替代此笔记的新笔记 ID |
+| `tags` | list | 标签 |
 
 Agent 自主维护 `Notes/` 目录，记录技术决策、编码模式、已知坑位。
 
