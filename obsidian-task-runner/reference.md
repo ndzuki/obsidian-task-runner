@@ -121,3 +121,25 @@ journalctl --user -u omp-task-runner.service -n 50
 `task-runner-daemon.sh` 使用 flock 文件锁防止并发——同一时间只允许一个 daemon 实例运行。watcher 触发的新 daemon 遇到锁时会直接退出，但**当前运行的 daemon 会在处理完当前批次后自动重扫**（最多 3 轮），拾起中途被 `on_req_changed` 重置的任务。因此需求文档更新后即使 daemon 正忙，也不会丢失——最多延迟到当前 OMP 会话完成后的一轮重扫。
 
 如果系统重启后锁文件残留，daemon 会自动覆盖（锁与文件描述符绑定，进程退出后自动释放）。
+
+### 断点续跑
+
+OMP agent 采用 **stateless 设计**——每次启动不依赖内部状态，通过分析文件系统理解当前进度。`make install-force` 或进程异常被杀后，任务可从中断点自动恢复：
+
+**续跑原理**：
+1. daemon 重启 → 扫描到 `status: implementing` → 重新 spawn OMP
+2. OMP 读 task 文档中的实现记录、git log、项目文件
+3. 判断已完成的步骤，从未完成步骤继续
+
+**能保留**：
+- 已创建的文件和代码
+- git 提交历史
+- 任务文档中的计划和实现记录
+- 项目目录的完整状态
+
+**不保留**：
+- 上一轮 OMP 的对话/思考上下文（这恰恰是优点——上下文过大反而影响模型质量）
+
+**为什么不做 session resume**：保存和恢复 OMP 对话状态（200K-300K tokens）比重新扫描文件系统更慢、更不可靠，且模型输出的不确定性会导致 `replay` 不一致。文件系统就是最好的 checkpoint。
+
+**建议**：在 SKILL.md 实现步骤中加入原子进度标记（如 "Step N completed: YYYY-MM-DD HH:MM"），让断点恢复更精确。
