@@ -19,6 +19,7 @@ description: >
 3. **只在 Merge Phase 推送/PR/合并**：Round 1 和 Round 2 期间不推送代码、不创建 PR、不合并。Merge Phase（Step 6）在 `merge_approved: true` 授权后负责 `git push`、`gh pr create`、merge、push 默认分支和分支清理
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
+6. **事后总结到项目记忆文档**：每轮（Round 1 / Round 2 / Merge Phase）结束后**必须**在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md` 创建或更新**项目累积记忆文档**。记录本轮的关键决策、遇到的问题及解决方案、发现的模式和陷阱。NOTE-<id>-<slug>.md 由 `otg on-req-changed` 自动创建（需求上下文笔记），二者共存于 Notes/。目的是积累项目上下文、避免重复踩坑、减少后续任务的无效思考。每个项目维护自己独立的 Notes/ 目录，不跨项目共享。
 
 ## 输入
 
@@ -29,7 +30,7 @@ description: >
 ### Step 1: 找到任务
 
 如果提供了 task_id：
-- 在 `$OBSIDIAN_VAULT/Tasks/` 下搜索文件名包含该 id 的 .md 文件
+- 在 `$OBSIDIAN_VAULT/Projects/*/Tasks/` 下搜索文件名包含该 id 的 .md 文件
 - 读第一个匹配的文件
 
 如果没有提供 task_id：
@@ -44,6 +45,11 @@ otg find-ready $OBSIDIAN_VAULT
 - 获取项目的本地路径
 - 获取 new_project_root 配置
 - 获取通知偏好
+
+**项目目录约定**：后续步骤中的 `<project>` 指 Vault 中项目目录名（如 `001-release-manager`），即任务文件路径两级的父目录：
+- 任务文件：`$OBSIDIAN_VAULT/Projects/<project>/Tasks/TASK-<id>-<slug>.md`
+- 项目记忆：`$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`
+- 可从 `file_path` 推导：`dirname(dirname(task_file))` = 项目目录
 
 ### Step 3: 判断当前阶段
 
@@ -130,6 +136,47 @@ otg find-ready $OBSIDIAN_VAULT
       ```
 
    e) 对于新项目，在计划末尾加醒目的提醒："⚠️ 这是新项目的脚手架方案，请确认后设 plan_approved: true 才会真正创建文件"
+
+5. **写回记忆文档（事后总结）**：在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/` 下创建或更新记忆文档：
+
+   **文件路径**：`$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`
+
+   **Frontmatter**：
+   ```yaml
+   project: "<project>"
+   type: decision
+   tags: ["round-1", "planning"]
+   req_ref: "<req_doc>"
+   task_ref: "TASK-<id>-<slug>.md"
+   status: active
+   ```
+
+   **内容四段式**（参考 NOTE-000-template.md）：
+   ```markdown
+   ## 背景
+   <!-- 要解决什么问题，需求的核心挑战是什么 -->
+
+   ## 决策
+   <!-- 本次 Round 1 做的主要技术决策（为什么选方案 A 不选方案 B） -->
+
+   ## 原因
+   <!-- 每个决策的依据（技术约束、性能考量、维护成本等） -->
+
+   ## 影响
+   <!-- 这些决策对后续实现的影响、需要注意的边界条件 -->
+
+   ## 关联
+   - 需求: [[<req_doc>]]
+   - 任务: [[TASK-<id>-<slug>.md]]
+   ```
+
+   如果 NOTE 已存在（需求变更重新出计划），使用**版本化子节**追加，不覆盖旧内容：
+   ```markdown
+   ### v{plan_version} · YYYY-MM-DD
+   > 变更原因: <需求变更/重新评估>
+
+   <!-- 衔接上面四段式 -->
+   ```
 
 ### Step 5: Round 2 — 实现
 
@@ -228,7 +275,31 @@ otg find-ready $OBSIDIAN_VAULT
       actual_hours=<实际耗时小时数>
     ```
 
-12. **退出**：输出 JSON 摘要，状态为 `review`。如果 `merge_approved` 仍为 `false`，通知用户 review 代码，并由用户决定是否手动创建 PR/merge 或设 `merge_approved: true` 交给 agent 自动处理。
+12. **写回记忆文档（事后总结）**：更新 `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`，追加本轮实现的经验：
+
+   ```markdown
+   ### Round {N} · YYYY-MM-DD
+   > 计划版本: v{plan_version} | 分支: task/<id>-<slug>
+
+   ## 经验总结
+
+   ### 遇到的问题
+   <!-- 实现过程中遇到的具体问题（编译错误、测试失败、逻辑 bug 等） -->
+
+   ### 解决方案
+   <!-- 每个问题的解决方法和最终采用的方案 -->
+
+   ### 发现的模式
+   <!-- 项目中值得记录的模式、约定、或坑 -->
+
+   ### 后续建议
+   <!-- 给未来类似任务的建议，或需要重构/改进的地方 -->
+   ```
+
+   如果 `memory.md` 不存在，先创建完整文档再追加本节。
+
+13. **退出**：输出 JSON 摘要，状态为 `review`。如果 `merge_approved` 仍为 `false`，通知用户 review 代码，并由用户决定是否手动创建 PR/merge 或设 `merge_approved: true` 交给 agent 自动处理。
+
 
 ### Step 6: Merge Phase — 自动 PR + 合并
 
@@ -349,7 +420,38 @@ otg find-ready $OBSIDIAN_VAULT
      <N+1>. `{ISO8601}` — Merge Phase 失败，<N> 个冲突文件，等待人工解决
      ```
 
-9. **退出**：输出 JSON 摘要：
+9. **写回记忆文档（事后总结）**：更新 `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`，记录合并结果：
+
+   **合并成功时**追加：
+   ```markdown
+   ### Merge · YYYY-MM-DD
+   > 状态: ✅ done | 分支: <target_branch> → <default_branch>
+
+   ## 完成总结
+
+   ### 最终产出
+   <!-- 合并的代码量、影响的文件数、关键功能点 -->
+
+   ### 关键经验
+   <!-- 整个任务从 Round 1 到 Merge 的最重要教训 -->
+
+   ### 后续关注
+   <!-- 需要监控的指标、可能的回归风险、技术债务 -->
+   ```
+   同时将 NOTE 的 frontmatter `status` 更新为 `resolved`。
+
+   **合并冲突时**追加：
+   ```markdown
+   ### Merge Conflict · YYYY-MM-DD
+   > 状态: ⚠️ conflict | 分支: <target_branch> → <default_branch>
+
+   ## 冲突详情
+   <!-- 冲突文件和原因 -->
+   ```
+   将 NOTE 的 frontmatter `status` 更新为 `active`，`type` 追加 `conflict`。
+
+10. **退出**：输出 JSON 摘要：
+
 
    成功时：
    ```json
@@ -427,30 +529,34 @@ vault-map.json → models 字段:
 
 当用户在 `Requirements/` 下新建 `REQ-<id>-<slug>.md` 文件时：
 - `otg on-req-changed` 自动在 `Tasks/` 下生成 `TASK-<id>-<slug>.md`
-- **同时**在 `Notes/` 下创建 `NOTE-<id>-<slug>.md`（项目记忆文档）
+- **同时**在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/` 下初始化 `NOTE-<id>-<slug>.md`（如不存在）——这是 Go 代码 `createNoteForReq` 自动创建的**单需求上下文笔记**，与累积记忆 `memory.md` 不同
 - 三者通过 id 和 frontmatter 双向关联（`req_ref` ↔ `task_ref`）
 - 自动填充字段：`id`、`title`、`project`、`priority`、`tags`、`epic`、`req_doc`、`reviewer`
 - **`assignee` 留空**，且新 TASK 默认 `status: blocked`
 - 用户补齐必填字段并保存后，daemon 自动解除 `blocked` → `ready`
 - 文件名不匹配 `REQ-<id>-<slug>.md` 的需求文档不自动创建（只记录 warning）
 
-### 特殊情况：项目记忆管理（Notes/）
+### 特殊情况：项目记忆管理
 
-Agent 在执行过程中自主维护 `Notes/` 下的记忆文档：
+每个项目在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/` 下维护两种记忆文档：
+- **`memory.md`**（由 OMP agent 写入）：项目的累积记忆文档，记录所有技术决策、实现经验和陷阱。这是你出计划和实现时有用的上下文。
+- **`NOTE-<id>-<slug>.md`**（由 `otg on-req-changed` 自动创建）：单个需求的上下文笔记，记录该需求创建时的初始信息。可选参考，非必需。
 
 **何时创建/更新**：
-- Round 1 出计划时：产生技术选型/架构决策 → 创建 `type: decision` note
-- Round 2 实现时：发现坑/模式 → 创建 `type: bug` 或 `type: pattern` note
-- Merge 完成时：更新相关 note 状态
+- Round 1 出计划时：产生技术选型/架构决策 → 追加 `## 决策` section
+- Round 2 实现时：遇到问题、发现模式 → 追加 `### Round {N}` 经验总结
+- Merge 完成时：追加最终总结，更新文档状态
 
-**格式**：ADR-lite，frontmatter + 四段式（背景/内容/原因/影响）
+**格式**：单个 `memory.md` 文件，按时间倒序追加 section（最新在上），使用 `### v{plan_version} · YYYY-MM-DD` 子节隔离不同任务的产出。
 
 **关联规则**：
-- 每个 note 必须引用 `req_ref` 和 `task_ref`
-- 如果新决策替代旧决策，旧 note 的 `status` 改为 `superseded`，`superseded_by` 指向新 note
-- Agent 出计划前先扫描 Notes/，在计划中引用已有决策作为依据
+- 每个 section 标注来源的 `req_ref` 和 `task_ref`
+- 如果新决策替代旧决策，在旧 section 前加 `> ⚠️ superseded by v{N}` 标记
+- Agent 出计划前**必须先扫描** `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`，在计划中引用已有决策作为依据
 
-**禁止**：不创建与需求/任务无关的 note
+**禁止**：
+- 不覆盖历史 section（始终追加，保持审计追溯）
+- 不写入与需求/任务无关的内容
 
 每次执行结束输出简短 JSON 摘要（用于日志解析）：
 

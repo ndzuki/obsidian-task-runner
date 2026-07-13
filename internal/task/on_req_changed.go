@@ -38,7 +38,7 @@ func TaskFilenameForReq(reqRelPath string) string {
 type AffectedResult struct {
 	TaskID    string `json:"task_id"`
 	File      string `json:"file"`
-	Action    string `json:"action"` // "reset_to_ready", "pending_req", "create_task", "warn_only"
+	Action    string `json:"action"`
 	OldStatus string `json:"old_status,omitempty"`
 }
 
@@ -86,7 +86,6 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 				TaskID: fm.ID, File: entry.Name(),
 				Action: "reset_to_ready", OldStatus: fm.Status,
 			})
-			fmt.Printf("  %s (%s): %s → ready（需求已更新，重新出计划）\n", fm.ID, entry.Name(), fm.Status)
 
 		case "implementing", "review", "conflict", "done":
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{
@@ -97,14 +96,12 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 				TaskID: fm.ID, File: entry.Name(),
 				Action: "pending_req", OldStatus: fm.Status,
 			})
-			fmt.Printf("  %s (%s): status=%s，已标记 pending_req（自动重新出计划）\n", fm.ID, entry.Name(), fm.Status)
 
 		default:
 			affected = append(affected, AffectedResult{
 				TaskID: fm.ID, File: entry.Name(),
 				Action: "warn_only", OldStatus: fm.Status,
 			})
-			fmt.Fprintf(os.Stderr, "  %s (%s): status=%s，已跳过（请手动评估）\n", fm.ID, entry.Name(), fm.Status)
 		}
 	}
 	}

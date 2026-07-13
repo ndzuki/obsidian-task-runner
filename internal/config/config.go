@@ -126,6 +126,19 @@ func (c *Config) Model(assignee string) string {
 	return "deepseek/deepseek-v4-flash"
 }
 
+// FallbackModel returns the fallback model for an assignee.
+// If the assignee is "gpt", falls back to "deepseek".
+// Returns empty string if no fallback is configured.
+func (c *Config) FallbackModel(assignee string) string {
+	if assignee == "gpt" {
+		if m, ok := c.Models["deepseek"]; ok && m != "" {
+			return m
+		}
+		return "deepseek/deepseek-v4-pro:xhigh"
+	}
+	return ""
+}
+
 // ResolveProject returns the local path for a project name.
 func (c *Config) ResolveProject(name string) (string, error) {
 	for _, p := range c.Projects {

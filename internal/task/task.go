@@ -4,6 +4,7 @@ package task
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,7 +98,7 @@ func IsReady(fm *yamlfrontmatter.Frontmatter) bool {
 		return true
 	}
 	switch fm.Status {
-	case "ready":
+	case "ready", "implementing":
 		return true
 	case "plan-review":
 		return fm.PlanApproved
@@ -152,12 +153,14 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				continue
 			}
 			filePath := filepath.Join(tasksDir, entry.Name())
-			data, err := os.ReadFile(filePath)
+			data, err := readFileWithRetry(filePath)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s: read error: %v\n", entry.Name(), err)
 				continue
 			}
 			fm, err := yamlfrontmatter.Parse(data)
 			if err != nil || fm == nil {
+				fmt.Fprintf(os.Stderr, "  %s: parse error: %v\n", entry.Name(), err)
 				continue
 			}
 			if !IsReady(fm) {
@@ -199,4 +202,88 @@ func PrintReadyTasks(tasks []ReadyTask) {
 		data, _ := json.Marshal(t)
 		fmt.Println(string(data))
 	}
+}
+
+// DebugReadyTasks logs all task files and why they are not ready.
+func DebugReadyTasks(vaultPath string, logger *log.Logger) {
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	projEntries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, proj := range projEntries {
+		if !proj.IsDir() { continue }
+		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil { continue }
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" { continue }
+			filePath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				logger.Printf("debug: %s: read error: %v", filePath, err)
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				logger.Printf("debug: %s: parse error: %v", filePath, err)
+				continue
+			}
+			isReady := IsReady(fm)
+			logger.Printf("debug: %s: id=%s status=%s assignee=%q pending_req=%v plan_approved=%v merge_approved=%v isReady=%v project=%q",
+				entry.Name(), fm.ID, fm.Status, fm.Assignee, fm.PendingReq, fm.PlanApproved, fm.MergeApproved, isReady, fm.Project)
+		}
+	}
+}
+
+// readFileWithRetry reads a file with retries to handle cloud-sync filesystems
+// where WRITE events fire before the file is fully written.
+func readFileWithRetry(path string) ([]byte, error) {
+	const maxRetries = 5
+	const retryDelay = 200 * time.Millisecond
+	for i := 0; i < maxRetries; i++ {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		// Verify it looks like a valid frontmatter file (starts with ---)
+		if len(data) >= 3 && string(data[:3]) == "---" {
+			// Verify frontmatter closes
+			rest := data[3:]
+			endIdx := findFrontmatterEnd(rest)
+			if endIdx > 0 {
+				return data, nil
+			}
+		}
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+	// Last attempt: return raw data even if incomplete
+	return os.ReadFile(path)
+}
+
+func findFrontmatterEnd(data []byte) int {
+	lines := splitLines(data)
+	for _, line := range lines {
+		if string(line) == "---" {
+			return 1
+		}
+	}
+	return 0
+}
+
+func splitLines(data []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			lines = append(lines, data[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		lines = append(lines, data[start:])
+	}
+	return lines
 }
