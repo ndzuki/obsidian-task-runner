@@ -230,6 +230,7 @@ func TestCreateTaskForReqNewStructure(t *testing.T) {
 id: "002"
 title: "Test Feature"
 priority: P1
+author: test-user
 ---
 
 # Test Feature
@@ -261,6 +262,24 @@ Add a test feature.
 	// No vault-map in isolated HOME → falls back to projectDir
 	if !strings.Contains(taskStr, `"001-release-manager"`) {
 		t.Error("TASK frontmatter project should fall back to 001-release-manager when no vault-map")
+	}
+	// Verify req_doc contains the requirement path, not the author
+	wantReqDoc := filepath.Join("Projects", projectName, "Requirements", "REQ-002-test-feature.md")
+	if !strings.Contains(taskStr, "\nreq_doc: "+wantReqDoc) {
+		t.Errorf("TASK req_doc should be the REQ path %q", wantReqDoc)
+	}
+	// Verify author contains the author name, not the REQ path
+	if !strings.Contains(taskStr, "\nauthor: \"test-user\"") {
+		t.Error("TASK author should be \"test-user\"")
+	}
+
+	// Also verify req_doc does NOT contain author value
+	if strings.Contains(taskStr, "\nreq_doc: test-user") || strings.Contains(taskStr, "\nreq_doc: \"test-user\"") {
+		t.Error("TASK req_doc should NOT contain author value 'test-user'")
+	}
+	// Also verify author does NOT contain req_doc path
+	if strings.Contains(taskStr, "\nauthor: \""+wantReqDoc+"\"") {
+		t.Error("TASK author should NOT contain the REQ path")
 	}
 
 	// Verify memory.md was created

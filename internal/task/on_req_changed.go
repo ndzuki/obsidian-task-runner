@@ -294,7 +294,7 @@ target_env: staging
 
 ## 变更记录
 1. %s — 任务创建，等待就绪
-`, id, title, projName, projectID, now, now, priority, reviewer, author, reqRelPath, tags, epic,
+`, id, title, projName, projectID, now, now, priority, reviewer, reqRelPath, author, tags, epic,
 		id, title, summary, ac, reqRelPath,
 		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""],
 		"`"+now+"`")
