@@ -105,3 +105,50 @@ func TestRegisterProject(t *testing.T) {
 		}
 	})
 }
+
+func TestMatchVaultDir(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+
+	config := map[string]interface{}{
+		"projects": []map[string]interface{}{
+			{"name": "release-manager", "path": "/tmp/release-manager"},
+			{"name": "obsidian-task-runner", "path": "/tmp/otr"},
+			{"name": "simple", "path": "/tmp/simple"},
+		},
+		"new_project_root": "/home/user/src",
+	}
+	data, _ := json.MarshalIndent(config, "", "  ")
+	os.WriteFile(mapFile, data, 0644)
+
+	tests := []struct {
+		name     string
+		vaultDir string
+		want     string
+	}{
+		{"exact match", "release-manager", "release-manager"},
+		{"prefix match", "001-release-manager", "release-manager"},
+		{"prefix match multi-digit", "042-release-manager", "release-manager"},
+		{"no prefix needed", "simple", "simple"},
+		{"no match", "unknown-project", ""},
+		{"prefix but no suffix match", "001-unknown", ""},
+		{"numeric suffix only - no match", "001-release-manager-v2", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchVaultDir(mapFile, tt.vaultDir)
+			if got != tt.want {
+				t.Errorf("MatchVaultDir(%q) = %q, want %q", tt.vaultDir, got, tt.want)
+			}
+		})
+	}
+
+	// Test missing map file
+	t.Run("missing map file", func(t *testing.T) {
+		got := MatchVaultDir("/nonexistent/vault-map.json", "001-foo")
+		if got != "" {
+			t.Errorf("expected empty from missing file, got %q", got)
+		}
+	})
+}

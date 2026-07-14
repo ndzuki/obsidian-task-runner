@@ -60,6 +60,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	w.Start(ctx)
 
+	// Run an initial scan to catch any tasks that became ready while daemon was down
+	go func() {
+		time.Sleep(2 * time.Second) // let watcher initialize
+		r.logger.Printf("running startup scan")
+		if err := r.scanAndProcess(); err != nil {
+			r.logger.Printf("startup scan error: %v", err)
+		}
+	}()
+
 	ticker := time.NewTicker(time.Duration(r.cfg.PollIntervalMin) * time.Minute)
 	defer ticker.Stop()
 
@@ -250,6 +259,22 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		default:
 			timeout = 30 * time.Minute
 		}
+		// Check if OMP is already running for this task (daemon restart recovery)
+		pidFile := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s.pid", t.ID))
+		if t.Status == "implementing" {
+			if data, err := os.ReadFile(pidFile); err == nil {
+				var existingPID int
+				if _, scanErr := fmt.Sscanf(string(data), "%d", &existingPID); scanErr == nil {
+					if procAlive(existingPID) {
+						r.logger.Printf("task %s: OMP already running (PID %d), skipping", t.ID, existingPID)
+						continue
+					}
+				}
+			}
+			// PID file missing or process dead — resume Round 2
+			r.logger.Printf("task %s: stuck in implementing, OMP dead — retrying Round 2", t.ID)
+			notify.SendTaskAction(t.ID, t.Title, "🔄", "恢复 Round 2", "上次执行异常中断，自动恢复")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
@@ -267,8 +292,20 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		tailDone := make(chan struct{})
 		go tailOMPLog(ompLogPath, f, tailDone)
 
+
+
+		// Start OMP and write PID file for crash recovery
+		if startErr := cmd.Start(); startErr != nil {
+			r.logger.Printf("task %s: OMP start failed: %v", t.ID, startErr)
+			cancel()
+			close(tailDone)
+			continue
+		}
+		_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+		defer os.Remove(pidFile)
+
 		r.logger.Printf("task %s: executing OMP (model=%s, phase=%s, timeout=%v, log=%s)", t.ID, model, phase, timeout, logPath)
-		err = cmd.Run()
+		err = cmd.Wait()
 		cancel()
 		close(tailDone) // signal tail goroutine to stop
 
@@ -311,7 +348,15 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 				}
 				fbTailDone := make(chan struct{})
 				go tailOMPLog(ompLogPath, f, fbTailDone)
-				retryErr := retryCmd.Run()
+				// Start fallback OMP and write PID file
+				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
+					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
+					fbCancel()
+					close(fbTailDone)
+					continue
+				}
+				_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0644)
+				retryErr := retryCmd.Wait()
 				fbCancel()
 				close(fbTailDone)
 				if retryErr != nil {
@@ -345,7 +390,18 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 
 func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 	mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
-	result := project.ResolveProject(mapFile, t.Project, t.NewProject)
+	projectName := t.Project
+	result := project.ResolveProject(mapFile, projectName, t.NewProject)
+
+	// If direct lookup fails, try matching Vault directory name to vault-map key
+	// e.g., "001-release-manager" → "release-manager"
+	if result.Status == "error" {
+		if mapped := project.MatchVaultDir(mapFile, projectName); mapped != "" {
+			projectName = mapped
+			result = project.ResolveProject(mapFile, projectName, t.NewProject)
+		}
+	}
+
 	if result.Status == "error" {
 		return "", fmt.Errorf("resolve project: %s", result.Error)
 	}
@@ -521,4 +577,15 @@ func acquireLock(cfg *config.Config) (func(), error) {
 		f.Close()
 		os.Remove(lockFile)
 	}, nil
+}
+
+// procAlive checks if a process with the given PID is still running.
+func procAlive(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Signal 0 is a null signal — checks existence without affecting the process
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
 }

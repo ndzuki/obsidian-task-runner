@@ -29,22 +29,26 @@ install: build
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY)"
 
 install-force: build
-	@echo "=== Stopping timer and services ==="
-	-systemctl --user stop omp-task-runner.timer 2>/dev/null || true
-	-systemctl --user stop omp-task-watcher.service omp-task-runner.service 2>/dev/null || true
-	@echo "=== Killing old processes ==="
-	-pkill -9 -f "obsidian-task-runner" 2>/dev/null || true
+	@echo "=== Stopping timer ==="
+	-systemctl --user stop --no-block omp-task-runner.timer 2>/dev/null || true
+	@echo "=== Stopping daemon (OMP processes survive) ==="
+	-systemctl --user stop --no-block omp-task-watcher.service 2>/dev/null || true
+	-pkill -TERM -f "otg daemon" 2>/dev/null || true
+	@sleep 2
 	-pkill -9 -f "otg daemon" 2>/dev/null || true
 	@sleep 1
 	@echo "=== Installing new binary ==="
 	mkdir -p $(HOME)/.local/bin
+	-mv $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(BINARY).old 2>/dev/null || true
 	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
-	@echo "Installed to $(HOME)/.local/bin/$(BINARY)"
-	@echo "=== Restarting services ==="
+	@echo "=== Ensuring services are running ==="
 	-systemctl --user reset-failed omp-task-watcher.service omp-task-runner.service 2>/dev/null || true
-	systemctl --user start omp-task-runner.timer
-	systemctl --user start omp-task-watcher.service
+	systemctl --user start omp-task-runner.timer 2>/dev/null || true
+	-systemctl --user start omp-task-watcher.service 2>/dev/null || true
+	@sleep 2
+	@if ! systemctl --user -q is-active omp-task-watcher.service; then \
+		echo "  Watcher didn't start (lock may be held) — retrying..."; \
+		systemctl --user reset-failed omp-task-watcher.service 2>/dev/null || true; \
+		systemctl --user start omp-task-watcher.service 2>/dev/null || true; \
+	fi
 	@echo "=== Done ==="
-
-run: build
-	./$(BINARY)

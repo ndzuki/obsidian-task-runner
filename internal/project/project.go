@@ -64,6 +64,51 @@ func ResolveProject(mapFile, projectName string, isNew bool) ResolveResult {
 	return result
 }
 
+// MatchVaultDir tries to match a Vault project directory name to a vault-map project key.
+// The Vault directory uses format "<id>-<name>" (e.g., "001-release-manager") while
+// the vault-map key is typically just "<name>" (e.g., "release-manager").
+// Matching order: exact match → strip numeric prefix → no match.
+// Returns the matched vault-map project name, or "" if no match found.
+func MatchVaultDir(mapFile, vaultDir string) string {
+	data, err := os.ReadFile(mapFile)
+	if err != nil {
+		return ""
+	}
+
+	var config struct {
+		Projects []map[string]string `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return ""
+	}
+
+	// 1. Exact match
+	for _, proj := range config.Projects {
+		if proj["name"] == vaultDir {
+			return vaultDir
+		}
+	}
+
+	// 2. Strip numeric prefix (e.g., "001-release-manager" → "release-manager")
+	// The prefix is one or more digits followed by a hyphen.
+	for i, c := range vaultDir {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '-' && i > 0 {
+			suffix := vaultDir[i+1:]
+			for _, proj := range config.Projects {
+				if proj["name"] == suffix {
+					return proj["name"]
+				}
+			}
+		}
+		break
+	}
+
+	return ""
+}
+
 // RegisterProject adds or updates a project entry in vault-map.json.
 // Uses atomic write (tmp → fsync → rename) to prevent corruption.
 // Set dryRun to true to preview changes without writing.
