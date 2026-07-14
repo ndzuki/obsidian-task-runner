@@ -1,91 +1,75 @@
 # 任务总览
 
-> 从文件路径提取项目名，按 `project_id` 聚合。Dataview 插件自动刷新。
+## 项目任务数
 
-## 诊断：所有任务文件
-
-```dataview
-TABLE file.folder AS "路径", status, project_id
-FROM "Projects"
-WHERE contains(file.folder, "/Tasks/")
-LIMIT 20
+```dataviewjs
+const tasks = dv.pages('"Projects"').where(p => p.file.folder.includes("/Tasks/"));
+dv.table(
+  ["项目", "任务数", "就绪", "实现中", "待审阅", "已完成", "阻塞"],
+  dv.array(tasks)
+    .groupBy(p => p.file.folder.split("/")[1])
+    .map(g => [
+      g.key,
+      g.rows.length,
+      g.rows.filter(r => r.status === "ready").length,
+      g.rows.filter(r => r.status === "implementing").length,
+      g.rows.filter(r => r.status === "plan-review").length,
+      g.rows.filter(r => r.status === "done").length,
+      g.rows.filter(r => r.status === "blocked").length,
+    ])
+    .sort(g => g[0])
+);
 ```
 
-## 按项目汇总
+## 待处理任务
 
-```dataview
-TABLE 
-  length(rows) AS "任务数",
-  length(filter(rows, (r) => r.status = "ready")) AS "就绪",
-  length(filter(rows, (r) => r.status = "implementing")) AS "实现中",
-  length(filter(rows, (r) => r.status = "plan-review")) AS "待审阅",
-  length(filter(rows, (r) => r.status = "review")) AS "待合并",
-  length(filter(rows, (r) => r.status = "done")) AS "已完成",
-  length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
-FROM "Projects"
-FLATTEN regexreplace(file.folder, "^Projects/(\d+)-.*$", "$1") AS project_id
-FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS category
-WHERE project_id AND category = "Tasks"
-GROUP BY project_id
-SORT project_id ASC
-```
-
-## 待处理任务（按优先级）
-
-```dataview
-TABLE 
-  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
-  priority AS "优先级",
-  status AS "状态",
-  assignee AS "执行者",
-  due_date AS "截止"
-FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status != "done" AND status != "blocked"
-SORT priority ASC
+```dataviewjs
+const all = dv.pages('"Projects"').where(p => p.file.folder.includes("/Tasks/") && p.status !== "done" && p.status !== "blocked");
+dv.table(
+  ["项目", "标题", "优先级", "状态", "执行者"],
+  all.sort(p => p.priority).map(p => [
+    p.file.folder.split("/")[1],
+    p.file.link,
+    p.priority,
+    p.status,
+    p.assignee
+  ])
+);
 ```
 
 ## 阻塞任务
 
-```dataview
-TABLE 
-  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
-  assignee AS "执行者",
-  file.mtime AS "最后更新"
-FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status = "blocked"
-SORT file.mtime DESC
+```dataviewjs
+const blocked = dv.pages('"Projects"').where(p => p.file.folder.includes("/Tasks/") && p.status === "blocked");
+dv.table(
+  ["项目", "标题", "执行者", "最后更新"],
+  blocked.sort(p => p.file.mtime, "desc").map(p => [
+    p.file.folder.split("/")[1],
+    p.file.link,
+    p.assignee,
+    p.file.mtime
+  ])
+);
 ```
 
 ## 最近完成
 
-```dataview
-TABLE 
-  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
-  completed AS "完成时间",
-  assignee AS "执行者"
-FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status = "done"
-SORT completed DESC
-LIMIT 10
-```
-
-## 我的任务
-
-```dataview
-TABLE 
-  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
-  status AS "状态",
-  priority AS "优先级"
-FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND assignee AND status != "done"
-SORT priority ASC
+```dataviewjs
+const done = dv.pages('"Projects"').where(p => p.file.folder.includes("/Tasks/") && p.status === "done");
+dv.table(
+  ["项目", "标题", "完成时间", "执行者"],
+  done.sort(p => p.completed, "desc").limit(10).map(p => [
+    p.file.folder.split("/")[1],
+    p.file.link,
+    p.completed,
+    p.assignee
+  ])
+);
 ```
 
 ## 项目记忆
 
-```dataview
-LIST
-FROM "Projects"
-WHERE file.name = "memory.md"
-SORT file.folder ASC
+```dataviewjs
+const mem = dv.pages('"Projects"').where(p => p.file.name === "memory.md");
+dv.list(mem.sort(p => p.file.folder).map(p => p.file.link));
 ```
