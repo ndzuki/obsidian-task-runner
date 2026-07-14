@@ -86,7 +86,7 @@ TABLE
   length(filter(rows, (r) => r.status = "done")) AS "已完成",
   length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
 FROM "Projects"
-FLATTEN regexreplace(file.folder, "^Projects/(\\d+)-.*$", "$1") AS project_id
+FLATTEN regexreplace(file.folder, "^Projects/(\d+)-.*$", "$1") AS project_id
 FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS category
 WHERE project_id AND category = "Tasks"
 GROUP BY project_id
