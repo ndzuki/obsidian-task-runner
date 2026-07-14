@@ -1,6 +1,6 @@
 # 任务总览
 
-> 按 `project_id` 聚合所有项目的任务状态。Dataview 插件自动刷新。
+> 从文件路径提取项目名，按 `project_id` 聚合。Dataview 插件自动刷新。
 
 ## 按项目汇总
 
@@ -14,7 +14,9 @@ TABLE
   length(filter(rows, (r) => r.status = "done")) AS "已完成",
   length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
 FROM "Projects"
-WHERE project_id
+FLATTEN regexreplace(file.folder, "^Projects/(\\d+)-.*$", "$1") AS project_id
+FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS category
+WHERE project_id AND category = "Tasks"
 GROUP BY project_id
 SORT project_id ASC
 ```
@@ -23,25 +25,26 @@ SORT project_id ASC
 
 ```dataview
 TABLE 
-  project_id AS "项目",
+  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
   priority AS "优先级",
   status AS "状态",
   assignee AS "执行者",
   due_date AS "截止"
-FROM "Projects"
-WHERE status != "done" AND status != "blocked"
-SORT priority ASC, project_id ASC
+FROM "Projects/Tasks" OR "Projects"
+FLATTEN regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS project
+WHERE contains(file.folder, "/Tasks/") AND status != "done" AND status != "blocked"
+SORT priority ASC, project ASC
 ```
 
 ## 阻塞任务
 
 ```dataview
 TABLE 
-  project_id AS "项目",
+  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
   assignee AS "执行者",
   file.mtime AS "最后更新"
 FROM "Projects"
-WHERE status = "blocked"
+WHERE contains(file.folder, "/Tasks/") AND status = "blocked"
 SORT file.mtime DESC
 ```
 
@@ -49,11 +52,11 @@ SORT file.mtime DESC
 
 ```dataview
 TABLE 
-  project_id AS "项目",
+  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
   completed AS "完成时间",
   assignee AS "执行者"
 FROM "Projects"
-WHERE status = "done"
+WHERE contains(file.folder, "/Tasks/") AND status = "done"
 SORT completed DESC
 LIMIT 10
 ```
@@ -62,19 +65,19 @@ LIMIT 10
 
 ```dataview
 TABLE 
-  project_id AS "项目",
+  regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS "项目",
   status AS "状态",
   priority AS "优先级"
 FROM "Projects"
-WHERE assignee = "deepseek" AND status != "done"
+WHERE contains(file.folder, "/Tasks/") AND assignee AND status != "done"
 SORT priority ASC
 ```
 
-## 项目详情卡片
+## 项目记忆
 
 ```dataview
-LIST 
+LIST
 FROM "Projects"
-WHERE project_id AND file.name = "memory.md"
-SORT project_id ASC
+WHERE file.name = "memory.md"
+SORT file.folder ASC
 ```
