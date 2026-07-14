@@ -11,10 +11,9 @@ TABLE
   filter(rows, (r) => r.status = "done").length as "已完成",
   filter(rows, (r) => r.status = "blocked").length as "阻塞"
 FROM "Projects"
-FLATTEN regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as project
-WHERE contains(file.folder, "/Tasks/")
-GROUP BY project
-SORT project asc
+WHERE contains(file.folder, "Tasks")
+GROUP BY regexreplace(file.folder, "Projects/([^/]+)/.*", "$1")
+SORT regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") asc
 ```
 
 ## 待处理任务
@@ -26,7 +25,7 @@ TABLE
   status as "状态",
   assignee as "执行者"
 FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status != "done" AND status != "blocked"
+WHERE contains(file.folder, "Tasks") AND status != "done" AND status != "blocked"
 SORT priority asc
 ```
 
@@ -38,7 +37,7 @@ TABLE
   assignee as "执行者",
   file.mtime as "最后更新"
 FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status = "blocked"
+WHERE contains(file.folder, "Tasks") AND status = "blocked"
 SORT file.mtime desc
 ```
 
@@ -50,7 +49,7 @@ TABLE
   completed as "完成时间",
   assignee as "执行者"
 FROM "Projects"
-WHERE contains(file.folder, "/Tasks/") AND status = "done"
+WHERE contains(file.folder, "Tasks") AND status = "done"
 SORT completed desc
 LIMIT 10
 ```
