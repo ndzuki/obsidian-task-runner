@@ -2,6 +2,15 @@
 
 > 从文件路径提取项目名，按 `project_id` 聚合。Dataview 插件自动刷新。
 
+## 诊断：所有任务文件
+
+```dataview
+TABLE file.folder AS "路径", status, project_id
+FROM "Projects"
+WHERE contains(file.folder, "/Tasks/")
+LIMIT 20
+```
+
 ## 按项目汇总
 
 ```dataview
@@ -14,7 +23,7 @@ TABLE
   length(filter(rows, (r) => r.status = "done")) AS "已完成",
   length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
 FROM "Projects"
-FLATTEN regexreplace(file.folder, "^Projects/(\\d+)-.*$", "$1") AS project_id
+FLATTEN regexreplace(file.folder, "^Projects/(\d+)-.*$", "$1") AS project_id
 FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS category
 WHERE project_id AND category = "Tasks"
 GROUP BY project_id
@@ -30,10 +39,9 @@ TABLE
   status AS "状态",
   assignee AS "执行者",
   due_date AS "截止"
-FROM "Projects/Tasks" OR "Projects"
-FLATTEN regexreplace(file.folder, "^Projects/([^/]+)/.*$", "$1") AS project
+FROM "Projects"
 WHERE contains(file.folder, "/Tasks/") AND status != "done" AND status != "blocked"
-SORT priority ASC, project ASC
+SORT priority ASC
 ```
 
 ## 阻塞任务
