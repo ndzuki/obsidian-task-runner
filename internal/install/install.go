@@ -66,6 +66,35 @@ func Run(opts Options) error {
 		os.MkdirAll(opts.NewProjectRoot, 0755)
 	}
 
+	// 7b. Deploy dashboard template to vault (Dataview-powered)
+	if !d && opts.ObsidianVault != "" {
+		dst := filepath.Join(opts.ObsidianVault, "Tasks-Dashboard.md")
+		if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
+			content := `# 任务总览
+
+> 按 ` + "`project_id`" + ` 聚合所有项目的任务状态。Dataview 插件自动刷新。
+
+## 按项目汇总
+
+` + "```dataview" + `
+TABLE
+  length(rows) AS "任务数",
+  length(filter(rows, (r) => r.status = "ready")) AS "就绪",
+  length(filter(rows, (r) => r.status = "implementing")) AS "实现中",
+  length(filter(rows, (r) => r.status = "plan-review")) AS "待审阅",
+  length(filter(rows, (r) => r.status = "review")) AS "待合并",
+  length(filter(rows, (r) => r.status = "done")) AS "已完成",
+  length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
+FROM "Projects"
+WHERE project_id
+GROUP BY project_id
+SORT project_id ASC
+` + "```"
+			os.WriteFile(dst, []byte(content), 0644)
+			fmt.Println("dashboard deployed to vault")
+		}
+	}
+
 	// 8. Configure systemd
 	if opts.SystemdEnabled {
 		if err := configureSystemd(opts); err != nil && !d {

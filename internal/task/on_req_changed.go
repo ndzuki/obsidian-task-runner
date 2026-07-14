@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/project"
+	project_pkg "github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -168,15 +168,23 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	reqContent := string(reqData)
 	reqFM, _ := yamlfrontmatter.Parse(reqData)
 
-	project := ""
+	projName := ""
+	projectID := project_pkg.ExtractProjectID(projectDir)
 	priority := "P2"
 	epic := ""
 	reviewer := ""
+	author := ""
+	tagsList := []string{}
 	if reqFM != nil {
-		project = reqFM.Project
+		projName = reqFM.Project
+		if reqFM.ProjectID != "" {
+			projectID = reqFM.ProjectID // override from REQ frontmatter if set
+		}
 		priority = reqFM.Priority
 		epic = reqFM.Epic
 		reviewer = reqFM.Reviewer
+		author = reqFM.Author
+		tagsList = reqFM.Tags
 	}
 	if priority == "" {
 		priority = "P2"
@@ -184,8 +192,8 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 
 	// Resolve project field for vault-map matching.
 	// Priority: REQ frontmatter → vault-map match on projectDir → projectDir fallback.
-	if project == "" {
-		project = resolveProjectField(projectDir)
+	if projName == "" {
+		projName = resolveProjectField(projectDir)
 	}
 
 	title := firstHeading(reqContent)
@@ -197,8 +205,8 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 
 	// Build task markdown
 	tags := ""
-	if reqFM != nil && len(reqFM.Tags) > 0 {
-		tags = "  - " + strings.Join(reqFM.Tags, "\n  - ")
+	if len(tagsList) > 0 {
+		tags = "  - " + strings.Join(tagsList, "\n  - ")
 	} else {
 		tags = "  - "
 	}
@@ -210,7 +218,7 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 id: "%s"
 title: "%s"
 project: "%s"
-new_project: false
+project_id: "%s"
 template: ""
 status: blocked
 plan_approved: false
@@ -228,7 +236,7 @@ actual_hours: 0
 assignee: ""
 reviewer: "%s"
 req_doc: %s
-component: ""
+author: "%s"
 tags:
 %s
 epic: "%s"
@@ -286,9 +294,9 @@ target_env: staging
 
 ## 变更记录
 1. %s — 任务创建，等待就绪
-`, id, title, project, now, now, priority, reviewer, reqRelPath, tags, epic,
+`, id, title, projName, projectID, now, now, priority, reviewer, author, reqRelPath, tags, epic,
 		id, title, summary, ac, reqRelPath,
-		project, map[bool]string{true: "✅", false: "🔴 必填"}[project != ""],
+		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""],
 		"`"+now+"`")
 
 	targetPath := filepath.Join(tasksDir, targetName)
@@ -299,7 +307,7 @@ target_env: staging
 
 	fmt.Printf("  %s (%s): 自动创建任务文档（status=blocked）\n", id, targetName)
 	// Append to project memory (single memory.md per project)
-	appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, now)
+	appendToMemory(vaultPath, projectDir, projectID, id, title, author, epic, reqRelPath, targetName, now)
 	return &AffectedResult{
 		TaskID: id, File: targetName, Action: "create_task",
 	}
@@ -331,7 +339,7 @@ func resolveProjectField(projectDir string) string {
 		return projectDir
 	}
 	mapFile := filepath.Join(home, ".omp", "skills", "obsidian-task-runner", "config", "vault-map.json")
-	if mapped := project.MatchVaultDir(mapFile, projectDir); mapped != "" {
+	if mapped := project_pkg.MatchVaultDir(mapFile, projectDir); mapped != "" {
 		return mapped
 	}
 	return projectDir
@@ -375,7 +383,7 @@ func extractSection(content string, headings ...string) string {
 
 // appendToMemory appends a requirement-created entry to the project's memory.md.
 // Uses single memory.md per project for cumulative context.
-func appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, now string) {
+func appendToMemory(vaultPath, projectDir, projectID, id, title, author, epic, reqRelPath, targetName, now string) {
 	notesDir := filepath.Join(vaultPath, "Projects", projectDir, "Notes")
 	os.MkdirAll(notesDir, 0755)
 
@@ -386,6 +394,7 @@ func appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, no
 	entry := fmt.Sprintf(`
 ### REQ-%s · %s
 > 需求: [[%s]] | 任务: [[%s]]
+> project_id: %s | author: %s | epic: %s
 
 ## 背景
 自动创建于需求 [[%s]]。
@@ -397,13 +406,13 @@ func appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, no
 - 需求: [[%s]]
 - 任务: [[%s]]
 
-`, id, title, relReq, relTask, relReq, relTask, relReq, relTask)
+`, id, title, relReq, relTask, projectID, author, epic, relReq, relTask, relReq, relTask)
 
 	// Read existing memory or create new
 	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
-		// Create new memory.md with frontmatter header
 		header := fmt.Sprintf(`---
 project: "%s"
+project_id: "%s"
 type: decision
 tags: ["auto-created"]
 status: active
@@ -413,7 +422,7 @@ updated: "%s"
 
 # 项目记忆: %s
 
-`, projectDir, now, now, projectDir)
+`, projectDir, projectID, now, now, projectDir)
 		if err := os.WriteFile(memoryPath, []byte(header), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "  Memory: failed to create %s: %v\n", memoryPath, err)
 			return

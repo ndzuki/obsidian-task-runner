@@ -181,7 +181,7 @@ func TestAppendToMemory(t *testing.T) {
 	targetName := "TASK-001-test.md"
 
 	// First call: creates memory.md
-	appendToMemory(vaultPath, projectDir, "001", "My Feature", reqRelPath, targetName, "2026-07-13T10:00:00+08:00")
+	appendToMemory(vaultPath, projectDir, "001", "001", "My Feature", "ndzuki", "", reqRelPath, targetName, "2026-07-13T10:00:00+08:00")
 
 	memoryPath := filepath.Join(vaultPath, "Projects", projectDir, "Notes", "memory.md")
 	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
@@ -208,7 +208,7 @@ func TestAppendToMemory(t *testing.T) {
 	}
 
 	// Second call: appends to existing memory.md
-	appendToMemory(vaultPath, projectDir, "002", "Another Feature", reqRelPath, targetName, "2026-07-13T11:00:00+08:00")
+	appendToMemory(vaultPath, projectDir, "001", "002", "Another Feature", "ndzuki", "", reqRelPath, targetName, "2026-07-13T11:00:00+08:00")
 
 	content2, _ := os.ReadFile(memoryPath)
 	if strings.Count(string(content2), "### REQ-") != 2 {

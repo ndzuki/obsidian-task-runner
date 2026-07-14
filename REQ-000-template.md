@@ -1,7 +1,7 @@
 ---
 id: ""
 title: ""
-epic: ""
+project_id: ""
 priority: P2
 created: ""
 updated: ""

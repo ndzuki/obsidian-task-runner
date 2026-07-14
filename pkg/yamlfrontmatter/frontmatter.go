@@ -21,6 +21,7 @@ type Frontmatter struct {
 	ID              string   `yaml:"id"`
 	Title           string   `yaml:"title"`
 	Project         string   `yaml:"project"`
+	ProjectID       string   `yaml:"project_id"`
 	NewProject      bool     `yaml:"new_project"`
 	Template        string   `yaml:"template"`
 	Status          string   `yaml:"status"`
@@ -38,6 +39,7 @@ type Frontmatter struct {
 	ActualHours     float64  `yaml:"actual_hours"`
 	Assignee        string   `yaml:"assignee"`
 	Reviewer        string   `yaml:"reviewer"`
+	Author          string   `yaml:"author"`
 	ReqDoc          string   `yaml:"req_doc"`
 	Component       string   `yaml:"component"`
 	Tags            []string `yaml:"tags"`

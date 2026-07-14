@@ -31,6 +31,7 @@ type Project struct {
 	Name      string `json:"name"`
 	Path      string `json:"path"`
 	GitRemote string `json:"git_remote"`
+	ProjectID string `json:"project_id"`
 }
 
 // NotifConfig holds notification settings.
