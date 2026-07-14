@@ -152,3 +152,27 @@ func TestMatchVaultDir(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractProjectID(t *testing.T) {
+	tests := []struct {
+		name    string
+		dirName string
+		want    string
+	}{
+		{"standard", "003-obsidian-task-runner", "003"},
+		{"multi-digit", "042-my-project", "042"},
+		{"single-digit", "1-release", "1"},
+		{"no-dash", "myproject", ""},
+		{"dash-but-no-digits", "abc-def", ""},
+		{"all-digits", "123", "123"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractProjectID(tt.dirName)
+			if got != tt.want {
+				t.Errorf("ExtractProjectID(%q) = %q, want %q", tt.dirName, got, tt.want)
+			}
+		})
+	}
+}

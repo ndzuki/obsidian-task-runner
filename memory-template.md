@@ -1,7 +1,7 @@
 ---
 project: ""
 type: decision           # decision | pattern | bug | context
-tags: []
+project_id: ""
 status: active           # active | superseded | resolved
 created: ""
 updated: ""

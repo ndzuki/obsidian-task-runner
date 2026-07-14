@@ -64,6 +64,22 @@ func ResolveProject(mapFile, projectName string, isNew bool) ResolveResult {
 	return result
 }
 
+// ExtractProjectID extracts the numeric project ID from a Vault directory name.
+// Format: "NNN-project-name" → "NNN", e.g., "003-obsidian-task-runner" → "003".
+// Returns empty string if no numeric prefix found.
+func ExtractProjectID(dirName string) string {
+	for i, c := range dirName {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '-' && i > 0 {
+			return dirName[:i]
+		}
+		return ""
+	}
+	return dirName // all digits, e.g., "123"
+}
+
 // MatchVaultDir tries to match a Vault project directory name to a vault-map project key.
 // The Vault directory uses format "<id>-<name>" (e.g., "001-release-manager") while
 // the vault-map key is typically just "<name>" (e.g., "release-manager").

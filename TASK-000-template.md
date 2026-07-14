@@ -2,7 +2,7 @@
 id: ""
 title: ""
 project: ""
-new_project: false
+project_id: ""
 template: ""
 
 # ── 状态流转（系统自动管理，不要手动改） ──
