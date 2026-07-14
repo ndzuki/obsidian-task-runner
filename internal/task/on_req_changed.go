@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -141,7 +142,10 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 		return nil
 	}
 
-	projectDir := fmt.Sprintf("%s-%s", id, slug)
+	// Derive project directory from the requirement's path.
+	// New structure: Projects/<project>/Requirements/REQ-xxx.md → project = <project>
+	// Old structure:   Requirements/REQ-xxx.md → project = <id>-<slug> (backward compat)
+	projectDir := deriveProjectDir(reqRelPath, id, slug)
 	tasksDir := filepath.Join(vaultPath, "Projects", projectDir, "Tasks")
 	reqDir := filepath.Join(vaultPath, "Projects", projectDir, "Requirements")
 	targetName := TaskFilenameForReq(reqRelPath)
@@ -176,6 +180,12 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	}
 	if priority == "" {
 		priority = "P2"
+	}
+
+	// Resolve project field for vault-map matching.
+	// Priority: REQ frontmatter → vault-map match on projectDir → projectDir fallback.
+	if project == "" {
+		project = resolveProjectField(projectDir)
 	}
 
 	title := firstHeading(reqContent)
@@ -288,11 +298,43 @@ target_env: staging
 	}
 
 	fmt.Printf("  %s (%s): 自动创建任务文档（status=blocked）\n", id, targetName)
-	// Also create a NOTE for project memory
-	createNoteForReq(vaultPath, reqRelPath, id, title, project, now)
+	// Append to project memory (single memory.md per project)
+	appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, now)
 	return &AffectedResult{
 		TaskID: id, File: targetName, Action: "create_task",
 	}
+}
+
+// deriveProjectDir extracts the project directory name from a requirement path.
+// New structure: "Projects/001-release-manager/Requirements/REQ-002-demo.md" → "001-release-manager"
+// Old structure: "Requirements/REQ-001-demo.md" → "001-demo" (backward compatible)
+func deriveProjectDir(reqRelPath, id, slug string) string {
+	// Require "Projects/" prefix for the new structure
+	projPrefix := "Projects" + string(filepath.Separator)
+	if strings.HasPrefix(reqRelPath, projPrefix) {
+		rest := strings.TrimPrefix(reqRelPath, projPrefix)
+		// rest = "001-release-manager/Requirements/REQ-002-demo.md"
+		idx := strings.Index(rest, string(filepath.Separator))
+		if idx > 0 {
+			return rest[:idx]
+		}
+	}
+	// Old flat structure: use id-slug as project directory
+	return fmt.Sprintf("%s-%s", id, slug)
+}
+
+// resolveProjectField maps a Vault project directory name to a vault-map project key.
+// Falls back to projectDir if vault-map is unavailable or no match found.
+func resolveProjectField(projectDir string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return projectDir
+	}
+	mapFile := filepath.Join(home, ".omp", "skills", "obsidian-task-runner", "config", "vault-map.json")
+	if mapped := project.MatchVaultDir(mapFile, projectDir); mapped != "" {
+		return mapped
+	}
+	return projectDir
 }
 
 func firstHeading(content string) string {
@@ -331,37 +373,19 @@ func extractSection(content string, headings ...string) string {
 	return strings.Join(lines, "\n")
 }
 
-// createNoteForReq creates a NOTE document alongside the TASK.
-func createNoteForReq(vaultPath, reqRelPath, id, title, project, now string) {
-	_, slug := ParseReqFilename(reqRelPath)
-	projectDir := fmt.Sprintf("%s-%s", id, slug)
+// appendToMemory appends a requirement-created entry to the project's memory.md.
+// Uses single memory.md per project for cumulative context.
+func appendToMemory(vaultPath, projectDir, id, title, reqRelPath, targetName, now string) {
 	notesDir := filepath.Join(vaultPath, "Projects", projectDir, "Notes")
 	os.MkdirAll(notesDir, 0755)
 
-	noteName := fmt.Sprintf("NOTE-%s-%s.md", id, strings.ToLower(strings.ReplaceAll(title, " ", "-")))
-	notePath := filepath.Join(notesDir, noteName)
-
-	if _, err := os.Stat(notePath); err == nil {
-		return // don't overwrite
-	}
-
-	taskName := TaskFilenameForReq(reqRelPath)
+	memoryPath := filepath.Join(notesDir, "memory.md")
 	relReq := fmt.Sprintf("Requirements/%s", filepath.Base(reqRelPath))
-	relTask := fmt.Sprintf("Tasks/%s", taskName)
+	relTask := fmt.Sprintf("Tasks/%s", targetName)
 
-	noteMD := fmt.Sprintf(`---
-project: "%s"
-type: context
-tags: []
-req_ref: %s
-task_ref: %s
-status: active
-superseded_by: ""
-created: "%s"
-updated: "%s"
----
-
-# NOTE-%s: %s
+	entry := fmt.Sprintf(`
+### REQ-%s · %s
+> 需求: [[%s]] | 任务: [[%s]]
 
 ## 背景
 自动创建于需求 [[%s]]。
@@ -372,13 +396,42 @@ updated: "%s"
 ## 关联
 - 需求: [[%s]]
 - 任务: [[%s]]
-`, project, relReq, relTask, now, now, id, title, relReq, relTask, relReq, relTask)
 
-	if err := os.WriteFile(notePath, []byte(noteMD), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "  Note: failed to create %s: %v\n", noteName, err)
+`, id, title, relReq, relTask, relReq, relTask, relReq, relTask)
+
+	// Read existing memory or create new
+	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
+		// Create new memory.md with frontmatter header
+		header := fmt.Sprintf(`---
+project: "%s"
+type: decision
+tags: ["auto-created"]
+status: active
+created: "%s"
+updated: "%s"
+---
+
+# 项目记忆: %s
+
+`, projectDir, now, now, projectDir)
+		if err := os.WriteFile(memoryPath, []byte(header), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "  Memory: failed to create %s: %v\n", memoryPath, err)
+			return
+		}
+	}
+
+	f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Memory: failed to open %s: %v\n", memoryPath, err)
 		return
 	}
-	fmt.Printf("  📝 %s: 自动创建记忆文档\n", noteName)
+	defer f.Close()
+
+	if _, err := f.WriteString(entry); err != nil {
+		fmt.Fprintf(os.Stderr, "  Memory: failed to write %s: %v\n", memoryPath, err)
+		return
+	}
+	fmt.Printf("  📝 memory.md: 追加需求上下文 (REQ-%s)\n", id)
 }
 
 // PrintAffected outputs affected results as JSON.

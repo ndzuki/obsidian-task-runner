@@ -12,7 +12,7 @@
 用户只做一件事                    系统自动完成
 ─────────────────────────────────────────────
 写 REQ-001-xxx.md      ──→   TASK-001-xxx.md  (任务文档)
-                              NOTE-001-xxx.md  (项目记忆)
+                              memory.md       (项目累积记忆，追加)
                                    │
                               Round 1: 出计划
                                    │  ⏸ plan_approved
@@ -23,8 +23,7 @@
                               ✅ done
 ```
 
-**三份文档通过 id 关联**：`REQ-001` ↔ `TASK-001` ↔ `NOTE-001`，Agent 自主维护全部。
-
+**同一个项目内通过 id 关联**：`REQ-001` ↔ `TASK-001`，上下文追加到 `Projects/<project>/Notes/memory.md`（单文件累积），Agent 自主维护全部。
 **纯 Go 二进制**：20 个 `.go` 文件，0 行 Python/Bash，5.3MB 静态编译，零运行时依赖。
 
 **Token 零开销**：Agent 通过文件 I/O 读写记忆，不注入系统前缀，DeepSeek 缓存命中率 100%。
@@ -54,7 +53,7 @@ project: my-backend
 - [ ] POST /api/login 返回 token
 - [ ] 无效凭证返回 401' > ~/Vault/Requirements/REQ-001-login.md
 
-# 3 秒后，TASK + NOTE 自动创建
+# 3 秒后，TASK 自动创建，memory.md 追加需求上下文
 # 在 Obsidian 中填 assignee: deepseek，保存
 # daemon 自动发现 → Round 1 出计划 → 等你确认
 ```
@@ -70,10 +69,10 @@ project: my-backend
 | `~/.omp/logs/otg-daemon.log` | 守护日志（10MB 轮转，gzip 压缩，30 天清除） |
 | `~/.omp/logs/tasks/` | Agent 审计日志（按任务/阶段分文件） |
 | `~/.config/systemd/user/omp-task-*` | systemd 单元文件 |
-| `~/.config/nvim/snippets/markdown.lua` | Neovim snippets（`oreq`/`otask`/`onote`） |
-| `~/Vault/Tasks/` | 任务文档（Agent 自动创建+更新） |
-| `~/Vault/Notes/` | 项目记忆（Agent 自动创建+维护） |
-| `~/Vault/Requirements/` | 需求文档（用户编写） |
+| `~/.config/nvim/snippets/markdown.lua` | Neovim snippets（`oreq`/`otask`） |
+| `~/Vault/Projects/<project>/Tasks/` | 任务文档（Agent 自动创建+更新） |
+| `~/Vault/Projects/<project>/Notes/memory.md` | 项目累积记忆（Agent 自动追加） |
+| `~/Vault/Projects/<project>/Requirements/` | 需求文档（用户编写） |
 
 ## 两轮状态机
 
@@ -117,7 +116,7 @@ project: my-backend
 | `otg daemon` | 常驻守护（fsnotify 监听 + 30min 定时兜底） |
 | `otg daemon --once` | 单次扫描 |
 | `otg find-ready <vault>` | 列出就绪任务（NDJSON） |
-| `otg on-req-changed <vault> <req>` | 需求变更 → 自动创建 TASK + NOTE |
+| `otg on-req-changed <vault> <req>` | 需求变更 → 自动创建 TASK，追加 memory.md |
 | `otg update-status <task> key=val` | 原子更新 frontmatter |
 | `otg resolve-path <map> <project>` | 项目名 → 路径 |
 | `otg register-project <map> <name> <dir>` | 注册新项目到 vault-map |
@@ -159,7 +158,7 @@ obsidian-task-runner/
 │   ├── SKILL.md                # Agent 执行指令
 │   ├── reference.md            # 状态流转参考
 │   └── config/
-├── NOTE-000-template.md        # 项目记忆模板
+├── memory-template.md           # 项目记忆模板（memory.md 格式）
 ├── TASK-000-template.md        # 任务模板
 ├── REQ-000-template.md         # 需求模板（L1/L2/L3）
 ├── .github/workflows/          # CI + E2E
@@ -193,32 +192,30 @@ obsidian-task-runner/
 
 完整见 [`reference.md`](obsidian-task-runner/reference.md)。
 
-## NOTE 字段参考
+## 项目记忆 (memory.md)
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `project` | string | 所属项目 |
-| `type` | enum | `decision` / `pattern` / `bug` / `context` |
-| `status` | enum | `active` / `superseded` / `resolved` |
-| `req_ref` | string | 关联需求文档 |
-| `task_ref` | string | 关联任务文档 |
-| `superseded_by` | string | 替代此笔记的新笔记 ID |
-| `tags` | list | 标签 |
+每个项目维护一份 `Projects/<project>/Notes/memory.md`，记录：
 
-Agent 自主维护 `Notes/` 目录，记录技术决策、编码模式、已知坑位。
+- **技术决策**（Round 1）：为什么选 JWT 不选 Session，为什么用 PostgreSQL
+- **实现经验**（Round 2）：遇到的问题、解决方案、发现的模式
+- **需求上下文**（REQ 创建时）：`otg on-req-changed` 自动追加 `### REQ-<id>` 子节
+
+格式为按时间追加的版本化子节，Agent 在每轮结束后自动写入，不覆盖历史：
 
 ```
-REQ-001-login.md  ──→  TASK-001-login.md  ──→  NOTE-001-login.md
-                              │                      │
-                         Round 1 决策           decision: JWT 方案
-                         Round 2 发现           bug: bcrypt cost 问题
-                              │                      │
-                         状态联动               status: active → resolved
+memory.md
+├── # 项目记忆: my-project
+├── ### REQ-001 · 用户登录
+├── ### v1 · 2026-07-10       ← Round 1 技术决策
+├── ### Round 1 · 2026-07-10  ← Round 2 实现经验
+├── ### Round 1 · 2026-07-11  ← Merge Phase 合并记录
+├── ### REQ-002 · 操作审计     ← 新需求自动追加
+└── ...
 ```
 
-每条 note 通过 frontmatter 双向关联需求与任务，支持 `superseded` 链追溯决策演化。
-
-> **用户不需要写 note** — Agent 在 Round 1/2 自动创建和维护，你只需要审计。
+> **用户不需要写 memory.md** — Agent 自动创建和维护，你只需要审阅。
+>
+> Agent 出计划前**必须先扫描** `memory.md`，在计划中引用已有决策作为依据。
 
 ### 推荐 Obsidian 插件
 
@@ -260,7 +257,7 @@ REQ-001-login.md  ──→  TASK-001-login.md  ──→  NOTE-001-login.md
 | [reference.md](obsidian-task-runner/reference.md) | 状态流转、字段参考、故障排查 |
 | [workflow.md](docs/workflow.md) | 架构图、时序图、Mermaid 流程图 |
 | [go-rewrite-plan.md](docs/go-rewrite-plan.md) | Bash/Python → Go 迁移方案 |
-| [NOTE-000-template.md](NOTE-000-template.md) | 项目记忆模板 |
+| [memory-template.md](memory-template.md) | 项目记忆模板（memory.md 格式） |
 | [TASK-000-template.md](TASK-000-template.md) | 任务文档模板 |
 | [REQ-000-template.md](REQ-000-template.md) | 需求文档模板 |
 
