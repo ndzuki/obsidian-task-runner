@@ -72,7 +72,7 @@ func Run(opts Options) error {
 		if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
 			content := `# 任务总览
 
-> 按 ` + "`project_id`" + ` 聚合所有项目的任务状态。Dataview 插件自动刷新。
+> 从文件路径提取项目名，按 ` + "`project_id`" + ` 聚合。Dataview 插件自动刷新。
 
 ## 按项目汇总
 
@@ -86,7 +86,9 @@ TABLE
   length(filter(rows, (r) => r.status = "done")) AS "已完成",
   length(filter(rows, (r) => r.status = "blocked")) AS "阻塞"
 FROM "Projects"
-WHERE project_id
+FLATTEN regexreplace(file.folder, "^Projects/(\\d+)-.*$", "$1") AS project_id
+FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS category
+WHERE project_id AND category = "Tasks"
 GROUP BY project_id
 SORT project_id ASC
 ` + "```"
