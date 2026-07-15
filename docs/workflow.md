@@ -6,31 +6,29 @@
 
 ```mermaid
 flowchart TD
-    subgraph 触发层
-        A[inotifywait<br/>Tasks/ 或 Requirements/ 变化]
+    subgraph "触发层"
+        A[fsnotify 监听<br/>Projects/ 文件变化]
         B[systemd timer<br/>每 30 分钟兜底]
     end
 
-    subgraph 调度层
-        C[task-watcher.sh<br/>监听文件变化]
-        D[on_req_changed.py<br/>需求变更处理]
-        E[task-runner-daemon.sh<br/>flock 防并发调度器]
+    subgraph "调度层"
+        C[otg daemon<br/>常驻守护进程]
+        D[on-req-changed<br/>需求变更处理]
     end
 
-    subgraph 执行层
-        F[find_ready_tasks.py<br/>发现可处理任务]
-        G[resolve_project_path.py<br/>项目名→本地路径]
-        H{omp -m &lt;model&gt; -p<br/>headless 执行 SKILL.md}
+    subgraph "执行层"
+        E[find-ready<br/>发现可处理任务]
+        F[resolve-path<br/>项目名 → 本地路径]
+        G{omp<br/>headless 执行 SKILL.md}
     end
 
     A --> C
     C --> D
-    D --> E
+    D --> C
+    B --> C
     C --> E
-    B --> E
     E --> F
     F --> G
-    G --> H
 ```
 
 ## 2. 状态机
@@ -160,24 +158,24 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph 任务配置
+    subgraph "任务配置"
         A[assignee: field]
     end
 
-    subgraph 模型选择
+    subgraph "模型选择"
         B{assignee?}
         C[deepseek]
         D[gpt]
         E[其他/空]
     end
 
-    subgraph 执行
+    subgraph "执行"
         F[deepseek-v4-pro<br/>Round 1 + Round 2 + Merge]
         G[gpt-5.5<br/>Round 1 + Round 2 + Merge]
         H[deepseek-v4-flash<br/>轻量任务回退]
     end
 
-    subgraph 权限
+    subgraph "权限"
         I[--auto-approve<br/>Round 1 / Round 2]
         J[--approval-mode yolo<br/>Merge Phase]
     end

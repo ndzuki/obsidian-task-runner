@@ -8,14 +8,14 @@
 
 ```mermaid
 flowchart TD
-    subgraph 单一二进制 otg
+    subgraph "单一二进制 otg"
         CLI[cobra CLI]
         CLI --> Daemon[daemon 子命令]
         CLI --> Tool[tool 子命令]
         CLI --> Install[install 子命令]
     end
 
-    subgraph daemon 模式（常驻）
+    subgraph "daemon 模式（常驻）"
         Daemon --> Watcher[fsnotify 监听]
         Daemon --> Scheduler[任务调度器]
         Scheduler --> Pool[goroutine 池]
@@ -24,7 +24,7 @@ flowchart TD
         Debounce --> Scheduler
     end
 
-    subgraph tool 模式（一次性）
+    subgraph "tool 模式（一次性）"
         Tool --> FindReady[find-ready]
         Tool --> ReqChanged[on-req-changed]
         Tool --> UpdateStatus[update-status]
@@ -33,7 +33,7 @@ flowchart TD
         Tool --> Notify[notify]
     end
 
-    subgraph install 模式
+    subgraph "install 模式"
         Install --> Systemd[systemd 单元部署]
         Install --> Symlink[OMP symlink 配置]
         Install --> Env[环境变量配置]
