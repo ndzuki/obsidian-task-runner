@@ -208,18 +208,23 @@ flowchart LR
 | Round 2: 实现 | `--auto-approve` | 文件操作、运行测试/lint、git commit |
 | Merge Phase | `--approval-mode yolo` | git push、gh pr create/merge、分支清理 |
 
-## 6. 文件变更总览
 
-| 操作 | 谁触发 | 作用 |
-|------|--------|------|
-| `find_ready_tasks.py` | daemon | 扫描 Tasks/ 目录，输出可处理任务（NDJSON） |
-| `update_task_status.py` | agent/daemon | 更新 YAML frontmatter 字段（原子写入） |
-| `resolve_project_path.py` | daemon | 项目名→本地文件系统路径 |
-| `register_project.py` | agent | 新项目脚手架创建后注册到 vault-map.json |
-| `on_req_changed.py` | watcher | 需求文档变化→关联任务重置/标记 |
-| `task-runner-daemon.sh` | watcher/timer | 核心调度器：扫描→解析→执行→通知 |
-| `notify_on_status_change.sh` | daemon | 任务到 gate 状态时发桌面通知 |
-| `update_task_status.py` | agent | 原子更新 frontmatter |
+## 6. 实现说明
+
+现已用 Go 重写成单一二进制（详见 [`go-rewrite-plan.md`](go-rewrite-plan.md)）。以下功能均封装在 `otg` 子命令中：
+
+| 子命令 | 替代原名 | 作用 |
+|--------|---------|------|
+| `otg daemon` | `task-runner-daemon.sh` | 常驻守护进程（fsnotify + 定时兜底） |
+| `otg daemon --once` | systemd oneshot | 单次扫描 |
+| `otg find-ready` | `find_ready_tasks.py` | 列出就绪任务（NDJSON） |
+| `otg on-req-changed` | `on_req_changed.py` | 需求变更处理 |
+| `otg update-status` | `update_task_status.py` | 原子更新 frontmatter |
+| `otg resolve-path` | `resolve_project_path.py` | 项目名 → 路径 |
+| `otg register-project` | `register_project.py` | 注册新项目到 vault-map |
+| `otg install` | `install.sh` | 一键安装（Skill + systemd + 看板） |
+
+`otg daemon` 内置了通知和日志功能，无需额外的 shell 脚本。
 
 ## 7. 关键规则
 
@@ -242,6 +247,6 @@ flowchart LR
 
 ### 并发控制
 
-- `flock` 文件锁：同一时间只允许一个 daemon 实例
+- daemon 内置锁：同一时间只允许一个实例运行
 - 最多重扫 3 轮：当前批次完成后自动检查新任务
 - watcher 触发的新 daemon 遇到锁退出，但不丢任务（当前 daemon 完成本轮后重扫）

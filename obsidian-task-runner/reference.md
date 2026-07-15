@@ -80,6 +80,15 @@ review/conflict ──merge_approved:true──→ Merge Phase
 
 详见 `config/vault-map.example.json`。
 
+## Dataview 看板
+
+安装后可在 Vault 根目录打开 `Tasks-Dashboard.md` 查看任务统计。看板依赖 Dataview 读取任务 frontmatter，不会修改任务文件；任务必须位于 `Projects/**/Tasks/`，并且有正确的 YAML frontmatter。
+
+完整安装步骤、查询解释、目录约定和看板为空的排查顺序见 [`docs/dataview.md`](../docs/dataview.md)。
+
+如果手动调整 Vault 目录层级，需要同步修改看板中的 `FROM` / `WHERE` 查询条件。执行是否成功仍以任务状态、任务记录和 daemon 日志为准，看板只是展示层。
+
+
 ## 故障排查
 
 ### 任务没有被自动处理
@@ -89,14 +98,22 @@ review/conflict ──merge_approved:true──→ Merge Phase
 3. 检查 status 是否为 `ready`、(`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
 4. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
 5. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
-6. 看日志：`tail -f ~/.omp/logs/task-runner.log`
+6. 看日志：`tail -f ~/.omp/logs/otg-daemon.log`
 
 ### 新建需求文档没有自动生成任务
 
 1. 确认文件名格式为 `REQ-<id>-<slug>.md`（如 `REQ-002-user-login.md`）
-2. 确认保存后 watcher 检测到了变更：`tail -f ~/.omp/logs/task-watcher.log`
+
+2. 确认保存后 watcher 检测到了变更：`tail -f ~/.omp/logs/otg-daemon.log`
 3. 如果已存在关联任务（通过 `req_doc` 匹配），不会重复创建，只会更新
 4. 手动重试：`otg on-req-changed <vault> <req_file>`
+
+### Tasks-Dashboard.md 显示为空
+
+1. 确认 Dataview 已启用
+2. 确认任务文件位于 `Projects/**/Tasks/`
+3. 确认 frontmatter YAML 格式正确（两个 `---`，缩进一致）
+4. 详细排查步骤见 [`docs/dataview.md`](../docs/dataview.md) 第 7 节
 
 ### systemd 服务没有启动
 
