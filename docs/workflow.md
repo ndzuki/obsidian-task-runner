@@ -100,8 +100,9 @@ sequenceDiagram
     Daemon->>Agent: omp --auto-approve -m deepseek-v4-pro
 
     Note over Agent: ═══ Round 2: 实现 ═══
+    Note over Daemon,Git: 同仓库并发时，daemon 为每个任务创建独立 Git worktree
 
-    Agent->>Git: git checkout -b task/001-slug
+    Agent->>Git: git switch -c task/001-slug（在任务 worktree）
     Agent->>Agent: 按计划逐步实现代码
     Agent->>Agent: 每步测试 + lint
     Agent->>Agent: git commit
@@ -245,6 +246,9 @@ flowchart LR
 
 ### 并发控制
 
-- daemon 内置锁：同一时间只允许一个实例运行
-- 最多重扫 3 轮：当前批次完成后自动检查新任务
-- watcher 触发的新 daemon 遇到锁退出，但不丢任务（当前 daemon 完成本轮后重扫）
+- daemon 使用单实例文件锁：同一 Vault 同时只运行一个调度 daemon；watcher 或 timer 的重复触发不会启动第二个调度循环。
+- `max_concurrent_tasks` 控制该 daemon 同时运行的 OMP 数，默认 `2`；小于 `1` 时按 `1` 执行。
+- 不同仓库任务可并发；同一仓库仅 Round 2 使用每任务独立的 Git worktree 并发执行。
+- Round 1、Merge 和新项目任务在同一主工作区串行运行，防止并发修改初始化文件、默认分支或共享配置。
+- 运行去重、PID 恢复文件和审计日志按任务文件路径区分；不同项目中相同 `id` 的任务不会互相阻塞。
+- 每批完成后最多重扫 3 轮，拾取执行期间变为 ready 的任务；新 watcher 触发遇到 daemon 锁会退出，不丢任务。

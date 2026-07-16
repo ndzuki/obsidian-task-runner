@@ -10,11 +10,12 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ObsidianVault   string      `json:"obsidian_vault"`
-	NewProjectRoot  string      `json:"new_project_root"`
-	Projects        []Project   `json:"projects"`
-	Notifications   NotifConfig `json:"notifications"`
-	PollIntervalMin int         `json:"poll_interval_minutes"`
+	ObsidianVault      string      `json:"obsidian_vault"`
+	NewProjectRoot     string      `json:"new_project_root"`
+	Projects           []Project   `json:"projects"`
+	Notifications      NotifConfig `json:"notifications"`
+	PollIntervalMin    int         `json:"poll_interval_minutes"`
+	MaxConcurrentTasks int         `json:"max_concurrent_tasks"`
 
 	// Models maps assignee keys to OMP model identifiers.
 	Models map[string]string `json:"models"`
@@ -69,12 +70,13 @@ func ModelReference() string {
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		NewProjectRoot:  filepath.Join(home, "src"),
-		PollIntervalMin: 30,
-		SkillInstallDir: filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
-		Models:          DefaultModels(),
-		OMPCmd:          "omp",
-		Notifications:   NotifConfig{Desktop: true},
+		NewProjectRoot:     filepath.Join(home, "src"),
+		PollIntervalMin:    30,
+		MaxConcurrentTasks: 2,
+		SkillInstallDir:    filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		Models:             DefaultModels(),
+		OMPCmd:             "omp",
+		Notifications:      NotifConfig{Desktop: true},
 	}
 }
 

@@ -13,15 +13,15 @@ import (
 
 // Options holds installation configuration.
 type Options struct {
-	ObsidianVault      string
-	NewProjectRoot     string
-	SkillInstallDir    string
-	NotifyEnabled      bool
-	PollIntervalMin    int
-	SystemdEnabled     bool
-	Force              bool
-	DryRun             bool
-	SrcDir             string // source directory with skill files
+	ObsidianVault   string
+	NewProjectRoot  string
+	SkillInstallDir string
+	NotifyEnabled   bool
+	PollIntervalMin int
+	SystemdEnabled  bool
+	Force           bool
+	DryRun          bool
+	SrcDir          string // source directory with skill files
 }
 
 // Run performs the installation.
@@ -176,6 +176,7 @@ func generateVaultMap(opts Options) error {
 		"projects":              []interface{}{},
 		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes": opts.PollIntervalMin,
+		"max_concurrent_tasks":  2,
 	}
 
 	if opts.DryRun {

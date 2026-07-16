@@ -23,17 +23,20 @@ description: >
 
 ## 输入
 
-你会收到一个 task_id（如 `/obsidian-task-runner 003`）。如果没有 task_id，调用 `find_ready_tasks.py` 取优先级最高的。
+你会收到一个 task reference：任务 ID（如 `/obsidian-task-runner 003`）或任务 markdown 的绝对路径（如 `/obsidian-task-runner /vault/Projects/001-demo/Tasks/TASK-003-demo.md`）。
 
 ## 执行流程
 
 ### Step 1: 找到任务
 
-如果提供了 task_id：
+如果提供的是以 `.md` 结尾的绝对路径：
+- 直接读取该任务文件；路径不存在或不在 `$OBSIDIAN_VAULT/Projects/*/Tasks/` 下时，输出错误并退出。
+
+如果提供 task_id：
 - 在 `$OBSIDIAN_VAULT/Projects/*/Tasks/` 下搜索文件名包含该 id 的 .md 文件
 - 读第一个匹配的文件
 
-如果没有提供 task_id：
+如果没有 task reference：
 ```bash
 otg find-ready $OBSIDIAN_VAULT
 ```
@@ -184,11 +187,12 @@ otg find-ready $OBSIDIAN_VAULT
 
 1. **读批准的计划**：从任务文档的「## 实现计划」section 读取当前最新版本（最后一个 `### v{N}` 子节）。
 
-2. **进入项目目录**：cd 到 vault-map.json 解析出的项目路径。
+2. **使用当前工作目录**：daemon 已为既有项目的 Round 2 准备独立 Git worktree。不得再根据 `vault-map.json` 切换目录；在当前目录创建分支和实现，避免与并发任务共享工作区。
 
-3. **创建分支**：
+3. **创建或恢复分支**：
    ```bash
-   git checkout -b task/<id>-<slug>
+   BRANCH="task/<id>-<slug>"
+   git switch "$BRANCH" 2>/dev/null || git switch -c "$BRANCH"
    ```
    其中 `<slug>` 从任务 title 生成（小写、空格替换为 `-`、去掉特殊字符）。
 
@@ -330,7 +334,6 @@ otg find-ready $OBSIDIAN_VAULT
 5. **检查并推送 feature 分支**：
    ```bash
    if git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
-     git checkout "$TARGET_BRANCH"
      git push -u origin "$TARGET_BRANCH"
    else
      echo "target_branch 缺失或本地不存在，无法自动 PR/合并"
@@ -367,7 +370,6 @@ otg find-ready $OBSIDIAN_VAULT
      gh pr merge "$TARGET_BRANCH" --merge --delete-branch
      git checkout "$DEFAULT_BRANCH"
      git pull --ff-only origin "$DEFAULT_BRANCH"
-     git branch -d "$TARGET_BRANCH" 2>/dev/null || true
      ```
    - 如果 `gh` 不可用，回退为本地合并：
      ```bash
@@ -375,7 +377,6 @@ otg find-ready $OBSIDIAN_VAULT
      git merge --no-ff "$TARGET_BRANCH" -m "merge: <title> (#<id>)"
      git push origin "$DEFAULT_BRANCH"
      git push origin --delete "$TARGET_BRANCH" || true
-     git branch -d "$TARGET_BRANCH"
      ```
 
 8. **处理合并结果**：
