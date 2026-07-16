@@ -58,7 +58,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 | `title` | string | ✅ | 任务标题 |
 | `project` | string | ✅ | vault-map.json 的项目 key |
 | `new_project` | bool | | 是否从零创建新项目 |
-| `template` | string | | 新项目脚手架模板名 |
+| `template` | string | | 新项目技术栈提示（如 `go-gin-microservice`），Agent 出计划时参考，非强制 |
 | `priority` | P0-P4 | | 优先级，默认 P2 |
 | `due_date` | date | | 截止日期 |
 | `estimated_hours` | float | | 预估工时 |
