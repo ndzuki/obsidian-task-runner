@@ -100,9 +100,9 @@ sequenceDiagram
     Daemon->>Agent: omp --auto-approve -m deepseek-v4-pro
 
     Note over Agent: ═══ Round 2: 实现 ═══
-    Note over Daemon,Git: 同仓库并发时，daemon 为每个任务创建独立 Git worktree
+    Note over Daemon,Git: 同仓库并发时，daemon 为每个任务创建独立 Git worktree<br/>target_branch 已存在则绑定/校验该分支
 
-    Agent->>Git: git switch -c task/001-slug（在任务 worktree）
+    Agent->>Git: 在任务 worktree 创建或恢复 task/001-slug
     Agent->>Agent: 按计划逐步实现代码
     Agent->>Agent: 每步测试 + lint
     Agent->>Agent: git commit
@@ -247,8 +247,13 @@ flowchart LR
 ### 并发控制
 
 - daemon 使用单实例文件锁：同一 Vault 同时只运行一个调度 daemon；watcher 或 timer 的重复触发不会启动第二个调度循环。
-- `max_concurrent_tasks` 控制该 daemon 同时运行的 OMP 数，默认 `2`；小于 `1` 时按 `1` 执行。
-- 不同仓库任务可并发；同一仓库仅 Round 2 使用每任务独立的 Git worktree 并发执行。
-- Round 1、Merge 和新项目任务在同一主工作区串行运行，防止并发修改初始化文件、默认分支或共享配置。
+- `max_concurrent_tasks` 控制真正执行中的 OMP headless 数量，默认 `2`；小于 `1` 时按 `1` 执行。等待仓库独占许可的任务不占用全局槽位。
+- 调度分为两个阶段：先解析仓库并准备执行目录，再派发 OMP。Round 2 的 worktree 创建或校验在仓库短锁内完成，完成后立即释放锁，不把准备时间计入 OMP 并发。
+- 如果 TASK 已有 `target_branch`，daemon 创建 worktree 时直接 checkout 该本地分支；分支不存在则创建并绑定。复用已有 worktree 时必须验证当前分支与 `target_branch` 一致，否则跳过任务并记录错误。
+- 如果 `target_branch: ""`，说明任务尚未形成实现分支；worktree 可以暂时从 `HEAD` detached 创建，Round 2 agent 随后在该 worktree 中创建 `task/<id>-<slug>`，完成后写回 frontmatter。
+- Round 2 在任务专属 worktree 中运行，可与同仓库的其他 Round 2、Round 1 或 Merge 并行；它们不共享工作目录和 Git index。
+- Round 1、Merge 和新项目任务使用主工作区，必须获取仓库独占许可；同一仓库的这些阶段严格串行，防止并发修改默认分支、初始化文件或共享配置。
+- 调度器按就绪任务顺序查找当前可运行项。某个独占任务因同仓库正在执行而等待时，调度器会跳过它，继续派发后续可在 worktree 中运行的 Round 2，避免等待者提前占满全局槽位。
+- 示例：同仓库队列为 `Merge A → Merge B → Round 2 C`，`max_concurrent_tasks: 2`。调度器先运行 `Merge A + Round 2 C`；`Merge B` 不占槽位，等待 `Merge A` 释放主工作区许可。
 - 运行去重、PID 恢复文件和审计日志按任务文件路径区分；不同项目中相同 `id` 的任务不会互相阻塞。
 - 每批完成后最多重扫 3 轮，拾取执行期间变为 ready 的任务；新 watcher 触发遇到 daemon 锁会退出，不丢任务。

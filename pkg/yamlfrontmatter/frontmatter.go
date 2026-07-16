@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,43 +19,66 @@ import (
 // Frontmatter maps all known fields in a task document frontmatter.
 // Unknown fields are preserved in Extra.
 type Frontmatter struct {
-	ID              string   `yaml:"id"`
-	Title           string   `yaml:"title"`
-	Project         string   `yaml:"project"`
-	ProjectID       string   `yaml:"project_id"`
-	NewProject      bool     `yaml:"new_project"`
-	Template        string   `yaml:"template"`
-	Status          string   `yaml:"status"`
-	PlanApproved    bool     `yaml:"plan_approved"`
-	MergeApproved   bool     `yaml:"merge_approved"`
-	PendingReq      bool     `yaml:"pending_req"`
-	OffPeakOnly     bool     `yaml:"off_peak_only"`
-	PlanVersion     int      `yaml:"plan_version"`
-	Created         string   `yaml:"created"`
-	Updated         string   `yaml:"updated"`
-	Completed       string   `yaml:"completed"`
-	Priority        string   `yaml:"priority"`
-	DueDate         string   `yaml:"due_date"`
-	EstimatedHours  float64  `yaml:"estimated_hours"`
-	ActualHours     float64  `yaml:"actual_hours"`
-	Assignee        string   `yaml:"assignee"`
-	Reviewer        string   `yaml:"reviewer"`
-	Author          string   `yaml:"author"`
-	ReqDoc          string   `yaml:"req_doc"`
-	Component       string   `yaml:"component"`
-	Tags            []string `yaml:"tags"`
-	Epic            string   `yaml:"epic"`
-	Parent          string   `yaml:"parent"`
-	Blocks          []string `yaml:"blocks"`
-	BlockedBy       []string `yaml:"blocked_by"`
-	TargetBranch    string   `yaml:"target_branch"`
-	TargetEnv       string   `yaml:"target_env"`
-	PRURL           string   `yaml:"pr_url"`
-	SwitchSettings  bool     `yaml:"switch_settings"`
-	AutoApprove     bool     `yaml:"auto_approve"`
+	ID             string   `yaml:"id"`
+	Title          string   `yaml:"title"`
+	Project        string   `yaml:"project"`
+	ProjectID      string   `yaml:"project_id"`
+	NewProject     bool     `yaml:"new_project"`
+	Template       string   `yaml:"template"`
+	Status         string   `yaml:"status"`
+	PlanApproved   bool     `yaml:"plan_approved"`
+	MergeApproved  bool     `yaml:"merge_approved"`
+	PendingReq     bool     `yaml:"pending_req"`
+	OffPeakOnly    bool     `yaml:"off_peak_only"`
+	PlanVersion    int      `yaml:"plan_version"`
+	Created        string   `yaml:"created"`
+	Updated        string   `yaml:"updated"`
+	Completed      string   `yaml:"completed"`
+	Priority       string   `yaml:"priority"`
+	DueDate        string   `yaml:"due_date"`
+	EstimatedHours float64  `yaml:"estimated_hours"`
+	ActualHours    float64  `yaml:"actual_hours"`
+	Assignee       string   `yaml:"assignee"`
+	Reviewer       string   `yaml:"reviewer"`
+	Author         string   `yaml:"author"`
+	ReqDoc         string   `yaml:"req_doc"`
+	Component      string   `yaml:"component"`
+	Tags           []string `yaml:"tags"`
+	Epic           string   `yaml:"epic"`
+	Parent         string   `yaml:"parent"`
+	Blocks         []string `yaml:"blocks"`
+	BlockedBy      []string `yaml:"blocked_by"`
+	TargetBranch   string   `yaml:"target_branch"`
+	TargetEnv      string   `yaml:"target_env"`
+	PRURL          string   `yaml:"pr_url"`
+	SwitchSettings bool     `yaml:"switch_settings"`
+	AutoApprove    bool     `yaml:"auto_approve"`
 
 	// Extra holds any YAML keys not explicitly mapped above.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// normalizeNumericStrings converts quoted numeric values for known numeric
+// fields to YAML numeric scalars before strict decoding. Obsidian and other
+// frontmatter editors may serialize a number such as 42 as "42".
+func normalizeNumericStrings(doc *yaml.Node) error {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(doc.Content[0].Content); i += 2 {
+		key := doc.Content[0].Content[i]
+		value := doc.Content[0].Content[i+1]
+		if (key.Value != "estimated_hours" && key.Value != "actual_hours") || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			continue
+		}
+		if _, err := strconv.ParseFloat(value.Value, 64); err != nil {
+			return fmt.Errorf("%s must be a number: %w", key.Value, err)
+		}
+		value.Tag = "!!float"
+	}
+
+	return nil
 }
 
 // Parse extracts YAML frontmatter from a markdown document.
@@ -76,10 +100,16 @@ func Parse(data []byte) (*Frontmatter, error) {
 		return &Frontmatter{}, nil
 	}
 
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if err := normalizeNumericStrings(&doc); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
 	var fm Frontmatter
-	dec := yaml.NewDecoder(strings.NewReader(fmBlock))
-	dec.KnownFields(true)
-	if err := dec.Decode(&fm); err != nil {
+	if err := doc.Decode(&fm); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 	return &fm, nil
@@ -99,8 +129,8 @@ func Update(path string, updates map[string]interface{}) error {
 	if end == -1 {
 		return fmt.Errorf("%s frontmatter not closed", path)
 	}
-	fmText := rest[:end]                     // frontmatter body
-	body := rest[end+4:]                      // skip "\n---\n"
+	fmText := rest[:end] // frontmatter body
+	body := rest[end+4:] // skip "\n---\n"
 	if body == "" {
 		body = "\n"
 	}
@@ -145,6 +175,7 @@ func Update(path string, updates map[string]interface{}) error {
 	newContent := "---\n" + newFM + "\n---" + body
 	return atomicWrite(path, []byte(newContent))
 }
+
 // atomicWrite writes data to a temporary file, fsyncs, and renames.
 func atomicWrite(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-")

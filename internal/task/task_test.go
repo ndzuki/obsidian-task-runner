@@ -118,6 +118,9 @@ blocked_by: []
 	if tasks[1].ID != "001" {
 		t.Errorf("second task id = %q, want 001", tasks[1].ID)
 	}
+	if tasks[1].TargetBranch != "" {
+		t.Errorf("target branch = %q, want empty", tasks[1].TargetBranch)
+	}
 }
 
 func TestDeriveProjectDir(t *testing.T) {

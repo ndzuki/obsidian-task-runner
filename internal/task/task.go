@@ -15,22 +15,23 @@ import (
 
 // ReadyTask is the NDJSON output format for find-ready.
 type ReadyTask struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Project        string `json:"project"`
-	NewProject     bool   `json:"new_project"`
-	Priority       string `json:"priority"`
-	FilePath       string `json:"file_path"`
-	FileName       string `json:"file_name"`
-	Status         string `json:"status"`
-	PlanApproved   bool   `json:"plan_approved"`
-	MergeApproved  bool   `json:"merge_approved"`
-	ReqDoc         string `json:"req_doc"`
-	Template       string `json:"template"`
-	Assignee       string `json:"assignee"`
-	AutoApprove    bool   `json:"auto_approve"`
-	PendingReq     bool   `json:"pending_req"`
-	OffPeakOnly    bool   `json:"off_peak_only"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Project       string `json:"project"`
+	NewProject    bool   `json:"new_project"`
+	Priority      string `json:"priority"`
+	FilePath      string `json:"file_path"`
+	FileName      string `json:"file_name"`
+	Status        string `json:"status"`
+	PlanApproved  bool   `json:"plan_approved"`
+	MergeApproved bool   `json:"merge_approved"`
+	ReqDoc        string `json:"req_doc"`
+	Template      string `json:"template"`
+	Assignee      string `json:"assignee"`
+	AutoApprove   bool   `json:"auto_approve"`
+	PendingReq    bool   `json:"pending_req"`
+	OffPeakOnly   bool   `json:"off_peak_only"`
+	TargetBranch  string `json:"target_branch"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -183,14 +184,16 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				MergeApproved: fm.MergeApproved, ReqDoc: fm.ReqDoc,
 				Template: fm.Template, Assignee: fm.Assignee,
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
-				OffPeakOnly: fm.OffPeakOnly,
+				OffPeakOnly: fm.OffPeakOnly, TargetBranch: fm.TargetBranch,
 			})
 		}
 	}
 	sort.Slice(ready, func(i, j int) bool {
 		pi := priorityOrder(ready[i].Priority)
 		pj := priorityOrder(ready[j].Priority)
-		if pi != pj { return pi < pj }
+		if pi != pj {
+			return pi < pj
+		}
 		return ready[i].ID < ready[j].ID
 	})
 	return ready, nil
@@ -212,12 +215,18 @@ func DebugReadyTasks(vaultPath string, logger *log.Logger) {
 		return
 	}
 	for _, proj := range projEntries {
-		if !proj.IsDir() { continue }
+		if !proj.IsDir() {
+			continue
+		}
 		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
 		entries, err := os.ReadDir(tasksDir)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" { continue }
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
 			filePath := filepath.Join(tasksDir, entry.Name())
 			data, err := os.ReadFile(filePath)
 			if err != nil {

@@ -45,6 +45,33 @@ blocked_by: []
 		}
 	})
 
+	t.Run("quoted numeric hours", func(t *testing.T) {
+		fm, err := Parse([]byte(`---
+estimated_hours: "40"
+actual_hours: "42"
+---
+`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fm.EstimatedHours != 40 {
+			t.Errorf("estimated_hours = %v, want 40", fm.EstimatedHours)
+		}
+		if fm.ActualHours != 42 {
+			t.Errorf("actual_hours = %v, want 42", fm.ActualHours)
+		}
+	})
+
+	t.Run("non-numeric quoted hours", func(t *testing.T) {
+		_, err := Parse([]byte(`---
+actual_hours: "forty-two"
+---
+`))
+		if err == nil {
+			t.Error("expected error for non-numeric actual_hours")
+		}
+	})
+
 	t.Run("no frontmatter", func(t *testing.T) {
 		fm, err := Parse([]byte("# Just a heading"))
 		if err != nil {

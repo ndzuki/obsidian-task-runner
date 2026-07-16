@@ -128,14 +128,18 @@ otg install \
 
 ### 并发任务
 
-`max_concurrent_tasks` 是 daemon 同时运行的 OMP 上限，默认 `2`；设为小于 `1` 的值时按 `1` 执行。调高该值会同时增加模型请求、token 消耗和本机 CPU/内存占用。
+`max_concurrent_tasks` 是 daemon 同时运行的 **OMP headless 进程**上限，默认 `2`；设为小于 `1` 的值时按 `1` 执行。等待仓库独占许可或准备 worktree 的任务不占用该额度。调高该值会同时增加模型请求、token 消耗和本机 CPU/内存占用。
 
-- **不同项目仓库**：可并行执行。
-- **同一仓库的 Round 2**：每个任务使用 `~/.omp/worktrees/` 下的独立 Git worktree，可并行实现，不共享工作目录、index 或当前分支。
-- **同一仓库的 Round 1、Merge 与新项目任务**：在主工作区串行执行，避免并发修改同一工作目录或默认分支。
-- **任务身份**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
+- **不同项目仓库**：只要有空闲 OMP 槽位即可并行执行。
+- **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `~/.omp/worktrees/` 下的任务专属 Git worktree，再释放仓库锁；实际 OMP 在独立 worktree 中运行，可与同仓库其他 Round 2 并行。
+- **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
+- **空分支字段兼容**：尚未进入 Round 2 的任务可以保留 `target_branch: ""`。daemon 先提供任务专属 worktree，agent 在其中创建 `task/<id>-<slug>`；Round 2 完成后把实际分支写回 `target_branch`。
+- **同一仓库的 Round 1、Merge 与新项目任务**：使用主工作区，必须获取仓库独占许可，彼此串行执行。
+- **避免队头阻塞**：等待同仓库独占许可的任务保留在调度队列中，不占 OMP 槽位。排在其后的、已经有独立 worktree 的 Round 2 可以填补空闲槽位。例如 `Merge A → Merge B → Round 2 C` 且上限为 `2` 时，实际先并行运行 `Merge A + Round 2 C`，`Merge B` 等待 `Merge A` 完成。
+- **安全边界**：Round 2 可与同仓库 Merge 并行，是因为它使用独立 worktree；多个 Merge、Round 1 或新项目任务仍不会同时修改主工作区。
+- **任务身份与恢复**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
 
-修改 `max_concurrent_tasks` 后，常驻 watcher daemon 需要重启才能读取新值；`otg daemon --once` 会在每次启动时读取配置。
+修改 `max_concurrent_tasks` 或安装新调度器二进制后，常驻 watcher daemon 需要重启才能生效；`otg daemon --once` 会在每次启动时读取配置。
 
 ### 5. 确认服务状态
 

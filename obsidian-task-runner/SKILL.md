@@ -187,14 +187,16 @@ otg find-ready $OBSIDIAN_VAULT
 
 1. **读批准的计划**：从任务文档的「## 实现计划」section 读取当前最新版本（最后一个 `### v{N}` 子节）。
 
-2. **使用当前工作目录**：daemon 已为既有项目的 Round 2 准备独立 Git worktree。不得再根据 `vault-map.json` 切换目录；在当前目录创建分支和实现，避免与并发任务共享工作区。
+2. **使用当前工作目录**：daemon 已为既有 Git 项目的 Round 2 准备任务专属 worktree。不得再根据 `vault-map.json` 切换目录，避免与并发任务共享工作区。
 
-3. **创建或恢复分支**：
-   ```bash
-   BRANCH="task/<id>-<slug>"
-   git switch "$BRANCH" 2>/dev/null || git switch -c "$BRANCH"
-   ```
-   其中 `<slug>` 从任务 title 生成（小写、空格替换为 `-`、去掉特殊字符）。
+3. **确认或创建任务分支**：
+   - 如果 frontmatter 的 `target_branch` 非空，daemon 已将 worktree 绑定到该分支；先执行 `git branch --show-current`，结果必须与 `target_branch` 一致，不得创建其他分支。
+   - 如果 `target_branch` 为空，说明这是首次进入 Round 2。在当前 worktree 创建 `task/<id>-<slug>`：
+     ```bash
+     BRANCH="task/<id>-<slug>"
+     git switch -c "$BRANCH"
+     ```
+   - `<slug>` 从任务 title 生成（小写、空格替换为 `-`、去掉特殊字符）。后续恢复必须复用同一 worktree 和分支。
 
 4. **设置状态为 implementing**：
    ```bash
