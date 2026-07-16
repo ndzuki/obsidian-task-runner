@@ -54,7 +54,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 
 | 字段 | 类型 | 必需 | 说明 |
 |------|------|------|------|
-| `id` | string | ✅ | 唯一任务编号 |
+| `id` | string | ✅ | 项目内唯一任务编号；不同项目可使用相同编号。 |
 | `title` | string | ✅ | 任务标题 |
 | `project` | string | ✅ | vault-map.json 的项目 key |
 | `new_project` | bool | | 是否从零创建新项目 |
@@ -78,7 +78,12 @@ review/conflict ──merge_approved:true──→ Merge Phase
 
 ## vault-map.json 配置参考
 
-详见 `config/vault-map.example.json`。
+详见 `config/vault-map.example.json`。常用调度字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `poll_interval_minutes` | int | `30` | watcher 未触发时的兜底扫描间隔。 |
+| `max_concurrent_tasks` | int | `2` | 单个 daemon 同时运行的 OMP 上限；小于 `1` 时按 `1` 执行。不同仓库任务可并行；同一仓库仅 Round 2 通过独立 Git worktree 并行。 |
 
 ## Dataview 看板
 
@@ -98,7 +103,8 @@ review/conflict ──merge_approved:true──→ Merge Phase
 3. 检查 status 是否为 `ready`、(`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
 4. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
 5. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
-6. 看日志：`tail -f ~/.omp/logs/otg-daemon.log`
+6. 并发任务卡住时，检查 `~/.omp/logs/tasks/` 下对应任务文件路径 hash 的 `.pid` 和审计日志；不同项目即使 `id` 相同也使用独立文件。
+7. 看日志：`tail -f ~/.omp/logs/otg-daemon.log`
 
 ### 新建需求文档没有自动生成任务
 

@@ -22,5 +22,6 @@
     "desktop": true,
     "sound": false
   },
-  "poll_interval_minutes": 30
+  "poll_interval_minutes": 30,
+  "max_concurrent_tasks": 2
 }

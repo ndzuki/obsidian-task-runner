@@ -119,11 +119,23 @@ otg install \
     "flash": "deepseek/deepseek-v4-flash"
   },
   "notifications": { "desktop": true },
-  "poll_interval_minutes": 30
+  "poll_interval_minutes": 30,
+  "max_concurrent_tasks": 2
 }
 ```
 
 `project` 必须匹配 `projects[].name`。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `flash`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
+
+### 并发任务
+
+`max_concurrent_tasks` 是 daemon 同时运行的 OMP 上限，默认 `2`；设为小于 `1` 的值时按 `1` 执行。调高该值会同时增加模型请求、token 消耗和本机 CPU/内存占用。
+
+- **不同项目仓库**：可并行执行。
+- **同一仓库的 Round 2**：每个任务使用 `~/.omp/worktrees/` 下的独立 Git worktree，可并行实现，不共享工作目录、index 或当前分支。
+- **同一仓库的 Round 1、Merge 与新项目任务**：在主工作区串行执行，避免并发修改同一工作目录或默认分支。
+- **任务身份**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
+
+修改 `max_concurrent_tasks` 后，常驻 watcher daemon 需要重启才能读取新值；`otg daemon --once` 会在每次启动时读取配置。
 
 ### 5. 确认服务状态
 

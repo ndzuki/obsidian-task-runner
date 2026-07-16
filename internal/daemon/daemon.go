@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +31,8 @@ type Runner struct {
 	cfg       *config.Config
 	logger    *log.Logger
 	logWriter *logutil.RotatingWriter
+	taskRuns  sync.Map
+	repoLocks sync.Map
 }
 
 func New(cfg *config.Config) *Runner {
@@ -168,19 +172,114 @@ func (r *Runner) scanAndProcess() error {
 	return nil
 }
 
+// processBatch starts independent tasks concurrently, bounded by configuration.
+// Round 2 tasks receive dedicated Git worktrees so they can safely share a repository.
 func (r *Runner) processBatch(tasks []task.ReadyTask) int {
-	processed := 0
+	limit := r.cfg.MaxConcurrentTasks
+	if limit < 1 {
+		limit = 1
+	}
+
+	sem := make(chan struct{}, limit)
+	results := make(chan int, len(tasks))
+	var wg sync.WaitGroup
 	for _, t := range tasks {
+		t := t
 		repoDir, err := r.resolveRepo(t)
 		if err != nil {
 			r.logger.Printf("task %s: %v", t.ID, err)
 			continue
 		}
-		// Skip if an OMP process is already running for this task.
-		if isOMPRunning(t.ID) {
-			r.logger.Printf("task %s: skipping (OMP already running)", t.ID)
-			continue
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results <- r.processTask(t, repoDir)
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	processed := 0
+	for count := range results {
+		processed += count
+	}
+	return processed
+}
+
+func (r *Runner) processTask(t task.ReadyTask, repoDir string) int {
+	taskKey := taskRunKey(t.FilePath)
+	if _, loaded := r.taskRuns.LoadOrStore(taskKey, struct{}{}); loaded {
+		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", t.ID)
+		return 0
+	}
+	defer r.taskRuns.Delete(taskKey)
+
+	lock := r.repoLock(repoDir)
+	if !isRound2(t) {
+		lock.Lock()
+		defer lock.Unlock()
+		return r.processBatchSequential([]task.ReadyTask{t}, repoDir)
+	}
+
+	lock.Lock()
+	worktree, err := ensureTaskWorktree(repoDir, taskKey)
+	lock.Unlock()
+	if err != nil {
+		r.logger.Printf("task %s: prepare worktree: %v", t.ID, err)
+		return 0
+	}
+	return r.processBatchSequential([]task.ReadyTask{t}, worktree)
+}
+
+func taskRunKey(taskPath string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(taskPath)))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+func taskPIDFile(taskLogDir, taskID, taskPath string) string {
+	return filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s.pid", taskID, taskRunKey(taskPath)))
+}
+
+func (r *Runner) repoLock(repoDir string) *sync.Mutex {
+	lock, _ := r.repoLocks.LoadOrStore(repoDir, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func isRound2(t task.ReadyTask) bool {
+	return t.PlanApproved && (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
+}
+
+func ensureTaskWorktree(repoDir, taskID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))
+	path := filepath.Join(home, ".omp", "worktrees", repoHash[:12], "TASK-"+taskID)
+	if _, err := os.Stat(path); err == nil {
+		cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("validate existing worktree %s: %w: %s", path, err, strings.TrimSpace(string(output)))
 		}
+		return path, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat worktree path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "", fmt.Errorf("create worktree parent: %w", err)
+	}
+	cmd := exec.Command("git", "-C", repoDir, "worktree", "add", "--detach", path, "HEAD")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("create worktree: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return path, nil
+}
+
+func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {
+	processed := 0
+	for _, t := range tasks {
 		taskPath := t.FilePath
 
 		if t.Status == "blocked" {
@@ -235,11 +334,12 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "implementing"})
 			t.Status = "implementing"
 		}
-		args = append(args, "-p", "/obsidian-task-runner "+t.ID)
+		args = append(args, "-p", "/obsidian-task-runner "+t.FilePath)
 		taskLogDir := filepath.Join(logDir, "tasks")
 		os.MkdirAll(taskLogDir, 0755)
 		ts := time.Now().Format("20060102-150405")
-		logPath := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s-%s.log", t.ID, ts, phase))
+		taskKey := taskRunKey(t.FilePath)
+		logPath := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s-%s-%s.log", t.ID, taskKey, ts, phase))
 
 		f, err := os.Create(logPath)
 		if f != nil {
@@ -259,8 +359,8 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		default:
 			timeout = 30 * time.Minute
 		}
-		// Check if OMP is already running for this task (daemon restart recovery)
-		pidFile := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s.pid", t.ID))
+		// Check if OMP is already running for this task (daemon restart recovery).
+		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
 		if t.Status == "implementing" {
 			if data, err := os.ReadFile(pidFile); err == nil {
 				var existingPID int
@@ -291,8 +391,6 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		ompLogPath := filepath.Join(logDir, "omp."+time.Now().Format("2006-01-02")+".log")
 		tailDone := make(chan struct{})
 		go tailOMPLog(ompLogPath, f, tailDone)
-
-
 
 		// Start OMP and write PID file for crash recovery
 		if startErr := cmd.Start(); startErr != nil {
@@ -553,13 +651,6 @@ func isNoise(line string) bool {
 		}
 	}
 	return false
-}
-
-// isOMPRunning checks if an OMP process is already executing for the given task ID.
-func isOMPRunning(taskID string) bool {
-	cmd := exec.Command("pgrep", "-f", "obsidian-task-runner "+taskID)
-	err := cmd.Run()
-	return err == nil
 }
 
 func acquireLock(cfg *config.Config) (func(), error) {
