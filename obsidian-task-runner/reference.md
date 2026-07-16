@@ -83,7 +83,9 @@ review/conflict ──merge_approved:true──→ Merge Phase
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `poll_interval_minutes` | int | `30` | watcher 未触发时的兜底扫描间隔。 |
-| `max_concurrent_tasks` | int | `2` | 单个 daemon 同时运行的 OMP 上限；小于 `1` 时按 `1` 执行。不同仓库任务可并行；同一仓库仅 Round 2 通过独立 Git worktree 并行。 |
+| `max_concurrent_tasks` | int | `2` | 单个 daemon 同时执行的 OMP headless 上限；小于 `1` 时按 `1` 执行。等待仓库独占许可或准备 worktree 的任务不占槽位。不同仓库可并行；同一仓库的 Round 2 使用独立 worktree，可与 Round 2 或主工作区独占阶段并行。 |
+
+修改并发上限或安装新二进制后，执行 `systemctl --user restart omp-task-watcher.service` 让常驻 daemon 重新读取配置和代码。
 
 ## Dataview 看板
 
@@ -141,9 +143,27 @@ journalctl --user -u omp-task-runner.service -n 50
 
 ### 并发任务处理
 
-`task-runner-daemon.sh` 使用 flock 文件锁防止并发——同一时间只允许一个 daemon 实例运行。watcher 触发的新 daemon 遇到锁时会直接退出，但**当前运行的 daemon 会在处理完当前批次后自动重扫**（最多 3 轮），拾起中途被 `on_req_changed` 重置的任务。因此需求文档更新后即使 daemon 正忙，也不会丢失——最多延迟到当前 OMP 会话完成后的一轮重扫。
+daemon 使用 flock 文件锁保证同一 Vault 只有一个调度实例。watcher 或 timer 的重复触发遇到锁会退出；当前 daemon 会在批次完成后最多重扫 3 轮，拾取执行期间新变为 ready 的任务。
 
-如果系统重启后锁文件残留，daemon 会自动覆盖（锁与文件描述符绑定，进程退出后自动释放）。
+`max_concurrent_tasks` 只计算已派发的 OMP headless。调度器先准备执行目录，再寻找当前可运行的任务：
+
+- Round 2：在仓库短锁内创建或复用任务专属 worktree，然后释放锁；OMP 在 worktree 中执行。
+- `target_branch` 已有值：worktree 必须绑定该分支；本地分支不存在时自动创建。已有 worktree 的分支不一致会被拒绝，防止恢复到其他任务分支。
+- `target_branch: ""`：属于合法初始状态，不需要批量预填。Round 2 在任务 worktree 内创建分支，并在进入 `review` 时写回实际分支名。
+- Round 1、Merge、新项目：使用主工作区，必须取得仓库独占许可；同仓库的这些阶段串行。
+- 某个独占任务正在等待同仓库许可时，它不会占用 OMP 槽位。调度器继续扫描队列，后续可在 worktree 中执行的 Round 2 可以先启动。
+
+例如同仓库队列为 `Merge A → Merge B → Round 2 C`，并发上限为 `2`：应看到 `Merge A` 和 `Round 2 C` 同时运行，`Merge B` 等待。若只看到一个 OMP，按以下顺序检查：
+
+1. `systemctl --user status omp-task-watcher.service`：确认服务进程树中实际 OMP 数量。
+2. `otg find-ready "$OBSIDIAN_VAULT"`：确认还有可执行的 Round 2；`plan-review` 必须同时满足 `plan_approved: true`。
+3. `journalctl --user -u omp-task-watcher.service -n 100`：检查 worktree 准备失败、项目路径解析失败或模型启动失败。
+4. `~/.omp/logs/tasks/`：检查任务审计日志和按任务路径 hash 命名的 PID 文件。
+5. `git -C <repo> worktree list --porcelain`：确认每个任务 worktree 绑定到预期的 `refs/heads/task/<id>-<slug>`；处于 Round 2 初期且 `target_branch` 仍为空时，短暂 detached 属于正常状态。
+
+6. 修改配置或更新二进制后，确认 watcher 已重启；旧进程不会自动加载新调度逻辑。
+
+如果系统重启后锁文件残留，daemon 仍可启动；flock 与文件描述符绑定，原进程退出后锁自动释放。
 
 ### 断点续跑
 

@@ -35,6 +35,19 @@ type Runner struct {
 	repoLocks sync.Map
 }
 
+type preparedTask struct {
+	task      task.ReadyTask
+	repoDir   string
+	workDir   string
+	exclusive bool
+}
+
+type taskResult struct {
+	repoDir   string
+	exclusive bool
+	processed int
+}
+
 func New(cfg *config.Config) *Runner {
 	return &Runner{cfg: cfg}
 }
@@ -172,65 +185,105 @@ func (r *Runner) scanAndProcess() error {
 	return nil
 }
 
-// processBatch starts independent tasks concurrently, bounded by configuration.
-// Round 2 tasks receive dedicated Git worktrees so they can safely share a repository.
+// processBatch schedules OMP executions up to the configured limit. Only an
+// executing OMP process consumes a global slot; tasks waiting for a repository
+// exclusive phase remain pending so Round 2 worktree tasks can use that slot.
 func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 	limit := r.cfg.MaxConcurrentTasks
 	if limit < 1 {
 		limit = 1
 	}
 
-	sem := make(chan struct{}, limit)
-	results := make(chan int, len(tasks))
-	var wg sync.WaitGroup
+	pending := r.prepareBatch(tasks)
+	done := make(chan taskResult, limit)
+	processed := 0
+	running := 0
+
+	for len(pending) > 0 || running > 0 {
+		for running < limit {
+			index := -1
+			for i, candidate := range pending {
+				if candidate.exclusive && !r.repoLock(candidate.repoDir).TryLock() {
+					continue
+				}
+				index = i
+				break
+			}
+			if index == -1 {
+				break
+			}
+
+			candidate := pending[index]
+			pending = append(pending[:index], pending[index+1:]...)
+			running++
+			go func(p preparedTask) {
+				done <- taskResult{
+					repoDir:   p.repoDir,
+					exclusive: p.exclusive,
+					processed: r.processPreparedTask(p),
+				}
+			}(candidate)
+		}
+
+		if running == 0 {
+			r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
+			break
+		}
+
+		result := <-done
+		running--
+		processed += result.processed
+		if result.exclusive {
+			r.repoLock(result.repoDir).Unlock()
+		}
+	}
+
+	return processed
+}
+
+// prepareBatch resolves repositories and creates Round 2 worktrees before
+// dispatching OMP. Worktree setup is serialized per repository but does not
+// consume an OMP concurrency slot.
+func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
+	pending := make([]preparedTask, 0, len(tasks))
 	for _, t := range tasks {
-		t := t
 		repoDir, err := r.resolveRepo(t)
 		if err != nil {
 			r.logger.Printf("task %s: %v", t.ID, err)
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results <- r.processTask(t, repoDir)
-		}()
-	}
-	wg.Wait()
-	close(results)
 
-	processed := 0
-	for count := range results {
-		processed += count
+		prepared := preparedTask{
+			task:      t,
+			repoDir:   repoDir,
+			workDir:   repoDir,
+			exclusive: !isRound2(t),
+		}
+		if !prepared.exclusive {
+			lock := r.repoLock(repoDir)
+			lock.Lock()
+			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch)
+			lock.Unlock()
+			if worktreeErr != nil {
+				r.logger.Printf("task %s: prepare worktree: %v", t.ID, worktreeErr)
+				continue
+			}
+			prepared.workDir = workDir
+		}
+		pending = append(pending, prepared)
 	}
-	return processed
+	return pending
 }
 
-func (r *Runner) processTask(t task.ReadyTask, repoDir string) int {
-	taskKey := taskRunKey(t.FilePath)
+func (r *Runner) processPreparedTask(prepared preparedTask) int {
+	taskKey := taskRunKey(prepared.task.FilePath)
 	if _, loaded := r.taskRuns.LoadOrStore(taskKey, struct{}{}); loaded {
-		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", t.ID)
+		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", prepared.task.ID)
 		return 0
 	}
 	defer r.taskRuns.Delete(taskKey)
 
-	lock := r.repoLock(repoDir)
-	if !isRound2(t) {
-		lock.Lock()
-		defer lock.Unlock()
-		return r.processBatchSequential([]task.ReadyTask{t}, repoDir)
-	}
-
-	lock.Lock()
-	worktree, err := ensureTaskWorktree(repoDir, taskKey)
-	lock.Unlock()
-	if err != nil {
-		r.logger.Printf("task %s: prepare worktree: %v", t.ID, err)
-		return 0
-	}
-	return r.processBatchSequential([]task.ReadyTask{t}, worktree)
+	return r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
 }
 
 func taskRunKey(taskPath string) string {
@@ -251,7 +304,7 @@ func isRound2(t task.ReadyTask) bool {
 	return t.PlanApproved && (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
 }
 
-func ensureTaskWorktree(repoDir, taskID string) (string, error) {
+func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -263,6 +316,15 @@ func ensureTaskWorktree(repoDir, taskID string) (string, error) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("validate existing worktree %s: %w: %s", path, err, strings.TrimSpace(string(output)))
 		}
+		if targetBranch != "" {
+			branch, branchErr := gitCurrentBranch(path)
+			if branchErr != nil {
+				return "", branchErr
+			}
+			if branch != targetBranch {
+				return "", fmt.Errorf("existing worktree %s uses branch %q, want %q", path, branch, targetBranch)
+			}
+		}
 		return path, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat worktree path: %w", err)
@@ -270,11 +332,34 @@ func ensureTaskWorktree(repoDir, taskID string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("create worktree parent: %w", err)
 	}
-	cmd := exec.Command("git", "-C", repoDir, "worktree", "add", "--detach", path, "HEAD")
+
+	args := []string{"-C", repoDir, "worktree", "add"}
+	if targetBranch == "" {
+		args = append(args, "--detach", path, "HEAD")
+	} else if gitBranchExists(repoDir, targetBranch) {
+		args = append(args, path, targetBranch)
+	} else {
+		args = append(args, "-b", targetBranch, path, "HEAD")
+	}
+	cmd := exec.Command("git", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("create worktree: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return path, nil
+}
+
+func gitBranchExists(repoDir, branch string) bool {
+	cmd := exec.Command("git", "-C", repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return cmd.Run() == nil
+}
+
+func gitCurrentBranch(workDir string) (string, error) {
+	cmd := exec.Command("git", "-C", workDir, "branch", "--show-current")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree branch: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {

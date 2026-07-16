@@ -174,6 +174,53 @@ func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
 	}
 }
 
+func TestProcessBatchDoesNotLetExclusiveWaiterConsumeOMPConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	mergeOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "review")
+	roundTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-002.md", "plan-review")
+	mergeTwo := writeTaskFile(t, filepath.Join(dir, "three"), "TASK-003.md", "review")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	done := runBatch(runner, []task.ReadyTask{
+		{ID: "001", Title: "First merge", Project: "shared", FilePath: mergeOne, Status: "review", MergeApproved: true, Assignee: "flash"},
+		{ID: "002", Title: "Round two", Project: "shared", FilePath: roundTwo, Status: "plan-review", PlanApproved: true, Assignee: "flash"},
+		{ID: "003", Title: "Second merge", Project: "shared", FilePath: mergeTwo, Status: "review", MergeApproved: true, Assignee: "flash"},
+	})
+	waitForStartCount(t, startDir, 2)
+
+	entries, err := os.ReadDir(startDir)
+	if err != nil {
+		t.Fatalf("read start directory: %v", err)
+	}
+	startedInPrimary := false
+	startedInWorktree := false
+	for _, entry := range entries {
+		workDir, readErr := os.ReadFile(filepath.Join(startDir, entry.Name()))
+		if readErr != nil {
+			t.Fatalf("read start marker: %v", readErr)
+		}
+		if strings.TrimSpace(string(workDir)) == repo {
+			startedInPrimary = true
+		} else {
+			startedInWorktree = true
+		}
+	}
+	if !startedInPrimary || !startedInWorktree {
+		t.Fatalf("expected one primary-repository and one worktree execution; primary=%v worktree=%v", startedInPrimary, startedInWorktree)
+	}
+
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, done); processed != 3 {
+		t.Fatalf("processed = %d, want 3", processed)
+	}
+}
+
 func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	dir := t.TempDir()
 	projectOne := filepath.Join(dir, "project-one")
@@ -212,7 +259,7 @@ func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	worktree, err := ensureTaskWorktree(repo, "007")
+	worktree, err := ensureTaskWorktree(repo, "007", "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
@@ -223,12 +270,51 @@ func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 		t.Fatalf("validate worktree: %v: %s", err, output)
 	}
 
-	reused, err := ensureTaskWorktree(repo, "007")
+	reused, err := ensureTaskWorktree(repo, "007", "")
 	if err != nil {
 		t.Fatalf("reuse worktree: %v", err)
 	}
 	if reused != worktree {
 		t.Fatalf("reused worktree = %q, want %q", reused, worktree)
+	}
+}
+
+func TestEnsureTaskWorktreeCreatesAndReusesTargetBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+
+	worktree, err := ensureTaskWorktree(repo, "008", "task/008-feature")
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
+	branch, err := gitCurrentBranch(worktree)
+	if err != nil {
+		t.Fatalf("gitCurrentBranch: %v", err)
+	}
+	if branch != "task/008-feature" {
+		t.Fatalf("branch = %q, want task/008-feature", branch)
+	}
+
+	reused, err := ensureTaskWorktree(repo, "008", "task/008-feature")
+	if err != nil {
+		t.Fatalf("reuse target branch worktree: %v", err)
+	}
+	if reused != worktree {
+		t.Fatalf("reused worktree = %q, want %q", reused, worktree)
+	}
+}
+
+func TestEnsureTaskWorktreeRejectsMismatchedTargetBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+
+	if _, err := ensureTaskWorktree(repo, "009", "task/009-first"); err != nil {
+		t.Fatalf("create first target branch worktree: %v", err)
+	}
+	if _, err := ensureTaskWorktree(repo, "009", "task/009-second"); err == nil {
+		t.Fatal("expected target branch mismatch error")
 	}
 }
 
