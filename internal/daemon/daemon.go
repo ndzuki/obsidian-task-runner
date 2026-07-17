@@ -368,7 +368,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		taskPath := t.FilePath
 
 		if t.Status == "blocked" {
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}})
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}}); err != nil {
+				r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
+				continue
+			}
 			t.Status = "ready"
 			t.PendingReq = false
 			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行")
@@ -379,10 +382,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// preserved — the task re-plans after its current phase completes.
 		if t.PendingReq && t.Status == "needs-grilling" {
 			r.logger.Printf("task %s: pending_req + needs-grilling → resetting to ready", t.ID)
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 				"status": "ready", "pending_req": false,
 				"plan_approved": false, "merge_approved": false,
-			})
+			}); err != nil {
+				r.logger.Printf("task %s: failed to reset pending_req: %v", t.ID, err)
+				continue
+			}
 			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
 			t.Status = "ready"
 		}
@@ -395,10 +401,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if t.ReqDoc != "" {
 				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
 			}
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 				"status":        "needs-grilling",
 				"grill_context": grillCtx,
-			})
+			}); err != nil {
+				r.logger.Printf("task %s: failed to set needs-grilling: %v", t.ID, err)
+				continue
+			}
 			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc)
 			processed++
 			continue
