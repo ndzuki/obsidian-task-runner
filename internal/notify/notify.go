@@ -194,8 +194,28 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		tabTitle = string(runes[:57]) + "..."
 	}
 
-	// Build script with values embedded via Go %q (safe shell quoting).
-	// Heredoc is quoted ('EOF') to prevent shell expansion.
+	// Build script with values embedded via Go fmt (heredoc is quoted 'EOF').
+	// Provide fallbacks for empty fields.
+	tid := taskID
+	if tid == "" {
+		tid = "?"
+	}
+	ttl := taskTitle
+	if ttl == "" {
+		ttl = "(no title)"
+	}
+	rd := reqDoc
+	if rd == "" {
+		rd = "(none)"
+	}
+
+	var ompPrompt string
+	if reqDoc != "" {
+		ompPrompt = fmt.Sprintf("对 %s 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。", reqDoc)
+	} else {
+		ompPrompt = "请使用 skill://requirement-elaborator 帮我进行需求详细化。先询问我要实现什么功能，然后逐一向我追问技术细节、数据模型、API 契约等，直到达成共识。"
+	}
+
 	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -203,16 +223,16 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ║
 ║  需求文档: %s
 ║
-║  OMP 正在加载需求文档并通过 requirement-elaborator
-║  逐一向你提问来对齐需求细节...
+║  OMP 正在通过 requirement-elaborator 逐一向你提问，
+║  识别需求中的模糊点来对齐细节...
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
 export OBSIDIAN_VAULT=%s
-omp -p %s; exec bash`,
-		taskID, taskTitle, reqDoc,
+exec omp -p %s`,
+		tid, ttl, rd,
 		vaultPath,
-		fmt.Sprintf("%q", fmt.Sprintf("对 %s 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。", reqDoc)),
+		fmt.Sprintf("%q", ompPrompt),
 	)
 
 	cmd := exec.Command("kitty", "@", "launch",
