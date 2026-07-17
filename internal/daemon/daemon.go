@@ -242,11 +242,37 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 }
 
 // prepareBatch resolves repositories and creates Round 2 worktrees before
-// dispatching OMP. Worktree setup is serialized per repository but does not
+// dispatching OMP.  Worktree setup is serialized per repository but does not
 // consume an OMP concurrency slot.
+//
+// Grilling tasks (ready / needs-grilling) are handled inline — they do not
+// need a repository and must not be blocked by repo resolution failures.
 func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 	pending := make([]preparedTask, 0, len(tasks))
 	for _, t := range tasks {
+		// ── Grilling: handle before repo resolution ──
+		if t.Status == "ready" {
+			r.logger.Printf("task %s: ready → needs-grilling", t.ID)
+			grillCtx := t.Title
+			if t.ReqDoc != "" {
+				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
+			}
+			if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
+				"status":        "needs-grilling",
+				"grill_context": grillCtx,
+			}); err != nil {
+				r.logger.Printf("task %s: failed to set needs-grilling: %v", t.ID, err)
+				continue
+			}
+			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc)
+			continue // do not add to pending — no OMP spawn
+		}
+		if t.Status == "needs-grilling" {
+			r.logger.Printf("task %s: still waiting for grilling", t.ID)
+			notify.SendGrillingReminder(t.ID, t.Title)
+			continue // do not add to pending
+		}
+
 		repoDir, err := r.resolveRepo(t)
 		if err != nil {
 			r.logger.Printf("task %s: %v", t.ID, err)
@@ -375,6 +401,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			t.Status = "ready"
 			t.PendingReq = false
 			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行")
+			continue // let next scan round pick up the ready task for grilling
 		}
 
 		// pending_req: only reset transient states where user hasn't started yet.
@@ -391,33 +418,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
 			t.Status = "ready"
-		}
-
-		// ── Grilling notification flow ──
-		// ready → needs-grilling: notify user, do NOT spawn OMP.
-		if t.Status == "ready" {
-			r.logger.Printf("task %s: ready → needs-grilling", t.ID)
-			grillCtx := t.Title
-			if t.ReqDoc != "" {
-				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
-			}
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":        "needs-grilling",
-				"grill_context": grillCtx,
-			}); err != nil {
-				r.logger.Printf("task %s: failed to set needs-grilling: %v", t.ID, err)
-				continue
-			}
-			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc)
-			processed++
-			continue
-		}
-
-		// needs-grilling: re-notify, don't spawn OMP.
-		if t.Status == "needs-grilling" {
-			r.logger.Printf("task %s: still waiting for grilling", t.ID)
-			notify.SendGrillingReminder(t.ID, t.Title)
-			continue
+			continue // let next scan round pick up for grilling
 		}
 
 		// ── Normal OMP dispatch for non-grilling phases ──

@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	daemonOnce    bool
-	daemonMapFile string
-	daemonLogDir  string
+	daemonOnce     bool
+	daemonMapFile  string
+	daemonLogDir   string
+	daemonSkillDir string
 )
 
 var daemonCmd = &cobra.Command{
@@ -29,6 +30,9 @@ With --once, runs a single scan cycle and exits (for systemd timer).`,
 		if daemonLogDir != "" {
 			cfg.LogDir = daemonLogDir
 		}
+		if daemonSkillDir != "" {
+			cfg.SkillInstallDir = daemonSkillDir
+		}
 		r := daemon.New(cfg)
 		if daemonOnce {
 			return r.RunOnce()
@@ -41,5 +45,6 @@ func init() {
 	daemonCmd.Flags().BoolVar(&daemonOnce, "once", false, "Run a single scan cycle and exit")
 	daemonCmd.Flags().StringVar(&daemonMapFile, "map-file", "", "Path to vault-map.json")
 	daemonCmd.Flags().StringVar(&daemonLogDir, "log-dir", "", "Log directory (default: ~/.omp/logs)")
+	daemonCmd.Flags().StringVar(&daemonSkillDir, "skill-dir", "", "Skill install directory (default: ~/.omp/skills/obsidian-task-runner)")
 	rootCmd.AddCommand(daemonCmd)
 }
