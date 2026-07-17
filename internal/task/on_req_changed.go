@@ -305,9 +305,6 @@ target_env: staging
 		return nil
 	}
 
-	fmt.Printf("  %s (%s): 自动创建任务文档（status=blocked）\n", id, targetName)
-	// Append to project memory (single memory.md per project)
-	appendToMemory(vaultPath, projectDir, projectID, id, title, author, epic, reqRelPath, targetName, now)
 	return &AffectedResult{
 		TaskID: id, File: targetName, Action: "create_task",
 	}
@@ -381,67 +378,6 @@ func extractSection(content string, headings ...string) string {
 	return strings.Join(lines, "\n")
 }
 
-// appendToMemory appends a requirement-created entry to the project's memory.md.
-// Uses single memory.md per project for cumulative context.
-func appendToMemory(vaultPath, projectDir, projectID, id, title, author, epic, reqRelPath, targetName, now string) {
-	notesDir := filepath.Join(vaultPath, "Projects", projectDir, "Notes")
-	os.MkdirAll(notesDir, 0755)
-
-	memoryPath := filepath.Join(notesDir, "memory.md")
-	relReq := fmt.Sprintf("Requirements/%s", filepath.Base(reqRelPath))
-	relTask := fmt.Sprintf("Tasks/%s", targetName)
-
-	entry := fmt.Sprintf(`
-### REQ-%s · %s
-> 需求: [[%s]] | 任务: [[%s]]
-> project_id: %s | author: %s | epic: %s
-
-## 背景
-自动创建于需求 [[%s]]。
-
-## 内容
-需求摘要参见关联任务文档 [[%s]] 的「需求摘要」section。
-
-## 关联
-- 需求: [[%s]]
-- 任务: [[%s]]
-
-`, id, title, relReq, relTask, projectID, author, epic, relReq, relTask, relReq, relTask)
-
-	// Read existing memory or create new
-	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
-		header := fmt.Sprintf(`---
-project: "%s"
-project_id: "%s"
-type: decision
-tags: ["auto-created"]
-status: active
-created: "%s"
-updated: "%s"
----
-
-# 项目记忆: %s
-
-`, projectDir, projectID, now, now, projectDir)
-		if err := os.WriteFile(memoryPath, []byte(header), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "  Memory: failed to create %s: %v\n", memoryPath, err)
-			return
-		}
-	}
-
-	f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  Memory: failed to open %s: %v\n", memoryPath, err)
-		return
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(entry); err != nil {
-		fmt.Fprintf(os.Stderr, "  Memory: failed to write %s: %v\n", memoryPath, err)
-		return
-	}
-	fmt.Printf("  📝 memory.md: 追加需求上下文 (REQ-%s)\n", id)
-}
 
 // PrintAffected outputs affected results as JSON.
 func PrintAffected(results []AffectedResult) {
