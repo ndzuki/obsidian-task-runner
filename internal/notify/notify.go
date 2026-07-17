@@ -212,7 +212,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc string) bool {
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec omp`
+omp; exec bash`
 
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
