@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -42,11 +43,12 @@ var updateStatusCmd = &cobra.Command{
 	Short: "Update YAML frontmatter fields in a task document",
 	Long: `Atomically update frontmatter fields in a task markdown file.
 Automatically sets the updated timestamp. Supports type coercion
-for bool (true/false), int, float, and string values.
+for bool (true/false), int, float, string, and list (comma-separated) values.
 
 Examples:
   otg update-status task.md status=plan-review plan_version=1
-  otg update-status task.md status=done merge_approved=false`,
+  otg update-status task.md status=done merge_approved=false
+  otg update-status task.md blocked_by=TASK-010,TASK-039`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runUpdateStatus,
 }
@@ -68,6 +70,24 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		key, val := arg[:eq], arg[eq+1:]
+
+		// List-type fields: blocked_by, blocks, tags
+		if isListField(key) {
+			if val == "" {
+				updates[key] = []string{}
+			} else {
+				parts := strings.Split(val, ",")
+				trimmed := make([]string, 0, len(parts))
+				for _, p := range parts {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						trimmed = append(trimmed, p)
+					}
+				}
+				updates[key] = trimmed
+			}
+			continue
+		}
 
 		// Type coercion
 		switch {
@@ -95,6 +115,15 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update %s: %w", taskPath, err)
 	}
 	return nil
+}
+
+// isListField returns true for frontmatter fields that accept list values.
+func isListField(key string) bool {
+	switch key {
+	case "blocked_by", "blocks", "tags":
+		return true
+	}
+	return false
 }
 
 func isDigits(s string) bool {

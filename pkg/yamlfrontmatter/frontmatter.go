@@ -257,6 +257,24 @@ func formatField(key string, val interface{}) string {
 			return key + ": " + fmt.Sprint(int(v))
 		}
 		return key + ": " + fmt.Sprint(v)
+	case []string:
+		if len(v) == 0 {
+			return key + ": []"
+		}
+		lines := make([]string, len(v))
+		for i, item := range v {
+			lines[i] = "  - " + item
+		}
+		return key + ":\n" + strings.Join(lines, "\n")
+	case []interface{}:
+		if len(v) == 0 {
+			return key + ": []"
+		}
+		lines := make([]string, len(v))
+		for i, item := range v {
+			lines[i] = "  - " + fmt.Sprint(item)
+		}
+		return key + ":\n" + strings.Join(lines, "\n")
 	default:
 		return key + `: "` + fmt.Sprint(v) + `"`
 	}
