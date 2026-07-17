@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -73,8 +74,61 @@ func isEmptyList(v interface{}) bool {
 	return false
 }
 
+// AreBlockersDone checks whether every task referenced in blockedBy has
+// status "done" by scanning the vault's Projects/*/Tasks/ directories.
+func AreBlockersDone(vaultPath string, blockedBy []string) bool {
+	if len(blockedBy) == 0 {
+		return true
+	}
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	projEntries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return false
+	}
+	remaining := make(map[string]bool, len(blockedBy))
+	for _, id := range blockedBy {
+		remaining[id] = true
+	}
+	for _, proj := range projEntries {
+		if !proj.IsDir() || len(remaining) == 0 {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			// Extract task ID from filename like TASK-039-something.md
+			name := entry.Name()
+			for id := range remaining {
+				if strings.Contains(name, id) {
+					filePath := filepath.Join(tasksDir, name)
+					data, err := readFileWithRetry(filePath)
+					if err != nil {
+						continue
+					}
+					fm, err := yamlfrontmatter.Parse(data)
+					if err != nil || fm == nil {
+						continue
+					}
+					if fm.Status == "done" {
+						delete(remaining, id)
+					}
+					break
+				}
+			}
+		}
+	}
+	return len(remaining) == 0
+}
+
 // IsAutoUnblockable checks if a blocked task can be auto-promoted to ready.
-func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter) bool {
+// vaultPath is required to resolve blocked_by references against actual task status.
+func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	if fm.Status != "blocked" {
 		return false
 	}
@@ -85,17 +139,20 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter) bool {
 		return false
 	}
 	if !isEmptyList(fm.BlockedBy) {
-		return false
+		if !AreBlockersDone(vaultPath, fm.BlockedBy) {
+			return false
+		}
 	}
 	return true
 }
 
 // IsReady checks if a task should be picked up by the daemon.
-func IsReady(fm *yamlfrontmatter.Frontmatter) bool {
+// vaultPath is used to resolve blocked_by dependencies.
+func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	if fm.Assignee == "" {
 		return false
 	}
-	if IsAutoUnblockable(fm) {
+	if IsAutoUnblockable(fm, vaultPath) {
 		return true
 	}
 	switch fm.Status {
@@ -164,7 +221,7 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				fmt.Fprintf(os.Stderr, "  %s: parse error: %v\n", entry.Name(), err)
 				continue
 			}
-			if !IsReady(fm) {
+			if !IsReady(fm, vaultPath) {
 				continue
 			}
 			if fm.Project == "" {
@@ -238,7 +295,7 @@ func DebugReadyTasks(vaultPath string, logger *log.Logger) {
 				logger.Printf("debug: %s: parse error: %v", filePath, err)
 				continue
 			}
-			isReady := IsReady(fm)
+			isReady := IsReady(fm, vaultPath)
 			logger.Printf("debug: %s: id=%s status=%s assignee=%q pending_req=%v plan_approved=%v merge_approved=%v isReady=%v project=%q",
 				entry.Name(), fm.ID, fm.Status, fm.Assignee, fm.PendingReq, fm.PlanApproved, fm.MergeApproved, isReady, fm.Project)
 		}

@@ -191,7 +191,7 @@ type Config struct {
     PollInterval   time.Duration `mapstructure:"poll_interval_minutes"`
     OMPModelDeepseek string `mapstructure:"omp_model_deepseek"`
     OMPModelGPT      string `mapstructure:"omp_model_gpt"`
-    OMPModelFlash    string `mapstructure:"omp_model_flash"`
+    OMPModelDefault  string `mapstructure:"omp_model_default"`
     OMPCmd           string `mapstructure:"omp_cmd"`
 }
 ```

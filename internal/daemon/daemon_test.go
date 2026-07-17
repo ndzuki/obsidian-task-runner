@@ -39,8 +39,8 @@ func TestProcessBatchRunsIndependentTasksConcurrently(t *testing.T) {
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "flash"},
-		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "flash"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
+		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -75,8 +75,8 @@ func TestProcessBatchUsesTaskPathForDuplicateIDs(t *testing.T) {
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "flash"},
-		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "flash"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
+		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -126,8 +126,8 @@ func TestProcessBatchUsesTaskPathForImplementingPIDRecovery(t *testing.T) {
 
 	runner := newTestRunner(skillDir, omp, logDir, 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "Blocked by live PID", Project: "project-one", FilePath: taskOne, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "flash"},
-		{ID: "001", Title: "Must resume", Project: "project-two", FilePath: taskTwo, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "flash"},
+		{ID: "001", Title: "Blocked by live PID", Project: "project-one", FilePath: taskOne, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "default"},
+		{ID: "001", Title: "Must resume", Project: "project-two", FilePath: taskTwo, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 1)
 	releaseBarrier(t, releaseFile)
@@ -149,8 +149,8 @@ func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
 	taskTwo := writeTaskFile(t, dir, "TASK-012.md", "plan-review")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "plan-review", PlanApproved: true, Assignee: "flash"},
-		{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "plan-review", PlanApproved: true, Assignee: "flash"},
+		{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "plan-review", PlanApproved: true, Assignee: "default"},
+		{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "plan-review", PlanApproved: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 
@@ -188,9 +188,9 @@ func TestProcessBatchDoesNotLetExclusiveWaiterConsumeOMPConcurrency(t *testing.T
 	mergeTwo := writeTaskFile(t, filepath.Join(dir, "three"), "TASK-003.md", "review")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "First merge", Project: "shared", FilePath: mergeOne, Status: "review", MergeApproved: true, Assignee: "flash"},
-		{ID: "002", Title: "Round two", Project: "shared", FilePath: roundTwo, Status: "plan-review", PlanApproved: true, Assignee: "flash"},
-		{ID: "003", Title: "Second merge", Project: "shared", FilePath: mergeTwo, Status: "review", MergeApproved: true, Assignee: "flash"},
+		{ID: "001", Title: "First merge", Project: "shared", FilePath: mergeOne, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "002", Title: "Round two", Project: "shared", FilePath: roundTwo, Status: "plan-review", PlanApproved: true, Assignee: "default"},
+		{ID: "003", Title: "Second merge", Project: "shared", FilePath: mergeTwo, Status: "review", MergeApproved: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 
@@ -243,8 +243,8 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "ready")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "flash"},
-		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "flash"},
+		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
+		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 1)
 	assertStartCount(t, startDir, 1)

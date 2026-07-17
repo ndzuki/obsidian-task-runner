@@ -167,13 +167,13 @@ flowchart LR
         B{assignee?}
         C[deepseek]
         D[gpt]
-        E[其他/空]
+        E[default / 其他]
     end
 
     subgraph "执行"
         F[deepseek-v4-pro<br/>Round 1 + Round 2 + Merge]
-        G[gpt-5.5<br/>Round 1 + Round 2 + Merge]
-        H[deepseek-v4-flash<br/>轻量任务回退]
+        G[gpt-5.6-sol<br/>Round 1 + Round 2 + Merge]
+        H[default → deepseek-v4-flash<br/>默认回退]
     end
 
     subgraph "权限"
@@ -184,7 +184,7 @@ flowchart LR
     A --> B
     B -->|deepseek| C
     B -->|gpt| D
-    B -->|其他| E
+    B -->|default / 其他| E
     C --> F
     D --> G
     E --> H
@@ -198,8 +198,8 @@ flowchart LR
 | assignee | Round 1 | Round 2 | Merge Phase | 轻量任务 |
 |----------|---------|---------|-------------|----------|
 | `deepseek` | deepseek-v4-pro | deepseek-v4-pro | deepseek-v4-pro | — |
-| `gpt` | gpt-5.5 | gpt-5.5 | gpt-5.5 | — |
-| — | — | — | — | deepseek-v4-flash |
+| `gpt` | gpt-5.6-sol | gpt-5.6-sol | gpt-5.6-sol | — |
+| `default` / 未知 | deepseek-v4-flash | deepseek-v4-flash | deepseek-v4-flash | deepseek-v4-flash |
 
 | 阶段 | OMP 权限 | 允许的操作 |
 |------|----------|-----------|
