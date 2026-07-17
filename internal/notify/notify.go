@@ -166,7 +166,8 @@ var (
 
 // tryKittyTab attempts to open a new Kitty tab for interactive grilling.
 // Only one tab per 30 s to avoid flooding. Returns true if successful.
-// All dynamic content is passed via environment variables to avoid shell injection.
+// All dynamic content is embedded directly in the shell command via %q quoting
+// because kitty @ launch does NOT forward the parent process environment.
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	kittyMu.Lock()
 	if time.Since(lastKittyTab) < 30*time.Second {
@@ -193,32 +194,31 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		tabTitle = string(runes[:57]) + "..."
 	}
 
-	// Banner + OMP with preloaded grilling prompt.
-	// Heredoc is unquoted so ${VAR} env vars are expanded by the shell.
-	const script = `cat <<GRILLING_EOF
+	// Build script with values embedded via Go %q (safe shell quoting).
+	// Heredoc is quoted ('EOF') to prevent shell expansion.
+	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
-║  🟡 需求对齐 — TASK-${GRILL_TASK_ID}: ${GRILL_TASK_TITLE}
+║  🟡 需求对齐 — TASK-%s: %s
 ║
-║  需求文档: ${GRILL_REQ_DOC}
+║  需求文档: %s
 ║
 ║  OMP 正在加载需求文档并通过 requirement-elaborator
 ║  逐一向你提问来对齐需求细节...
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-omp -p "对 ${GRILL_REQ_DOC} 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。"; exec bash`
+export OBSIDIAN_VAULT=%s
+omp -p %s; exec bash`,
+		taskID, taskTitle, reqDoc,
+		vaultPath,
+		fmt.Sprintf("%q", fmt.Sprintf("对 %s 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。", reqDoc)),
+	)
 
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
 		"bash", "-c", script,
-	)
-	cmd.Env = append(os.Environ(),
-		"GRILL_TASK_ID="+taskID,
-		"GRILL_TASK_TITLE="+taskTitle,
-		"GRILL_REQ_DOC="+reqDoc,
-		"OBSIDIAN_VAULT="+vaultPath,
 	)
 	return cmd.Run() == nil
 }
