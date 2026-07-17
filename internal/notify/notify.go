@@ -215,9 +215,9 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		prompt = "请使用 skill://requirement-elaborator 帮我进行需求详细化。先询问我要实现什么功能，然后逐一向我追问技术细节以达成共识。"
 	}
 
-	// Use a Python PTY wrapper so OMP sees a real TTY and stays interactive.
-	// The { echo; cat; } | omp pipe approach causes OMP to detect a non-TTY
-	// stdin and exit after the first exchange.
+	// Python PTY wrapper: creates a pseudo-terminal so OMP sees a TTY and
+	// stays interactive.  The prompt is passed via GRILL_PROMPT env var to
+	// avoid shell quoting conflicts between Go %%q and Python string syntax.
 	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -230,25 +230,26 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 
 GRILLING_EOF
 export OBSIDIAN_VAULT=%s
-python3 -c "
+export GRILL_PROMPT=%s
+python3 -c '
 import os, pty, sys, select
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp('omp', ['omp'])
-else:
-    os.write(fd, %s.encode() + b'\n')
-    while True:
-        r, _, _ = select.select([sys.stdin, fd], [], [])
-        if sys.stdin in r:
-            data = os.read(sys.stdin.fileno(), 4096)
-            if not data: break
-            os.write(fd, data)
-        if fd in r:
-            data = os.read(fd, 4096)
-            if not data: break
-            os.write(sys.stdout.fileno(), data)
-    os.waitpid(pid, 0)
-" || exec bash`,
+    os.execvp("omp", ["omp"])
+prompt = os.environ.get("GRILL_PROMPT", "")
+os.write(fd, prompt.encode() + b"\n")
+while True:
+    r, _, _ = select.select([sys.stdin, fd], [], [])
+    if sys.stdin in r:
+        data = os.read(sys.stdin.fileno(), 4096)
+        if not data: break
+        os.write(fd, data)
+    if fd in r:
+        data = os.read(fd, 4096)
+        if not data: break
+        os.write(sys.stdout.fileno(), data)
+os.waitpid(pid, 0)
+' || exec bash`,
 		tid, ttl, rd,
 		vaultPath,
 		fmt.Sprintf("%q", prompt),
