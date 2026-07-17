@@ -54,3 +54,52 @@ SORT completed desc
 LIMIT 10
 ```
 
+## 领域上下文
+
+```dataview
+TABLE
+  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  file.link as "CONTEXT.md",
+  file.mtime as "最后更新"
+FROM "Projects"
+WHERE file.name = "CONTEXT.md"
+SORT file.folder asc
+```
+
+## ADR 提议待审
+
+```dataview
+TABLE
+  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  adr_proposed as "提议 ADR",
+  adr_approved as "已授权",
+  status as "任务状态"
+FROM "Projects"
+WHERE contains(file.folder, "Tasks") AND adr_proposed != null AND adr_approved != true
+SORT file.mtime desc
+```
+
+## 依赖阻塞详情
+
+```dataview
+TABLE
+  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  blocked_by as "等待",
+  status as "状态",
+  priority as "优先级"
+FROM "Projects"
+WHERE contains(file.folder, "Tasks") AND blocked_by != null AND status != "done"
+SORT priority asc
+```
+
+## 架构决策记录
+
+```dataview
+TABLE
+  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  file.link as "ADR",
+  file.mtime as "最后更新"
+FROM "Projects"
+WHERE contains(file.folder, "adr")
+SORT file.folder asc, file.name asc
+```
