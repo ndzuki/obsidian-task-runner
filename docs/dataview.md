@@ -27,8 +27,6 @@
         │   └── REQ-001-login.md
         ├── Tasks/
         │   └── TASK-001-login.md
-        └── Notes/
-            └── memory.md
 ```
 
 运行 `otg install --vault <Vault路径>` 时，如果 Vault 根目录还没有 `Tasks-Dashboard.md`，安装器会自动部署一份。若文件已存在，安装器不会覆盖它。
@@ -70,7 +68,6 @@ updated: 2026-07-15T10:30:00+08:00
 2. **待处理任务**：排除 `done` 和 `blocked` 的任务。
 3. **阻塞任务**：缺少配置或等待依赖的任务。
 4. **最近完成**：最近完成的任务和执行者。
-5. **项目记忆**：每个项目的 `memory.md` 链接。
 
 保存任务文件后，Dataview 会自动刷新查询。若没有刷新，可关闭并重新打开看板，或在命令面板执行 **Reload app without saving**。
 
@@ -126,14 +123,6 @@ WHERE contains(file.folder, "Tasks") AND assignee = "deepseek"
 SORT priority asc
 ```
 
-### 看项目记忆
-
-```dataview
-LIST file.link
-FROM "Projects"
-WHERE file.name = "memory.md"
-SORT file.folder asc
-```
 
 ## 7. 看板为空时按顺序排查
 

@@ -266,53 +266,6 @@ func TestDeriveProjectDir(t *testing.T) {
 	}
 }
 
-func TestAppendToMemory(t *testing.T) {
-	dir := t.TempDir()
-	vaultPath := filepath.Join(dir, "vault")
-
-	// New structure: REQ under Projects/001-demo/Requirements/
-	projectDir := "001-demo"
-	reqDir := filepath.Join(vaultPath, "Projects", projectDir, "Requirements")
-	os.MkdirAll(reqDir, 0755)
-
-	reqRelPath := filepath.Join("Projects", projectDir, "Requirements", "REQ-001-test.md")
-	targetName := "TASK-001-test.md"
-
-	// First call: creates memory.md
-	appendToMemory(vaultPath, projectDir, "001", "001", "My Feature", "ndzuki", "", reqRelPath, targetName, "2026-07-13T10:00:00+08:00")
-
-	memoryPath := filepath.Join(vaultPath, "Projects", projectDir, "Notes", "memory.md")
-	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
-		t.Fatal("memory.md was not created")
-	}
-
-	content, err := os.ReadFile(memoryPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contentStr := string(content)
-
-	if !strings.Contains(contentStr, "# 项目记忆: 001-demo") {
-		t.Error("memory.md missing project header")
-	}
-	if !strings.Contains(contentStr, "### REQ-001 · My Feature") {
-		t.Error("memory.md missing REQ entry heading")
-	}
-	if !strings.Contains(contentStr, "[[Requirements/REQ-001-test.md]]") {
-		t.Error("memory.md missing requirement reference")
-	}
-	if !strings.Contains(contentStr, "[[Tasks/TASK-001-test.md]]") {
-		t.Error("memory.md missing task reference")
-	}
-
-	// Second call: appends to existing memory.md
-	appendToMemory(vaultPath, projectDir, "001", "002", "Another Feature", "ndzuki", "", reqRelPath, targetName, "2026-07-13T11:00:00+08:00")
-
-	content2, _ := os.ReadFile(memoryPath)
-	if strings.Count(string(content2), "### REQ-") != 2 {
-		t.Errorf("expected 2 REQ entries, got %d", strings.Count(string(content2), "### REQ-"))
-	}
-}
 
 func TestCreateTaskForReqNewStructure(t *testing.T) {
 	dir := t.TempDir()
@@ -380,11 +333,6 @@ Add a test feature.
 		t.Error("TASK author should NOT contain the REQ path")
 	}
 
-	// Verify memory.md was created
-	memoryPath := filepath.Join(vaultPath, "Projects", projectName, "Notes", "memory.md")
-	if _, err := os.Stat(memoryPath); os.IsNotExist(err) {
-		t.Error("memory.md was not created")
-	}
 }
 
 func TestCreateTaskForReqWithVaultMap(t *testing.T) {

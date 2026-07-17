@@ -54,11 +54,3 @@ SORT completed desc
 LIMIT 10
 ```
 
-## 项目记忆
-
-```dataview
-LIST
-FROM "Projects"
-WHERE file.name = "memory.md"
-SORT file.folder asc
-```
