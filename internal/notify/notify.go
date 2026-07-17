@@ -195,8 +195,8 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	}
 
 	// Build script with values embedded via Go fmt (heredoc is quoted 'EOF').
-	// Start OMP in INTERACTIVE mode (no -p) — the banner shows the user
-	// exactly what to type. -p mode is non-interactive and exits immediately.
+	// Inject the grilling prompt as the FIRST input to OMP via a pipe,
+	// then cat forwards terminal input so OMP stays interactive.
 	tid := taskID
 	if tid == "" {
 		tid = "?"
@@ -206,10 +206,13 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		ttl = "(no title)"
 	}
 	rd := reqDoc
-	grillCmd := fmt.Sprintf("对 %s 进行需求详细化", reqDoc)
-	if reqDoc == "" {
-		rd = "(请先在下方描述需求)"
-		grillCmd = "描述你的需求（OMP 会自动触发 grilling 追问）"
+	var prompt string
+	if reqDoc != "" {
+		rd = reqDoc
+		prompt = fmt.Sprintf("对 %s 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。", reqDoc)
+	} else {
+		rd = "(未指定)"
+		prompt = "请使用 skill://requirement-elaborator 帮我进行需求详细化。先询问我要实现什么功能，然后逐一向我追问技术细节以达成共识。"
 	}
 
 	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
@@ -219,17 +222,15 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ║
 ║  需求文档: %s
 ║
-║  ▶ 请在下方 OMP 中输入：
-║
-║     %s
-║
+║  OMP 正在加载 requirement-elaborator 并主动向你提问…
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
 export OBSIDIAN_VAULT=%s
-exec omp`,
-		tid, ttl, rd, grillCmd,
+{ echo %s; cat; } | omp || exec bash`,
+		tid, ttl, rd,
 		vaultPath,
+		fmt.Sprintf("%q", prompt),
 	)
 
 	cmd := exec.Command("kitty", "@", "launch",
