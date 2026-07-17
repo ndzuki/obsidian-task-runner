@@ -78,10 +78,12 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 		}
 
 		switch fm.Status {
-		case "ready", "plan-review":
+		case "ready", "needs-grilling", "plan-review":
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{
 				"status":        "ready",
 				"plan_approved": false,
+				"grill_done":    false,
+				"grill_context": "",
 			})
 			affected = append(affected, AffectedResult{
 				TaskID: fm.ID, File: entry.Name(),
