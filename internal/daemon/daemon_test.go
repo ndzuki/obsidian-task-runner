@@ -34,13 +34,13 @@ func TestProcessBatchRunsIndependentTasksConcurrently(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, dir, "TASK-001.md", "ready")
-	taskTwo := writeTaskFile(t, dir, "TASK-002.md", "ready")
+	taskOne := writeTaskFile(t, dir, "TASK-001.md", "review")
+	taskTwo := writeTaskFile(t, dir, "TASK-002.md", "review")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
-		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -67,16 +67,16 @@ func TestProcessBatchUsesTaskPathForDuplicateIDs(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "ready")
-	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-001.md", "ready")
+	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "review")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-001.md", "review")
 	if taskRunKey(taskOne) == taskRunKey(taskTwo) {
 		t.Fatal("different task files must have distinct run keys")
 	}
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
-		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -239,12 +239,12 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, dir, "TASK-021.md", "ready")
-	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "ready")
+	taskOne := writeTaskFile(t, dir, "TASK-021.md", "review")
+	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "review")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "ready", Assignee: "default"},
-		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "ready", Assignee: "default"},
+		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 1)
 	assertStartCount(t, startDir, 1)

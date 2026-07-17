@@ -373,8 +373,12 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			t.PendingReq = false
 			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行")
 		}
-		if t.PendingReq && t.Status != "ready" && t.Status != "plan-review" {
-			r.logger.Printf("task %s: pending_req → resetting to ready", t.ID)
+
+		// pending_req: only reset transient states where user hasn't started yet.
+		// For active phases (implementing/review/conflict/done), the flag is
+		// preserved — the task re-plans after its current phase completes.
+		if t.PendingReq && t.Status == "needs-grilling" {
+			r.logger.Printf("task %s: pending_req + needs-grilling → resetting to ready", t.ID)
 			yamlfrontmatter.Update(taskPath, map[string]interface{}{
 				"status": "ready", "pending_req": false,
 				"plan_approved": false, "merge_approved": false,
@@ -383,6 +387,31 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			t.Status = "ready"
 		}
 
+		// ── Grilling notification flow ──
+		// ready → needs-grilling: notify user, do NOT spawn OMP.
+		if t.Status == "ready" {
+			r.logger.Printf("task %s: ready → needs-grilling", t.ID)
+			grillCtx := t.Title
+			if t.ReqDoc != "" {
+				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
+			}
+			yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"status":        "needs-grilling",
+				"grill_context": grillCtx,
+			})
+			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc)
+			processed++
+			continue
+		}
+
+		// needs-grilling: re-notify, don't spawn OMP.
+		if t.Status == "needs-grilling" {
+			r.logger.Printf("task %s: still waiting for grilling", t.ID)
+			notify.SendGrillingReminder(t.ID, t.Title)
+			continue
+		}
+
+		// ── Normal OMP dispatch for non-grilling phases ──
 		model := r.selectModel(t.Assignee)
 		isMerge := t.MergeApproved && (t.Status == "review" || t.Status == "conflict")
 
@@ -395,8 +424,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			args = append(args, "--auto-approve")
 			if (t.Status == "plan-review" || t.Status == "implementing") && t.PlanApproved {
 				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行")
-			} else if t.Status == "ready" {
-				notify.SendTaskAction(t.ID, t.Title, "📝", "开始出计划", "OMP 正在分析需求并生成实现计划")
 			} else if t.Status == "implementing" && !t.PlanApproved {
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "恢复处理", "Round 2 异常中断，回退到 Round 1 重新出计划")
 			}
