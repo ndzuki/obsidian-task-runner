@@ -33,6 +33,7 @@ type ReadyTask struct {
 	PendingReq    bool   `json:"pending_req"`
 	OffPeakOnly   bool   `json:"off_peak_only"`
 	TargetBranch  string `json:"target_branch"`
+	GrillDone     bool   `json:"grill_done"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -253,6 +254,7 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				Template: fm.Template, Assignee: fm.Assignee,
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
 				OffPeakOnly: fm.OffPeakOnly, TargetBranch: fm.TargetBranch,
+				GrillDone: fm.GrillDone,
 			})
 		}
 	}

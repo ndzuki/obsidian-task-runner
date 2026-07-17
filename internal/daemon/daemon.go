@@ -273,6 +273,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
 					"status": "ready", "pending_req": false,
 					"plan_approved": false, "merge_approved": false,
+					"grill_done": false, "grill_context": "",
 				}); err != nil {
 					r.logger.Printf("task %s: failed to reset pending_req: %v", t.ID, err)
 					continue
@@ -280,6 +281,25 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
 				continue
 			}
+			if t.GrillDone || t.PlanApproved {
+				r.logger.Printf("task %s: grilling complete → plan-review", t.ID)
+				updates := map[string]interface{}{
+					"status":        "plan-review",
+					"grill_done":    true,
+					"grill_context": "",
+				}
+				if err := yamlfrontmatter.Update(t.FilePath, updates); err != nil {
+					r.logger.Printf("task %s: failed to transition to plan-review: %v", t.ID, err)
+					continue
+				}
+				if t.PlanApproved {
+					notify.SendTaskAction(t.ID, t.Title, "✅", "需求对齐完成", "已自动进入 Round 2 实现阶段")
+				} else {
+					notify.SendTaskAction(t.ID, t.Title, "✅", "需求对齐完成", "计划已生成，请审阅后设 plan_approved: true 开始实现")
+				}
+				continue
+			}
+
 			r.logger.Printf("task %s: still waiting for grilling", t.ID)
 			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault)
 			continue // do not add to pending
