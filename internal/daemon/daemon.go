@@ -268,6 +268,18 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			continue // do not add to pending — no OMP spawn
 		}
 		if t.Status == "needs-grilling" {
+			if t.PendingReq {
+				r.logger.Printf("task %s: pending_req + needs-grilling → resetting to ready", t.ID)
+				if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
+					"status": "ready", "pending_req": false,
+					"plan_approved": false, "merge_approved": false,
+				}); err != nil {
+					r.logger.Printf("task %s: failed to reset pending_req: %v", t.ID, err)
+					continue
+				}
+				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
+				continue
+			}
 			r.logger.Printf("task %s: still waiting for grilling", t.ID)
 			notify.SendGrillingReminder(t.ID, t.Title)
 			continue // do not add to pending
@@ -404,22 +416,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			continue // let next scan round pick up the ready task for grilling
 		}
 
-		// pending_req: only reset transient states where user hasn't started yet.
-		// For active phases (implementing/review/conflict/done), the flag is
-		// preserved — the task re-plans after its current phase completes.
-		if t.PendingReq && t.Status == "needs-grilling" {
-			r.logger.Printf("task %s: pending_req + needs-grilling → resetting to ready", t.ID)
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status": "ready", "pending_req": false,
-				"plan_approved": false, "merge_approved": false,
-			}); err != nil {
-				r.logger.Printf("task %s: failed to reset pending_req: %v", t.ID, err)
-				continue
-			}
-			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
-			t.Status = "ready"
-			continue // let next scan round pick up for grilling
-		}
 
 		// ── Normal OMP dispatch for non-grilling phases ──
 		model := r.selectModel(t.Assignee)
