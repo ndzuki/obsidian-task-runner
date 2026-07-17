@@ -142,7 +142,7 @@ func installSkill(opts Options) error {
 }
 
 func installTaskVerifier(opts Options) error {
-	agentsDir := filepath.Join(opts.SkillInstallDir, "..", "..", "agents")
+	agentsDir := filepath.Join(opts.SkillInstallDir, "..", "..", "agent", "agents")
 	if opts.DryRun {
 		fmt.Printf("[DRY RUN] Would install task-verifier to %s\n", agentsDir)
 		return nil
