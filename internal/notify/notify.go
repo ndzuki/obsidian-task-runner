@@ -260,7 +260,10 @@ pid, fd = pty.fork()
 if pid == 0:
     os.execvp("omp", ["omp"])
 prompt = os.environ.get("GRILL_PROMPT", "")
-os.write(fd, prompt.encode() + b"\r")
+import time; time.sleep(0.3)
+os.write(fd, prompt.encode())
+time.sleep(0.05)
+os.write(fd, b"\r")
 while True:
     r, _, _ = select.select([sys.stdin, fd], [], [])
     if sys.stdin in r:
