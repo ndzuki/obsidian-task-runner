@@ -4,6 +4,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -167,25 +168,24 @@ var (
 	kittyMu      sync.Mutex
 )
 
-// tryKittyTab attempts to open a new Kitty tab for interactive grilling.
-// Only one tab per 30 s to avoid flooding. Returns true if successful.
-// All dynamic content is embedded directly in the shell command via %q quoting
-// because kitty @ launch does NOT forward the parent process environment.
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	kittyMu.Lock()
 	if time.Since(lastKittyTab) < 30*time.Second {
 		kittyMu.Unlock()
+		log.Printf("grilling tab: debounced (last was %v ago)", time.Since(lastKittyTab))
 		return false
 	}
 	lastKittyTab = time.Now()
 	kittyMu.Unlock()
 
 	if _, err := exec.LookPath("kitty"); err != nil {
+		log.Printf("grilling tab: kitty not in PATH: %v", err)
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "kitty", "@", "ls").Run(); err != nil {
+		log.Printf("grilling tab: kitty @ ls failed: %v", err)
 		return false
 	}
 
