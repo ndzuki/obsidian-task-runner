@@ -5,6 +5,8 @@ description: >
   两轮状态机：Round 1 出计划、Round 2 写代码。
   支持自动发现可处理任务、解析项目路径、创建新项目脚手架、
   运行测试和 lint、提交到分支。
+  **新增**：项目级依赖分析——自动识别需求类型（路线图/领域索引/原子需求），
+  解析 `depends_on` 依赖链，确保任务按正确顺序执行，阻止依赖未满足时提前开始。
   当用户在 Obsidian 中设 plan_approved: true 时自动触发 Round 2；设 merge_approved: true 时自动执行合并。
   当用户提到"自动执行 Obsidian 任务"、"从 Obsidian 拉任务开发"、
   "自动实现需求文档"、"task runner" 时使用本 skill。
@@ -20,6 +22,7 @@ description: >
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
 6. **事后总结到项目记忆文档**：每轮（Round 1 / Round 2 / Merge Phase）结束后**必须**在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md` 创建或更新**项目累积记忆文档**。记录本轮的关键决策、遇到的问题及解决方案、发现的模式和陷阱。新需求创建时 `otg on-req-changed` 自动追加需求上下文到同一 `memory.md`（单文件累积）。目的是积累项目上下文、避免重复踩坑、减少后续任务的无效思考。每个项目维护自己独立的 Notes/ 目录，不跨项目共享。
+7. **依赖优先**：任何任务在 `depends_on` 中的前序需求对应的 TASK 未 `done` 前，不得进入 Round 2 实现阶段。Round 1 出计划可以提前执行（了解全局上下文），但计划中必须标注阻塞依赖。
 
 ## 输入
 
@@ -54,40 +57,114 @@ otg find-ready $OBSIDIAN_VAULT
 - 项目记忆：`$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`
 - 可从 `file_path` 推导：`dirname(dirname(task_file))` = 项目目录
 
+### Step 2.5: 项目依赖分析（Round 1 & blocked 判定前必执行）
+
+**目标**：理解项目全局结构和需求间的依赖关系，确保任务按正确顺序执行。
+
+**此步骤必须在 Step 3 判定 `blocked` 状态之前执行**。
+
+1. **读取项目路线图**：
+   - 在 `$OBSIDIAN_VAULT/Projects/<project>/Requirements/` 下搜索 `type: requirement-roadmap` 的需求文档（如 REQ-001）
+   - 解析路线图中的交付波次（Wave）、依赖链（`A -> B -> C`）和里程碑
+   - 如果找不到路线图，扫描所有需求文档，从各需求的 `depends_on` 字段反向推导依赖图
+
+2. **分类需求类型**：
+
+   读取任务关联的需求文档（`req_doc` frontmatter 字段），根据需求文档自身的 frontmatter `type` 分类：
+
+   | 需求类型 | `type` 值 | 含义 | 处理方式 |
+   |----------|-----------|------|----------|
+   | 路线图 | `requirement-roadmap` | 项目总览，定义 Wave 和依赖链 | **禁止创建任务**，仅用于分析依赖 |
+   | 领域索引 | `requirement-index` | 领域内原子需求列表 | **禁止创建任务**，标注"本文不直接创建实现任务" |
+   | 原子需求 | 无特殊 `type` 或有 `depends_on`/`domain` | 可独立实现的需求单元 | 正常创建任务，按依赖顺序执行 |
+
+   **重要**：如果当前处理的任务关联的需求文档是 `requirement-roadmap` 或 `requirement-index` 类型，输出错误并退出："此需求是路线图/领域索引，不应创建实现任务。请选择其下的原子需求。"
+
+3. **解析依赖链**：
+
+   从需求文档的 frontmatter 提取 `depends_on` 字段（数组）：
+   ```yaml
+   depends_on: ["039", "009"]
+   ```
+
+   对于每个依赖的 REQ-ID：
+   - 在 `$OBSIDIAN_VAULT/Projects/<project>/Tasks/` 下搜索对应的 TASK 文件（文件名含该 ID）
+   - 读取该 TASK 的 frontmatter `status` 字段
+   - 判定依赖是否满足：
+
+   | 依赖任务状态 | 判定 |
+   |-------------|------|
+   | `done` | ✅ 依赖已满足 |
+   | `review` | ⚠️ 代码已实现但未合并，可出计划但 Round 2 必须等 merge 后执行 |
+   | `implementing`、`plan-review`、`ready` | ❌ 依赖未完成 |
+   | 不存在 | ❌ 依赖任务尚未创建 |
+
+4. **更新任务 `blocked_by`**：
+
+   将所有未完成的依赖 REQ-ID 映射为对应的 TASK-ID，写入任务的 `blocked_by` frontmatter：
+   ```bash
+   otg update-status \
+     <task_path> \
+     blocked_by="TASK-039,TASK-009"
+   ```
+
+   如果所有依赖都已 `done`，且 `blocked_by` 非空，清空之：
+   ```bash
+   otg update-status \
+     <task_path> \
+     blocked_by=""
+   ```
+
+5. **构建依赖上下文**（供 Round 1 计划生成使用）：
+
+   对于每个已完成的依赖任务：
+   - 读取其需求文档，提取提供的契约（proto message、接口、数据模型）
+   - 读取其实现记录，了解产出的文件和关键设计决策
+   - 在生成当前任务的实现计划时，显式引用这些前序产出，避免重复设计或接口不兼容
+
+   对于未完成的依赖：
+   - 记录缺失的契约/接口
+   - 在计划的"前置条件"部分列出，让审阅者清楚当前任务的阻塞状态
 ### Step 3: 判断当前阶段
 
 解析任务文档的 YAML frontmatter，关注 `status`、`plan_approved` 和 `merge_approved`：
 
 | 当前状态 | plan_approved | merge_approved | 动作 |
 |----------|---------------|----------------|------|
-| `ready` 或无 | — | — | 走 Round 1 |
+| `ready` 或无 | — | — | 走 Round 1（但先通过 Step 2.5 验证无未满足依赖） |
 | `plan-review` | `true` | — | 走 Round 2 |
 | `plan-review` | 非 `true` | — | 输出 "等待人工批准" 并退出 |
 | `review` | — | `true` | 走 Merge Phase |
 | `review` | — | 非 `true` / 无 | 输出 "任务已在 review 状态，等待人工 review" 并退出 |
 | `conflict` | — | `true` | 走 Merge Phase（重新尝试合并） |
 | `conflict` | — | 非 `true` / 无 | 输出 "任务存在合并冲突，请解决后重新设置 merge_approved: true" 并退出 |
-| `blocked` | — | — | 如果必填字段已补齐且无 `blocked_by` 依赖，先自动改为 `ready` 再走 Round 1；否则输出缺失字段/依赖并退出 |
+| `blocked` | — | — | 执行 Step 2.5 依赖分析后，若所有 `blocked_by` 依赖已 `done` 且必填字段已补齐，自动改为 `ready` 再走 Round 1；否则输出缺失字段/未完成依赖并退出 |
 | `done` | — | — | 输出 "任务已完成" 并退出 |
 | `implementing` | — | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
 
-`blocked` 自动解除条件：
+`blocked` 自动解除条件（全部满足才解除）：
 - `project` 非空（或 `new_project: true` 且可通过 `new_project_root` 解析目标目录）
 - `assignee` 非空；其值作为 vault-map.json `models` 的 key，未知 key 回退到 `default`
-- `blocked_by` 为空
+- `blocked_by` 中所有 TASK 的 `status` 均为 `done`
+
+**重要**：`blocked_by` 为空不代表无依赖。如果需求文档的 `depends_on` 非空但 `blocked_by` 为空（首次分析），Step 2.5 必须先解析依赖并填充 `blocked_by`，再据此判定是否可以解除 blocked。
+
+`ready` 状态的额外检查：
+- 即使任务当前是 `ready`，在进入 Round 1 前也必须执行 Step 2.5 依赖分析
+- 如果发现 `depends_on` 中有未完成依赖，将任务改为 `blocked` 并更新 `blocked_by`，输出未满足的依赖列表，退出
 
 ### Step 4: Round 1 — 出计划
 
-**目标**：理解需求，生成可执行的实现计划。
+**目标**：理解需求及依赖上下文，生成可执行的实现计划。
 
 **重要**：如果任务文档的「## 实现记录」或「## 验收记录」section 已有内容（说明这是因需求变更触发的**重新出计划**），则 Round 1 生成计划后**必须停在 `plan-review`**，等待人工确认。不得因为"代码已经实现过了"就跳过 plan-review 直接进入 review。即使 `auto_approve: true`，重新出计划场景下也必须停在 plan-review。
 
+0. **回顾依赖上下文**（Step 2.5 的产出）：
+   - 列出所有已完成的前序依赖及其提供的契约/接口
+   - 列出所有未完成的依赖及阻塞原因
+   - 计划中必须引用前序产出，避免重复设计或契约冲突
+
 1. **读需求文档**：根据 `req_doc` 字段读 `$OBSIDIAN_VAULT/<req_doc>`。
-   - 需求文档可以是**任意格式**——一句话描述到完整结构化模板都行：
-     - **L1 极简**（只有「要做什么」+「完成标准」）：从自然语言提取功能点，根据技术约束或项目惯例推断缺失信息，标注为「推断」
-     - **L2 标准**（有功能列表 + 技术约束）：逐条映射 FR-N 到实现步骤，技术约束直接作为硬性限制
-     - **L3 完整**（有 API 规格 + 数据模型）：直接用 API 规格生成 handler，用数据模型生成 struct/schema
-   - 缺失关键信息时（如不知道怎么部署、不知道性能要求），在计划中标注「⚠️ 需人工补充：<具体缺什么>」
    - 如果 `req_doc` 为空，从任务文档的「需求摘要」section 提取需求，按 L1 处理。
 
 2. **分析项目上下文**：
@@ -95,9 +172,11 @@ otg find-ready $OBSIDIAN_VAULT
    - 如果是新项目（`new_project: true`）：只出脚手架方案——目录结构、技术选型（根据 `template` 字段）、构建工具配置。**不创建任何文件**
 
 3. **生成实现计划**：
+   - 首先列出「前置条件」：已完成的前序任务及其提供的契约/接口，待完成的依赖及阻塞原因
    - 分步骤，每步有明确的产出物
    - 每步预估代码量（文件数、行数）
    - 标注关键决策点（需要人工确认的地方）
+   - 标注对前序产出的引用（如"复用 TASK-010 的 `RequestMetadata` message"）
    - 如果项目已有 task-verifier，列出验收标准的映射
 
 4. **写回任务文档（版本化，不覆盖）**：
@@ -106,18 +185,19 @@ otg find-ready $OBSIDIAN_VAULT
       ```bash
       otg update-status \
         <task_path> status=plan-review plan_version=<新版本号>
-      ```
-
    b) **追加计划版本**：使用**严格表格格式**（跨模型兼容，便于审计）：
       ```markdown
       ### v{N} · YYYY-MM-DD
       > 基于需求: <req_doc> | 变更: <原因>
+      > 前置依赖: <已完成的前序 TASK-ID 列表，逗号分隔；无则为「无」>
+      > 阻塞依赖: <未完成的依赖 TASK-ID 列表及阻塞原因；无则为「无」>
 
       #### Step 1: <步骤名称>
       | 维度 | 内容 |
       |------|------|
       | 目标 | <一句话描述要达成什么> |
       | 产出 | <新建/修改的文件列表，逗号分隔> |
+      | 依赖前序 | <引用的前序 TASK 产出，如"TASK-010 的 RequestMetadata"> |
       | 验收 | <映射到哪条 AC-N> |
 
       #### Step 2: ...
@@ -185,6 +265,9 @@ otg find-ready $OBSIDIAN_VAULT
 
 **目标**：按批准的计划实现代码并提交。
 
+**前置检查**：在开始实现前，确认计划的「阻塞依赖」列表为空。如果仍有未 `done` 的依赖，输出错误并退出："以下依赖尚未完成，无法进入 Round 2：<TASK-ID 列表>"。
+
+0. **验证依赖已解除**：读取任务 `blocked_by` 字段，确认所有依赖 TASK 的 `status` 均为 `done`。若有任何非 `done` 依赖，输出错误并退出。
 1. **读批准的计划**：从任务文档的「## 实现计划」section 读取当前最新版本（最后一个 `### v{N}` 子节）。
 
 2. **使用当前工作目录**：daemon 已为既有 Git 项目的 Round 2 准备任务专属 worktree。不得再根据 `vault-map.json` 切换目录，避免与并发任务共享工作区。

@@ -2,8 +2,7 @@
 
 ## 状态流转
 
-```
-blocked ──补齐 project + assignee 且 blocked_by 为空──→ ready
+blocked ──补齐 project + assignee 且所有 blocked_by 依赖已 done──→ ready
                                                             │
                                                             ▼
 ready ──→ Round 1 ──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
@@ -24,7 +23,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 
 | 状态 | 含义 | 谁设置 | 下一步 |
 |------|------|--------|--------|
-| `blocked` | 缺必填字段或被依赖阻塞 | 自动创建任务 / 人工 | 补齐 `project` + `assignee` 且 `blocked_by` 为空后自动转 `ready`；依赖阻塞则等待依赖解决 |
+| `blocked` | 缺必填字段或被依赖阻塞 | 自动创建任务 / 人工 | 补齐 `project` + `assignee` 后 daemon 自动扫描 `blocked_by` 中所有引用任务的状态；全部 `done` 则清空 `blocked_by` 并转 `ready`；有任一未完成则保持 `blocked` |
 | `ready` | 新建任务，等待处理 | daemon 或人工 | Round 1 自动启动 |
 | `plan-review` | 计划已生成，等待人工批准 | OMP（Round 1） | 人工审阅计划 |
 | `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行 |
@@ -101,7 +100,8 @@ review/conflict ──merge_approved:true──→ Merge Phase
 ### 任务没有被自动处理
 
 1. 检查 `assignee` **不为空**——这是最常见的原因：自动创建的任务 `assignee` 为空，daemon 会跳过。填写 `default` / `deepseek` / `gpt` 或其他 `models` key 后保存即触发
-2. 如果 status 是 `blocked`，确认 `project` 已填写、`assignee` 有效且 `blocked_by` 为空；满足后 daemon 会自动改为 `ready`，无需手动改 status
+
+2. 如果 status 是 `blocked`，确认 `project` 已填写、`assignee` 有效；daemon 会自动检查 `blocked_by` 中所有引用任务是否 `done`，满足后清空 `blocked_by` 并转 `ready`，无需手动改 status
 3. 检查 status 是否为 `ready`、(`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
 4. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
 5. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
