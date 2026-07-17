@@ -134,14 +134,14 @@ func SendTaskAction(taskID, taskTitle, emoji, title, description string) {
 
 // SendGrillingNotification notifies the user that a task needs interactive
 // grilling. Tries Kitty tab first; falls back to desktop notification.
-func SendGrillingNotification(taskID, taskTitle, reqDoc string) {
+func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string) {
 	title := fmt.Sprintf("🟡 T%s 需要需求对齐", taskID)
 	if taskTitle != "" {
 		title = fmt.Sprintf("🟡 T%s %s 需要需求对齐", taskID, taskTitle)
 	}
 	body := fmt.Sprintf("需求文档: %s\n请在 OMP 中输入：对 %s 进行需求详细化", reqDoc, reqDoc)
 
-	if tryKittyTab(taskID, taskTitle, reqDoc) {
+	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
 		return
 	}
 	// Fallback to desktop notification
@@ -167,7 +167,7 @@ var (
 // tryKittyTab attempts to open a new Kitty tab for interactive grilling.
 // Only one tab per 30 s to avoid flooding. Returns true if successful.
 // All dynamic content is passed via environment variables to avoid shell injection.
-func tryKittyTab(taskID, taskTitle, reqDoc string) bool {
+func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	kittyMu.Lock()
 	if time.Since(lastKittyTab) < 30*time.Second {
 		kittyMu.Unlock()
@@ -193,9 +193,8 @@ func tryKittyTab(taskID, taskTitle, reqDoc string) bool {
 		tabTitle = string(runes[:57]) + "..."
 	}
 
-	// Script prints a rich banner with task context then starts OMP.
-	// All dynamic values come from env vars — no shell injection.
-	// Heredoc delimiter is intentionally unquoted to allow ${VAR} expansion.
+	// Banner + OMP with preloaded grilling prompt.
+	// Heredoc is unquoted so ${VAR} env vars are expanded by the shell.
 	const script = `cat <<GRILLING_EOF
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -203,16 +202,12 @@ func tryKittyTab(taskID, taskTitle, reqDoc string) bool {
 ║
 ║  需求文档: ${GRILL_REQ_DOC}
 ║
-║  ▶ 请在下方 OMP 提示符处输入以下命令开始 grilling 对话：
-║
-║     对 ${GRILL_REQ_DOC} 进行需求详细化
-║
-║  OMP 会加载 requirement-elaborator，识别需求中的模糊点，
-║  逐一向你提问来达成共识。完成后将详细技术规格写入 Obsidian。
+║  OMP 正在加载需求文档并通过 requirement-elaborator
+║  逐一向你提问来对齐需求细节...
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-omp; exec bash`
+omp -p "对 ${GRILL_REQ_DOC} 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。"; exec bash`
 
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
@@ -223,6 +218,7 @@ omp; exec bash`
 		"GRILL_TASK_ID="+taskID,
 		"GRILL_TASK_TITLE="+taskTitle,
 		"GRILL_REQ_DOC="+reqDoc,
+		"OBSIDIAN_VAULT="+vaultPath,
 	)
 	return cmd.Run() == nil
 }

@@ -264,7 +264,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: failed to set needs-grilling: %v", t.ID, err)
 				continue
 			}
-			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc)
+			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault)
 			continue // do not add to pending — no OMP spawn
 		}
 		if t.Status == "needs-grilling" {
