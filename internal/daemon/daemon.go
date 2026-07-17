@@ -252,7 +252,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 	for _, t := range tasks {
 		// ── Grilling: handle before repo resolution ──
 		if t.Status == "ready" {
-			r.logger.Printf("task %s: ready → needs-grilling", t.ID)
+			r.logger.Printf("task %s: ready → needs-grilling (title=%q req_doc=%q file=%s)", t.ID, t.Title, t.ReqDoc, t.FilePath)
 			grillCtx := t.Title
 			if t.ReqDoc != "" {
 				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
