@@ -62,7 +62,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 | `priority` | P0-P4 | | 优先级，默认 P2 |
 | `due_date` | date | | 截止日期 |
 | `estimated_hours` | float | | 预估工时 |
-| `assignee` | string | | 委派执行 agent：`deepseek`（deepseek-v4-pro）/ `gpt`（gpt-5.5） |
+| `assignee` | string | | `models` 中的执行模型 key，例如 `default` / `deepseek` / `gpt` |
 | `reviewer` | string | | 代码审查人 |
 | `req_doc` | string | ✅ | Requirements/ 下的需求文档路径 |
 | `component` | string | | 影响组件 |
@@ -100,7 +100,7 @@ review/conflict ──merge_approved:true──→ Merge Phase
 
 ### 任务没有被自动处理
 
-1. 检查 `assignee` **不为空且有效**——这是最常见的原因：自动创建的任务 `assignee` 为空，daemon 会跳过。填写 `deepseek` / `gpt` 后保存即触发
+1. 检查 `assignee` **不为空**——这是最常见的原因：自动创建的任务 `assignee` 为空，daemon 会跳过。填写 `default` / `deepseek` / `gpt` 或其他 `models` key 后保存即触发
 2. 如果 status 是 `blocked`，确认 `project` 已填写、`assignee` 有效且 `blocked_by` 为空；满足后 daemon 会自动改为 `ready`，无需手动改 status
 3. 检查 status 是否为 `ready`、(`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
 4. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起

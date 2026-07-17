@@ -73,7 +73,7 @@ otg find-ready $OBSIDIAN_VAULT
 
 `blocked` 自动解除条件：
 - `project` 非空（或 `new_project: true` 且可通过 `new_project_root` 解析目标目录）
-- `assignee` 是 `deepseek` / `gpt`
+- `assignee` 非空；其值作为 vault-map.json `models` 的 key，未知 key 回退到 `default`
 - `blocked_by` 为空
 
 ### Step 4: Round 1 — 出计划
@@ -313,7 +313,7 @@ otg find-ready $OBSIDIAN_VAULT
 
 `merge_approved: true` 是明确授权：
 - 当 `assignee: deepseek` 时，使用 deepseek-v4-pro 执行 git push、gh pr create、gh pr merge / git merge、git push origin <default_branch> 和 feature 分支清理。
-- 当 `assignee: gpt` 时，使用 gpt-5.5 执行上述操作。
+- 当 `assignee: gpt` 时，使用 gpt-5.6-sol 执行上述操作。
 - 如果 `merge_approved: false`，不得自动 push、创建 PR 或 merge；只停在 `review` 并提醒用户处理。
 
 **headless 执行权限**：Merge Phase 由 daemon 以 `--approval-mode yolo` 启动，agent 拥有所有 tool 的完整执行权限，可以直接执行 `git push`、`gh pr create`、`gh pr merge`、分支清理等操作，无需人工交互确认。Round 1 / Round 2 以 `--auto-approve` 启动，自动审批文件写入和命令执行，但用户设 `plan_approved: true` / `merge_approved: true` 本身即代表授权。
@@ -512,21 +512,21 @@ otg find-ready $OBSIDIAN_VAULT
 ```
 vault-map.json → models 字段:
   "deepseek" → "deepseek/deepseek-v4-pro:xhigh"
-  "gpt"      → "gateway/gpt-5.5:xhigh"
+  "gpt"      → "gateway/gpt-5.6-sol:xhigh"
   "gemini"   → "google/gemini-2.5-pro"
   "claude"   → "anthropic/claude-sonnet-4-20250514"
   "minimax"  → "minimax/minimax-m1"
-  "flash"    → "deepseek/deepseek-v4-flash"  ← 未知 assignee 的回退
+  "default"  → "deepseek/deepseek-v4-flash"  ← 未知 assignee 的回退
   ...
 ```
 
 **规则**：
 - `assignee` 为 `models` 的 key → daemon 使用对应模型执行
-- `assignee` 不在 `models` 中 → 回退到 `flash` 模型
+- `assignee` 不在 `models` 中 → 回退到 `default` 模型
 - `assignee` 为空 → 任务不会被 daemon 拾取
 - `models` 可通过 vault-map.json 扩展或覆盖，用户自由添加新模型
 
-**Round 1 & Round 2 使用同一模型**（由 `assignee` 决定）。轻量任务（新需求自动创建 TASK、状态更新）使用 `flash` 模型。
+**Round 1 & Round 2 使用同一模型**（由 `assignee` 决定）。轻量任务（新需求自动创建 TASK、状态更新）使用 `default` 模型。
 
 ### 特殊情况：新需求自动创建 TASK + 追加 memory.md
 

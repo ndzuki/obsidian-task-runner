@@ -368,10 +368,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		taskPath := t.FilePath
 
 		if t.Status == "blocked" {
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false})
+			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}})
 			t.Status = "ready"
 			t.PendingReq = false
-			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，任务自动解除阻塞开始执行")
+			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行")
 		}
 		if t.PendingReq && t.Status != "ready" && t.Status != "plan-review" {
 			r.logger.Printf("task %s: pending_req → resetting to ready", t.ID)

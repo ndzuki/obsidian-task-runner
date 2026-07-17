@@ -44,8 +44,8 @@ type NotifConfig struct {
 func DefaultModels() map[string]string {
 	return map[string]string{
 		"deepseek": "deepseek/deepseek-v4-pro:xhigh",
-		"gpt":      "gateway/gpt-5.5:xhigh",
-		"flash":    "deepseek/deepseek-v4-flash",
+		"gpt":      "gateway/gpt-5.6-sol:xhigh",
+		"default":  "deepseek/deepseek-v4-flash",
 		"gemini":   "google/gemini-2.5-pro",
 		"claude":   "anthropic/claude-sonnet-4-20250514",
 		"minimax":  "minimax/minimax-m1",
@@ -57,8 +57,8 @@ func ModelReference() string {
 	return `| assignee | 模型标识 |
 |----------|---------|
 | deepseek | deepseek/deepseek-v4-pro:xhigh |
-| gpt      | gateway/gpt-5.5:xhigh |
-| flash    | deepseek/deepseek-v4-flash |
+| gpt      | gateway/gpt-5.6-sol:xhigh |
+| default  | deepseek/deepseek-v4-flash |
 | gemini   | google/gemini-2.5-pro |
 | claude   | anthropic/claude-sonnet-4-20250514 |
 | minimax  | minimax/minimax-m1 |
@@ -117,14 +117,14 @@ func Load(mapPath string) (*Config, error) {
 }
 
 // Model returns the OMP model identifier for an assignee key.
-// Falls back to the "flash" model if the assignee is unknown.
+// Falls back to the "default" model if the assignee is unknown.
 func (c *Config) Model(assignee string) string {
 	if m, ok := c.Models[assignee]; ok && m != "" {
 		return m
 	}
-	// Fallback to flash
-	if flash, ok := c.Models["flash"]; ok {
-		return flash
+	// Fallback to default
+	if defaultModel, ok := c.Models["default"]; ok {
+		return defaultModel
 	}
 	return "deepseek/deepseek-v4-flash"
 }

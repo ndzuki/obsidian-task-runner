@@ -174,6 +174,7 @@ func generateVaultMap(opts Options) error {
 		"obsidian_vault":        opts.ObsidianVault,
 		"new_project_root":      opts.NewProjectRoot,
 		"projects":              []interface{}{},
+		"models":                map[string]string{"default": "deepseek/deepseek-v4-flash"},
 		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes": opts.PollIntervalMin,
 		"max_concurrent_tasks":  2,

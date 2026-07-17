@@ -115,8 +115,8 @@ otg install \
   "new_project_root": "/home/you/src",
   "models": {
     "deepseek": "deepseek/deepseek-v4-pro:xhigh",
-    "gpt": "gateway/gpt-5.5:xhigh",
-    "flash": "deepseek/deepseek-v4-flash"
+    "gpt": "gateway/gpt-5.6-sol:xhigh",
+    "default": "deepseek/deepseek-v4-flash"
   },
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
@@ -124,7 +124,7 @@ otg install \
 }
 ```
 
-`project` 必须匹配 `projects[].name`。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `flash`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
+`project` 必须匹配 `projects[].name`。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
 
 ### 并发任务
 

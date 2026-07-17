@@ -48,8 +48,8 @@ blocked_by: []
 		t.Fatal("parse failed")
 	}
 
-	if !IsAutoUnblockable(fm) {
-		t.Error("should be auto-unblockable")
+	if !IsAutoUnblockable(fm, dir) {
+		t.Error("should be auto-unblockable with empty blocked_by")
 	}
 
 	// Test with missing assignee
@@ -63,8 +63,103 @@ blocked_by: []
 `)
 	data2, _ := os.ReadFile(path2)
 	fm2, _ := yamlfrontmatter.Parse(data2)
-	if IsAutoUnblockable(fm2) {
+	if IsAutoUnblockable(fm2, dir) {
 		t.Error("should NOT be auto-unblockable without assignee")
+	}
+}
+
+func TestBlockedByDependencyResolution(t *testing.T) {
+	dir := t.TempDir()
+	projDir := filepath.Join(dir, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	os.MkdirAll(tasksDir, 0755)
+
+	// Create a dependency task that is done
+	writeTask(tasksDir, "TASK-010-done.md", `
+id: "010"
+title: "Dependency Done"
+project: my-project
+status: done
+assignee: deepseek
+`)
+
+	// Create a task blocked by the done dependency
+	blockedPath := writeTask(tasksDir, "TASK-020-blocked.md", `
+id: "020"
+title: "Blocked Task"
+project: my-project
+status: blocked
+assignee: deepseek
+blocked_by:
+  - "TASK-010"
+priority: P0
+`)
+
+	data, _ := os.ReadFile(blockedPath)
+	fm, _ := yamlfrontmatter.Parse(data)
+
+	// Should be unblockable because TASK-010 is done
+	if !IsAutoUnblockable(fm, dir) {
+		t.Error("should be auto-unblockable; blocker TASK-010 is done")
+	}
+
+	// Also test FindReadyTasks picks it up
+	tasks, err := FindReadyTasks(dir)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	found := false
+	for _, rt := range tasks {
+		if rt.ID == "020" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("blocked task with done dependencies should appear in ready tasks")
+	}
+}
+
+func TestBlockedByUnresolvedDependency(t *testing.T) {
+	dir := t.TempDir()
+	projDir := filepath.Join(dir, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	os.MkdirAll(tasksDir, 0755)
+
+	// Create a dependency task that is NOT done
+	writeTask(tasksDir, "TASK-011-planning.md", `
+id: "011"
+title: "Still Planning"
+project: my-project
+status: plan-review
+assignee: deepseek
+`)
+
+	// Create a task blocked by the non-done dependency
+	blockedPath := writeTask(tasksDir, "TASK-021-blocked.md", `
+id: "021"
+title: "Still Blocked"
+project: my-project
+status: blocked
+assignee: deepseek
+blocked_by:
+  - "TASK-011"
+`)
+
+	data, _ := os.ReadFile(blockedPath)
+	fm, _ := yamlfrontmatter.Parse(data)
+
+	// Should NOT be unblockable because TASK-011 is not done
+	if IsAutoUnblockable(fm, dir) {
+		t.Error("should NOT be auto-unblockable; blocker TASK-011 is not done")
+	}
+
+	// Verify FindReadyTasks does not pick it up
+	tasks, _ := FindReadyTasks(dir)
+	for _, rt := range tasks {
+		if rt.ID == "021" {
+			t.Error("blocked task with unresolved dependencies should NOT appear in ready tasks")
+		}
 	}
 }
 
