@@ -36,8 +36,17 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
     blocked --> ready: 补齐 project + assignee<br/>且 blocked_by 为空
-    ready --> plan-review: Round 1 出计划
+    ready --> needs-grilling: daemon 触发 Grilling 通知<br/>Kitty tab 弹出
+    needs-grilling --> plan-review: 你完成交互式 grilling<br/>生成计划
     plan-review --> ready: 需求变更 pending_req
+
+    state needs-grilling {
+        [*] --> Round1: 需求对齐 grilling
+        Round1 --> [*]: status → plan-review
+        --
+        [*] --> Round2: 实现阻塞 grilling
+        Round2 --> [*]: status → implementing
+    }
 
     state plan-review {
         [*] --> 等待人工审阅
@@ -45,6 +54,7 @@ stateDiagram-v2
     }
 
     plan-review --> implementing: Round 2 实现代码
+    implementing --> needs-grilling: 测试失败 / 设计决策 /<br/>依赖冲突 / 架构摩擦
     implementing --> review: 测试/lint/验收通过<br/>git commit 到本地分支
     review --> ready: 需求变更 pending_req
 
@@ -61,7 +71,7 @@ stateDiagram-v2
     note right of blocked
         自动创建的任务初始为 blocked
         用户填 assignee + project 后
-        daemon 自动解除
+        daemon 自动解除 → Grilling 通知
     end note
 ```
 
@@ -73,32 +83,24 @@ sequenceDiagram
     participant Watch as task-watcher
     participant Daemon as task-runner-daemon
     participant Agent as OMP (model)
-    participant Git as GitHub
-
-    User->>Watch: 保存 REQ-xxx.md
-    Watch->>Daemon: on_req_changed → 触发调度
-    Daemon->>Daemon: find_ready_tasks → 发现 TASK
-    Note over Daemon: 任务状态: blocked → 需用户填字段
-
-    User->>Daemon: 填 assignee + project，保存
-    Daemon->>Daemon: 自动解除 blocked → ready
-
     Daemon->>Agent: omp --auto-approve -m deepseek-v4-pro
 
-    Note over Agent: ═══ Round 1: 出计划 ═══
+    Note over Agent: ═══ Grilling 对齐 ═══
 
-    Agent->>Agent: 读需求文档 (L1/L2/L3)
-    Agent->>Agent: 分析项目代码/结构
-    Agent->>Agent: 生成分步骤实现计划
-    Agent->>User: 写回 ## 实现计划 section
+    Agent->>Agent: 加载需求上下文
+    Agent->>Daemon: status = needs-grilling
+    Daemon->>User: 🖥️ Kitty 新 tab + 🔔 桌面通知
+
+    Note over User: 切换到 Kitty tab，与 OMP 交互
+    User->>Agent: 对话式 grilling（requirement-elaborator）
+    Agent->>Agent: 生成技术规格 + 实现计划
     Agent->>Daemon: status = plan-review
     Daemon->>User: 🔔 桌面通知: 计划已生成
 
-    Note over User: 审阅计划
+    Note over User: 审阅计划 + ADR 提议
     User->>Daemon: plan_approved = true，保存
 
     Daemon->>Agent: omp --auto-approve -m deepseek-v4-pro
-
     Note over Agent: ═══ Round 2: 实现 ═══
     Note over Daemon,Git: 同仓库并发时，daemon 为每个任务创建独立 Git worktree<br/>target_branch 已存在则绑定/校验该分支
 

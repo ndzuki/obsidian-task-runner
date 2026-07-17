@@ -156,7 +156,7 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return true
 	}
 	switch fm.Status {
-	case "ready", "implementing":
+	case "ready", "implementing", "needs-grilling":
 		return true
 	case "plan-review":
 		return fm.PlanApproved
