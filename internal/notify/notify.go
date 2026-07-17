@@ -183,7 +183,6 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		log.Printf("grilling tab: kitty not in PATH: %v", err)
 		return false
 	}
-
 	// Detect Kitty socket — systemd services lack KITTY_LISTEN_ON env var.
 	kittyEnv := os.Environ()
 	if os.Getenv("KITTY_LISTEN_ON") == "" {
@@ -191,10 +190,15 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 			for _, e := range entries {
 				if strings.HasPrefix(e.Name(), "kitty-") {
 					kittyEnv = append(kittyEnv, "KITTY_LISTEN_ON=unix:/tmp/"+e.Name())
+					log.Printf("grilling tab: auto-detected kitty socket %s", e.Name())
 					break
 				}
 			}
+		} else {
+			log.Printf("grilling tab: cannot read /tmp: %v", err)
 		}
+	} else {
+		log.Printf("grilling tab: KITTY_LISTEN_ON already set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
