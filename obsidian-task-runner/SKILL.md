@@ -5,8 +5,8 @@ description: >
   两轮状态机：Round 1 出计划、Round 2 写代码。
   支持自动发现可处理任务、解析项目路径、创建新项目脚手架、
   运行测试和 lint、提交到分支。
-  **新增**：项目级依赖分析——自动识别需求类型（路线图/领域索引/原子需求），
-  解析 `depends_on` 依赖链，确保任务按正确顺序执行，阻止依赖未满足时提前开始。
+  支持需求类型识别（路线图/领域索引/原子需求）与 depends_on 依赖链解析，
+  确保任务按正确顺序执行，阻止依赖未满足时提前开始。
   当用户在 Obsidian 中设 plan_approved: true 时自动触发 Round 2；设 merge_approved: true 时自动执行合并。
   当用户提到"自动执行 Obsidian 任务"、"从 Obsidian 拉任务开发"、
   "自动实现需求文档"、"task runner" 时使用本 skill。
