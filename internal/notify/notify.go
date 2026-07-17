@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -164,21 +163,21 @@ func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string) {
 	Send(title, "请在终端中完成交互式 grilling 对话。完成后 daemon 自动继续。")
 }
 
-// kittyDebounce prevents flooding the user with multiple Kitty tabs.
-var (
-	lastKittyTab time.Time
-	kittyMu      sync.Mutex
-)
+// kittyDebounce uses a file-based timestamp so the debounce survives daemon
+// restarts. Without this, every daemon restart triggers a new tab.
+const kittyDebounceFile = "/tmp/otg-kitty-grilling.lock"
+const kittyDebounceInterval = 5 * time.Minute
 
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
-	kittyMu.Lock()
-	if time.Since(lastKittyTab) < 30*time.Second {
-		kittyMu.Unlock()
-		log.Printf("grilling tab: debounced (last was %v ago)", time.Since(lastKittyTab))
-		return false
+	if data, err := os.ReadFile(kittyDebounceFile); err == nil {
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
+			if time.Since(t) < kittyDebounceInterval {
+				log.Printf("grilling tab: debounced (last was %v ago)", time.Since(t))
+				return false
+			}
+		}
 	}
-	lastKittyTab = time.Now()
-	kittyMu.Unlock()
+	os.WriteFile(kittyDebounceFile, []byte(time.Now().Format(time.RFC3339)), 0644)
 
 	if _, err := exec.LookPath("kitty"); err != nil {
 		log.Printf("grilling tab: kitty not in PATH: %v", err)
