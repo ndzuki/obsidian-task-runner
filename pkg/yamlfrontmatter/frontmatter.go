@@ -29,8 +29,8 @@ type Frontmatter struct {
 	PlanApproved   bool     `yaml:"plan_approved"`
 	MergeApproved  bool     `yaml:"merge_approved"`
 	AdrApproved    bool     `yaml:"adr_approved"`
-	AdrProposed    string   `yaml:"adr_proposed"`
-	AdrWritten     string   `yaml:"adr_written"`
+	AdrProposed    any      `yaml:"adr_proposed"`
+	AdrWritten     any      `yaml:"adr_written"`
 	GrillContext     string   `yaml:"grill_context"`
 	GrillPrevStatus  string   `yaml:"grill_prev_status"`
 	GrillDone        bool     `yaml:"grill_done"`
