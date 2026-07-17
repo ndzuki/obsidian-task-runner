@@ -281,7 +281,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				continue
 			}
 			r.logger.Printf("task %s: still waiting for grilling", t.ID)
-			notify.SendGrillingReminder(t.ID, t.Title)
+			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault)
 			continue // do not add to pending
 		}
 

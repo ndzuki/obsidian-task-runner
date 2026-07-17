@@ -149,8 +149,11 @@ func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string) {
 }
 
 // SendGrillingReminder re-notifies the user that a task is still waiting for grilling.
-// Does NOT open a Kitty tab — only desktop notification.
-func SendGrillingReminder(taskID, taskTitle string) {
+// Also tries to open a Kitty tab (debounced) in case the user missed the first one.
+func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string) {
+	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
+		return
+	}
 	title := fmt.Sprintf("⏳ T%s 仍在等待需求对齐", taskID)
 	if taskTitle != "" {
 		title = fmt.Sprintf("⏳ T%s %s 仍在等待需求对齐", taskID, taskTitle)
