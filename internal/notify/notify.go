@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,9 +183,25 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		log.Printf("grilling tab: kitty not in PATH: %v", err)
 		return false
 	}
+
+	// Detect Kitty socket — systemd services lack KITTY_LISTEN_ON env var.
+	kittyEnv := os.Environ()
+	if os.Getenv("KITTY_LISTEN_ON") == "" {
+		if entries, err := os.ReadDir("/tmp"); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "kitty-") {
+					kittyEnv = append(kittyEnv, "KITTY_LISTEN_ON=unix:/tmp/"+e.Name())
+					break
+				}
+			}
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "kitty", "@", "ls").Run(); err != nil {
+	lsCmd := exec.CommandContext(ctx, "kitty", "@", "ls")
+	lsCmd.Env = kittyEnv
+	if err := lsCmd.Run(); err != nil {
 		log.Printf("grilling tab: kitty @ ls failed: %v", err)
 		return false
 	}
@@ -263,5 +280,6 @@ os.waitpid(pid, 0)
 		"--title", tabTitle,
 		"bash", "-c", script,
 	)
+	cmd.Env = kittyEnv
 	return cmd.Run() == nil
 }
