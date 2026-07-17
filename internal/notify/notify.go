@@ -251,7 +251,6 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ║
 ║  OMP 正在加载 requirement-elaborator 并主动向你提问…
 ╚══════════════════════════════════════════════════════════════╝
-
 GRILLING_EOF
 export OBSIDIAN_VAULT=%s
 export GRILL_PROMPT=%s
@@ -261,7 +260,7 @@ pid, fd = pty.fork()
 if pid == 0:
     os.execvp("omp", ["omp"])
 prompt = os.environ.get("GRILL_PROMPT", "")
-os.write(fd, prompt.encode() + b"\n")
+os.write(fd, prompt.encode() + b"\r")
 while True:
     r, _, _ = select.select([sys.stdin, fd], [], [])
     if sys.stdin in r:
