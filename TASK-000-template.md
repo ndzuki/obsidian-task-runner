@@ -2,45 +2,41 @@
 id: ""
 title: ""
 project: ""
-project_id: ""
-template: ""
+assignee: ""
 
-# ── 状态流转（系统自动管理，不要手动改） ──
+# ── 推荐填写 ──
+priority: P2
+req_doc: ""
+blocked_by: []
+tags: []
+epic: ""
+
+# ── 系统管理（不要手动改） ──
 status: ready
 plan_approved: false
 merge_approved: false
-pending_req: false
-off_peak_only: false
+adr_approved: false
+grill_done: false
+auto_approve: false
 plan_version: 0
 created: ""
 updated: ""
 completed: ""
-
-# ── 优先级 & 排期 ──
-priority: P2
-due_date: ""
-estimated_hours: 0
-actual_hours: 0
-
-# ── 人员 & 模型委派 ──
-# 🔴 必填！任意支持的 assignee key（deepseek | gpt | gemini | claude | minimax...）
-# 留空则 daemon 不会拾取此任务
-# 模型映射: vault-map.json → models 字段
-assignee: ""
-reviewer: ""
-
-# ── 范围 & 分类 ──
-req_doc: ""
-component: ""
-tags: []
-epic: ""
-parent: ""
-blocks: []
-blocked_by: []
-
-# ── 环境 & 部署 ──
 target_branch: ""
 target_env: staging
+grill_context: ""
+grill_prev_status: ""
+actual_hours: 0
+
+# ── 高级选项（按需填写） ──
+# new_project: false         # 新项目 — daemon 可自动推断
+# off_peak_only: false       # 仅低峰执行 Round 2（省钱）
+# due_date: ""               # 截止日期
+# estimated_hours: 0         # 预估工时
+# component: ""              # 影响组件
+# reviewer: ""               # 代码审查人
+# parent: ""                 # 父任务 ID（如非空则链式阻塞）
+# pending_req: false         # 需求变更标记（系统管理）
 ---
 
 # <!-- 标题 -->
@@ -60,7 +56,7 @@ target_env: staging
 <!-- 🤖 Agent 自动维护 — 当前状态快照 -->
 | 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
 |------|------|---------|------|--------|
-| 1 | Round 1 | v1 | ⏳ 待开始 | — |
+| 1 | Grilling | v1 | ⏳ 待开始 | — |
 
 ---
 
@@ -82,6 +78,23 @@ target_env: staging
 <!-- 🤖 task-verifier 填充。每轮验收追加 dated 子节 -->
 ### Round 1 · 2026-07-10
 <!-- 初始验收 -->
+
+---
+
+## ADR 提议
+<!-- 🤖 Round 1 生成。满足 ADR 三条件时自动填充 -->
+<!-- 审查后设 adr_approved: true 授权写入 Notes/adr/ -->
+
+---
+
+## Grilling 上下文
+<!-- 🤖 系统自动填充 — 暂停时写入阻塞上下文 -->
+<!-- 交互式 grilling 完成后自动清空 -->
+
+---
+
+## Round 2 阻塞
+<!-- 🤖 Round 2 暂停时填充 — 记录卡住的原因和需要的决策 -->
 
 ---
 

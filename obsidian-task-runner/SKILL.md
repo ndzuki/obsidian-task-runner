@@ -7,6 +7,7 @@ description: >
   运行测试和 lint、提交到分支。
   支持需求类型识别（路线图/领域索引/原子需求）与 depends_on 依赖链解析，
   确保任务按正确顺序执行，阻止依赖未满足时提前开始。
+  集成 skill://grilling 对齐追问和 skill://domain-modeling 共享词汇维护。
   当用户在 Obsidian 中设 plan_approved: true 时自动触发 Round 2；设 merge_approved: true 时自动执行合并。
   当用户提到"自动执行 Obsidian 任务"、"从 Obsidian 拉任务开发"、
   "自动实现需求文档"、"task runner" 时使用本 skill。
@@ -23,6 +24,7 @@ description: >
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
 6. **事后总结到项目记忆文档**：每轮（Round 1 / Round 2 / Merge Phase）结束后**必须**在 `$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md` 创建或更新**项目累积记忆文档**。记录本轮的关键决策、遇到的问题及解决方案、发现的模式和陷阱。新需求创建时 `otg on-req-changed` 自动追加需求上下文到同一 `memory.md`（单文件累积）。目的是积累项目上下文、避免重复踩坑、减少后续任务的无效思考。每个项目维护自己独立的 Notes/ 目录，不跨项目共享。
 7. **依赖优先**：任何任务在 `depends_on` 中的前序需求对应的 TASK 未 `done` 前，不得进入 Round 2 实现阶段。Round 1 出计划可以提前执行（了解全局上下文），但计划中必须标注阻塞依赖。
+8. **维护共享领域词汇**：所有计划、实现记录、代码命名必须使用项目 CONTEXT.md 中定义的术语。Round 1 和 Round 2 过程中新出现的领域概念，即时调用 `skill://domain-modeling` 更新 CONTEXT.md。架构决策满足 ADR 三条件时，主动提议创建 ADR。
 
 ## 输入
 
@@ -51,11 +53,31 @@ otg find-ready $OBSIDIAN_VAULT
 - 获取项目的本地路径
 - 获取 new_project_root 配置
 - 获取通知偏好
-
 **项目目录约定**：后续步骤中的 `<project>` 指 Vault 中项目目录名（如 `001-release-manager`），即任务文件路径两级的父目录：
 - 任务文件：`$OBSIDIAN_VAULT/Projects/<project>/Tasks/TASK-<id>-<slug>.md`
 - 项目记忆：`$OBSIDIAN_VAULT/Projects/<project>/Notes/memory.md`
+- 领域词汇：`$OBSIDIAN_VAULT/Projects/<project>/Notes/CONTEXT.md`
+- 架构决策：`$OBSIDIAN_VAULT/Projects/<project>/Notes/adr/`
 - 可从 `file_path` 推导：`dirname(dirname(task_file))` = 项目目录
+
+### Step 2.3: 加载项目领域模型（Round 1 必执行）
+
+**目标**：加载项目共享词汇和架构决策，确保后续所有命名和设计使用一致术语。
+
+1. **读取 CONTEXT.md**（如果存在）：
+   - 路径：`$OBSIDIAN_VAULT/Projects/<project>/Notes/CONTEXT.md`
+   - 将其中所有领域术语加载为当前会话的词汇表
+   - 后续所有计划、实现记录、代码标识符必须使用 CONTEXT.md 中的规范术语
+   - 发现代码中使用 `_Avoid_` 标注的废弃术语 → 在计划中标注为需要统一
+
+2. **读取 ADR**（如果存在）：
+   - 扫描 `$OBSIDIAN_VAULT/Projects/<project>/Notes/adr/` 下的所有 ADR
+   - 理解已做出的架构决策，不重新讨论、不违反
+   - 如果需求与已有 ADR 冲突 → 在计划中标注并提议讨论
+
+3. **CONTEXT.md 不存在时的处理**：
+   - 不必强求创建，但 Round 1 出计划时若产生新的领域术语，应新建 CONTEXT.md
+   - 从需求文档和已有代码中提取候选术语，在计划末尾提议"建议纳入 CONTEXT.md 的术语列表"
 
 ### Step 2.5: 项目依赖分析（Round 1 & blocked 判定前必执行）
 
@@ -127,36 +149,116 @@ otg find-ready $OBSIDIAN_VAULT
    - 在计划的"前置条件"部分列出，让审阅者清楚当前任务的阻塞状态
 ### Step 3: 判断当前阶段
 
-解析任务文档的 YAML frontmatter，关注 `status`、`plan_approved` 和 `merge_approved`：
+解析任务文档的 YAML frontmatter，关注 `status`、`plan_approved`、`merge_approved` 和 `adr_approved`：
+
+**ADR 写入优先检查**（在任何状态转换之前）：
+- 如果 `adr_approved: true` 且 `adr_proposed` 非空 → 执行 **ADR 写入子流程**（见下方），写入完成后清空 `adr_proposed`，然后继续正常状态判断。
+- 如果 `adr_approved: true` 但 `adr_proposed` 为空 → 无 ADR 待写入，跳过。
+- 如果 `adr_approved` 未设置（非 `true`）且 `adr_proposed` 非空 → **输出醒目提醒**（见下方），然后继续正常状态判断。这个提醒确保用户不会漏掉待审 ADR。
+
+**待审 ADR 提醒**（每次调用只要 `adr_proposed` 非空且 `adr_approved` 非 `true` 就输出）：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│  ⚠️  待审 ADR 提议（adr_approved 尚未授权）                  │
+│                                                             │
+│  以下 ADR 已提议但尚未写入。请审查后设 adr_approved: true：   │
+│                                                             │
+│  ▸ Event Sourcing for Order Write Model                     │
+│  ▸ PostgreSQL for Read Model Projections                    │
+│                                                             │
+│  在 task frontmatter 中设置 adr_approved: true 以授权写入。  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+> 这个提醒在每次任务调用时都会出现，直到 `adr_approved: true` 被设置且 ADR 写入完成。用户无法忽略。
 
 | 当前状态 | plan_approved | merge_approved | 动作 |
 |----------|---------------|----------------|------|
-| `ready` 或无 | — | — | 走 Round 1（但先通过 Step 2.5 验证无未满足依赖） |
+| `ready` 或无 | — | — | 走 **Grilling 通知流程**（见下方），设置 `needs-grilling`，通知用户交互式完成任务，然后退出。**不在 daemon 中生成计划。** |
+| `needs-grilling` | — | — | 任务等待用户交互式 grilling。如果 status 仍是 `needs-grilling`（用户尚未完成）→ 再次通知，退出。如果已是 `plan-review` 或 `implementing`（用户已完成，交互式会话已改 status）→ 不会进入此行——由对应行处理。 |
 | `plan-review` | `true` | — | 走 Round 2 |
 | `plan-review` | 非 `true` | — | 输出 "等待人工批准" 并退出 |
 | `review` | — | `true` | 走 Merge Phase |
 | `review` | — | 非 `true` / 无 | 输出 "任务已在 review 状态，等待人工 review" 并退出 |
 | `conflict` | — | `true` | 走 Merge Phase（重新尝试合并） |
 | `conflict` | — | 非 `true` / 无 | 输出 "任务存在合并冲突，请解决后重新设置 merge_approved: true" 并退出 |
-| `blocked` | — | — | 执行 Step 2.5 依赖分析后，若所有 `blocked_by` 依赖已 `done` 且必填字段已补齐，自动改为 `ready` 再走 Round 1；否则输出缺失字段/未完成依赖并退出 |
+| `blocked` | — | — | 执行 Step 2.5 依赖分析后，若所有 `blocked_by` 依赖已 `done` 且必填字段已补齐，自动改为 `ready` 再走 Grilling 通知流程；否则输出缺失字段/未完成依赖并退出 |
 | `done` | — | — | 输出 "任务已完成" 并退出 |
 | `implementing` | — | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
 
-`blocked` 自动解除条件（全部满足才解除）：
-- `project` 非空（或 `new_project: true` 且可通过 `new_project_root` 解析目标目录）
-- `assignee` 非空；其值作为 vault-map.json `models` 的 key，未知 key 回退到 `default`
-- `blocked_by` 中所有 TASK 的 `status` 均为 `done`
+### Grilling 通知流程
 
-**重要**：`blocked_by` 为空不代表无依赖。如果需求文档的 `depends_on` 非空但 `blocked_by` 为空（首次分析），Step 2.5 必须先解析依赖并填充 `blocked_by`，再据此判定是否可以解除 blocked。
+当 daemon 在 `ready` 状态检测到任务需要需求对齐时，**不对任务进行自动分析**。
+而是写入 grilling 上下文、通知用户、然后退出。用户手动完成交互式 grilling 后，
+daemon 在下次轮询中继续。
 
-`ready` 状态的额外检查：
-- 即使任务当前是 `ready`，在进入 Round 1 前也必须执行 Step 2.5 依赖分析
-- 如果发现 `depends_on` 中有未完成依赖，将任务改为 `blocked` 并更新 `blocked_by`，输出未满足的依赖列表，退出
+**触发条件**：`ready` 状态的任务首次进入 Round 1。
 
-### Step 4: Round 1 — 出计划
+**流程**：
 
-**目标**：理解需求及依赖上下文，生成可执行的实现计划。
+1. **加载上下文**（Step 2、Step 2.3、Step 2.5）：
+   - 读取项目配置、CONTEXT.md、ADR、依赖链
+   - 读取需求文档
 
+2. **写入 grilling 上下文到任务文档**：
+   ```bash
+   otg update-status <task_path> \
+     status=needs-grilling \
+     grill_context="<需求标题>: <一句话描述需要对齐的关键决策点>"
+   ```
+
+   同时在任务文档的「## Grilling 上下文」section 写入详细信息：
+   ```markdown
+   ## Grilling 上下文
+
+   > 此任务需要交互式需求对齐。请在终端中完成 grilling 对话。
+
+   - **需求文档**: [[<req_doc>]]
+   - **依赖上下文**: <已完成的前序任务及其产出>
+   - **关键决策点**: <从需求文档中识别出的模糊点列表>
+   - **建议技能**: skill://requirement-elaborator
+   ```
+
+3. **Kitty 新 tab 通知**（主要方式）：
+   ```bash
+   kitty @ launch --type=tab --title "Grilling <task_id>" \
+     bash -c 'echo "🟡 需要对 <req_doc> 进行需求详细化（grilling 追问 + 技术规格生成）"; echo; exec omp'
+   ```
+
+   > `kitty @ launch` 在当前 Kitty 实例中创建新 tab。用户看到新 tab 后切换过去，
+   > 直接与 OMP 对话完成 grilling。`allow_remote_control yes` 必须在 `kitty.conf` 中启用。
+
+4. **桌面通知**（fallback，同时发送）：
+   ```bash
+   notify-send -u critical -t 10000 \
+     "OTG: <task_id> 需要需求对齐" \
+     "已在新 Kitty tab 中打开 OMP。说：对 <req_doc> 进行需求详细化"
+   ```
+
+5. **退出**：daemon 本轮结束。不等待用户、不阻塞。
+
+**用户侧操作**：
+1. 看到新 Kitty tab 或桌面通知
+2. 切换到新 tab，OMP 已就绪
+3. 对 OMP 说："对 <req_doc> 进行需求详细化"
+4. OMP 加载 `requirement-elaborator` → grilling 对话 → 生成技术规格 → 写入 Obsidian
+5. 用户审阅生成的计划后，在 Obsidian 中设 `plan_approved: true`
+6. daemon 下次轮询看到 `plan-review` + `plan_approved: true` → 进入 Round 2
+
+**Kitty 不可用时的降级**：
+- 如果 `kitty @ ls` 失败（Kitty 未运行或 remote control 未启用）→ 仅使用 `notify-send`
+- 同时在终端 stderr 输出醒目的 boxed message 作为最后手段
+
+### Step 4: Round 1 — 出计划（仅在 grilling 完成后执行）
+
+**重要**：Round 1 的 grilling 阶段已移至「Grilling 通知流程」。daemon 在 `ready` 状态下不生成计划，而是通知用户完成交互式 grilling。此 Step 4 仅在以下场景执行：
+- 用户完成交互式 grilling 后，需求文档已包含详细技术规格，daemon 可据此直接生成实现计划（罕见）
+- 或者任务通过 `auto_approve: true` + 需求文档已详细完备 跳过 grilling（未来优化）
+
+**当前默认行为**：daemon 在 `ready` 状态下走 Grilling 通知流程后退出。此 Step 4 作为 fallback 保留。
 **重要**：如果任务文档的「## 实现记录」或「## 验收记录」section 已有内容（说明这是因需求变更触发的**重新出计划**），则 Round 1 生成计划后**必须停在 `plan-review`**，等待人工确认。不得因为"代码已经实现过了"就跳过 plan-review 直接进入 review。即使 `auto_approve: true`，重新出计划场景下也必须停在 plan-review。
 
 0. **回顾依赖上下文**（Step 2.5 的产出）：
@@ -178,6 +280,7 @@ otg find-ready $OBSIDIAN_VAULT
    - 标注关键决策点（需要人工确认的地方）
    - 标注对前序产出的引用（如"复用 TASK-010 的 `RequestMetadata` message"）
    - 如果项目已有 task-verifier，列出验收标准的映射
+   - **使用 CONTEXT.md 术语**：计划中所有实体、模块、接口命名必须使用 CONTEXT.md 定义的规范术语。避免使用 `_Avoid_` 列表中的废弃术语。如果 CONTEXT.md 不存在，在计划末尾附上"建议纳入 CONTEXT.md 的术语列表"
 
 4. **写回任务文档（版本化，不覆盖）**：
 
@@ -261,6 +364,68 @@ otg find-ready $OBSIDIAN_VAULT
    <!-- 衔接上面四段式 -->
    ```
 
+6. **维护领域模型（事后总结）**：
+
+   加载 `skill://domain-modeling`，根据本轮计划产出的内容更新项目领域模型：
+
+   a) **更新 CONTEXT.md**：
+      - 如果 CONTEXT.md 不存在且计划中产生了领域特定术语 → 新建 `$OBSIDIAN_VAULT/Projects/<project>/Notes/CONTEXT.md`
+      - 如果计划中引入了新的领域概念（如新的实体、新的流程名称）→ 追加到 CONTEXT.md 的 `## Language` section
+      - 如果计划中统一了模糊术语（如将"工单/ticket/issue"统一为"Task"）→ 更新对应条目，将废弃术语加入 `_Avoid_`
+      - 格式遵循 `skill://domain-modeling` 中「CONTEXT.md — The glossary」section 的 Format 定义
+
+   b) **提议 ADR**（仅在满足全部三条件时）：
+      - 本轮计划中有**难以逆转的架构决策**（技术选型、模块边界、集成模式）
+      - 该决策**对后续开发者而言是意外的**（不记录会有人疑惑）
+      - 该决策是**在多个真实备选方案中做出的权衡**
+      - 满足条件 → 执行以下操作：
+
+      1. 为每个提议的 ADR 生成 `title`（短标题）和 `slug`（小写、空格替换为 `-`）
+      2. **记录到 task frontmatter**：
+         ```bash
+         otg update-status <task_path> adr_proposed='[{"title":"Event Sourcing for Order Write Model","slug":"event-sourcing-order-write"},{"title":"PostgreSQL for Read Model Projections","slug":"postgres-read-projections"}]'
+         ```
+      3. **在任务文档中写入醒目的 ADR 提议 section**（在 `## 变更记录` section 之前插入）：
+
+         使用 Obsidian callout 格式，确保在 Obsidian 中显眼渲染：
+
+         ```markdown
+         ## ADR 提议
+
+         > [!important]- ADR 提议（待授权）
+         > 以下架构决策记录已提议但**尚未写入**。请审查后授权：
+         >
+         > | # | ADR 标题 | Slug |
+         > |---|----------|------|
+         > | 1 | Event Sourcing for Order Write Model | event-sourcing-order-write |
+         > | 2 | PostgreSQL for Read Model Projections | postgres-read-projections |
+         >
+         > **操作**：审查完毕后，在 task frontmatter 中设置 `adr_approved: true`。
+         > 下次任务调用时，agent 自动写入 `Notes/adr/` 目录。
+         ```
+
+         > ⚠️ `> [!important]` callout 在 Obsidian 中渲染为红色/橙色高亮框，用户绝对不会错过。
+         > 使用 `-` 折叠标记（`[!important]-`）使其默认折叠，避免干扰日常任务查看。
+
+      4. 在实现计划末尾也输出简要 ADR 摘要（供 plan-review 阶段参考）。
+         ```markdown
+         ## ADR 提议摘要
+
+         > 详见任务文档「ADR 提议」section。
+
+         | # | ADR 标题 | Slug |
+         |---|----------|------|
+         | 1 | Event Sourcing for Order Write Model | event-sourcing-order-write |
+         | 2 | PostgreSQL for Read Model Projections | postgres-read-projections |
+         ```
+
+   c) **输出摘要**：在 Round 1 完成消息中附带术语变更摘要：
+      ```markdown
+      📝 领域模型更新：
+         - CONTEXT.md: 新增术语 <N> 个，更新 <N> 个
+         - ADR 提议: <N> 条（已记录到 adr_proposed），设 adr_approved: true 授权写入
+      ```
+
 ### Step 5: Round 2 — 实现
 
 **目标**：按批准的计划实现代码并提交。
@@ -297,7 +462,68 @@ otg find-ready $OBSIDIAN_VAULT
      ```
    - 每完成一步：检查代码编译通过、运行相关测试
    - 遵循项目现有的代码风格和约定
-   - 把每一步的产出追加到「## 实现记录」的当前 round 子节下。**创建 dated 子节**`### Round {N} · YYYY-MM-DD`：
+   - **Tracer Bullet 约束**（强制红-绿循环）：
+     1. **一条验收标准 = 一条示踪弹。** 对计划的每一步，按 AC 逐条推进。绝不批量写所有测试再批量写所有代码（anti-pattern: horizontal slicing）。
+     2. **Red**：针对当前 AC 先写一个最小失败测试 → `go test -race -run <TestName>` 确认失败。
+     3. **Green**：写刚好足够的代码使测试通过 → 再次 `go test -race -run <TestName>` 确认通过。
+     4. **Refactor**（仅在绿后）：如果代码需要整理，在测试绿了之后做。红时绝不重构。
+     5. **下一条 AC**：只有当前 AC 的测试绿了，才进入下一条 AC。每条 AC 都是一颗完整的示踪弹——从测试到实现到验证。
+     6. **测试只测公共接口**（seam）：测试名描述行为而非实现（"用户可以用有效购物车结账"而非"CheckoutHandler.Execute 返回 200"）。内部重命名不应破坏测试。
+     7. **期望值来自独立来源**：测试中的期望值必须是字面量或 spec 中明确定义的值——绝不从被测代码反向推导（tautological test）。
+
+   - **Round 2 暂停条件**（以下任一触发时，暂停并向用户求助）：
+
+     | 触发条件 | 自主尝试上限 | 行为 |
+     |----------|-------------|------|
+     | **测试连续失败** | 同一 AC 的测试修复尝试 ≤ 3 次 | 第 4 次仍失败 → 暂停。设置 `needs-grilling`，写入阻塞上下文，Kitty 通知用户。 |
+     | **计划外设计决策** | 0 次（立即暂停） | 实现过程中发现计划未覆盖的模糊点（如"审批驳回后回退到哪一步？"）。不自行决定——暂停，写入问题上下文。 |
+     | **依赖冲突** | 尝试 1 个替代方案 | 如果计划的库/版本不可用，尝试 1 个替代。仍失败 → 暂停。 |
+     | **架构摩擦** | 0 次（立即暂停） | 发现代码库现状与计划假设不一致（如需要修改的模块已被其他任务大幅重构）。暂停，写入差异描述。 |
+     | **Tracer Bullet 无法穿透** | ≤ 3 次重构 | 测试写不出来（无法找到正确的 seam）→ 暂停。这本身是一个重要信号——代码架构阻止了测试。 |
+
+   - **暂停流程**（复用 Grilling 通知流程）：
+     1. 在任务文档的「## Round 2 阻塞」section 写入：
+        ```markdown
+        ## Round 2 阻塞
+
+        > ⚠️ 实现过程中遇到需要你决策的问题。
+
+        - **阻塞类型**: <测试失败 / 设计决策 / 依赖冲突 / 架构摩擦>
+        - **当前 AC**: <AC-N 描述>
+        - **问题描述**: <具体阻塞点>
+        - **已尝试**: <已尝试的方案和结果>
+        - **需要的决策**: <明确列出用户需要回答的问题>
+        ```
+     2. **保存暂停前状态**：
+        ```bash
+        otg update-status <task_path> \
+          status=needs-grilling \
+          grill_prev_status=implementing
+        ```
+        > `grill_prev_status` 记录暂停来源——恢复时用。
+        > `target_branch` 保留不变（Round 2 的 worktree）。
+     3. 触发 Kitty 通知（同 Grilling 通知流程）
+     4. daemon 退出
+
+   - **恢复流程**（用户完成交互式 grilling 后）：
+
+     **用户侧**（在交互式 OMP 会话中）：
+     ```bash
+     otg update-status <task_path> \
+       status=implementing \
+       grill_done=true \
+       grill_context=""
+     ```
+     > `status=implementing` 即 `grill_prev_status` 的保存值（Round 2 暂停时写入 `grill_prev_status=implementing`，恢复时原值写回）。
+     > 标记 grilling 完成（`grill_done=true`），清空阻塞上下文（`grill_context=""`）。
+     > `plan_approved` 和 `target_branch` 保持原值不变。
+
+     **daemon 侧**（下次轮询）：
+     1. Step 3 看到 `status: implementing` → 走 Round 2（无 `plan_approved` 检查，因为 Round 2 的 gate 早已通过）
+     2. `git checkout <target_branch>` → 回到 Round 2 worktree
+     3. 从「## Round 2 阻塞」section 读取阻塞点上下文
+     4. 从「## 实现记录」找到最后一个已完成的 AC
+     5. 继续下一个 AC 的 Tracer Bullet 循环
      ```markdown
      ### Round {N} · YYYY-MM-DD
      > 计划版本: v{plan_version}
