@@ -2,9 +2,11 @@
 package notify
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -128,4 +130,99 @@ func SendTaskAction(taskID, taskTitle, emoji, title, description string) {
 		prefix = fmt.Sprintf("T%s %s", taskID, taskTitle)
 	}
 	Send(fmt.Sprintf("%s %s: %s", emoji, prefix, title), description)
+}
+
+// SendGrillingNotification notifies the user that a task needs interactive
+// grilling. Tries Kitty tab first; falls back to desktop notification.
+func SendGrillingNotification(taskID, taskTitle, reqDoc string) {
+	title := fmt.Sprintf("🟡 T%s 需要需求对齐", taskID)
+	if taskTitle != "" {
+		title = fmt.Sprintf("🟡 T%s %s 需要需求对齐", taskID, taskTitle)
+	}
+	body := fmt.Sprintf("需求文档: %s\n请在 OMP 中输入：对 %s 进行需求详细化", reqDoc, reqDoc)
+
+	if tryKittyTab(taskID, taskTitle, reqDoc) {
+		return
+	}
+	// Fallback to desktop notification
+	Send(title, body)
+}
+
+// SendGrillingReminder re-notifies the user that a task is still waiting for grilling.
+// Does NOT open a Kitty tab — only desktop notification.
+func SendGrillingReminder(taskID, taskTitle string) {
+	title := fmt.Sprintf("⏳ T%s 仍在等待需求对齐", taskID)
+	if taskTitle != "" {
+		title = fmt.Sprintf("⏳ T%s %s 仍在等待需求对齐", taskID, taskTitle)
+	}
+	Send(title, "请在终端中完成交互式 grilling 对话。完成后 daemon 自动继续。")
+}
+
+// kittyDebounce prevents flooding the user with multiple Kitty tabs.
+var (
+	lastKittyTab time.Time
+	kittyMu      sync.Mutex
+)
+
+// tryKittyTab attempts to open a new Kitty tab for interactive grilling.
+// Only one tab per 30 s to avoid flooding. Returns true if successful.
+// All dynamic content is passed via environment variables to avoid shell injection.
+func tryKittyTab(taskID, taskTitle, reqDoc string) bool {
+	kittyMu.Lock()
+	if time.Since(lastKittyTab) < 30*time.Second {
+		kittyMu.Unlock()
+		return false
+	}
+	lastKittyTab = time.Now()
+	kittyMu.Unlock()
+
+	if _, err := exec.LookPath("kitty"); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "kitty", "@", "ls").Run(); err != nil {
+		return false
+	}
+
+	tabTitle := fmt.Sprintf("Grilling %s", taskID)
+	if taskTitle != "" {
+		tabTitle = fmt.Sprintf("Grilling %s — %s", taskID, taskTitle)
+	}
+	if runes := []rune(tabTitle); len(runes) > 60 {
+		tabTitle = string(runes[:57]) + "..."
+	}
+
+	// Script prints a rich banner with task context then starts OMP.
+	// All dynamic values come from env vars — no shell injection.
+	// Heredoc delimiter is intentionally unquoted to allow ${VAR} expansion.
+	const script = `cat <<GRILLING_EOF
+
+╔══════════════════════════════════════════════════════════════╗
+║  🟡 需求对齐 — TASK-${GRILL_TASK_ID}: ${GRILL_TASK_TITLE}
+║
+║  需求文档: ${GRILL_REQ_DOC}
+║
+║  ▶ 请在下方 OMP 提示符处输入以下命令开始 grilling 对话：
+║
+║     对 ${GRILL_REQ_DOC} 进行需求详细化
+║
+║  OMP 会加载 requirement-elaborator，识别需求中的模糊点，
+║  逐一向你提问来达成共识。完成后将详细技术规格写入 Obsidian。
+╚══════════════════════════════════════════════════════════════╝
+
+GRILLING_EOF
+exec omp`
+
+	cmd := exec.Command("kitty", "@", "launch",
+		"--type=tab",
+		"--title", tabTitle,
+		"bash", "-c", script,
+	)
+	cmd.Env = append(os.Environ(),
+		"GRILL_TASK_ID="+taskID,
+		"GRILL_TASK_TITLE="+taskTitle,
+		"GRILL_REQ_DOC="+reqDoc,
+	)
+	return cmd.Run() == nil
 }

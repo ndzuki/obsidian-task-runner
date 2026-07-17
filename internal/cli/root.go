@@ -12,10 +12,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var cfg *config.Config
+var (
+	cfg     *config.Config
+	version string
+)
 
-// Execute runs the root command.
-func Execute() error {
+// Execute runs the root command. version is set via ldflags at build time.
+func Execute(v string) error {
+	version = v
+	if version == "" {
+		version = "dev"
+	}
 	return rootCmd.Execute()
 }
 
@@ -32,7 +39,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("otg v0.1.0")
+		fmt.Printf("otg %s\n", version)
 		fmt.Println("Obsidian Task Runner — Go edition")
 	},
 }

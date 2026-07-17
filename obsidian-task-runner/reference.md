@@ -2,21 +2,25 @@
 
 ## 状态流转
 
+```
 blocked ──补齐 project + assignee 且所有 blocked_by 依赖已 done──→ ready
                                                             │
                                                             ▼
-ready ──→ Round 1 ──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
-  ▲          │                 │                                │         │
-  │          ▼                 │                                ▼         ▼
-  │       🔔 请审阅计划        └──未批准：等待人工确认       🔔 请 review 代码
+ready ──→ needs-grilling ──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
+  ▲          │                      │                                │         │
+  │          ▼                      │                                ▼         ▼
+  │       🔔 Kitty 通知             └──未批准：等待人工确认       🔔 请 review 代码
+  │       等待交互式 grilling                                             │
   │                                                                         │
   └── pending_req:true ─────────────────────────────────────────────────────┘
-      需求文档更新后自动重置 status=ready，重新走 Round 1 → plan-review
+      需求文档更新后自动重置 status=ready，重新走 needs-grilling → plan-review
 
 review/conflict ──merge_approved:true──→ Merge Phase
                                       │
                                       ├── git push + gh pr create + merge 成功 → done
                                       └── 冲突 / 不可合并 → conflict ──人工处理后重新设 merge_approved:true
+
+implementing ──Round 2 阻塞──→ needs-grilling ──用户解决──→ implementing
 ```
 
 ## 状态详解
@@ -24,9 +28,10 @@ review/conflict ──merge_approved:true──→ Merge Phase
 | 状态 | 含义 | 谁设置 | 下一步 |
 |------|------|--------|--------|
 | `blocked` | 缺必填字段或被依赖阻塞 | 自动创建任务 / 人工 | 补齐 `project` + `assignee` 后 daemon 自动扫描 `blocked_by` 中所有引用任务的状态；全部 `done` 则清空 `blocked_by` 并转 `ready`；有任一未完成则保持 `blocked` |
-| `ready` | 新建任务，等待处理 | daemon 或人工 | Round 1 自动启动 |
+| `ready` | 新建任务，等待处理 | daemon 或人工 | daemon 触发 Grilling 通知，转为 `needs-grilling` |
+| `needs-grilling` | 等待用户交互式需求对齐 | daemon | 用户在 Kitty tab 中完成 grilling 对话，OMP 生成计划后转为 `plan-review` |
 | `plan-review` | 计划已生成，等待人工批准 | OMP（Round 1） | 人工审阅计划 |
-| `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行 |
+| `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行；遇到阻塞转为 `needs-grilling` |
 | `review` | 代码已实现，等待人工 review | OMP（Round 2 完成） | 人工 review 代码，确认后设 merge_approved: true |
 | `conflict` | 合并冲突，需人工解决 | OMP（Merge Phase） | 人工解决冲突，重新设 merge_approved: true 重试 |
 | `done` | 已完成合并并推送 | OMP（Merge Phase 成功） | 结束 |
