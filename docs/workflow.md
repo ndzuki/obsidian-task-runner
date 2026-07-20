@@ -46,6 +46,7 @@ stateDiagram-v2
         --
         [*] --> Round2: 实现阻塞 grilling
         Round2 --> [*]: status → implementing
+        Round2 --> plan-review: plan_version=0<br/>（无计划，先出计划）
     }
 
     state plan-review {
@@ -54,7 +55,7 @@ stateDiagram-v2
     }
 
     plan-review --> implementing: Round 2 实现代码
-    implementing --> needs-grilling: 测试失败 / 设计决策 /<br/>依赖冲突 / 架构摩擦
+    implementing --> needs-grilling: 测试失败 / 设计决策 /<br/>依赖冲突 / 架构摩擦<br/>（plan_version=0 时自动转 plan-review）
     implementing --> review: 测试/lint/验收通过<br/>git commit 到本地分支
     review --> ready: 需求变更 pending_req
 

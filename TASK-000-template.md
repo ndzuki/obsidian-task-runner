@@ -27,6 +27,7 @@ target_env: staging
 grill_context: ""
 grill_prev_status: ""
 actual_hours: 0
+pending_req: false
 
 # ── 高级选项（按需填写） ──
 # new_project: false         # 新项目 — daemon 可自动推断
@@ -34,9 +35,7 @@ actual_hours: 0
 # due_date: ""               # 截止日期
 # estimated_hours: 0         # 预估工时
 # component: ""              # 影响组件
-# reviewer: ""               # 代码审查人
 # parent: ""                 # 父任务 ID（如非空则链式阻塞）
-# pending_req: false         # 需求变更标记（系统管理）
 ---
 
 # <!-- 标题 -->
