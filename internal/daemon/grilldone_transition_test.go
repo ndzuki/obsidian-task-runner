@@ -64,11 +64,11 @@ priority: P2
 	transitioned := false
 	if rt.Status == "needs-grilling" {
 		if rt.GrillDone || rt.PlanApproved {
-			t.Log("grilling complete → transitioning to plan-review")
 			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":        "plan-review",
-				"grill_done":    true,
-				"grill_context": "",
+				"status":            "plan-review",
+				"grill_done":        true,
+				"grill_context":     "",
+				"grill_prev_status": "",
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -217,9 +217,10 @@ assignee: gpt
 	if rt.Status == "needs-grilling" {
 		if rt.GrillDone || rt.PlanApproved {
 			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":        "plan-review",
-				"grill_done":    true,
-				"grill_context": "",
+				"status":            "plan-review",
+				"grill_done":        true,
+				"grill_context":     "",
+				"grill_prev_status": "",
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -240,6 +241,109 @@ assignee: gpt
 	}
 	if fm.PlanApproved {
 		t.Error("PlanApproved should still be false")
+	}
+
+	// plan-review without plan_approved → NOT ready for Round 2
+	ready2, err := task.FindReadyTasks(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready2) != 0 {
+		t.Errorf("expected 0 ready tasks (plan-review without plan_approved), got %d", len(ready2))
+	}
+}
+
+func TestGrillDoneTransition_ImplementingBounceNoPlan(t *testing.T) {
+	// needs-grilling + grill_prev_status=implementing + plan_version=0
+	// → auto-transition to plan-review (task needs a plan, not more grilling)
+	vault := t.TempDir()
+	tasksDir := filepath.Join(vault, "Projects", "001-release-manager", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	taskContent := `---
+id: "072"
+title: Bounced Without Plan
+project: release-manager
+project_id: "001"
+status: needs-grilling
+plan_approved: false
+plan_version: 0
+grill_done: false
+grill_prev_status: implementing
+grill_context: "implementation blocked — no plan"
+assignee: gpt
+---
+# TASK-072
+`
+	taskPath := filepath.Join(tasksDir, "TASK-072-bounce-no-plan.md")
+	if err := os.WriteFile(taskPath, []byte(taskContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ready, err := task.FindReadyTasks(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 1 {
+		t.Fatalf("expected 1 ready task, got %d", len(ready))
+	}
+
+	rt := ready[0]
+	if rt.Status != "needs-grilling" {
+		t.Fatalf("Status = %q, want needs-grilling", rt.Status)
+	}
+	if rt.GrillPrevStatus != "implementing" {
+		t.Fatalf("GrillPrevStatus = %q, want implementing", rt.GrillPrevStatus)
+	}
+	if rt.PlanVersion != 0 {
+		t.Fatalf("PlanVersion = %d, want 0", rt.PlanVersion)
+	}
+	if rt.GrillDone {
+		t.Error("GrillDone should be false initially")
+	}
+
+	// Simulate prepareBatch: implementing bounce + plan_version=0 → plan-review
+	transitioned := false
+	if rt.Status == "needs-grilling" && rt.GrillPrevStatus == "implementing" && rt.PlanVersion == 0 {
+		t.Log("bounced from implementing with no plan → auto plan-review")
+		updates := map[string]interface{}{
+			"status":            "plan-review",
+			"grill_done":        true,
+			"grill_context":     "",
+			"grill_prev_status": "",
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+			t.Fatal(err)
+		}
+		transitioned = true
+	}
+	if !transitioned {
+		t.Fatal("expected auto-transition to plan-review")
+	}
+
+	// Verify frontmatter after transition
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal("failed to parse frontmatter after transition")
+	}
+
+	if fm.Status != "plan-review" {
+		t.Errorf("Status = %q, want plan-review", fm.Status)
+	}
+	if !fm.GrillDone {
+		t.Error("GrillDone should be true after transition")
+	}
+	if fm.GrillContext != "" {
+		t.Errorf("GrillContext = %q, want empty", fm.GrillContext)
+	}
+	if fm.GrillPrevStatus != "" {
+		t.Errorf("GrillPrevStatus = %q, want empty", fm.GrillPrevStatus)
 	}
 
 	// plan-review without plan_approved → NOT ready for Round 2

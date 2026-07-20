@@ -281,12 +281,28 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
 				continue
 			}
+			if t.GrillPrevStatus == "implementing" && t.PlanVersion == 0 {
+				r.logger.Printf("task %s: needs-grilling bounced from implementing with no plan → plan-review", t.ID)
+				updates := map[string]interface{}{
+					"status":             "plan-review",
+					"grill_done":         true,
+					"grill_context":      "",
+					"grill_prev_status":  "",
+				}
+				if err := yamlfrontmatter.Update(t.FilePath, updates); err != nil {
+					r.logger.Printf("task %s: failed to transition to plan-review: %v", t.ID, err)
+					continue
+				}
+				notify.SendTaskAction(t.ID, t.Title, "🔧", "实现受阻（无计划）", "已返回 plan-review，需求文档完备可直接生成计划")
+				continue
+			}
 			if t.GrillDone || t.PlanApproved {
 				r.logger.Printf("task %s: grilling complete → plan-review", t.ID)
 				updates := map[string]interface{}{
-					"status":        "plan-review",
-					"grill_done":    true,
-					"grill_context": "",
+					"status":            "plan-review",
+					"grill_done":        true,
+					"grill_context":     "",
+					"grill_prev_status": "",
 				}
 				if err := yamlfrontmatter.Update(t.FilePath, updates); err != nil {
 					r.logger.Printf("task %s: failed to transition to plan-review: %v", t.ID, err)
