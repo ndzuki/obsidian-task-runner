@@ -477,6 +477,11 @@ daemon 在下次轮询中继续。
      > 标记 grilling 完成（`grill_done=true`），清空阻塞上下文（`grill_context=""`）。
      > `plan_approved` 和 `target_branch` 保持原值不变。
 
+     > **plan_version=0 守护**：如果任务从 `implementing` 弹回但 `plan_version=0`（从未有过有效计划），
+     > daemon 不会等待 grilling，而是**自动转入 `plan-review`** 先出计划。
+     > 此时用户应直接设 `plan_approved: true` 让 Round 2 生成计划并实现，
+     > 而非按上述恢复流程设 `status=implementing`（无计划无法实现）。
+
      **daemon 侧**（下次轮询）：
      1. Step 3 看到 `status: implementing` → 走 Round 2（无 `plan_approved` 检查，因为 Round 2 的 gate 早已通过）
      2. `git checkout <target_branch>` → 回到 Round 2 worktree
