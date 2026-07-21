@@ -2,67 +2,60 @@
 
 ## 状态流转
 
-```
 blocked ──补齐 project + assignee 且所有 blocked_by 依赖已 done──→ ready
                                                             │
                                                             ▼
-ready ──→ needs-grilling ──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
-  ▲          │                      │                                │         │
-  │          ▼                      │                                ▼         ▼
-  │       🔔 Kitty 通知             └──未批准：等待人工确认       🔔 请 review 代码
-  │       等待交互式 grilling                                             │
-  │                                                                         │
-  └── pending_req:true ─────────────────────────────────────────────────────┘
-      需求文档更新后自动重置 status=ready，重新走 needs-grilling → plan-review
+ready ──→ needs-grilling ──grill_done 或 plan_approved──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
+  ▲          │                                                    │                                │         │
+  │          ▼                                                    │                                ▼         ▼
+  │       🔔 通知用户交互式 grilling                               └──未批准：等待人工确认       🔔 请 review 代码
+  │                                                                                                      │
+  └── pending_req:true ──────────────────────────────────────────────────────────────────────────────────┘
+      需求文档更新后自动重置 status=ready，重新走 Round 1 → plan-review
 
 review/conflict ──merge_approved:true──→ Merge Phase
                                       │
                                       ├── git push + gh pr create + merge 成功 → done
                                       └── 冲突 / 不可合并 → conflict ──人工处理后重新设 merge_approved:true
-
-implementing ──Round 2 阻塞──→ needs-grilling ──用户解决──→ implementing
-                                   │
-                                   └── plan_version=0 ──→ plan-review（自动出计划）
+```
 
 ## 状态详解
 
 | 状态 | 含义 | 谁设置 | 下一步 |
 |------|------|--------|--------|
 | `blocked` | 缺必填字段或被依赖阻塞 | 自动创建任务 / 人工 | 补齐 `project` + `assignee` 后 daemon 自动扫描 `blocked_by` 中所有引用任务的状态；全部 `done` 则清空 `blocked_by` 并转 `ready`；有任一未完成则保持 `blocked` |
-| `ready` | 新建任务，等待处理 | daemon 或人工 | daemon 触发 Grilling 通知，转为 `needs-grilling` |
-| `needs-grilling` | 等待交互式需求对齐（Round 1）或实现阻塞解决（Round 2 暂停） | daemon | daemon 先检查 `grill_owner`：非空且未超时 → 跳过通知（有人正在 grilling）；非空但超时 → 自动清空后继续；为空 → 正常通知。Round 1: 用户完成 grilling → `plan-review`。Round 2 暂停: 用户解决阻塞 → `implementing`；若 `plan_version=0` 则 daemon 自动转入 `plan-review` 先出计划 |
-| `plan-review` | 计划已生成，等待人工批准 | OMP（Round 1） | 人工审阅计划 |
-| `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行；遇到阻塞转为 `needs-grilling`。daemon 守护：若 `plan_version=0` 且 `grill_prev_status=implementing`，自动转 `plan-review` 而非等待 grilling |
+| `ready` | 新建任务，等待处理 | daemon 或人工 | daemon 通知用户交互式 grilling，设 `needs-grilling` |
+| `needs-grilling` | 等待用户交互式需求对齐 | daemon（从 ready 转入） | requirement-elaborator 完成后**自动**设 `grill_done: true` + 清空 `grill_owner`（参见 Step 8.5）。用户也可手动设 `plan_approved: true` 跳过；daemon 检测后自动转 `plan-review`。`grill_owner` 非空且未超时时 daemon 跳过通知 |
+| `plan-review` | 计划已生成，等待人工批准 | daemon（从 needs-grilling 自动转入）或 OMP（Round 1） | 人工审阅计划 |
+| `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行 |
 | `review` | 代码已实现，等待人工 review | OMP（Round 2 完成） | 人工 review 代码，确认后设 merge_approved: true |
 | `conflict` | 合并冲突，需人工解决 | OMP（Merge Phase） | 人工解决冲突，重新设 merge_approved: true 重试 |
 | `done` | 已完成合并并推送 | OMP（Merge Phase 成功） | 结束 |
 | `error` | 执行失败 | OMP（异常时） | 人工排查日志 |
-
 ## Task Frontmatter 字段参考
 
 ### 系统自动管理（不要手动改）
 
+| 字段 | 类型 | 说明 |
+|------|------|------|
 | `status` | enum | 见上方状态流转表 |
 | `plan_approved` | bool | Round 2 的钥匙，人工设为 true |
 | `merge_approved` | bool | 自动 PR + 合并的钥匙，人工 review 通过后设为 true；若 `assignee: deepseek`，表示授权 deepseek-v4-pro 执行 `git push`、`gh pr create`、merge 和分支清理 |
-| `grill_done` | bool | grilling 完成标记。用户交互式 grilling 完成后或 daemon 自动处理时设为 true |
-| `grill_context` | string | grilling 上下文字符串。daemon 在 ready→needs-grilling 时写入，完成 grilling 后清空 |
-| `grill_prev_status` | string | 暂停前的状态（如 `implementing`）。daemon 在 Round 2 阻塞暂停时写入，恢复后清空 |
-| `grill_owner` | string | 当前持有 grilling 会话的 agent ID（hub agent ID、"user" 或 daemon task-id）。空表示无人占用。由 requirement-elaborator 在 grilling 开始时 CAS 写入，完成/超时后清空 |
-| `grill_started_at` | ISO8601 | grilling 所有权获取时间，与 `grill_owner` 同步写入和清空 |
-| `grill_timeout_minutes` | int | grilling 会话超时阈值，默认 30。超时后其他 agent/daemon 可抢占所有权 |
-| `plan_version` | int | 实现计划版本号。Round 1 每次出计划时递增；0 = 从未有过计划 |
 | `created` | ISO8601 | 文件首次创建时间 |
 | `updated` | ISO8601 | 最后更新时间 |
 | `completed` | ISO8601 | 完成时间 |
 | `actual_hours` | float | 实际耗时 |
 | `pending_req` | bool | 需求文档在任务进行中/完成后有更新。daemon 拾起后自动重置为 ready 并重新出计划 |
+| `grill_owner` | string | 当前持有 grilling 会话的 agent ID（hub agent ID、"user" 或 daemon task-id）。空表示无人占用。由 requirement-elaborator 在 grilling 开始时 CAS 写入，完成/超时后清空 |
+| `grill_started_at` | ISO8601 | grilling 所有权获取时间，与 `grill_owner` 同步写入和清空 |
+| `grill_timeout_minutes` | int | grilling 会话超时阈值，默认 30。超时后其他 agent/daemon 可抢占所有权 |
+| `req_refine_count` | int | 需求缺口循环计数器。暂停进入 grilling 前 +1，全部 AC 通过后清零。≥3 时 Agent 主动进入 grilling 交互（不递增），交互完成后自主恢复 |
+| `grill_done` | bool | grilling 完成标记。requirement-elaborator 写回规格后设为 true，daemon 检测后自动转 plan-review |
+| `grill_prev_status` | string | 暂停前的原始 status（如 `implementing`），恢复时写回 `status` 字段 |
+| `grill_context` | YAML | 结构化 grilling 上下文。包含 `triage`（type/confidence/evidence）和 `domain_terms` 列表。不再使用纯文本格式 |
+| `adr_approved` | bool | ADR 写入授权。设为 true 后 daemon 写入 `Notes/adr/` 并清空 `adr_proposed` |
+| `adr_proposed` | JSON array | 待审 ADR 提议列表，格式 `[{"title":"...","slug":"..."}]`。写入后设 `adr_approved: true` 授权 |
 | `target_branch` | string | Git 分支名，由 Round 2 自动设置，Merge Phase 使用 |
-| `pr_url` | string | PR 链接，Merge Phase 创建/复用 PR 后自动设置 |
-| `adr_approved` | bool | ADR 写入授权。用户审查 adr_proposed 后设为 true 授权写入 Notes/adr/ |
-| `adr_proposed` | json | 待审 ADR 提议列表。Round 1 满足 ADR 三条件时自动填充 |
-| `adr_written` | json | 已写入的 ADR 记录。写入完成后自动填充，防止重复写入 |
-
 ### 人工填写
 
 | 字段 | 类型 | 必需 | 说明 |
