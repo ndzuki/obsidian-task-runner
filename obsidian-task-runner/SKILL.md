@@ -1,16 +1,6 @@
 ---
 name: obsidian-task-runner
-description: >
-  读取 Obsidian Vault 中的需求文档和任务文档，自动理解要求并实现代码。
-  两轮状态机：Round 1 出计划、Round 2 写代码。
-  支持自动发现可处理任务、解析项目路径、创建新项目脚手架、
-  运行测试和 lint、提交到分支。
-  支持需求类型识别（路线图/领域索引/原子需求）与 depends_on 依赖链解析，
-  确保任务按正确顺序执行，阻止依赖未满足时提前开始。
-  集成 skill://grilling 对齐追问和 skill://domain-modeling 共享词汇维护。
-  当用户在 Obsidian 中设 plan_approved: true 时自动触发 Round 2；设 merge_approved: true 时自动执行合并。
-  当用户提到"自动执行 Obsidian 任务"、"从 Obsidian 拉任务开发"、
-  "自动实现需求文档"、"task runner" 时使用本 skill。
+description: "Run the Obsidian task lifecycle: discover tasks, resolve dependencies, grill requirements, plan, implement, test, review, and merge. Trigger: task runner, 自动执行 Obsidian 任务, 自动实现需求文档."
 ---
 
 你是 Obsidian → OMP 自动化流水线的执行引擎。你的工作是在一次 OMP 调用中完成一轮状态推进，然后退出，不发生交互。
@@ -176,8 +166,10 @@ otg find-ready $OBSIDIAN_VAULT
 
 | 当前状态 | plan_approved | merge_approved | 动作 |
 |----------|---------------|----------------|------|
-| `ready` 或无 | — | — | 走 **Grilling 通知流程**（见下方），设置 `needs-grilling`，通知用户交互式完成任务，然后退出。**不在 daemon 中生成计划。** |
-| `needs-grilling` | — | — | 任务等待用户交互式 grilling。如果 status 仍是 `needs-grilling`（用户尚未完成）→ 再次通知，退出。如果已是 `plan-review` 或 `implementing`（用户已完成，交互式会话已改 status）→ 不会进入此行——由对应行处理。 |
+| `ready` 或无 | — | — | 走 **Grilling 通知流程**（见下方），设 `status=needs-grilling`，通知用户交互式完成任务，然后退出。**不在 daemon 中生成计划。** |
+| `needs-grilling`（`grill_owner` 非空且未超时） | — | — | **有人正在 grilling**。daemon 静默跳过此任务，不重复通知，不更新任何字段。 |
+| `needs-grilling`（`grill_owner` 非空但已超时） | — | — | **上一次 grilling 已超时**。daemon 自动清空 `grill_owner` 和 `grill_started_at`，在变更记录追加超时日志，然后走正常 `needs-grilling` 检测逻辑（检查 `grill_done` 或 `plan_approved`）。 |
+| `needs-grilling`（`grill_owner` 为空） | — | — | 任务等待用户交互式 grilling。daemon 检查 `grill_done` 或 `plan_approved`：若其一为 `true` → 自动转为 `plan-review` 并通知；若均为 `false` → 再次通知提醒，退出。 |
 | `plan-review` | `true` | — | 走 Round 2 |
 | `plan-review` | 非 `true` | — | 输出 "等待人工批准" 并退出 |
 | `review` | — | `true` | 走 Merge Phase |
@@ -210,12 +202,17 @@ daemon 在下次轮询中继续。
    ```
 
    同时在任务文档的「## Grilling 上下文」section 写入详细信息：
-   ```markdown
-   ## Grilling 上下文
 
-   > 此任务需要交互式需求对齐。请在终端中完成 grilling 对话。
+1. **所有权检查**（新）：在通知前检查 TASK frontmatter 的 `grill_owner`：
+   - 若非空且未超时 → 有人正在 grilling，跳过本轮通知，退出
+   - 若非空但已超时 → 自动清空 `grill_owner` 和 `grill_started_at`，追加变更记录，继续通知流程
+   - 若为空 → 正常通知
 
-   - **需求文档**: [[<req_doc>]]
+2. **加载上下文**（Step 2、Step 2.3、Step 2.5）：
+   - 读取项目配置、CONTEXT.md、ADR、依赖链
+   - 读取需求文档
+
+3. **写入 grilling 上下文到任务文档**：
    - **依赖上下文**: <已完成的前序任务及其产出>
    - **关键决策点**: <从需求文档中识别出的模糊点列表>
    - **建议技能**: skill://requirement-elaborator
@@ -244,12 +241,12 @@ daemon 在下次轮询中继续。
 2. 切换到新 tab，OMP 已就绪
 3. 对 OMP 说："对 <req_doc> 进行需求详细化"
 4. OMP 加载 `requirement-elaborator` → grilling 对话 → 生成技术规格 → 写入 Obsidian
-5. 用户审阅生成的计划后，在 Obsidian 中设 `plan_approved: true`
-6. daemon 下次轮询看到 `plan-review` + `plan_approved: true` → 进入 Round 2
+5. grilling 完成后，requirement-elaborator **自动**设置 `grill_done: true` + 清空 `grill_owner`（Step 8.5）。用户无需手动操作。
+6. daemon 下次轮询检测到 `grill_done: true` 或 `plan_approved: true`，自动将 status 从 `needs-grilling` 转为 `plan-review`，通知"需求对齐完成"
+7. 用户审阅生成的计划后，确认 `plan_approved: true`
+8. daemon 下次轮询看到 `plan-review` + `plan_approved: true` → 进入 Round 2
 
 **Kitty 不可用时的降级**：
-- 如果 `kitty @ ls` 失败（Kitty 未运行或 remote control 未启用）→ 仅使用 `notify-send`
-- 同时在终端 stderr 输出醒目的 boxed message 作为最后手段
 
 ### Step 4: Round 1 — 出计划（仅在 grilling 完成后执行）
 
@@ -476,11 +473,6 @@ daemon 在下次轮询中继续。
      > `status=implementing` 即 `grill_prev_status` 的保存值（Round 2 暂停时写入 `grill_prev_status=implementing`，恢复时原值写回）。
      > 标记 grilling 完成（`grill_done=true`），清空阻塞上下文（`grill_context=""`）。
      > `plan_approved` 和 `target_branch` 保持原值不变。
-
-     > **plan_version=0 守护**：如果任务从 `implementing` 弹回但 `plan_version=0`（从未有过有效计划），
-     > daemon 不会等待 grilling，而是**自动转入 `plan-review`** 先出计划。
-     > 此时用户应直接设 `plan_approved: true` 让 Round 2 生成计划并实现，
-     > 而非按上述恢复流程设 `status=implementing`（无计划无法实现）。
 
      **daemon 侧**（下次轮询）：
      1. Step 3 看到 `status: implementing` → 走 Round 2（无 `plan_approved` 检查，因为 Round 2 的 gate 早已通过）

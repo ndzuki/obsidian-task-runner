@@ -26,6 +26,9 @@ target_branch: ""
 target_env: staging
 grill_context: ""
 grill_prev_status: ""
+grill_owner: ""
+grill_started_at: ""
+grill_timeout_minutes: 30
 actual_hours: 0
 pending_req: false
 
