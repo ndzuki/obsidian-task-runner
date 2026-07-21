@@ -12,7 +12,7 @@ description: "Run the Obsidian task lifecycle: discover tasks, resolve dependenc
 3. **只在 Merge Phase 推送/PR/合并**：Round 1 和 Round 2 期间不推送代码、不创建 PR、不合并。Merge Phase（Step 6）在 `merge_approved: true` 授权后负责 `git push`、`gh pr create`、merge、push 默认分支和分支清理
 4. **新项目永远确认**：`new_project: true` 的任务在 Round 1 只出脚手架方案，绝不自动创建
 5. **使用系统本地时区**：所有时间戳（`created`、`updated`、`completed`、实现记录中的时间）必须使用系统本地时区，执行 `date` 命令获取当前时间，不得使用 UTC
-6. **事后总结写入领域模型**：每轮（Round 1 / Round 2 / Merge Phase）结束后，若有新发现的**领域模式、反模式（陷阱）或跨任务经验**，追加到 `$OBSIDIAN_VAULT/Projects/<project>/Notes/CONTEXT.md` 的 `## Patterns` 或 `## Anti-patterns` section。架构决策走 ADR，领域术语走 CONTEXT.md `## Language`。不复述已在 TASK 文档「实现记录」中的内容。
+6. **即时写回领域模型**：Grilling / Round 1 / Round 2 过程中新出现的领域术语、模式、反模式**即时**调用 `skill://domain-modeling` 更新 CONTEXT.md，不等到轮次结束后再批量总结。架构决策满足 ADR 三条件时，即时提议创建 ADR。事后总结（Round 结束后）仅记录跨轮次的宏观观察，不复述已在 TASK 文档「实现记录」中的内容。
 7. **依赖优先**：任何任务在 `depends_on` 中的前序需求对应的 TASK 未 `done` 前，不得进入 Round 2 实现阶段。Round 1 出计划可以提前执行（了解全局上下文），但计划中必须标注阻塞依赖。
 8. **维护共享领域词汇**：所有计划、实现记录、代码命名必须使用项目 CONTEXT.md 中定义的术语。Round 1 和 Round 2 过程中新出现的领域概念，即时调用 `skill://domain-modeling` 更新 CONTEXT.md。架构决策满足 ADR 三条件时，主动提议创建 ADR。
 
@@ -177,7 +177,7 @@ otg find-ready $OBSIDIAN_VAULT
 | `conflict` | — | `true` | 走 Merge Phase（重新尝试合并） |
 | `conflict` | — | 非 `true` / 无 | 输出 "任务存在合并冲突，请解决后重新设置 merge_approved: true" 并退出 |
 | `blocked` | — | — | 执行 Step 2.5 依赖分析后，若所有 `blocked_by` 依赖已 `done` 且必填字段已补齐，自动改为 `ready` 再走 Grilling 通知流程；否则输出缺失字段/未完成依赖并退出 |
-| `done` | — | — | 输出 "任务已完成" 并退出 |
+| `done` | — | — | 如果 `pending_req: true` → 需求已变更且任务已完成，自动重置为 `plan-review` + `pending_req=false`，通知用户「需求变更，已完成的任务需要重新出计划」；否则输出 "任务已完成" 并退出 |
 | `implementing` | — | — | 检查项目是否已有代码产出，有则继续 Round 2，否则视为异常重新进入 Round 2 |
 
 ### Grilling 通知流程
@@ -194,49 +194,72 @@ daemon 在下次轮询中继续。
    - 读取项目配置、CONTEXT.md、ADR、依赖链
    - 读取需求文档
 
-2. **写入 grilling 上下文到任务文档**：
-   ```bash
-   otg update-status <task_path> \
-     status=needs-grilling \
-     grill_context="<需求标题>: <一句话描述需要对齐的关键决策点>"
+2. **Triage 分类**（需求进入 Grilling 前先分类，按优先级判定）：
+
+   **决策树**（先匹配先得，不并列打分）：
+
+   ```
+   读取需求文档
+     │
+     ├─ 1. 疑似已实现？（最高优先级）
+     │   代码搜索：核心功能函数/接口名命中 >80%
+     │   → type="疑似已实现", confidence=命中率, 附代码位置
+     │
+     ├─ 2. Bug 修复？
+     │   关键词: 「bug」「修复」「异常」「报错」「崩溃」「panic」「nil pointer」
+     │   排除: 需求文档中作为上下文提及（如"修复了之前的 bug 后"）
+     │   → type="Bug修复", confidence=关键词密度
+     │
+     └─ 3. 功能增强（默认兜底）
+         → type="功能增强", confidence=high/medium
    ```
 
-   同时在任务文档的「## Grilling 上下文」section 写入详细信息：
-
-1. **所有权检查**（新）：在通知前检查 TASK frontmatter 的 `grill_owner`：
-   - 若非空且未超时 → 有人正在 grilling，跳过本轮通知，退出
-   - 若非空但已超时 → 自动清空 `grill_owner` 和 `grill_started_at`，追加变更记录，继续通知流程
-   - 若为空 → 正常通知
-
-2. **加载上下文**（Step 2、Step 2.3、Step 2.5）：
-   - 读取项目配置、CONTEXT.md、ADR、依赖链
-   - 读取需求文档
+   分类结果写入 `grill_context` **结构化 YAML**（不再用纯文本），不阻塞 Grilling：
+   ```yaml
+   grill_context:
+     req_path: "Projects/<project>/Requirements/REQ-<id>-<slug>.md"
+     triage:
+       type: "功能增强"          # 功能增强 | Bug修复 | 疑似已实现
+       confidence: "high"        # high | medium | low
+       evidence: "关键词匹配: 增强、新增、验证"
+       already_implemented: false
+     domain_terms:               # Grilling 中即时写入
+       - term: "<新术语>"
+         defined_at: "<ISO8601>"
+   ```
+   - confidence 为 low 时不阻塞，但输出提醒供用户确认
 
 3. **写入 grilling 上下文到任务文档**：
-   - **依赖上下文**: <已完成的前序任务及其产出>
-   - **关键决策点**: <从需求文档中识别出的模糊点列表>
-   - **建议技能**: skill://requirement-elaborator
-   ```
+   a) **所有权检查**：检查 TASK frontmatter 的 `grill_owner`：
+      - 若非空且未超时 → 有人正在 grilling，跳过本轮通知，退出
+      - 若非空但已超时 → 自动清空 `grill_owner` 和 `grill_started_at`，追加变更记录，继续通知流程
+      - 若为空 → 正常通知
+   b) **写入 frontmatter**（结构化 YAML）：
+      ```bash
+      otg update-status <task_path> \
+        status=needs-grilling \
+        grill_context='{"req_path":"<req_doc>","triage":{"type":"<分类>","confidence":"<high/medium/low>","evidence":"<分类依据>","already_implemented":false},"domain_terms":[]}'
+      ```
+   c) **写入「## Grilling 上下文」section**：
+      - **依赖上下文**: <已完成的前序任务及其产出>
+      - **关键决策点**: <从需求文档中识别出的模糊点列表>
+      - **建议技能**: skill://requirement-elaborator
+      ```
 
-3. **Kitty 新 tab 通知**（主要方式）：
+4. **Kitty 新 tab 通知**（主要方式）：
    ```bash
    kitty @ launch --type=tab --title "Grilling <task_id>" \
      bash -c 'echo "🟡 需要对 <req_doc> 进行需求详细化（grilling 追问 + 技术规格生成）"; echo; exec omp'
    ```
 
-   > `kitty @ launch` 在当前 Kitty 实例中创建新 tab。用户看到新 tab 后切换过去，
-   > 直接与 OMP 对话完成 grilling。`allow_remote_control yes` 必须在 `kitty.conf` 中启用。
-
-4. **桌面通知**（fallback，同时发送）：
+5. **桌面通知**（fallback，同时发送）：
    ```bash
    notify-send -u critical -t 10000 \
      "OTG: <task_id> 需要需求对齐" \
      "已在新 Kitty tab 中打开 OMP。说：对 <req_doc> 进行需求详细化"
    ```
 
-5. **退出**：daemon 本轮结束。不等待用户、不阻塞。
-
-**用户侧操作**：
+6. **退出**：daemon 本轮结束。不等待用户、不阻塞。
 1. 看到新 Kitty tab 或桌面通知
 2. 切换到新 tab，OMP 已就绪
 3. 对 OMP 说："对 <req_doc> 进行需求详细化"
@@ -274,13 +297,14 @@ daemon 在下次轮询中继续。
    - 分步骤，每步有明确的产出物
    - 每步预估代码量（文件数、行数）
    - 标注关键决策点（需要人工确认的地方）
+   - **高风险 Step 的 Prototype 验证**：如果计划中任何 Step 标记为 `风险: high`，在计划末尾附加「## Prototype 建议」section，列出建议原型验证的 Step 及其验证目标（如"验证状态机在边界条件下的行为"）。用户可在 `plan_approved` 前选择执行 prototype——daemon 在下次轮询时检测到 `prototype_requested: true`，先执行 throwaway 原型验证，将结果写回计划后再进入 Round 2。原型代码不提交主分支。
    - 标注对前序产出的引用（如"复用 TASK-010 的 `RequestMetadata` message"）
    - 如果项目已有 task-verifier，列出验收标准的映射
    - **使用 CONTEXT.md 术语**：计划中所有实体、模块、接口命名必须使用 CONTEXT.md 定义的规范术语。避免使用 `_Avoid_` 列表中的废弃术语。如果 CONTEXT.md 不存在，在计划末尾附上"建议纳入 CONTEXT.md 的术语列表"
 
 4. **写回任务文档（版本化，不覆盖）**：
 
-   a) 用 `update_task_status.py` 更新 frontmatter：
+   a) 用 `otg update-status` 更新 frontmatter：
       ```bash
       otg update-status \
         <task_path> status=plan-review plan_version=<新版本号>
@@ -296,6 +320,7 @@ daemon 在下次轮询中继续。
       |------|------|
       | 目标 | <一句话描述要达成什么> |
       | 产出 | <新建/修改的文件列表，逗号分隔> |
+      | Step 依赖 | <前置 Step 编号，如"Step 1"；无则为「—」> |
       | 依赖前序 | <引用的前序 TASK 产出，如"TASK-010 的 RequestMetadata"> |
       | 验收 | <映射到哪条 AC-N> |
 
@@ -431,11 +456,13 @@ daemon 在下次轮询中继续。
 
      | 触发条件 | 自主尝试上限 | 行为 |
      |----------|-------------|------|
-     | **测试连续失败** | 同一 AC 的测试修复尝试 ≤ 3 次 | 第 4 次仍失败 → 暂停。设置 `needs-grilling`，写入阻塞上下文，Kitty 通知用户。 |
+     | **测试连续失败** | 同一 AC 的测试修复尝试 ≤ 3 次 | 第 4 次仍失败 → 暂停。**两阶段自检分流**：<br>**阶段 1 — 自检**：Agent 读取需求文档相关部分，判定根因。<br>• **需求缺口信号**：错误涉及"预期行为不明确"、AC 描述含模糊词（should/may/if applicable）、需猜测业务规则。<br>• **代码逻辑错误信号**：错误信息明确（expected X, got Y）、需求清晰定义输入输出、纯实现 bug（nil pointer、off-by-one）。<br>**阶段 2 — 分流**：<br>• 若为**需求不清晰** → 阻塞类型标记为「需求缺口」，**进入 grilling 前 req_refine_count +1**，加载 `skill://requirement-elaborator`。<br>• 若为**代码逻辑错误** → 阻塞类型标记为「代码逻辑错误」，加载 `skill://diagnosing-bugs` 执行六阶段调试。调试成功则继续 Tracer Bullet。<br>• 若**自检无法判定** → 默认走 diagnosing-bugs，失败后转为需求缺口路径。 |
      | **计划外设计决策** | 0 次（立即暂停） | 实现过程中发现计划未覆盖的模糊点（如"审批驳回后回退到哪一步？"）。不自行决定——暂停，写入问题上下文。 |
      | **依赖冲突** | 尝试 1 个替代方案 | 如果计划的库/版本不可用，尝试 1 个替代。仍失败 → 暂停。 |
      | **架构摩擦** | 0 次（立即暂停） | 发现代码库现状与计划假设不一致（如需要修改的模块已被其他任务大幅重构）。暂停，写入差异描述。 |
-     | **Tracer Bullet 无法穿透** | ≤ 3 次重构 | 测试写不出来（无法找到正确的 seam）→ 暂停。这本身是一个重要信号——代码架构阻止了测试。 |
+     | **Tracer Bullet 无法穿透** | ≤ 3 次重构 | 测试写不出来（无法找到正确的 seam）→ 暂停。**先分析根因**：是否为 seam 定义错误（需求层面问题）？若多 AC 均受阻，阻塞类型标记为「需求缺口」，建议 grilling 需求文档。 |
+     | **需求缺口**（跨 AC 模式） | 0 次（立即暂停） | 如果连续 2 个以上 AC 的测试失败根因指向**同一需求模糊点**，说明 spec 本身有漏洞——不继续写代码。暂停，阻塞类型标记为「需求缺口」，建议加载 `skill://requirement-elaborator` 细化需求。 |
+     | **代码逻辑错误**（diagnosing-bugs 失败） | 1 次完整诊断 | 加载 `skill://diagnosing-bugs` 完成全部 6 阶段后仍未修复 → **Agent 主动与用户交互**（不设 status=blocked/error）。交互消息附带完整诊断上下文：复现步骤、已排除假设列表、残留现象、待用户确认的问题。用户回答后 Agent 修正假设继续诊断。 |
 
    - **暂停流程**（复用 Grilling 通知流程）：
      1. 在任务文档的「## Round 2 阻塞」section 写入：
@@ -443,12 +470,13 @@ daemon 在下次轮询中继续。
         ## Round 2 阻塞
 
         > ⚠️ 实现过程中遇到需要你决策的问题。
-
-        - **阻塞类型**: <测试失败 / 设计决策 / 依赖冲突 / 架构摩擦>
+        - **阻塞类型**: <测试失败 / 设计决策 / 依赖冲突 / 架构摩擦 / 需求缺口 / 代码逻辑错误>
         - **当前 AC**: <AC-N 描述>
         - **问题描述**: <具体阻塞点>
         - **已尝试**: <已尝试的方案和结果>
+        - **根因分析**: <是代码问题还是需求不清晰？若是需求问题，指出 spec 中哪个 AC 或哪段描述有歧义>
         - **需要的决策**: <明确列出用户需要回答的问题>
+        - **建议技能**: <若为需求缺口 → `skill://requirement-elaborator`；若为代码逻辑错误 → `skill://diagnosing-bugs`；若为设计问题 → `skill://grilling`>
         ```
      2. **保存暂停前状态**：
         ```bash
@@ -472,14 +500,18 @@ daemon 在下次轮询中继续。
      ```
      > `status=implementing` 即 `grill_prev_status` 的保存值（Round 2 暂停时写入 `grill_prev_status=implementing`，恢复时原值写回）。
      > 标记 grilling 完成（`grill_done=true`），清空阻塞上下文（`grill_context=""`）。
-     > `plan_approved` 和 `target_branch` 保持原值不变。
-
      **daemon 侧**（下次轮询）：
      1. Step 3 看到 `status: implementing` → 走 Round 2（无 `plan_approved` 检查，因为 Round 2 的 gate 早已通过）
      2. `git checkout <target_branch>` → 回到 Round 2 worktree
      3. 从「## Round 2 阻塞」section 读取阻塞点上下文
-     4. 从「## 实现记录」找到最后一个已完成的 AC
-     5. 继续下一个 AC 的 Tracer Bullet 循环
+     4. **需求变更检测**（恢复关键步骤）：
+        - 读取任务 frontmatter 的 `req_refine_count` 字段（不存在则视为 0）
+        - 如果 `req_refine_count >= 3` → **Agent 主动进入 grilling 交互**（不递增 count，不设 status=needs-grilling）。交互完成后 Agent 自主执行 `otg update-status <task_path> status=implementing req_refine_count=0`，然后继续步骤 5。注意：此行为替代了旧的「设为 needs-grilling + 退出」——Agent 不放弃，而是换交互方式推进
+        - 如果阻塞类型为「需求缺口」且 `req_refine_count < 3` → 检查 `req_doc` 的修改时间是否晚于「## 实现记录」最后一次写入时间
+        - 若需求已更新 → **触发轻量重出计划**：不覆盖整个计划，仅更新受影响的 Step/AC。在「## 实现计划」追加新版本（如 `v2.1`），标注 `> 基于需求: <req_doc> | 变更: grilling 后需求细化`。注意：`req_refine_count` 已在暂停时（进入 grilling 前）递增，此处不重复递增。然后从更新后的第一步开始 Tracer Bullet 循环。
+        - 若需求未变 → 可能是 seam 选择问题，清除「## Round 2 阻塞」section，继续步骤 5。
+     5. 从「## 实现记录」找到最后一个已完成的 AC
+     6. 继续下一个 AC 的 Tracer Bullet 循环
      ```markdown
      ### Round {N} · YYYY-MM-DD
      > 计划版本: v{plan_version}
@@ -496,6 +528,7 @@ daemon 在下次轮询中继续。
 6. **质量检查**：
    - 运行测试：`make test` 或 `go test ./...` 或项目等效命令
    - 运行 lint：`golangci-lint run` 或项目等效命令
+   - **测试质量审查**（全部 AC 绿灯后执行一次，非逐 AC 审查）：加载 `skill://test-quality` 检查本次实现的测试是否符合质量标准（非代码任务自动跳过）。三级分类：🔴 critical（测试无断言/全假）→ 阻塞必须修复；🟡 important（tautological/实现耦合/缺边界）→ 修复后继续；🟢 info（命名/风格建议）→ 可忽略。将发现的 🔴 / 🟡 修复后重新跑全部测试并重新审查。底部汇总 `🔴 N / 🟡 N / 🟢 N`。
    - 如果有 task-verifier subagent，调它逐条核实验收标准
    - 修复检查发现的问题
 
@@ -524,6 +557,7 @@ daemon 在下次轮询中继续。
      >
      - 测试结果: PASS/FAIL
      - lint 结果: PASS/FAIL
+     - 测试质量: 🔴 <N> / 🟡 <N> / 🟢 <N>（非代码任务显示 N/A）
      - task-verifier: <逐条核实结果>
      ```
 
@@ -543,6 +577,7 @@ daemon 在下次轮询中继续。
       <task_path> \
       status=review \
       target_branch=task/<id>-<slug> \
+      req_refine_count=0 \
       actual_hours=<实际耗时小时数>
     ```
 
@@ -629,8 +664,7 @@ daemon 在下次轮询中继续。
    **合并成功**：
    - 更新状态：
      ```bash
-     otg update-status \
-       <task_path> status=done merge_approved=false
+       <task_path> status=done merge_approved=false req_refine_count=0
      ```
    - 在「## 实现记录」section 追加合并记录：
      ```markdown
@@ -697,7 +731,7 @@ daemon 在下次轮询中继续。
 如果 `off_peak_only: true`：
 - Round 1 不受影响——随时执行
 - Round 2 只在**北京时间低峰时段**执行（00:00-09:00, 12:00-14:00, 18:00-24:00）
-- 高峰时段（09:00-12:00, 14:00-18:00）：即使 `plan_approved: true`，`find_ready_tasks.py` 也不返回该任务，daemon 日志输出延迟信息。等到下一次扫描（timer 间隔或 watcher 触发）进入低峰后自动执行
+- 高峰时段（09:00-12:00, 14:00-18:00）：即使 `plan_approved: true`，`otg find-ready` 也不返回该任务，daemon 日志输出延迟信息。等到下一次扫描（timer 间隔或 watcher 触发）进入低峰后自动执行
 - 适用于 token 费用敏感的场景（如 DeepSeek 高峰定价为低峰 2x）
 - 不影响 Merge Phase（Merge Phase token 消耗极少）
 
