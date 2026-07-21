@@ -41,7 +41,10 @@ stateDiagram-v2
     plan-review --> ready: 需求变更 pending_req
 
     state needs-grilling {
-        [*] --> Round1: 需求对齐 grilling
+        [*] --> 所有权检查: grill_owner 非空且未超时 → 跳过
+        所有权检查 --> Round1: grill_owner 为空 → 需求对齐
+        所有权检查 --> 超时清理: grill_owner 非空但超时 → 清空
+        超时清理 --> Round1
         Round1 --> [*]: status → plan-review
         --
         [*] --> Round2: 实现阻塞 grilling
