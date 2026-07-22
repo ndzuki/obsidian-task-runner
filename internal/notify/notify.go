@@ -2,6 +2,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -203,6 +204,7 @@ func kittyDebounceFile(taskID string) string {
 	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("otg-kitty-grilling-%s.lock", taskID))
 }
+
 const kittyDebounceInterval = 5 * time.Minute
 
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
@@ -277,7 +279,12 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		log.Printf("grilling tab: kitty @ ls failed: %v", err)
 		return false
 	}
-	if strings.Contains(string(lsOutput), tabTitle) {
+	shouldLaunch, err := shouldLaunchKittyTab(lsOutput, taskID, tabTitle)
+	if err != nil {
+		log.Printf("grilling tab: cannot inspect existing tabs for %s: %v", taskID, err)
+		return false
+	}
+	if !shouldLaunch {
 		log.Printf("grilling tab: existing tab for %s, skipping", taskID)
 		return true
 	}
@@ -289,9 +296,18 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		prompt = "请使用 skill://requirement-elaborator 帮我进行需求详细化。先询问我要实现什么功能，然后逐一向我追问技术细节以达成共识。"
 	}
 
-	tid := taskID; if tid == "" { tid = "?" }
-	ttl := taskTitle; if ttl == "" { ttl = "(no title)" }
-	rd := reqDoc; if rd == "" { rd = "(未指定)" }
+	tid := taskID
+	if tid == "" {
+		tid = "?"
+	}
+	ttl := taskTitle
+	if ttl == "" {
+		ttl = "(no title)"
+	}
+	rd := reqDoc
+	if rd == "" {
+		rd = "(未指定)"
+	}
 	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -311,4 +327,55 @@ exec omp %s`, tid, ttl, rd, fmt.Sprintf("%q", prompt))
 	)
 	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
 	return cmd.Run() == nil
+}
+
+type kittyOSWindow struct {
+	Tabs []kittyTab `json:"tabs"`
+}
+
+type kittyTab struct {
+	Title   string        `json:"title"`
+	Windows []kittyWindow `json:"windows"`
+}
+
+type kittyWindow struct {
+	Title string `json:"title"`
+}
+
+func shouldLaunchKittyTab(output []byte, taskID, tabTitle string) (bool, error) {
+	exists, err := kittyTabExists(output, taskID, tabTitle)
+	if err != nil {
+		return false, err
+	}
+	return !exists, nil
+}
+
+func kittyTabExists(output []byte, taskID, tabTitle string) (bool, error) {
+	var osWindows []kittyOSWindow
+	if err := json.Unmarshal(output, &osWindows); err != nil {
+		return false, fmt.Errorf("parse kitty @ ls output: %w", err)
+	}
+
+	taskPrefix := "Grilling " + taskID
+	for _, osWindow := range osWindows {
+		for _, tab := range osWindow.Tabs {
+			if kittyTitleMatchesTask(tab.Title, taskPrefix, tabTitle) {
+				return true, nil
+			}
+			for _, window := range tab.Windows {
+				if kittyTitleMatchesTask(window.Title, taskPrefix, tabTitle) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func kittyTitleMatchesTask(current, taskPrefix, tabTitle string) bool {
+	if current == tabTitle {
+		return true
+	}
+	return taskPrefix != "Grilling " &&
+		(strings.HasPrefix(current, taskPrefix+" ") || strings.HasPrefix(current, taskPrefix+" —"))
 }

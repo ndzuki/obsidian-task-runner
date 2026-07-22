@@ -232,6 +232,9 @@ ${TMPDIR}/otg-grill-<task-path-sha256>.lock
 
 - `desktop=false`：不发送系统桌面通知，包括最终状态通知。
 - Kitty Grilling tab 是核心交互入口，始终尝试创建，不受 `desktop` 控制。
+- 同一 TASK 在全部 Kitty OS window 中最多保留一个活跃 Grilling tab。Daemon 在创建前解析 `kitty @ ls` JSON，并按稳定前缀 `Grilling <task-id>` 检查 tab title 与 window title；标题变化和 JSON Unicode 转义不得绕过去重。
+- tab 检查和创建受 per-task 文件锁保护；每次尝试前写入 5 分钟 debounce 时间戳，避免并发扫描或 daemon 重启重复创建。
+- `kitty @ ls` 不可执行时按本次尝试写入的 debounce 判断近期会话并停止创建；JSON 无法解析时 fail closed，不创建 tab，并保留 `notify-send` fallback。后续扫描继续重试 Kitty。
 - Kitty 不可用：保持 `needs-grilling`，记录日志，后续扫描按 debounce 周期重试 Kitty；不得转 `blocked`，不得调用普通终端 fallback。
 
 需求细化型 Grilling 完成后必须回到 `refining` 复验；实现阻塞型 Grilling 按 `grill_resolution=resume|replan` 分流。
@@ -594,6 +597,9 @@ grill_prev_status: ""
 
 - [ ] `notifications.desktop=false` 关闭所有 notify-send，包括 StatusNotify。
 - [ ] Kitty tab 不受 desktop 配置控制。
+- [ ] 同一 TASK 只允许一个活跃 Grilling tab；按 task ID 检查 tab/window title，支持 Unicode JSON 转义和标题变化。
+- [ ] 并发扫描与 daemon 重启受 per-task flock + debounce 去重。
+- [ ] Kitty JSON 无法解析时不创建 tab，并保留桌面通知 fallback。
 - [ ] Kitty 不可用时保持 needs-grilling 并周期重试。
 
 ### AC-12 安装
@@ -721,9 +727,10 @@ grill_prev_status: ""
 2. active owner 不重复通知、不迁移。
 3. expired owner 清理并审计。
 4. Kitty 永远尝试；desktop 仅控制 notify-send。
-5. Kitty 不可用保持 needs-grilling 并周期重试。
-6. REQ WRITE 在 active Grilling 中只设 pending_req。
-7. requirement-elaborator 写 grill_resolution=replan 且不清 pending_req。
+5. Kitty 创建前解析 `kitty @ ls`，按 TASK ID 跨 tab/window 去重；per-task flock + debounce 防止并发与重启重复创建。
+6. Kitty JSON 解析失败时 fail closed 且保留桌面通知 fallback；Kitty 不可用保持 needs-grilling 并周期重试。
+7. REQ WRITE 在 active Grilling 中只设 pending_req。
+8. requirement-elaborator 写 grill_resolution=replan 且不清 pending_req。
 
 **验收**：AC-10、AC-11、AC-07 active Grilling 路径。
 

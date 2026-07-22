@@ -166,6 +166,9 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 
 - false：关闭动作、提醒和最终状态的系统桌面通知。
 - Kitty tab 不受该字段控制，Grilling 时始终尝试创建。
+- 同一 TASK 只允许一个活跃 Grilling tab。Daemon 创建前解析 `kitty @ ls`，按 `Grilling <task-id>` 检查所有 tab/window title；任务标题变化或 Unicode JSON 转义不会触发第二个 tab。
+- per-task 文件锁和每次尝试前写入的 5 分钟 debounce 时间戳防止并发扫描或 daemon 重启重复创建。
+- Kitty 状态 JSON 无法解析时不会创建 tab，并回退到桌面通知；后续扫描继续重试。
 - Kitty 不可用：保持 needs-grilling，写日志并周期重试，不转 blocked，不启动普通终端。
 
 ## 8. Daemon 与并发

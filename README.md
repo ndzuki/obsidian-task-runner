@@ -54,8 +54,8 @@ Round 2 完成后：
 - `git`。
 - `omp` 命令，并已配置可用模型。
 - Linux 下建议使用 `systemd --user`。
-- **推荐**：Kitty 终端（`allow_remote_control yes`）用于 Grilling 通知时自动创建新 tab。
-- 桌面通知还需要 `notify-send` 和通知服务（Kitty 不可用时的 fallback）。
+- **推荐**：Kitty 终端（`allow_remote_control yes`）用于 Grilling 通知时自动创建新 tab。同一 TASK 只会保留一个活跃 Grilling tab；daemon 会跨 Kitty 窗口按任务 ID 去重，任务标题变化或 daemon 重启不会重复创建。
+- 桌面通知还需要 `notify-send` 和通知服务。`kitty @ ls` 失败时 daemon 使用本次尝试写入的 5 分钟 debounce 阻止重复创建；Kitty JSON 无法解析时也不会冒险创建 tab，而是使用桌面通知 fallback 并等待后续扫描重试。
 
 
 ### 2. 构建并安装 `otg`

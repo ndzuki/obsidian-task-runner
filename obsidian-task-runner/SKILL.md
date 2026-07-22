@@ -75,7 +75,8 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 - `notifications.desktop` 只控制 notify-send。
 - Kitty Grilling tab 始终尝试创建，不受 desktop 开关控制。
-- Kitty 不可用时保持 needs-grilling 并周期重试。
+- 同一 TASK 只允许一个活跃 Grilling tab；创建前按 task ID 检查 Kitty tab/window title，并以 per-task flock + debounce 防止并发和重启重复创建。
+- Kitty JSON 无法解析时不创建 tab，保留 notify-send fallback；Kitty 不可用时保持 needs-grilling 并周期重试。
 
 ## 文档
 
