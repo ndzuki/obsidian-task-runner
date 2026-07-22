@@ -2,7 +2,6 @@
 package notify
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -195,20 +194,20 @@ func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string, notifyEna
 
 // kittyDebounce uses a file-based timestamp so the debounce survives daemon
 // restarts. Without this, every daemon restart triggers a new tab.
-var kittyDebounceFile = func() string {
+func kittyDebounceFile(taskID string) string {
 	if user := os.Getenv("USER"); user != "" {
-		return filepath.Join(os.TempDir(), "otg-kitty-grilling-"+user+".lock")
+		return filepath.Join(os.TempDir(), fmt.Sprintf("otg-kitty-grilling-%s-%s.lock", user, taskID))
 	}
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".otg-kitty-grilling.lock")
+		return filepath.Join(homeDir, fmt.Sprintf(".otg-kitty-grilling-%s.lock", taskID))
 	}
-	return filepath.Join(os.TempDir(), "otg-kitty-grilling.lock")
-}()
+	return filepath.Join(os.TempDir(), fmt.Sprintf("otg-kitty-grilling-%s.lock", taskID))
+}
 const kittyDebounceInterval = 5 * time.Minute
 
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	// Acquire file lock to prevent concurrent tab creation
-	lockFile, err := os.OpenFile(kittyDebounceFile, os.O_CREATE|os.O_RDWR, 0644)
+	lockFile, err := os.OpenFile(kittyDebounceFile(taskID), os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		log.Printf("grilling tab: cannot open lock: %v", err)
 		return false
@@ -221,7 +220,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
 	// Debounce: skip if last tab was created within 5 minutes
-	if data, err := os.ReadFile(kittyDebounceFile); err == nil {
+	if data, err := os.ReadFile(kittyDebounceFile(taskID)); err == nil {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
 			if time.Since(t) < kittyDebounceInterval {
 				log.Printf("grilling tab: debounced (last was %v ago)", time.Since(t))
@@ -229,7 +228,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 			}
 		}
 	}
-	os.WriteFile(kittyDebounceFile, []byte(time.Now().Format(time.RFC3339)), 0644)
+	os.WriteFile(kittyDebounceFile(taskID), []byte(time.Now().Format(time.RFC3339)), 0644)
 
 	if _, err := exec.LookPath("kitty"); err != nil {
 		log.Printf("grilling tab: kitty not in PATH: %v", err)
@@ -261,19 +260,26 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		tabTitle = string(runes[:57]) + "..."
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	lsCmd := exec.CommandContext(ctx, "kitty", "@", "ls")
+	lsCmd := exec.Command("kitty", "@", "ls")
 	lsCmd.Env = kittyEnv
 	lsOutput, err := lsCmd.Output()
 	if err != nil {
+		// kitty @ ls failed — fall back to per-task debounce as dedup authority.
+		// If debounce was written within the last interval, treat tab as alive.
+		if data, rdErr := os.ReadFile(kittyDebounceFile(taskID)); rdErr == nil {
+			if t, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); parseErr == nil {
+				if time.Since(t) < kittyDebounceInterval {
+					log.Printf("grilling tab: kitty @ ls failed, treating as dedup via debounce for %s", taskID)
+					return true
+				}
+			}
+		}
 		log.Printf("grilling tab: kitty @ ls failed: %v", err)
 		return false
 	}
-	// At most one Grilling session at any time — prevent flooding tabs.
-	if strings.Contains(string(lsOutput), "Grilling") {
-		log.Printf("grilling tab: another Grilling session is active, skipping %s", taskID)
-		return true // don't create duplicate — wait for active session to finish
+	if strings.Contains(string(lsOutput), tabTitle) {
+		log.Printf("grilling tab: existing tab for %s, skipping", taskID)
+		return true
 	}
 
 	var prompt string

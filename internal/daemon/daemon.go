@@ -33,6 +33,7 @@ type Runner struct {
 	logWriter *logutil.RotatingWriter
 	taskRuns  sync.Map
 	repoLocks sync.Map
+	scanMu    sync.Mutex // prevents overlapping scanAndProcess calls
 }
 
 type preparedTask struct {
@@ -162,10 +163,11 @@ func (r *Runner) initLogging() error {
 }
 
 func (r *Runner) scanAndProcess() error {
+	r.scanMu.Lock()
+	defer r.scanMu.Unlock()
 	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
-		return err
 	}
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
 	if len(tasks) == 0 {

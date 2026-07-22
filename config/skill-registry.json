@@ -1,7 +1,30 @@
 {
-  "version": 1,
-  "description": "Maps skill:// names to install sources. Used by skill-doctor for auto-install.",
+  "version": 2,
+  "description": "Maps skill:// names to install sources. Used by skill-doctor for auto-install. 当 obsidian-task-runner 的 SKILL.md 中新增 skill:// 引用时，必须同步更新此文件。skill-doctor check 会在安装后自动提示缺失依赖。",
+  "_maintenance": "此文件随 obsidian-task-runner 仓库发布。本项目的阶段 Skill 标记为 bundled（随包安装）。外部依赖需要用户通过 skill-doctor install 手动获取。",
   "sources": {
+    "obsidian-task-runner (bundled)": {
+      "type": "bundled",
+      "description": "随 otg install 自动部署的阶段 Skill",
+      "skills": [
+        "obsidian-task-runner",
+        "obsidian-task-runner-refining",
+        "obsidian-task-runner-round1",
+        "obsidian-task-runner-round2",
+        "obsidian-task-runner-merge"
+      ]
+    },
+    "obsidian-task-runner (external required)": {
+      "type": "local-required",
+      "description": "核心依赖 Skill，缺失时任务无法执行。请通过 ~/.omp/skills/ 手动安装或从对应仓库获取。",
+      "skills": [
+        "requirement-elaborator",
+        "grilling",
+        "domain-modeling",
+        "diagnosing-bugs",
+        "test-quality"
+      ]
+    },
     "samber/cc-skills-golang": {
       "type": "github",
       "url": "https://github.com/samber/cc-skills-golang.git",
