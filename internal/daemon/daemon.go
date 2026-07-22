@@ -392,6 +392,13 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat worktree path: %w", err)
 	}
+	// If the main repo is already on targetBranch, use it directly.
+	// Avoids "already used by worktree" error when user manually checked out the branch.
+	if targetBranch != "" {
+		if current, err := gitCurrentBranch(repoDir); err == nil && current == targetBranch {
+			return repoDir, nil
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("create worktree parent: %w", err)
 	}
