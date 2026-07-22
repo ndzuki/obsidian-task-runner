@@ -103,10 +103,10 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 	}
 
 	w.mu.Lock()
-	last := w.debounce[dir]
+	last := w.debounce[path]
 	now := time.Now()
 	if now.Sub(last) < w.interval { w.mu.Unlock(); return }
-	w.debounce[dir] = now
+	w.debounce[path] = now
 	w.mu.Unlock()
 
 	op := "WRITE"

@@ -1,4 +1,4 @@
-.PHONY: build test lint install clean
+.PHONY: build test test-cover bench lint clean install install-force
 
 BINARY := otg
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -33,9 +33,9 @@ install-force: build
 	-systemctl --user stop --no-block omp-task-runner.timer 2>/dev/null || true
 	@echo "=== Stopping daemon (OMP processes survive) ==="
 	-systemctl --user stop --no-block omp-task-watcher.service 2>/dev/null || true
-	-pkill -TERM -f "otg daemon" 2>/dev/null || true
+	-pkill -TERM -U "$(id -u)" -f "otg daemon" 2>/dev/null || true
 	@sleep 2
-	-pkill -9 -f "otg daemon" 2>/dev/null || true
+	-pkill -9 -U "$(id -u)" -f "otg daemon" 2>/dev/null || true
 	@sleep 1
 	@echo "=== Installing new binary ==="
 	mkdir -p $(HOME)/.local/bin

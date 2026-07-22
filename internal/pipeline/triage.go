@@ -7,6 +7,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -219,8 +220,13 @@ func checkAlreadyImplemented(ctx context.Context, content, projectDir string) *T
 
 	matched := 0
 	var locations []string
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
 	for _, term := range candidates {
-		if loc := searchCodebase(projectDir, term); loc != "" {
+		if loc := searchCodebase(ctx, projectDir, term); loc != "" {
 			matched++
 			locations = append(locations, loc)
 		}
@@ -244,48 +250,31 @@ func checkAlreadyImplemented(ctx context.Context, content, projectDir string) *T
 }
 
 
-// searchCodebase naively greps for a term in .go files under projectDir.
-func searchCodebase(projectDir, term string) string {
-	entries, err := os.ReadDir(projectDir)
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		// Check .go files directly in projectDir.
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
-			p := filepath.Join(projectDir, e.Name())
-			data, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(data), term) {
-				return p
+// searchCodebase greps for a term in .go files under projectDir at any depth.
+func searchCodebase(ctx context.Context, projectDir, term string) string {
+	var found string
+	filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		select {
+		case <-ctx.Done():
+			return filepath.SkipAll
+		default:
+		}
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir // skip hidden dirs
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
+			data, err := os.ReadFile(path)
+			if err == nil && strings.Contains(string(data), term) {
+				found = path
+				return filepath.SkipAll // found it, stop walking
 			}
 		}
-		if e.IsDir() && strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		if e.IsDir() {
-			subDir := filepath.Join(projectDir, e.Name())
-			subEntries, err := os.ReadDir(subDir)
-			if err != nil {
-				continue
-			}
-			for _, se := range subEntries {
-				if !se.IsDir() && strings.HasSuffix(se.Name(), ".go") {
-					p := filepath.Join(subDir, se.Name())
-					data, err := os.ReadFile(p)
-					if err != nil {
-						continue
-					}
-					if strings.Contains(string(data), term) {
-						return p
-					}
-				}
-			}
-		}
-	}
-	return ""
+		return nil
+	})
+	return found
 }
 
 // isBugReport checks if the content is primarily a bug report (not contextual mentions).

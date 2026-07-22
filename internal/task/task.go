@@ -35,6 +35,7 @@ type ReadyTask struct {
 	TargetBranch  string `json:"target_branch"`
 	GrillDone        bool   `json:"grill_done"`
 	GrillPrevStatus  string `json:"grill_prev_status,omitempty"`
+	GrillResolution  string `json:"grill_resolution,omitempty"`
 	PlanVersion      int    `json:"plan_version,omitempty"`
 }
 
@@ -78,9 +79,29 @@ func isEmptyList(v interface{}) bool {
 }
 
 // AreBlockersDone checks whether every task referenced in blockedBy has
-// status "done" by scanning the vault's Projects/*/Tasks/ directories.
-func AreBlockersDone(vaultPath string, blockedBy []string) bool {
+// status "done" by scanning the specified project's Tasks/ directory.
+// References use format:
+//   "TASK-010" — within current project
+//   "project-key:TASK-010" — cross-project lookup via vault-map scan
+func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
 	if len(blockedBy) == 0 {
+		return true
+	}
+	deps := make([]struct{ proj, id string }, 0, len(blockedBy))
+	for _, raw := range blockedBy {
+		if idx := strings.Index(raw, ":"); idx > 0 {
+			deps = append(deps, struct{ proj, id string }{proj: raw[:idx], id: strings.TrimPrefix(raw[idx+1:], "TASK-")})
+		} else {
+			deps = append(deps, struct{ proj, id string }{proj: projectName, id: strings.TrimPrefix(raw, "TASK-")})
+		}
+	}
+	remaining := make(map[string]bool, len(blockedBy))
+	for _, d := range deps {
+		remaining[d.proj+":"+d.id] = true
+	}
+	checkDir := filepath.Join(vaultPath, "Projects", projectName, "Tasks")
+	checkDirDeps(checkDir, projectName, remaining)
+	if len(remaining) == 0 {
 		return true
 	}
 	projectsDir := filepath.Join(vaultPath, "Projects")
@@ -88,45 +109,49 @@ func AreBlockersDone(vaultPath string, blockedBy []string) bool {
 	if err != nil {
 		return false
 	}
-	remaining := make(map[string]bool, len(blockedBy))
-	for _, id := range blockedBy {
-		remaining[id] = true
-	}
 	for _, proj := range projEntries {
 		if !proj.IsDir() || len(remaining) == 0 {
 			continue
 		}
-		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
-		entries, err := os.ReadDir(tasksDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
-				continue
-			}
-			// Extract task ID from filename like TASK-039-something.md
-			name := entry.Name()
-			for id := range remaining {
-				if strings.Contains(name, id) {
-					filePath := filepath.Join(tasksDir, name)
-					data, err := readFileWithRetry(filePath)
-					if err != nil {
-						continue
-					}
-					fm, err := yamlfrontmatter.Parse(data)
-					if err != nil || fm == nil {
-						continue
-					}
-					if fm.Status == "done" {
-						delete(remaining, id)
-					}
-					break
-				}
-			}
-		}
+		checkDirDeps(filepath.Join(projectsDir, proj.Name(), "Tasks"), proj.Name(), remaining)
 	}
 	return len(remaining) == 0
+}
+
+func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		name := entry.Name()
+		for key := range remaining {
+			parts := strings.SplitN(key, ":", 2)
+			if len(parts) != 2 || parts[0] != projName {
+				continue
+			}
+			numID := parts[1]
+			if !strings.HasPrefix(name, "TASK-"+numID+"-") {
+				continue
+			}
+			filePath := filepath.Join(tasksDir, name)
+			data, err := readFileWithRetry(filePath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			if fm.Status == "done" {
+				delete(remaining, key)
+			}
+			break
+		}
+	}
 }
 
 // IsAutoUnblockable checks if a blocked task can be auto-promoted to ready.
@@ -142,7 +167,7 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return false
 	}
 	if !isEmptyList(fm.BlockedBy) {
-		if !AreBlockersDone(vaultPath, fm.BlockedBy) {
+		if !AreBlockersDone(vaultPath, fm.Project, fm.BlockedBy) {
 			return false
 		}
 	}
@@ -159,7 +184,7 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return true
 	}
 	switch fm.Status {
-	case "ready", "needs-grilling":
+	case "ready", "needs-grilling", "refining", "planning":
 		return true
 	case "implementing":
 		if fm.OffPeakOnly && !IsOffPeak() {
@@ -175,7 +200,12 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		}
 		return true
 	case "review", "conflict":
+		if fm.PendingReq {
+			return true // force refining
+		}
 		return fm.MergeApproved
+	case "done":
+		return fm.PendingReq // re-plan via refining
 	}
 	if fm.PendingReq {
 		return true
@@ -257,7 +287,7 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
 				OffPeakOnly: fm.OffPeakOnly, TargetBranch: fm.TargetBranch,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
-				PlanVersion: fm.PlanVersion,
+				GrillResolution: fm.GrillResolution, PlanVersion: fm.PlanVersion,
 			})
 		}
 	}
@@ -332,8 +362,8 @@ func readFileWithRetry(path string) ([]byte, error) {
 		if len(data) >= 3 && string(data[:3]) == "---" {
 			// Verify frontmatter closes
 			rest := data[3:]
-			endIdx := findFrontmatterEnd(rest)
-			if endIdx > 0 {
+			endIdx := frontmatterIsClosed(rest)
+			if endIdx {
 				return data, nil
 			}
 		}
@@ -345,14 +375,14 @@ func readFileWithRetry(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func findFrontmatterEnd(data []byte) int {
+func frontmatterIsClosed(data []byte) bool {
 	lines := splitLines(data)
 	for _, line := range lines {
 		if string(line) == "---" {
-			return 1
+			return true
 		}
 	}
-	return 0
+	return false
 }
 
 func splitLines(data []byte) [][]byte {

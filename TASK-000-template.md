@@ -1,105 +1,133 @@
 ---
+# ══════════════════════════════
+# 🔴 必填 — 你必须在创建任务时填写
+# ══════════════════════════════
 id: ""
 title: ""
 project: ""
 assignee: ""
-
-# ── 推荐填写 ──
-priority: P2
 req_doc: ""
-blocked_by: []
+
+# ══════════════════════════════
+# 🟡 推荐填写 — 按需设置
+# ══════════════════════════════
+priority: P2
 tags: []
 epic: ""
+blocked_by: []
 
-# ── 系统管理（不要手动改） ──
-status: ready
-plan_approved: false
-merge_approved: false
-adr_approved: false
-grill_done: false
-auto_approve: false
+# ══════════════════════════════
+# 🟢 高级选项 — 特殊场景使用
+# ══════════════════════════════
+# auto_approve: false       # 跳过 plan-review Gate（仅首次、既有项目生效）
+# off_peak_only: false      # Round 2 仅在北京时间低峰执行（省钱）
+# new_project: false        # 新项目标记（Round 1 只出脚手架，Round 2 才创建）
+# template: ""              # 新项目脚手架提示（如 go-gin-microservice）
+# due_date: ""
+# estimated_hours: 0
+# component: ""
+# parent: ""
+# reviewer: ""
+# author: ""
+# target_env: staging
+
+# ══════════════════════════════
+# 🔵 人工 Gate — 由你批准
+# ══════════════════════════════
+plan_approved: false       # 审阅计划后设 true → 进入 Round 2
+merge_approved: false      # 审阅代码后设 true → 进入 Merge
+adr_approved: false        # 授权写入 ADR 到 Notes/adr/
+resume_approved: false     # 阶段失败修复后设 true → daemon 恢复
+
+# ══════════════════════════════
+# ⚪ 以下字段由系统自动维护，你不需要手动修改
+# ══════════════════════════════
+status: blocked
+pending_req: false
+maturity: ""
+refine_version: 0
+refine_req_hash: ""
+plan_req_hash: ""
 plan_version: 0
+checkpoint_commit: ""
+refine_retry_count: 0
+refine_error: ""
+planning_retry_count: 0
+blocked_phase: ""
+phase_error: ""
+phase_log: ""
+grill_owner: ""
+grill_started_at: ""
+grill_timeout_minutes: 30
+grill_done: false
+grill_resolution: ""
+grill_context: ""
+grill_prev_status: ""
+req_refine_count: 0
 created: ""
 updated: ""
 completed: ""
 target_branch: ""
-target_env: staging
-grill_context: ""
-grill_prev_status: ""
-grill_owner: ""
-grill_started_at: ""
-grill_timeout_minutes: 30
+pr_url: ""
 actual_hours: 0
-pending_req: false
-
-# ── 高级选项（按需填写） ──
-# new_project: false         # 新项目 — daemon 可自动推断
-# off_peak_only: false       # 仅低峰执行 Round 2（省钱）
-# due_date: ""               # 截止日期
-# estimated_hours: 0         # 预估工时
-# component: ""              # 影响组件
-# parent: ""                 # 父任务 ID（如非空则链式阻塞）
+# adr_proposed: []          # 系统填充
+# adr_written: []           # 系统填充
 ---
 
 # <!-- 标题 -->
 
 ## 需求摘要
-<!-- 从 Requirements/<req_doc>.md 复制摘要，或简要说明 -->
-<!-- 需求文档模板: REQ-000-template.md -->
+<!-- 从 req_doc 提取需求摘要 -->
 
 ## 验收标准
-<!-- 可验证的验收条件，task-verifier 会按此清单核实 -->
-- [ ] 
-- [ ] 
+<!-- Given/When/Then；覆盖成功、边界、错误、幂等/并发 -->
+- [ ]
+
+---
+
+## 需求成熟度评估
+<!-- 🤖 refining Skill 写入六项检查和 REQ hash -->
 
 ---
 
 ## 执行摘要
-<!-- 🤖 Agent 自动维护 — 当前状态快照 -->
+<!-- 🤖 Agent 自动维护 -->
 | 轮次 | 阶段 | 计划版本 | 状态 | 时间戳 |
 |------|------|---------|------|--------|
-| 1 | Grilling | v1 | ⏳ 待开始 | — |
+| 1 | Refining | v0 | ⏳ 待开始 | — |
 
 ---
 
 ## 实现计划
-<!-- 🤖 Round 1 生成。重新出计划时追加新版本，不覆盖旧版 -->
-### v1 · 2026-07-10
-<!-- 初始计划 -->
+<!-- 🤖 planning/Round 1 追加版本，不覆盖历史 -->
 
 ---
 
 ## 实现记录
-<!-- 🤖 Round 2 填充。每个执行轮次追加 dated 子节 -->
-### Round 1 · 2026-07-10
-<!-- 初始实现 -->
+<!-- 🤖 Round 2 按 AC 追加证据 -->
 
 ---
 
 ## 验收记录
-<!-- 🤖 task-verifier 填充。每轮验收追加 dated 子节 -->
-### Round 1 · 2026-07-10
-<!-- 初始验收 -->
+<!-- 🤖 task-verifier 按轮次追加 -->
 
 ---
 
 ## ADR 提议
-<!-- 🤖 Round 1 生成。满足 ADR 三条件时自动填充 -->
-<!-- 审查后设 adr_approved: true 授权写入 Notes/adr/ -->
+<!-- 🤖 Planning 提议；adr_approved=true 后写入 Notes/adr/ -->
 
 ---
 
 ## Grilling 上下文
-<!-- 🤖 系统自动填充 — 暂停时写入阻塞上下文 -->
-<!-- 交互式 grilling 完成后自动清空 -->
+<!-- 🤖 needs-grilling 时记录未通过的 maturity 项或实现阻塞 -->
 
 ---
 
 ## Round 2 阻塞
-<!-- 🤖 Round 2 暂停时填充 — 记录卡住的原因和需要的决策 -->
+<!-- 🤖 实现中需要用户决策时写入 -->
 
 ---
 
 ## 变更记录
-<!-- 🤖 Agent 自动追加 — 不可变审计日志 -->
-1. `2026-07-10T10:00:00+08:00` — 任务创建，等待就绪
+<!-- 🤖 不可变审计日志 -->
+1. `<local ISO8601>` — 任务创建，status=blocked

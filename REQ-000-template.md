@@ -7,6 +7,10 @@ created: ""
 updated: ""
 author: ""
 tags: []
+# type: ""                    # 需求类型：空=原子需求, requirement-roadmap, requirement-index
+# depends_on: []              # 依赖的前序需求 ID 列表
+# project: ""                 # 关联项目名（与 vault-map.json 中的项目名一致）
+# reviewer: ""                # 审阅人
 ---
 
 # <!-- 标题 -->

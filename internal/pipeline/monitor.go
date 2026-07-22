@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,8 +35,8 @@ func MonitorRefineCount(ctx context.Context, taskPath string, process *os.Proces
 	}
 	defer watcher.Close()
 
-	if err := watcher.Add(taskPath); err != nil {
-		return nil, fmt.Errorf("monitor: watch file: %w", err)
+	if err := watcher.Add(filepath.Dir(taskPath)); err != nil {
+		return nil, fmt.Errorf("monitor: watch dir: %w", err)
 	}
 
 	// Read initial count.
@@ -86,6 +87,10 @@ func MonitorRefineCount(ctx context.Context, taskPath string, process *os.Proces
 			if event.Op&fsnotify.Write == 0 {
 				continue
 			}
+			// Filter only events for our target file (supports atomic-save editors).
+			if filepath.Clean(event.Name) != filepath.Clean(taskPath) {
+				continue
+			}
 			// Debounce: reset timer on each write.
 			mu.Lock()
 			if debounceTimer != nil {
@@ -118,8 +123,22 @@ func MonitorRefineCount(ctx context.Context, taskPath string, process *os.Proces
 }
 
 // readRefineCount parses the req_refine_count field from a TASK frontmatter.
+// Uses retry logic to handle cloud-sync filesystems where WRITE events fire
+// before the file is fully written.
 func readRefineCount(taskPath string) (int, error) {
-	data, err := os.ReadFile(taskPath)
+	const maxRetries = 5
+	const retryDelay = 200 * time.Millisecond
+	var data []byte
+	var err error
+	for i := range maxRetries {
+		data, err = os.ReadFile(taskPath)
+		if err == nil {
+			break
+		}
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
 	if err != nil {
 		return 0, err
 	}

@@ -1,3 +1,5 @@
+# This is a template. Run `otg install --systemd` to generate functional units.
+
 [Unit]
 Description=Obsidian Task Runner 兜底轮询
 

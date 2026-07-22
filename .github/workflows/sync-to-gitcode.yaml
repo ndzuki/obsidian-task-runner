@@ -23,4 +23,4 @@ jobs:
           REMOTE_URL="https://${{ env.GITCODE_USER }}:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ env.GITCODE_USER }}/${{ github.event.repository.name }}.git"
 
           # 强制将本地全部分支与标签推送到 GitCode
-          git push --mirror "$REMOTE_URL"
+          git push "$REMOTE_URL" --force refs/heads/*:refs/heads/* refs/tags/*:refs/tags/*

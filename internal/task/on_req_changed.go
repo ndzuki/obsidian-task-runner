@@ -78,28 +78,91 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 		}
 
 		switch fm.Status {
-		case "ready", "needs-grilling", "plan-review":
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":        "ready",
-				"plan_approved": false,
-				"grill_done":    false,
-				"grill_context": "",
-			})
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "reset_to_ready", OldStatus: fm.Status,
-			})
-
-		case "implementing", "review", "conflict", "done":
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req":    true,
-				"merge_approved": false,
-			})
+		case "blocked":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"pending_req": true,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error updating blocked task %s: %v\n", taskPath, err)
+				continue
+			}
 			affected = append(affected, AffectedResult{
 				TaskID: fm.ID, File: entry.Name(),
 				Action: "pending_req", OldStatus: fm.Status,
 			})
-
+		case "ready":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"pending_req": true,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error updating ready task %s: %v\n", taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "pending_req", OldStatus: fm.Status,
+			})
+		case "refining", "planning":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"pending_req": true,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "pending_req", OldStatus: fm.Status,
+			})
+		case "needs-grilling":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"pending_req": true,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "pending_req", OldStatus: fm.Status,
+			})
+		case "plan-review":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"status":            "refining",
+				"pending_req":       true,
+				"plan_approved":     false,
+				"grill_done":        false,
+				"grill_context":     "",
+				"grill_prev_status": "",
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error resetting plan-review task %s: %v\n", taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "reset_to_ready", OldStatus: fm.Status,
+			})
+		case "implementing":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"pending_req":    true,
+				"merge_approved": false,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "pending_req", OldStatus: fm.Status,
+			})
+		case "review", "conflict", "done":
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"status":         "refining",
+				"pending_req":    true,
+				"merge_approved": false,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
+				continue
+			}
+			affected = append(affected, AffectedResult{
+				TaskID: fm.ID, File: entry.Name(),
+				Action: "pending_req", OldStatus: fm.Status,
+			})
 		default:
 			affected = append(affected, AffectedResult{
 				TaskID: fm.ID, File: entry.Name(),
@@ -125,16 +188,10 @@ func normalizePath(p string) string {
 	return strings.TrimSuffix(p, ".md")
 }
 
+// pathsMatch returns true only when both normalized paths are identical.
+// Basename fallback is explicitly prohibited to avoid cross-project collisions.
 func pathsMatch(a, b string) bool {
-	if a == b {
-		return true
-	}
-	an := filepath.Base(a)
-	bn := filepath.Base(b)
-	if an == bn {
-		return true
-	}
-	return strings.HasSuffix(a, "/"+bn)
+	return a == b
 }
 
 // createTaskForReq auto-creates a TASK file from a new requirement.
@@ -225,9 +282,31 @@ template: ""
 status: blocked
 plan_approved: false
 merge_approved: false
+adr_approved: false
+resume_approved: false
 pending_req: false
-off_peak_only: false
+maturity: ""
+refine_version: 0
+refine_req_hash: ""
+plan_req_hash: ""
 plan_version: 0
+checkpoint_commit: ""
+refine_retry_count: 0
+refine_error: ""
+planning_retry_count: 0
+blocked_phase: ""
+phase_error: ""
+phase_log: ""
+grill_owner: ""
+grill_started_at: ""
+grill_timeout_minutes: 30
+grill_done: false
+grill_resolution: ""
+grill_context: ""
+grill_prev_status: ""
+req_refine_count: 0
+auto_approve: false
+off_peak_only: false
 created: "%s"
 updated: "%s"
 completed: ""
@@ -246,6 +325,7 @@ parent: ""
 blocks: []
 blocked_by: []
 target_branch: ""
+pr_url: ""
 target_env: staging
 ---
 
@@ -268,7 +348,12 @@ target_env: staging
 | project | %s | %s |
 | assignee | （空） | 🔴 必填（deepseek / gpt） |
 
-> ⚠️ **任务已暂停在 blocked。** 请在 frontmatter 中补齐必填字段后保存，daemon 自动进入 Round 1。
+> ⚠️ **任务已暂停在 blocked。** 请在 frontmatter 中补齐必填字段后保存，daemon 自动进入 refining → maturity gate。
+
+---
+
+## 需求成熟度评估
+<!-- 🤖 refining Skill 写入 -->
 
 ---
 
@@ -295,7 +380,7 @@ target_env: staging
 ---
 
 ## 变更记录
-1. %s — 任务创建，等待就绪
+1. %s — 任务创建，status=blocked
 `, id, title, projName, projectID, now, now, priority, reviewer, reqRelPath, author, tags, epic,
 		id, title, summary, ac, reqRelPath,
 		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""],
@@ -317,7 +402,7 @@ target_env: staging
 // Old structure: "Requirements/REQ-001-demo.md" → "001-demo" (backward compatible)
 func deriveProjectDir(reqRelPath, id, slug string) string {
 	// Require "Projects/" prefix for the new structure
-	projPrefix := "Projects" + string(filepath.Separator)
+	projPrefix := "Projects/"
 	if strings.HasPrefix(reqRelPath, projPrefix) {
 		rest := strings.TrimPrefix(reqRelPath, projPrefix)
 		// rest = "001-release-manager/Requirements/REQ-002-demo.md"

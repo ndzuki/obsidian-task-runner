@@ -74,20 +74,18 @@ func TestBlockedByDependencyResolution(t *testing.T) {
 	tasksDir := filepath.Join(projDir, "Tasks")
 	os.MkdirAll(tasksDir, 0755)
 
-	// Create a dependency task that is done
 	writeTask(tasksDir, "TASK-010-done.md", `
 id: "010"
 title: "Dependency Done"
-project: my-project
+project: "001-test"
 status: done
 assignee: deepseek
 `)
 
-	// Create a task blocked by the done dependency
 	blockedPath := writeTask(tasksDir, "TASK-020-blocked.md", `
 id: "020"
 title: "Blocked Task"
-project: my-project
+project: "001-test"
 status: blocked
 assignee: deepseek
 blocked_by:
@@ -98,12 +96,10 @@ priority: P0
 	data, _ := os.ReadFile(blockedPath)
 	fm, _ := yamlfrontmatter.Parse(data)
 
-	// Should be unblockable because TASK-010 is done
 	if !IsAutoUnblockable(fm, dir) {
 		t.Error("should be auto-unblockable; blocker TASK-010 is done")
 	}
 
-	// Also test FindReadyTasks picks it up
 	tasks, err := FindReadyTasks(dir)
 	if err != nil {
 		t.Fatalf("FindReadyTasks: %v", err)

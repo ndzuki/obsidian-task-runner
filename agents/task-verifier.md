@@ -25,13 +25,12 @@ tools: Read, Bash, Grep, Glob
 
 ### Step 2: 进入项目目录并切换分支
 
-1. 从 `~/.omp/skills/obsidian-task-runner/config/vault-map.json` 解析项目路径
+1. Accept the worktree path from the calling daemon. If not provided, fall back to vault-map.json resolution from `~/.omp/skills/obsidian-task-runner/config/vault-map.json`
 2. cd 进入项目目录
 3. 切换到 target_branch：
    ```bash
    git checkout <target_branch>
    ```
-
 ### Step 3: 逐条核实验收标准
 
 对「## 验收标准」中的每一条：

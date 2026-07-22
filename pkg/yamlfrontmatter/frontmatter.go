@@ -25,7 +25,7 @@ type Frontmatter struct {
 	ProjectID      string   `yaml:"project_id"`
 	NewProject     bool     `yaml:"new_project"`
 	Template       string   `yaml:"template"`
-	Status         string   `yaml:"status"`
+	Status         string   `yaml:"status"`          // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done
 	PlanApproved   bool     `yaml:"plan_approved"`
 	MergeApproved  bool     `yaml:"merge_approved"`
 	AdrApproved    bool     `yaml:"adr_approved"`
@@ -59,6 +59,33 @@ type Frontmatter struct {
 	PRURL          string   `yaml:"pr_url"`
 	SwitchSettings bool     `yaml:"switch_settings"`
 	AutoApprove    bool     `yaml:"auto_approve"`
+
+	// ── Maturity gate ──
+	Maturity       string `yaml:"maturity"`         // fully_mature | mostly_mature | immature
+	RefineVersion  int    `yaml:"refine_version"`
+	RefineReqHash  string `yaml:"refine_req_hash"`  // SHA-256 of full REQ bytes
+	RefineRetryCount int  `yaml:"refine_retry_count"`
+	RefineError    string `yaml:"refine_error"`
+
+	// ── Planning ──
+	PlanReqHash        string `yaml:"plan_req_hash"` // REQ hash at planning start
+	PlanningRetryCount int    `yaml:"planning_retry_count"`
+
+	// ── Phase recovery ──
+	PhaseError     string `yaml:"phase_error"`
+	PhaseLog       string `yaml:"phase_log"`
+	BlockedPhase   string `yaml:"blocked_phase"` // refining | planning
+	ResumeApproved bool   `yaml:"resume_approved"`
+
+	// ── Grilling ownership ──
+	GrillOwner           string `yaml:"grill_owner"`
+	GrillStartedAt       string `yaml:"grill_started_at"`
+	GrillTimeoutMinutes  int    `yaml:"grill_timeout_minutes"`
+	GrillResolution      string `yaml:"grill_resolution"` // resume | replan | ""
+
+	// ── Checkpoint / refine ──
+	CheckpointCommit string `yaml:"checkpoint_commit"`
+	ReqRefineCount   int    `yaml:"req_refine_count"`
 
 	// Extra holds any YAML keys not explicitly mapped above.
 	Extra map[string]any `yaml:",inline"`
@@ -222,17 +249,9 @@ func extractFieldRaw(fmText string, key string) string {
 	return ""
 }
 
-// matchesKey checks if a frontmatter line starts with the given key.
+// matchesKey checks if a frontmatter line starts with the given key followed by ":".
 func matchesKey(line string, key string) bool {
-	if !strings.HasPrefix(line, key) {
-		return false
-	}
-	// Ensure what follows is ": " or ":"
-	rest := line[len(key):]
-	if len(rest) == 0 || rest[0] != ':' {
-		return false
-	}
-	return true
+	return strings.HasPrefix(line, key+":")
 }
 
 // formatField formats a frontmatter key=value line. Handles types.

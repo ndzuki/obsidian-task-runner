@@ -104,13 +104,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				for _, res := range results {
 					switch res.Action {
 					case "reset_to_ready":
-						notify.SendTaskAction(res.TaskID, "", "🔄", "需求变更", "重新出计划")
+						notify.SendTaskAction(res.TaskID, "", "🔄", "需求变更", "重新出计划", r.cfg.Notifications.Desktop)
 					case "pending_req":
-						notify.SendTaskAction(res.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划")
+						notify.SendTaskAction(res.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划", r.cfg.Notifications.Desktop)
 					case "create_task":
-						notify.SendTaskAction(res.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段")
+						notify.SendTaskAction(res.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段", r.cfg.Notifications.Desktop)
 					case "warn_only":
-						notify.SendTaskAction(res.TaskID, "", "⚠️", "需求变更", "请手动评估影响")
+						notify.SendTaskAction(res.TaskID, "", "⚠️", "需求变更", "请手动评估影响", r.cfg.Notifications.Desktop)
 					default:
 						r.logger.Printf("task %s: unknown OnReqChanged action %q", res.TaskID, res.Action)
 					}
@@ -252,73 +252,62 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 	for _, t := range tasks {
 		// ── Grilling: handle before repo resolution ──
 		if t.Status == "ready" {
-			r.logger.Printf("task %s: ready → needs-grilling (title=%q req_doc=%q file=%s)", t.ID, t.Title, t.ReqDoc, t.FilePath)
-			grillCtx := t.Title
-			if t.ReqDoc != "" {
-				grillCtx = fmt.Sprintf("%s (%s)", t.Title, t.ReqDoc)
-			}
+			r.logger.Printf("task %s: ready → refining", t.ID)
 			if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
-				"status":        "needs-grilling",
-				"grill_context": grillCtx,
+				"status": "refining",
 			}); err != nil {
-				r.logger.Printf("task %s: failed to set needs-grilling: %v", t.ID, err)
+				r.logger.Printf("task %s: failed to set refining: %v", t.ID, err)
 				continue
 			}
-			notify.SendGrillingNotification(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault)
-			continue // do not add to pending — no OMP spawn
+			pending = append(pending, preparedTask{task: t, exclusive: false})
+			continue
+		}
+		if t.Status == "refining" || t.Status == "planning" || t.Status == "blocked" {
+			pending = append(pending, preparedTask{task: t, exclusive: false})
+			continue
 		}
 		if t.Status == "needs-grilling" {
 			if t.PendingReq {
-				r.logger.Printf("task %s: pending_req + needs-grilling → resetting to ready", t.ID)
-				if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
-					"status": "ready", "pending_req": false,
-					"plan_approved": false, "merge_approved": false,
-					"grill_done": false, "grill_context": "",
-				}); err != nil {
-					r.logger.Printf("task %s: failed to reset pending_req: %v", t.ID, err)
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "自动根据新需求重新出计划")
+				yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "重新进入 maturity gate", r.cfg.Notifications.Desktop)
 				continue
 			}
 			if t.GrillPrevStatus == "implementing" && t.PlanVersion == 0 {
-				r.logger.Printf("task %s: needs-grilling bounced from implementing with no plan → plan-review", t.ID)
-				updates := map[string]interface{}{
-					"status":             "plan-review",
-					"grill_done":         true,
-					"grill_context":      "",
-					"grill_prev_status":  "",
-				}
-				if err := yamlfrontmatter.Update(t.FilePath, updates); err != nil {
-					r.logger.Printf("task %s: failed to transition to plan-review: %v", t.ID, err)
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🔧", "实现受阻（无计划）", "已返回 plan-review，需求文档完备可直接生成计划")
+				yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "plan-review", "grill_done": true, "grill_context": "", "grill_prev_status": ""})
+				notify.SendTaskAction(t.ID, t.Title, "🔧", "实现受阻（无计划）", "已返回 plan-review", r.cfg.Notifications.Desktop)
 				continue
 			}
 			if t.GrillDone || t.PlanApproved {
-				r.logger.Printf("task %s: grilling complete → plan-review", t.ID)
-				updates := map[string]interface{}{
-					"status":            "plan-review",
-					"grill_done":        true,
-					"grill_context":     "",
-					"grill_prev_status": "",
-				}
-				if err := yamlfrontmatter.Update(t.FilePath, updates); err != nil {
-					r.logger.Printf("task %s: failed to transition to plan-review: %v", t.ID, err)
-					continue
-				}
-				if t.PlanApproved {
-					notify.SendTaskAction(t.ID, t.Title, "✅", "需求对齐完成", "已自动进入 Round 2 实现阶段")
-				} else {
-					notify.SendTaskAction(t.ID, t.Title, "✅", "需求对齐完成", "计划已生成，请审阅后设 plan_approved: true 开始实现")
+				switch t.GrillResolution {
+				case "resume":
+					prev := t.GrillPrevStatus; if prev == "" { prev = "implementing" }
+					yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": prev, "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+					notify.SendTaskAction(t.ID, t.Title, "✅", "阻塞已解决", "恢复实现", r.cfg.Notifications.Desktop)
+				case "replan":
+					yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "grill_done": false, "pending_req": true, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+					notify.SendTaskAction(t.ID, t.Title, "✅", "需求/计划已更新", "进入 maturity gate", r.cfg.Notifications.Desktop)
+				default:
+					r.logger.Printf("task %s: grill_done but no resolution — waiting", t.ID)
+					notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
 				}
 				continue
 			}
-
 			r.logger.Printf("task %s: still waiting for grilling", t.ID)
-			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault)
-			continue // do not add to pending
+			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
+			continue
+		}
+
+		// ── review/conflict/done + pending_req → force refining ──
+		if (t.Status == "review" || t.Status == "conflict" || t.Status == "done") && t.PendingReq {
+			r.logger.Printf("task %s: %s + pending_req → refining", t.ID, t.Status)
+			yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "merge_approved": false})
+			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更", "已取消 Merge 授权并返回 maturity gate", r.cfg.Notifications.Desktop)
+			continue
+		}
+		// ── premature plan_approved reset ──
+		if t.PlanApproved && t.Status != "plan-review" && t.Status != "implementing" {
+			r.logger.Printf("task %s: plan_approved=true but status=%s → resetting", t.ID, t.Status)
+			yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"plan_approved": false})
 		}
 
 		repoDir, err := r.resolveRepo(t)
@@ -448,47 +437,53 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			t.Status = "ready"
 			t.PendingReq = false
-			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行")
+			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
+			processed++
 			continue // let next scan round pick up the ready task for grilling
 		}
 
 
-		// ── Normal OMP dispatch for non-grilling phases ──
+		// ── Direct phase dispatch ──
 		model := r.selectModel(t.Assignee)
 		isMerge := t.MergeApproved && (t.Status == "review" || t.Status == "conflict")
+		var phase, skillPrompt string
+
+		switch {
+		case t.Status == "refining":
+			phase = "refining"
+			model = r.cfg.Model("default")
+			skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
+			r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
+		case t.Status == "planning":
+			phase = "planning"
+			skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
+			r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
+		case isMerge:
+			phase = "merge"
+			skillPrompt = "/obsidian-task-runner-merge " + t.FilePath
+			r.logger.Printf("task %s: Merge Phase authorized", t.ID)
+			notify.SendTaskAction(t.ID, t.Title, "🔀", "开始合并", "正在将功能分支合并到主分支", r.cfg.Notifications.Desktop)
+		case t.Status == "plan-review" || t.Status == "implementing":
+			phase = "round2"
+			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
+			if t.Status == "plan-review" {
+				yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "implementing"})
+				t.Status = "implementing"
+			}
+			notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
+		default:
+			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
+			continue
+		}
 
 		args := []string{"--model", model}
-		if isMerge {
-			args = append(args, "--approval-mode", "yolo")
-			r.logger.Printf("task %s: Merge Phase authorized", t.ID)
-			notify.SendTaskAction(t.ID, t.Title, "🔀", "开始合并", "正在将功能分支合并到主分支")
-		} else {
-			args = append(args, "--auto-approve")
-			if (t.Status == "plan-review" || t.Status == "implementing") && t.PlanApproved {
-				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行")
-			} else if t.Status == "implementing" && !t.PlanApproved {
-				notify.SendTaskAction(t.ID, t.Title, "🔄", "恢复处理", "Round 2 异常中断，回退到 Round 1 重新出计划")
-			}
-		}
-		// Task audit log
+		if isMerge { args = append(args, "--approval-mode", "yolo") } else { args = append(args, "--auto-approve") }
+		args = append(args, "-p", skillPrompt)
 		logDir := r.cfg.LogDir
 		if logDir == "" {
 			home, _ := os.UserHomeDir()
 			logDir = filepath.Join(home, ".omp", "logs")
 		}
-		phase := "round1"
-		if isMerge {
-			phase = "merge"
-		} else if t.Status == "plan-review" || (t.Status == "implementing" && t.PlanApproved) {
-			phase = "round2"
-		}
-		// Set intermediate status for Round 2 to prevent re-scan duplicate spawn.
-		// Round 1 (ready) is protected by isOMPRunning guard — no status change needed.
-		if t.Status == "plan-review" {
-			yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "implementing"})
-			t.Status = "implementing"
-		}
-		args = append(args, "-p", "/obsidian-task-runner "+t.FilePath)
 		taskLogDir := filepath.Join(logDir, "tasks")
 		os.MkdirAll(taskLogDir, 0755)
 		ts := time.Now().Format("20060102-150405")
@@ -504,18 +499,14 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// Determine timeout based on phase
 		var timeout time.Duration
 		switch phase {
-		case "round1":
-			timeout = 30 * time.Minute
-		case "round2":
-			timeout = 60 * time.Minute
-		case "merge":
-			timeout = 15 * time.Minute
-		default:
-			timeout = 30 * time.Minute
+		case "refining": timeout = 15 * time.Minute
+		case "planning": timeout = 30 * time.Minute
+		case "round2":   timeout = 60 * time.Minute
+		case "merge":    timeout = 15 * time.Minute
+		default:         timeout = 30 * time.Minute
 		}
-		// Check if OMP is already running for this task (daemon restart recovery).
 		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
-		if t.Status == "implementing" {
+		if phase == "refining" || phase == "planning" || phase == "round2" {
 			if data, err := os.ReadFile(pidFile); err == nil {
 				var existingPID int
 				if _, scanErr := fmt.Sscanf(string(data), "%d", &existingPID); scanErr == nil {
@@ -525,9 +516,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					}
 				}
 			}
-			// PID file missing or process dead — resume Round 2
-			r.logger.Printf("task %s: stuck in implementing, OMP dead — retrying Round 2", t.ID)
-			notify.SendTaskAction(t.ID, t.Title, "🔄", "恢复 Round 2", "上次执行异常中断，自动恢复")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -571,19 +559,19 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// Check if the failure is due to token quota exhaustion
 			if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
 				notify.SendTaskAction(t.ID, t.Title, "💰", "Token 不足",
-					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr))
+					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), r.cfg.Notifications.Desktop)
 			} else if errors.Is(err, context.DeadlineExceeded) {
 				notify.SendTaskAction(t.ID, t.Title, "⏰", "执行超时",
-					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout))
+					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout), r.cfg.Notifications.Desktop)
 			} else {
-				notify.SendTaskAction(t.ID, t.Title, "💥", "进程异常", fmt.Sprintf("%s: %v", reason, err))
+				notify.SendTaskAction(t.ID, t.Title, "💥", "进程异常", fmt.Sprintf("%s: %v", reason, err), r.cfg.Notifications.Desktop)
 			}
 
 			// Try fallback model if primary model failed (e.g., GPT → DeepSeek)
 			if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
 				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
-					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel))
+					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
 
 				fallbackArgs := []string{"--model", fallbackModel}
 				fallbackArgs = append(fallbackArgs, args[2:]...) // skip --model and old model value
@@ -618,18 +606,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					}
 					r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
 					notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
-						fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason))
+						fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
 				} else {
 					r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
 					if _, statErr := os.Stat(taskPath); statErr == nil {
-						notify.StatusNotify(taskPath)
+						notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 					}
 				}
 			}
 		} else {
 			r.logger.Printf("task %s: completed", t.ID)
 			if _, statErr := os.Stat(taskPath); statErr == nil {
-				notify.StatusNotify(taskPath)
+				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}
 		}
 		if f != nil {
@@ -808,14 +796,15 @@ func isNoise(line string) bool {
 }
 
 func acquireLock(cfg *config.Config) (func(), error) {
-	lockFile := filepath.Join(os.TempDir(), "otg-daemon.lock")
+	vaultHash := fmt.Sprintf("%x", sha256.Sum256([]byte(filepath.Clean(cfg.ObsidianVault))))[:16]
+	lockFile := filepath.Join(os.TempDir(), "otg-daemon-"+vaultHash+".lock")
 	f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("another daemon instance is running")
+		return nil, fmt.Errorf("another daemon instance is running for this vault")
 	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

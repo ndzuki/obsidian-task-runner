@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "Maps skill:// names to install sources. Used by skill-doctor for auto-install.",
+  "sources": {
+    "samber/cc-skills-golang": {
+      "type": "github",
+      "url": "https://github.com/samber/cc-skills-golang.git",
+      "skillBasePath": "skills",
+      "patterns": ["golang-*"],
+      "skills": [
+        "golang-benchmark",
+        "golang-cli",
+        "golang-code-style",
+        "golang-concurrency",
+        "golang-context",
+        "golang-continuous-integration",
+        "golang-data-structures",
+        "golang-database",
+        "golang-dependency-management",
+        "golang-design-patterns",
+        "golang-documentation",
+        "golang-error-handling",
+        "golang-gopls",
+        "golang-how-to",
+        "golang-lint",
+        "golang-modernize",
+        "golang-naming",
+        "golang-observability",
+        "golang-project-layout",
+        "golang-refactoring",
+        "golang-safety",
+        "golang-security",
+        "golang-spf13-cobra",
+        "golang-stretchr-testify",
+        "golang-structs-interfaces",
+        "golang-testing",
+        "golang-troubleshooting"
+      ]
+    },
+    "vercel-labs/skills": {
+      "type": "github",
+      "url": "https://github.com/vercel-labs/skills.git",
+      "skillBasePath": "skills",
+      "skills": ["find-skills"]
+    },
+    "akin-ozer/cc-devops-skills": {
+      "type": "github",
+      "url": "https://github.com/akin-ozer/cc-devops-skills.git",
+      "skillBasePath": "devops-skills-plugin/skills",
+      "skills": ["helm-generator"]
+    },
+    "mattpocock/skills": {
+      "type": "github",
+      "url": "https://github.com/mattpocock/skills.git",
+      "skillBasePath": "skills",
+      "skills": [
+        "teach",
+        "codebase-design",
+        "improve-codebase-architecture",
+        "research"
+      ]
+    }
+  }
+}

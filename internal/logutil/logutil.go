@@ -100,8 +100,6 @@ func (w *RotatingWriter) rotate() {
 	}
 
 	// Shift existing rotated files
-	baseFile := filepath.Base(w.path)
-	dir := filepath.Dir(w.path)
 
 	// Compress the current file
 	compressedPath := w.path + ".1.gz"
@@ -132,8 +130,6 @@ func (w *RotatingWriter) rotate() {
 	// Clean old files
 	w.cleanOldLogs()
 
-	_ = baseFile
-	_ = dir
 }
 
 func (w *RotatingWriter) compressFile(src, dst string) {
