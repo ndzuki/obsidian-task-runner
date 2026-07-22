@@ -184,8 +184,8 @@ func installTaskVerifier(opts Options) error {
 
 func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
-	if _, err := os.Stat(mapFile); err == nil && !opts.Force {
-		fmt.Println("vault-map.json exists, skipping (use --force to overwrite)")
+	if _, err := os.Stat(mapFile); err == nil {
+		fmt.Println("vault-map.json exists, skipping (never overwritten — contains user config)")
 		return nil
 	}
 
