@@ -13,12 +13,11 @@ func TestResolveProject(t *testing.T) {
 
 	config := map[string]interface{}{
 		"projects": []map[string]interface{}{
-			{"name": "my-app", "path": "/tmp/my-app", "git_remote": "github.com/user/my-app"},
+			{"name": "my-app", "path": filepath.Join(dir, "my-app"), "git_remote": "github.com/user/my-app"},
 		},
 		"new_project_root": "/home/user/src",
 	}
-	os.MkdirAll("/tmp/my-app", 0755)
-	defer os.RemoveAll("/tmp/my-app")
+	os.MkdirAll(filepath.Join(dir, "my-app"), 0755)
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(mapFile, data, 0644)
 
@@ -27,7 +26,7 @@ func TestResolveProject(t *testing.T) {
 		if r.Status != "existing" {
 			t.Errorf("status = %q, want existing", r.Status)
 		}
-		if r.Path != "/tmp/my-app" {
+		if r.Path != filepath.Join(dir, "my-app") {
 			t.Errorf("path = %q", r.Path)
 		}
 	})
@@ -56,15 +55,14 @@ func TestRegisterProject(t *testing.T) {
 
 	config := map[string]interface{}{
 		"projects": []map[string]interface{}{},
-		"new_project_root": "/tmp",
+		"new_project_root": dir,
 	}
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(mapFile, data, 0644)
-	os.MkdirAll("/tmp/e2e-test", 0755)
-	defer os.RemoveAll("/tmp/e2e-test")
+	os.MkdirAll(filepath.Join(dir, "e2e-test"), 0755)
 
 	t.Run("add new", func(t *testing.T) {
-		err := RegisterProject(mapFile, "e2e-test", "/tmp/e2e-test", "", false)
+		err := RegisterProject(mapFile, "e2e-test", filepath.Join(dir, "e2e-test"), "", false)
 		if err != nil {
 			t.Fatalf("RegisterProject: %v", err)
 		}
@@ -74,28 +72,27 @@ func TestRegisterProject(t *testing.T) {
 		if r.Status != "existing" {
 			t.Errorf("after register, status = %q, want existing (path=%q)", r.Status, r.Path)
 		}
-		if r.Path != "/tmp/e2e-test" {
+		if r.Path != filepath.Join(dir, "e2e-test") {
 			t.Errorf("path = %q", r.Path)
 		}
 	})
 
 	t.Run("update existing", func(t *testing.T) {
-		os.MkdirAll("/tmp/e2e-test-v2", 0755)
-		defer os.RemoveAll("/tmp/e2e-test-v2")
-		err := RegisterProject(mapFile, "e2e-test", "/tmp/e2e-test-v2", "git@github.com:x/y.git", false)
+		os.MkdirAll(filepath.Join(dir, "e2e-test-v2"), 0755)
+		err := RegisterProject(mapFile, "e2e-test", filepath.Join(dir, "e2e-test-v2"), "git@github.com:x/y.git", false)
 		if err != nil {
 			t.Fatalf("RegisterProject update: %v", err)
 		}
 
 		r := ResolveProject(mapFile, "e2e-test", false)
-		if r.Path != "/tmp/e2e-test-v2" {
-			t.Errorf("after update, path = %q, want /tmp/e2e-test-v2", r.Path)
+		if r.Path != filepath.Join(dir, "e2e-test-v2") {
+			t.Errorf("after update, path = %q, want %s", r.Path, filepath.Join(dir, "e2e-test-v2"))
 		}
 	})
 
 	t.Run("dry run", func(t *testing.T) {
 		before, _ := os.ReadFile(mapFile)
-		err := RegisterProject(mapFile, "dry-test", "/tmp/dry", "", true)
+		err := RegisterProject(mapFile, "dry-test", filepath.Join(dir, "dry"), "", true)
 		if err != nil {
 			t.Fatalf("RegisterProject dry-run: %v", err)
 		}

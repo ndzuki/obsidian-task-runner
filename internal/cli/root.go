@@ -7,13 +7,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 	"github.com/spf13/cobra"
 )
 
 var (
-	cfg     *config.Config
 	version string
 )
 

@@ -1,195 +1,195 @@
-# Obsidian Task Runner — Reference
+# Obsidian Task Runner — 目标设计参考
 
-## 状态流转
+> 规范流程见 [`docs/workflow.md`](../docs/workflow.md)。本文定义状态、frontmatter schema、依赖引用和人工操作。
+>
+> 当前 Go 实现未完全满足本文；以 workflow.md 的实现验收清单为准。
 
-blocked ──补齐 project + assignee 且所有 blocked_by 依赖已 done──→ ready
-                                                            │
-                                                            ▼
-ready ──→ needs-grilling ──grill_done 或 plan_approved──→ plan-review ──plan_approved:true──→ Round 2 ──→ review
-  ▲          │                                                    │                                │         │
-  │          ▼                                                    │                                ▼         ▼
-  │       🔔 通知用户交互式 grilling                               └──未批准：等待人工确认       🔔 请 review 代码
-  │                                                                                                      │
-  └── pending_req:true ──────────────────────────────────────────────────────────────────────────────────┘
-      需求文档更新后自动重置 status=ready，重新走 Round 1 → plan-review
+## 1. 状态流转
 
-review/conflict ──merge_approved:true──→ Merge Phase
-                                      │
-                                      ├── git push + gh pr create + merge 成功 → done
-                                      └── 冲突 / 不可合并 → conflict ──人工处理后重新设 merge_approved:true
+```text
+blocked → ready → refining ─┬─ fully_mature → planning → plan-review → implementing → review → done
+                            └─ needs input → needs-grilling → refining
+
+refining/planning -- retry once, fail again --> blocked
+implementing -- pending_req at AC boundary --> refining
+review/conflict/done -- pending_req --> refining
+review -- merge conflict --> conflict -- approved retry --> done
 ```
 
-## 状态详解
+## 2. 状态定义
 
-| 状态 | 含义 | 谁设置 | 下一步 |
+| 状态 | 含义 | 执行者 | 下一步 |
 |------|------|--------|--------|
-| `blocked` | 缺必填字段或被依赖阻塞 | 自动创建任务 / 人工 | 补齐 `project` + `assignee` 后 daemon 自动扫描 `blocked_by` 中所有引用任务的状态；全部 `done` 则清空 `blocked_by` 并转 `ready`；有任一未完成则保持 `blocked` |
-| `ready` | 新建任务，等待处理 | daemon 或人工 | daemon 通知用户交互式 grilling，设 `needs-grilling` |
-| `needs-grilling` | 等待用户交互式需求对齐 | daemon（从 ready 转入） | requirement-elaborator 完成后**自动**设 `grill_done: true` + 清空 `grill_owner`（参见 Step 8.5）。用户也可手动设 `plan_approved: true` 跳过；daemon 检测后自动转 `plan-review`。`grill_owner` 非空且未超时时 daemon 跳过通知 |
-| `plan-review` | 计划已生成，等待人工批准 | daemon（从 needs-grilling 自动转入）或 OMP（Round 1） | 人工审阅计划 |
-| `implementing` | 正在实现代码 | OMP（Round 2 开始） | 自动进行 |
-| `review` | 代码已实现，等待人工 review | OMP（Round 2 完成） | 人工 review 代码，确认后设 merge_approved: true |
-| `conflict` | 合并冲突，需人工解决 | OMP（Merge Phase） | 人工解决冲突，重新设 merge_approved: true 重试 |
-| `done` | 已完成合并并推送 | OMP（Merge Phase 成功） | 结束 |
-| `error` | 执行失败 | OMP（异常时） | 人工排查日志 |
-## Task Frontmatter 字段参考
+| `blocked` | 缺字段/依赖，或 refining/planning 连续失败 | daemon / 人工 | `ready` 或按 `blocked_phase` 恢复 |
+| `ready` | 可开始统一 maturity gate | daemon | `refining` |
+| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `blocked` |
+| `needs-grilling` | 需要用户交互补充规格 | Kitty + requirement-elaborator | `refining` |
+| `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
+| `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` |
+| `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
+| `review` | 本地实现已提交，等待 Merge 授权 | 人工 | `done` / `conflict` / `refining` |
+| `conflict` | Merge 冲突 | 人工 + Merge Skill | `done` / `refining` |
+| `done` | 已合并推送；pending_req=false 时终态 | — | `refining` 或结束 |
 
-### 系统自动管理（不要手动改）
+## 3. 人工 Gate
+
+| 字段 | 人工操作 | 约束 |
+|------|----------|------|
+| `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；其他状态的 true 自动清 false |
+| `merge_approved` | 审阅实现后设 true | `pending_req=true` 时绝对无效 |
+| `adr_approved` | 授权写入 ADR | 一次性授权当前 `adr_proposed` |
+| `resume_approved` | 阶段失败修复后设 true | daemon 按 `blocked_phase` 恢复，随后清 false |
+
+## 4. Frontmatter Schema
+
+### 4.1 身份与人工填写
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `status` | enum | 见上方状态流转表 |
-| `plan_approved` | bool | Round 2 的钥匙，人工设为 true |
-| `merge_approved` | bool | 自动 PR + 合并的钥匙，人工 review 通过后设为 true；若 `assignee: deepseek`，表示授权 deepseek-v4-pro 执行 `git push`、`gh pr create`、merge 和分支清理 |
-| `created` | ISO8601 | 文件首次创建时间 |
-| `updated` | ISO8601 | 最后更新时间 |
-| `completed` | ISO8601 | 完成时间 |
-| `actual_hours` | float | 实际耗时 |
-| `pending_req` | bool | 需求文档在任务进行中/完成后有更新。daemon 拾起后自动重置为 ready 并重新出计划 |
-| `grill_owner` | string | 当前持有 grilling 会话的 agent ID（hub agent ID、"user" 或 daemon task-id）。空表示无人占用。由 requirement-elaborator 在 grilling 开始时 CAS 写入，完成/超时后清空 |
-| `grill_started_at` | ISO8601 | grilling 所有权获取时间，与 `grill_owner` 同步写入和清空 |
-| `grill_timeout_minutes` | int | grilling 会话超时阈值，默认 30。超时后其他 agent/daemon 可抢占所有权 |
-| `req_refine_count` | int | 需求缺口循环计数器。暂停进入 grilling 前 +1，全部 AC 通过后清零。≥3 时 Agent 主动进入 grilling 交互（不递增），交互完成后自主恢复 |
-| `grill_done` | bool | grilling 完成标记。requirement-elaborator 写回规格后设为 true，daemon 检测后自动转 plan-review |
-| `grill_prev_status` | string | 暂停前的原始 status（如 `implementing`），恢复时写回 `status` 字段 |
-| `grill_context` | YAML | 结构化 grilling 上下文。包含 `triage`（type/confidence/evidence）和 `domain_terms` 列表。不再使用纯文本格式 |
-| `adr_approved` | bool | ADR 写入授权。设为 true 后 daemon 写入 `Notes/adr/` 并清空 `adr_proposed` |
-| `adr_proposed` | JSON array | 待审 ADR 提议列表，格式 `[{"title":"...","slug":"..."}]`。写入后设 `adr_approved: true` 授权 |
-| `target_branch` | string | Git 分支名，由 Round 2 自动设置，Merge Phase 使用 |
-### 人工填写
+| `id` | string | 项目内唯一；不同项目可重复 |
+| `title` | string | 任务标题 |
+| `project` | string | vault-map project key |
+| `assignee` | string | planning/Round 2/Merge 模型 key |
+| `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
+| `new_project` | bool | 新项目标记 |
+| `template` | string | 新项目脚手架提示 |
+| `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
+| `auto_approve` | bool | 只跳过首次既有项目计划的 Plan Review |
+| `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
 
-| 字段 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `id` | string | ✅ | 项目内唯一任务编号；不同项目可使用相同编号。 |
-| `title` | string | ✅ | 任务标题 |
-| `project` | string | ✅ | vault-map.json 的项目 key |
-| `new_project` | bool | | 是否从零创建新项目 |
-| `template` | string | | 新项目技术栈提示（如 `go-gin-microservice`），Agent 出计划时参考，非强制 |
-| `priority` | P0-P4 | | 优先级，默认 P2 |
-| `due_date` | date | | 截止日期 |
-| `estimated_hours` | float | | 预估工时 |
-| `assignee` | string | | `models` 中的执行模型 key，例如 `default` / `deepseek` / `gpt` |
-| `reviewer` | string | | 代码审查人 |
-| `req_doc` | string | ✅ | Requirements/ 下的需求文档路径 |
-| `component` | string | | 影响组件 |
-| `tags` | list | | 标签 |
-| `epic` | string | | 所属 Epic |
-| `parent` | string | | 父任务 ID |
-| `blocks` | list | | 阻塞哪些任务 ID |
-| `blocked_by` | list | | 被哪些任务 ID 阻塞 |
-| `auto_approve` | bool | | 是否跳过 plan-review gate（新项目无效） |
-| `off_peak_only` | bool | | Round 2 仅低峰执行（避开北京时间 9-12、14-18），节省 token 费用 |
-| `switch_settings` | bool | | ⛔ 已弃用，改由 `assignee` 字段选择 agent。OMP 已接管 model routing，此字段无实际效果 |
-| `target_env` | string | | 部署环境 |
-
-## vault-map.json 配置参考
-
-详见 `config/vault-map.example.json`。常用调度字段：
+### 4.2 Maturity Gate
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `poll_interval_minutes` | int | `30` | watcher 未触发时的兜底扫描间隔。 |
-| `max_concurrent_tasks` | int | `2` | 单个 daemon 同时执行的 OMP headless 上限；小于 `1` 时按 `1` 执行。等待仓库独占许可或准备 worktree 的任务不占槽位。不同仓库可并行；同一仓库的 Round 2 使用独立 worktree，可与 Round 2 或主工作区独占阶段并行。 |
+| `maturity` | enum/string | `""` | `fully_mature` / `mostly_mature` / `immature` |
+| `refine_version` | int | `0` | maturity gate 审计版本 |
+| `refine_req_hash` | string | `""` | refining 开始时完整 REQ bytes SHA-256 |
+| `refine_retry_count` | int | `0` | refining 自动恢复次数 |
+| `refine_error` | string | `""` | 最近 refining 错误 |
 
-修改并发上限或安装新二进制后，执行 `systemctl --user restart omp-task-watcher.service` 让常驻 daemon 重新读取配置和代码。
+Refining 必须同时维护 TASK 的 `## 需求成熟度评估` section，保存六项检查证据。
 
-## Dataview 看板
+### 4.3 Planning
 
-安装后可在 Vault 根目录打开 `Tasks-Dashboard.md` 查看任务统计。看板依赖 Dataview 读取任务 frontmatter，不会修改任务文件；任务必须位于 `Projects/**/Tasks/`，并且有正确的 YAML frontmatter。
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `plan_req_hash` | string | `""` | planning 使用的 REQ hash |
+| `plan_version` | int | `0` | 每次 planning 成功 +1 |
+| `planning_retry_count` | int | `0` | planning 自动恢复次数 |
+| `plan_approved` | bool | `false` | Round 2 Gate |
+| `checkpoint_commit` | string | `""` | pending_req 前的 WIP checkpoint |
 
-完整安装步骤、查询解释、目录约定和看板为空的排查顺序见 [`docs/dataview.md`](../docs/dataview.md)。
+Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得写入/批准计划，返回 refining。
 
-如果手动调整 Vault 目录层级，需要同步修改看板中的 `FROM` / `WHERE` 查询条件。执行是否成功仍以任务状态、任务记录和 daemon 日志为准，看板只是展示层。
+### 4.4 阶段恢复
 
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `blocked_phase` | string | `""` | `refining` 或 `planning` |
+| `phase_error` | string | `""` | 阶段失败原因 |
+| `phase_log` | string | `""` | 对应日志路径 |
+| `resume_approved` | bool | `false` | 人工恢复授权 |
 
-## 故障排查
+Refining/planning 第一次失败自动恢复；再次失败转 blocked。阶段成功或人工 resume 后 retry count 清零。
 
-### 任务没有被自动处理
+### 4.5 Grilling 所有权
 
-1. 检查 `assignee` **不为空**——这是最常见的原因：自动创建的任务 `assignee` 为空，daemon 会跳过。填写 `default` / `deepseek` / `gpt` 或其他 `models` key 后保存即触发
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `grill_owner` | string | `""` | 当前交互会话 owner |
+| `grill_started_at` | ISO8601 | `""` | owner 获取时间 |
+| `grill_timeout_minutes` | int | `30` | 可配置 lease 超时 |
+| `grill_done` | bool | `false` | 规格写回完成标记 |
+| `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
+| `grill_prev_status` | string | `""` | 实现阻塞前状态 |
 
-2. 如果 status 是 `blocked`，确认 `project` 已填写、`assignee` 有效；daemon 会自动检查 `blocked_by` 中所有引用任务是否 `done`，满足后清空 `blocked_by` 并转 `ready`，无需手动改 status
-3. 检查 status 是否为 `ready`、(`plan-review` 且 `plan_approved: true`) 或 (`review`/`conflict` 且 `merge_approved: true`)
-4. 如果 `off_peak_only: true` 且 status 为 `plan-review`，确认当前不在北京高峰时段（9-12、14-18）→ 低峰时段会自动拾起
-5. 确认 `project` 字段在 vault-map.json 的 projects 中存在，或 `new_project: true`
-6. 并发任务卡住时，检查 `~/.omp/logs/tasks/` 下对应任务文件路径 hash 的 `.pid` 和审计日志；不同项目即使 `id` 相同也使用独立文件。
-7. 看日志：`tail -f ~/.omp/logs/otg-daemon.log`
+| `grill_resolution` | enum/string | `""` | `resume` 直接恢复实现；`replan` 转 refining；空值保持等待 |
+Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使用 `${TMPDIR}/otg-grill-<task-path-sha256>.lock` flock 强化本机原子性。
 
-### 新建需求文档没有自动生成任务
+需求细化完成使用 `grill_resolution=replan`，daemon 转 refining 复验。实现阻塞按 resolution 分流。`pending_req=true` 优先于 `resume`，必须重规划。
 
-1. 确认文件名格式为 `REQ-<id>-<slug>.md`（如 `REQ-002-user-login.md`）
+Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_context`、`grill_prev_status`，防止重复路由。
 
-2. 确认保存后 watcher 检测到了变更：`tail -f ~/.omp/logs/otg-daemon.log`
-3. 如果已存在关联任务（通过 `req_doc` 匹配），不会重复创建，只会更新
-4. 手动重试：`otg on-req-changed <vault> <req_file>`
+### 4.6 需求变更与 Merge
 
-### Tasks-Dashboard.md 显示为空
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `pending_req` | bool | `false` | 新 REQ 尚未被新计划完整吸收 |
+| `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效 |
+| `target_branch` | string | `""` | Round 2 分支 |
+| `pr_url` | string | `""` | PR URL |
 
-1. 确认 Dataview 已启用
-2. 确认任务文件位于 `Projects/**/Tasks/`
-3. 确认 frontmatter YAML 格式正确（两个 `---`，缩进一致）
-4. 详细排查步骤见 [`docs/dataview.md`](../docs/dataview.md) 第 7 节
+`pending_req` 仅在新 planning 成功后清 false。
 
-### systemd 服务没有启动
+## 5. 需求变更行为
 
-```bash
-# 检查状态
-systemctl --user status omp-task-watcher.service
-systemctl --user list-timers | grep omp-task-runner
+### implementing
 
-# 看 systemd 日志
-journalctl --user -u omp-task-watcher.service -n 50
-journalctl --user -u omp-task-runner.service -n 50
-```
+Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 
-### notify-send 没反应
+1. 不开始下一条 AC。
+2. 提交 `chore(task): checkpoint before requirement replan`。
+3. 写 `checkpoint_commit`。
+4. 转 `refining`，保持 pending_req=true。
 
-- 确认 `notify-send` 可用：`which notify-send`
-- 确认 notification daemon 在运行（如 dunst, notification-daemon）
-- 在 vault-map.json 中检查 `notifications.desktop` 是否为 true
+### Grilling 阻塞分流
 
-### 并发任务处理
+- 需求细化、计划外设计决策、架构假设变化：`grill_resolution=replan`。
+- 纯代码逻辑错误、环境问题且无需修改规格/计划：`grill_resolution=resume`。
+- resume 恢复 `grill_prev_status`；replan 保持 pending_req=true 并转 refining。
 
-daemon 使用 flock 文件锁保证同一 Vault 只有一个调度实例。watcher 或 timer 的重复触发遇到锁会退出；当前 daemon 会在批次完成后最多重扫 3 轮，拾取执行期间新变为 ready 的任务。
+### OnReqChanged 状态规则
 
-`max_concurrent_tasks` 只计算已派发的 OMP headless。调度器先准备执行目录，再寻找当前可运行的任务：
+- blocked：保持 blocked，pending_req=true。
+- ready：保持 ready，pending_req=true。
+- refining/planning：仅 pending_req=true，不改 live phase。
+- needs-grilling + active owner：不中断会话，只设 pending_req=true。
+- plan-review：撤销 plan approval，转 refining。
+- implementing：当前 AC 后 checkpoint → refining。
+- review/conflict/done：清 merge approval，直接 refining。
+- 新自动创建 TASK：pending_req=false。
 
-- Round 2：在仓库短锁内创建或复用任务专属 worktree，然后释放锁；OMP 在 worktree 中执行。
-- `target_branch` 已有值：worktree 必须绑定该分支；本地分支不存在时自动创建。已有 worktree 的分支不一致会被拒绝，防止恢复到其他任务分支。
-- `target_branch: ""`：属于合法初始状态，不需要批量预填。Round 2 在任务 worktree 内创建分支，并在进入 `review` 时写回实际分支名。
-- Round 1、Merge、新项目：使用主工作区，必须取得仓库独占许可；同仓库的这些阶段串行。
-- 某个独占任务正在等待同仓库许可时，它不会占用 OMP 槽位。调度器继续扫描队列，后续可在 worktree 中执行的 Round 2 可以先启动。
+### review / conflict / done
 
-例如同仓库队列为 `Merge A → Merge B → Round 2 C`，并发上限为 `2`：应看到 `Merge A` 和 `Round 2 C` 同时运行，`Merge B` 等待。若只看到一个 OMP，按以下顺序检查：
+直接清 merge_approved 并转 refining。禁止合并已知基于过期需求的实现。
 
-1. `systemctl --user status omp-task-watcher.service`：确认服务进程树中实际 OMP 数量。
-2. `otg find-ready "$OBSIDIAN_VAULT"`：确认还有可执行的 Round 2；`plan-review` 必须同时满足 `plan_approved: true`。
-3. `journalctl --user -u omp-task-watcher.service -n 100`：检查 worktree 准备失败、项目路径解析失败或模型启动失败。
-4. `~/.omp/logs/tasks/`：检查任务审计日志和按任务路径 hash 命名的 PID 文件。
-5. `git -C <repo> worktree list --porcelain`：确认每个任务 worktree 绑定到预期的 `refs/heads/task/<id>-<slug>`；处于 Round 2 初期且 `target_branch` 仍为空时，短暂 detached 属于正常状态。
+## 6. ID 与依赖解析
 
-6. 修改配置或更新二进制后，确认 watcher 已重启；旧进程不会自动加载新调度逻辑。
+- TASK/REQ 数字 ID 项目内唯一。
+- `TASK-010` 只在当前项目解析。
+- `release-manager:TASK-010` 通过 vault-map project key 精确定位跨项目依赖。
+- `req_doc` 使用 `Projects/<project>/Requirements/REQ-...md`，只做规范完整路径匹配；禁止 basename fallback。
 
-如果系统重启后锁文件残留，daemon 仍可启动；flock 与文件描述符绑定，原进程退出后锁自动释放。
+## 7. 通知
 
-### 断点续跑
+`notifications.desktop` 只控制 `notify-send`：
 
-OMP agent 采用 **stateless 设计**——每次启动不依赖内部状态，通过分析文件系统理解当前进度。`make install-force` 或进程异常被杀后，任务可从中断点自动恢复：
+- false：关闭动作、提醒和最终状态的系统桌面通知。
+- Kitty tab 不受该字段控制，Grilling 时始终尝试创建。
+- Kitty 不可用：保持 needs-grilling，写日志并周期重试，不转 blocked，不启动普通终端。
 
-**续跑原理**：
-1. daemon 重启 → 扫描到 `status: implementing` → 重新 spawn OMP
-2. OMP 读 task 文档中的实现记录、git log、项目文件
-3. 判断已完成的步骤，从未完成步骤继续
+## 8. Daemon 与并发
 
-**能保留**：
-- 已创建的文件和代码
-- git 提交历史
-- 任务文档中的计划和实现记录
-- 项目目录的完整状态
+Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 
-**不保留**：
-- 上一轮 OMP 的对话/思考上下文（这恰恰是优点——上下文过大反而影响模型质量）
+- 同一 Vault watcher/timer 互斥。
+- 不同 Vault 可并行。
+- refining 不需要仓库。
+- 既有项目 planning、Merge 使用主工作区独占锁。
+- Round 2 使用任务专属 worktree。
+- 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 
-**为什么不做 session resume**：保存和恢复 OMP 对话状态（200K-300K tokens）比重新扫描文件系统更慢、更不可靠，且模型输出的不确定性会导致 `replay` 不一致。文件系统就是最好的 checkpoint。
+## 9. Skill 安装
 
-**建议**：在 SKILL.md 实现步骤中加入原子进度标记（如 "Step N completed: YYYY-MM-DD HH:MM"），让断点恢复更精确。
+Installer 随包安装五件套：core、refining、round1、round2、merge，均为顶层 Skill。
+
+外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality。
+
+## 10. 故障排查
+
+1. `otg find-ready <vault>`：检查 daemon 是否会拾取任务。
+2. `tail -f ~/.omp/logs/otg-daemon.log`：检查状态分派、锁和重试。
+3. `~/.omp/logs/tasks/`：检查阶段日志/PID。
+4. blocked 阶段失败：检查 `blocked_phase`、`phase_error`、`phase_log`；修复后设 `resume_approved=true`。
+5. Grilling 卡住：检查 `grill_owner`、`grill_started_at`、timeout 和 Kitty 日志。
+6. 安装后执行 `skill-doctor check`，必须返回 0。

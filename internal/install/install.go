@@ -7,8 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"time"
 )
 
 // Options holds installation configuration.
@@ -22,11 +22,16 @@ type Options struct {
 	Force           bool
 	DryRun          bool
 	SrcDir          string // source directory with skill files
+	RestartSystemd  bool   // stop daemon before install, restart after
 }
 
 // Run performs the installation.
 func Run(opts Options) error {
 	d := opts.DryRun
+	// 0. Stop running daemon so binary/skills can be safely overwritten
+	if opts.RestartSystemd && !d {
+		stopDaemon()
+	}
 
 	// 1. Check dependencies
 	for _, bin := range []string{"git", "omp"} {
@@ -55,6 +60,19 @@ func Run(opts Options) error {
 		return fmt.Errorf("OMP symlink: %w", err)
 	}
 
+	// 5b. Install skill-doctor (dependency diagnostic tool)
+	if err := installSkillDoctor(opts); err != nil && !d {
+		return fmt.Errorf("skill-doctor: %w", err)
+	}
+
+	// 5c. Install skill registry
+	if err := installRegistry(opts); err != nil && !d {
+		return fmt.Errorf("skill registry: %w", err)
+	}
+	// 5d. Install phase sub-skills as top-level skills
+	if err := installPhaseSkills(opts); err != nil && !d {
+		return fmt.Errorf("phase skills: %w", err)
+	}
 	// 6. Configure shell environment
 	if err := configureShell(opts); err != nil && !d {
 		return fmt.Errorf("shell config: %w", err)
@@ -69,8 +87,10 @@ func Run(opts Options) error {
 	// 7b. Deploy dashboard template to vault (Dataview-powered)
 	if !d && opts.ObsidianVault != "" {
 		dst := filepath.Join(opts.ObsidianVault, "Tasks-Dashboard.md")
-		if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
-			content := `# 任务总览
+		srcFile := filepath.Join(opts.SrcDir, "Tasks-Dashboard.md")
+		content, err := os.ReadFile(srcFile)
+		if err != nil {
+			content = []byte(`# 任务总览
 
 > 从文件路径提取项目名，按 ` + "`project_id`" + ` 聚合。Dataview 插件自动刷新。
 
@@ -91,10 +111,10 @@ FLATTEN regexreplace(file.folder, "^Projects/[^/]+/([^/]+)/.*$", "$1") AS catego
 WHERE project_id AND category = "Tasks"
 GROUP BY project_id
 SORT project_id ASC
-` + "```"
-			os.WriteFile(dst, []byte(content), 0644)
-			fmt.Println("dashboard deployed to vault")
+` + "```")
 		}
+		os.WriteFile(dst, content, 0644)
+		fmt.Println("dashboard deployed to vault")
 	}
 
 	// 8. Configure systemd
@@ -131,10 +151,9 @@ func installSkill(opts Options) error {
 	// Create parent dir
 	os.MkdirAll(filepath.Dir(dest), 0755)
 
-	// Copy skill files (using cp -r for simplicity)
-	cmd := exec.Command("cp", "-rT", src, dest)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("copy skill: %w\n%s", err, output)
+	// Copy skill files (native Go copy for portability)
+	if err := copyDir(src, dest); err != nil {
+		return fmt.Errorf("copy skill: %w", err)
 	}
 
 	fmt.Println("skill installed to", dest)
@@ -208,6 +227,50 @@ func createOMPSymlink(opts Options) error {
 	os.Remove(linkPath) // remove old symlink/file
 	return os.Symlink(opts.SkillInstallDir, linkPath)
 }
+// installPhaseSkills copies the four phase sub-skills (refining, round1, round2, merge)
+func installPhaseSkills(opts Options) error {
+	home, _ := os.UserHomeDir()
+	skillRoot := filepath.Join(home, ".omp", "skills")
+	srcBase := opts.SrcDir
+	if srcBase == "" {
+		srcBase = "obsidian-task-runner"
+	}
+	phases := []struct{ name, srcRel string }{
+		{"obsidian-task-runner-refining", "skills/refining/SKILL.md"},
+		{"obsidian-task-runner-round1", "skills/round1/SKILL.md"},
+		{"obsidian-task-runner-round2", "skills/round2/SKILL.md"},
+		{"obsidian-task-runner-merge", "skills/merge/SKILL.md"},
+	}
+	if opts.DryRun {
+		for _, p := range phases {
+			fmt.Printf("[DRY RUN] Would install %s\n", p.name)
+		}
+		return nil
+	}
+	for _, p := range phases {
+		src := filepath.Join(srcBase, p.srcRel)
+		destDir := filepath.Join(skillRoot, p.name)
+		dest := filepath.Join(destDir, "SKILL.md")
+		os.MkdirAll(destDir, 0755)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", src, err)
+		}
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			return fmt.Errorf("write %s: %w", dest, err)
+		}
+		// Agent skill symlink
+		agentDir := filepath.Join(home, ".omp", "agent", "skills")
+		os.MkdirAll(agentDir, 0755)
+		link := filepath.Join(agentDir, p.name)
+		os.Remove(link)
+		if err := os.Symlink(destDir, link); err != nil {
+			return fmt.Errorf("symlink %s → %s: %w", link, destDir, err)
+		}
+		fmt.Printf("phase skill installed: %s\n", p.name)
+	}
+	return nil
+}
 
 func configureShell(opts Options) error {
 	if opts.DryRun {
@@ -235,8 +298,11 @@ func configureShell(opts Options) error {
 
 	// Check if already configured
 	existing, _ := os.ReadFile(rcFile)
-	if strings.Contains(string(existing), "OBSIDIAN_VAULT="+opts.ObsidianVault) {
-		return nil // already configured
+	for _, line := range strings.Split(string(existing), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "export OBSIDIAN_VAULT="+opts.ObsidianVault {
+			return nil // already configured
+		}
 	}
 
 	var exportLine string
@@ -269,13 +335,11 @@ func configureSystemd(opts Options) error {
 
 	// Build PATH
 	path := "/usr/local/bin:/usr/bin:/bin"
-	if runtime.GOARCH == "amd64" {
-		if d := filepath.Join(home, "go", "bin"); dirExists(d) {
-			path = d + ":" + path
-		}
-		if d := filepath.Join(home, ".local", "bin"); dirExists(d) {
-			path = d + ":" + path
-		}
+	if d := filepath.Join(home, "go", "bin"); dirExists(d) {
+		path = d + ":" + path
+	}
+	if d := filepath.Join(home, ".local", "bin"); dirExists(d) {
+		path = d + ":" + path
 	}
 
 	// Write service files
@@ -324,17 +388,126 @@ WantedBy=default.target
 
 	// Enable and start
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		exec.Command("systemctl", "--user", "daemon-reload").Run()
-		exec.Command("systemctl", "--user", "enable", "--now", "omp-task-runner.timer").Run()
+		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n%s\n", err, out)
+		}
+		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "omp-task-runner.timer").CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: systemctl enable timer failed: %v\n%s\n", err, out)
+		}
 		if _, err := exec.LookPath("inotifywait"); err == nil {
-			exec.Command("systemctl", "--user", "enable", "--now", "omp-task-watcher.service").Run()
+			if out, err := exec.Command("systemctl", "--user", "enable", "--now", "omp-task-watcher.service").CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: systemctl enable watcher failed: %v\n%s\n", err, out)
+			}
 		}
 		fmt.Println("systemd units installed and enabled")
 	}
 	return nil
 }
 
+// installSkillDoctor copies the skill-doctor script to ~/.omp/bin/.
+func installSkillDoctor(opts Options) error {
+	home, _ := os.UserHomeDir()
+	ompRoot := filepath.Join(home, ".omp")
+	destDir := filepath.Join(ompRoot, "bin")
+	dest := filepath.Join(destDir, "skill-doctor")
+	src := filepath.Join("scripts", "skill-doctor")
+
+	if opts.DryRun {
+		fmt.Printf("[DRY RUN] Would copy %s → %s\n", src, dest)
+		return nil
+	}
+
+	os.MkdirAll(destDir, 0755)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read skill-doctor: %w", err)
+	}
+	if err := os.WriteFile(dest, data, 0644); err != nil {
+		return fmt.Errorf("write skill-doctor: %w", err)
+	}
+	os.Chmod(dest, 0755)
+	fmt.Println("skill-doctor installed to", dest)
+	return nil
+}
+
+// installRegistry copies the skill registry to ~/.omp/config/.
+func installRegistry(opts Options) error {
+	home, _ := os.UserHomeDir()
+	ompRoot := filepath.Join(home, ".omp")
+	destDir := filepath.Join(ompRoot, "config")
+	dest := filepath.Join(destDir, "skill-registry.json")
+	src := filepath.Join("config", "skill-registry.json")
+
+	if opts.DryRun {
+		fmt.Printf("[DRY RUN] Would copy %s → %s\n", src, dest)
+		return nil
+	}
+
+	os.MkdirAll(destDir, 0755)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read skill registry: %w", err)
+	}
+	if err := os.WriteFile(dest, data, 0644); err != nil {
+		return fmt.Errorf("write skill registry: %w", err)
+	}
+	fmt.Println("skill registry installed to", dest)
+	return nil
+}
+
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// copyDir recursively copies a directory tree from src to dst using native Go I/O.
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("read dir %s: %w", src, err)
+	}
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst, err)
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			data, err := os.ReadFile(srcPath)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", srcPath, err)
+			}
+			if err := os.WriteFile(dstPath, data, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", dstPath, err)
+			}
+		}
+	}
+	return nil
+}
+
+// stopDaemon gracefully stops any running otg daemon processes.
+func stopDaemon() {
+	// Stop systemd units
+	exec.Command("systemctl", "--user", "stop", "--no-block", "omp-task-runner.timer").Run()
+	exec.Command("systemctl", "--user", "stop", "--no-block", "omp-task-watcher.service").Run()
+
+	// SIGTERM for graceful shutdown
+	exec.Command("pkill", "-TERM", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon").Run()
+
+	// Give processes time to exit, then force kill
+	time.Sleep(2 * time.Second)
+	exec.Command("pkill", "-9", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon").Run()
+	time.Sleep(1 * time.Second)
+
+	// Clean up stale lock files (daemon acquires vault-hash locks)
+	entries, _ := os.ReadDir(os.TempDir())
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "otg-daemon-") && strings.HasSuffix(e.Name(), ".lock") {
+			os.Remove(filepath.Join(os.TempDir(), e.Name()))
+		}
+	}
 }

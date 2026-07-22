@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"os"
-
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/spf13/cobra"
 )
@@ -18,7 +16,7 @@ var findReadyCmd = &cobra.Command{
 			return err
 		}
 		if len(tasks) == 0 {
-			os.Exit(0)
+			return nil
 		}
 		task.PrintReadyTasks(tasks)
 		return nil

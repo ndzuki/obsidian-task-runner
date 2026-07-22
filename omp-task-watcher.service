@@ -1,3 +1,5 @@
+# This is a template. Run `otg install --systemd` to generate functional units.
+
 [Unit]
 Description=Obsidian Task Watcher — 监听文件变化,触发 OMP 处理
 

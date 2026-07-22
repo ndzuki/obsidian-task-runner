@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/install"
 	"github.com/spf13/cobra"
@@ -16,7 +17,6 @@ var (
 	installNotif    bool
 	installPoll     int
 	installSystemd  bool
-	installSkipDeps bool
 )
 
 var installCmd = &cobra.Command{
@@ -56,6 +56,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
 	}
 
+	if v := os.Getenv("NOTIFY_ENABLED"); v != "" {
+		installNotif, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("POLL_INTERVAL_MINUTES"); v != "" {
+		installPoll, _ = strconv.Atoi(v)
+	}
+	if v := os.Getenv("SYSTEMD_ENABLED"); v != "" {
+		installSystemd, _ = strconv.ParseBool(v)
+	}
+
 	opts := install.Options{
 		ObsidianVault:   vault,
 		NewProjectRoot:  newRoot,
@@ -65,6 +75,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		SystemdEnabled:  installSystemd,
 		Force:           installForce,
 		DryRun:          installDryRun,
+		RestartSystemd:  installSystemd,
 	}
 
 	return install.Run(opts)

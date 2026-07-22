@@ -1,0 +1,454 @@
+#!/usr/bin/env bash
+# skill-doctor — diagnose, install, and update skill:// dependencies
+set -euo pipefail
+
+SKILL_SEARCH_DIRS=(
+  "$HOME/.omp/skills"
+  "$HOME/.omp/agent/skills"
+  "$HOME/.agents/skills"
+)
+REGISTRY="$HOME/.omp/config/skill-registry.json"
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+skill_exists() {
+  local name="$1"
+  for dir in "${SKILL_SEARCH_DIRS[@]}"; do
+    [ -f "$dir/$name/SKILL.md" ] && return 0
+  done
+  return 1
+}
+
+skill_path() {
+  local name="$1"
+  for dir in "${SKILL_SEARCH_DIRS[@]}"; do
+    if [ -f "$dir/$name/SKILL.md" ]; then
+      echo "$dir/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+extract_refs() {
+  local file="$1"
+  grep -o '\bskill://[a-zA-Z0-9_.-]\+' "$file" 2>/dev/null \
+    | sed 's|skill://||' \
+    | sort -u \
+    || true
+}
+
+lookup_source() {
+  local name="$1"
+  [ -f "$REGISTRY" ] || return 1
+  python3 -c '
+import json, sys
+name = sys.argv[1]
+reg = json.load(sys.stdin)
+for src_id, src in reg.get("sources", {}).items():
+    if name in src.get("skills", []):
+        print(json.dumps({"source": src_id, **src}))
+        sys.exit(0)
+for src_id, src in reg.get("sources", {}).items():
+    for pat in src.get("patterns", []):
+        import fnmatch
+        if fnmatch.fnmatch(name, pat):
+            print(json.dumps({"source": src_id, "matched_pattern": pat, **src}))
+            sys.exit(0)
+sys.exit(1)
+' "$name" < "$REGISTRY" 2>/dev/null || return 1
+}
+
+# Clone source repo and find the skill folder inside it.
+# Outputs the path to the skill directory on success.
+# Caller is responsible for cleaning up $tmpdir.
+clone_skill_source() {
+  local name="$1" tmpdir="$2"
+
+  local src_info
+  src_info=$(lookup_source "$name" 2>/dev/null || true)
+  if [ -z "$src_info" ]; then
+    echo "❌ $name: no known install source." >&2
+    return 1
+  fi
+
+  local src_url src_id base_path
+  src_url=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])" 2>/dev/null)
+  src_id=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin)['source'])" 2>/dev/null)
+  base_path=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('skillBasePath','skills'))" 2>/dev/null)
+
+  echo "   source: $src_id ($src_url)" >&2
+  echo "   Cloning (shallow)..." >&2
+
+  local clone_err="$tmpdir/clone.err"
+  if ! git clone --depth 1 --filter=blob:none "$src_url" "$tmpdir/repo" 2>"$clone_err"; then
+    echo "❌ Failed to clone $src_url" >&2
+    echo "   stderr:" >&2
+    sed 's/^/     /' "$clone_err" >&2
+    return 1
+  fi
+
+  # Find the skill folder
+  local skill_path=""
+  if [ -f "$tmpdir/repo/$base_path/$name/SKILL.md" ]; then
+    skill_path="$tmpdir/repo/$base_path/$name"
+  fi
+  if [ -z "$skill_path" ]; then
+    skill_path=$(find "$tmpdir/repo/$base_path" -maxdepth 4 -name "SKILL.md" -path "*/$name/SKILL.md" 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
+  fi
+  if [ -z "$skill_path" ] || [ ! -f "$skill_path/SKILL.md" ]; then
+    echo "❌ Could not find SKILL.md for $name in cloned repo." >&2
+    echo "   Available skills in repo:" >&2
+    find "$tmpdir/repo/$base_path" -maxdepth 4 -name "SKILL.md" 2>/dev/null | sort | while read -r f; do
+      echo "     - $(dirname "$f" | sed "s|$tmpdir/repo/$base_path/||")" >&2
+    done
+    return 1
+  fi
+
+  echo "$skill_path"
+  return 0
+}
+
+# Compute a content hash of all files in the skill directory (path-independent)
+skill_dir_hash() {
+  local name="$1"
+  local sp
+  sp=$(skill_path "$name" 2>/dev/null || true)
+  if [ -z "$sp" ]; then return 1; fi
+  find -L "$sp" -type f -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null | awk '{print $1}' | sort | sha256sum | cut -d' ' -f1
+}
+
+# ── commands ─────────────────────────────────────────────────────────
+
+cmd_check() {
+  tmpdir=$(mktemp -d)
+
+  echo "🔍 skill-doctor: checking skill:// dependencies..."
+  echo ""
+
+  # Collect all references
+  for dir in "${SKILL_SEARCH_DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    for skill_dir in "$dir"/*/; do
+      [ -d "$skill_dir" ] || continue
+      local skill_name skill_md
+      skill_name=$(basename "$skill_dir")
+      skill_md="$skill_dir/SKILL.md"
+      [ -f "$skill_md" ] || continue
+
+      extract_refs "$skill_md" | while IFS= read -r ref; do
+        [ -z "$ref" ] && continue
+        printf '%s:%s\n' "$ref" "$skill_name" >> "$tmpdir/refs.txt"
+      done
+    done
+  done
+
+  if [ ! -f "$tmpdir/refs.txt" ]; then
+    echo "  No skill:// references found. Nothing to check."
+    rm -rf "$tmpdir"
+    return 0
+  fi
+
+  sort -u "$tmpdir/refs.txt" | awk -F: '
+    { refs[$1] = refs[$1] ? refs[$1] ", " $2 : $2 }
+    END { for (r in refs) print r ":" refs[r] }
+  ' | sort > "$tmpdir/merged.txt"
+
+  local missing=0 ok=0 total=0
+
+  while IFS=: read -r ref sources; do
+    total=$((total + 1))
+    if skill_exists "$ref"; then
+      ok=$((ok + 1))
+      echo "  ✅ $ref — used by $sources"
+    else
+      missing=$((missing + 1))
+      echo "  ❌ $ref — used by $sources"
+
+      local src_info src_id
+      src_info=$(lookup_source "$ref" 2>/dev/null || true)
+      if [ -n "$src_info" ]; then
+        src_id=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source',''))" 2>/dev/null || true)
+        echo "     📦 available from: $src_id"
+        echo "     💡 run: skill-doctor install $ref"
+      else
+        echo "     ⚠️  no known install source — add to $REGISTRY first"
+      fi
+    fi
+  done < "$tmpdir/merged.txt"
+
+  rm -rf "$tmpdir"
+  echo ""
+  echo "───"
+  echo "  total: $total | ok: $ok | missing: $missing"
+
+  return $missing
+}
+
+cmd_list() {
+  echo "📋 All skills and their skill:// dependencies:"
+  echo ""
+
+  for dir in "${SKILL_SEARCH_DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    for skill_dir in "$dir"/*/; do
+      [ -d "$skill_dir" ] || continue
+      local skill_md="$skill_dir/SKILL.md"
+      [ -f "$skill_md" ] || continue
+
+      local skill_name refs status
+      skill_name=$(basename "$skill_dir")
+      refs=$(extract_refs "$skill_md" | tr '\n' ' ')
+      status="✅"
+
+      if [ -n "$refs" ]; then
+        echo "  $status $skill_name → $refs"
+      else
+        echo "  $status $skill_name (no references)"
+      fi
+    done
+  done
+}
+
+cmd_install() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: skill-doctor install <skill-name>"
+    return 1
+  fi
+
+  if skill_exists "$name"; then
+    echo "✅ $name is already installed at $(skill_path "$name")"
+    echo "   To update: skill-doctor update $name"
+    return 0
+  fi
+
+  local src_info src_id src_url
+  src_info=$(lookup_source "$name" 2>/dev/null || true)
+  if [ -z "$src_info" ]; then
+    echo "❌ $name: no known install source."
+    echo "   Add it to $REGISTRY, then retry."
+    return 1
+  fi
+  src_id=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin)['source'])" 2>/dev/null)
+  src_url=$(echo "$src_info" | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])" 2>/dev/null)
+
+  # Confirmation prompt
+  echo "📦 Installing $name from $src_id"
+  echo "   url: $src_url"
+  echo ""
+  read -r -p "   Proceed? [y/N] " confirm
+  if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    echo "   Cancelled."
+    return 0
+  fi
+  echo ""
+
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  local skill_src
+  skill_src=$(clone_skill_source "$name" "$tmpdir") || return 1
+
+  local dest="$HOME/.agents/skills/$name"
+  echo "   Copying to $dest..."
+  mkdir -p "$(dirname "$dest")"
+  cp -r "$skill_src" "$dest"
+
+  echo "   Tracking with chezmoi..."
+  chezmoi add "$dest" 2>&1 | tail -1 || echo "   ⚠️  chezmoi add failed, but files are in place"
+
+  # Create symlink in OMP agent skills
+  if [ ! -e "$symlink" ]; then
+    echo "   Creating symlink $symlink → $dest"
+    mkdir -p "$(dirname "$symlink")" && ln -s "$dest" "$symlink"
+    chezmoi add "$symlink" 2>&1 | tail -1 || echo "   ⚠️  chezmoi add symlink failed, but symlink is in place"
+  fi
+
+  rm -rf "$tmpdir"
+  echo ""
+  echo "✅ $name installed successfully."
+  echo "   Run 'skill-doctor check' to verify."
+}
+
+cmd_update() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "Usage: skill-doctor update <skill-name>"
+    return 1
+  fi
+
+  if ! skill_exists "$name"; then
+    echo "❌ $name is not installed. Use 'skill-doctor install $name' first."
+    return 1
+  fi
+
+  local src_info
+  src_info=$(lookup_source "$name" 2>/dev/null || true)
+  if [ -z "$src_info" ]; then
+    echo "❌ $name: no known upstream source — cannot update."
+    echo "   If this is a self-created skill, edit it directly in ~/.omp/skills/$name/"
+    return 1
+  fi
+
+  local old_hash
+  old_hash=$(skill_dir_hash "$name" 2>/dev/null || true)
+
+  echo "🔄 Updating $name from upstream..."
+  echo ""
+
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  local skill_src
+  skill_src=$(clone_skill_source "$name" "$tmpdir") || return 1
+
+  local new_hash
+  new_hash=$(find "$skill_src" -type f -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null | awk '{print $1}' | sort | sha256sum | cut -d' ' -f1)
+
+  if [ -z "$new_hash" ]; then
+    echo "   ⚠️  could not hash upstream — skipping update"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  if [ "$old_hash" = "$new_hash" ]; then
+    echo "   Already up to date (hash: ${new_hash:0:12}...)"
+    rm -rf "$tmpdir"
+    return 0
+  fi
+
+  echo "   Changes detected (${old_hash:0:12}... → ${new_hash:0:12}...)"
+  local dest
+  dest=$(skill_path "$name")
+  if [ -L "$dest" ]; then
+    dest=$(readlink -f "$dest")
+  fi
+  echo "   Updating $dest..."
+  rm -rf "$dest"
+  cp -r "$skill_src" "$dest"
+  chezmoi add "$dest" 2>&1 | tail -1 || echo "   ⚠️  chezmoi add failed"
+}
+
+cmd_update_all() {
+  echo "🔄 Checking all third-party skills for updates..."
+  echo ""
+
+  local updated=0 skipped=0 failed=0
+
+  for dir in "${SKILL_SEARCH_DIRS[@]}"; do
+    [ -d "$dir" ] || continue
+    for skill_dir in "$dir"/*/; do
+      [ -d "$skill_dir" ] || continue
+      [ -f "$skill_dir/SKILL.md" ] || continue
+
+      local name
+      name=$(basename "$skill_dir")
+
+      # Skip skills without a known upstream
+      lookup_source "$name" &>/dev/null || continue
+
+      echo "  Checking $name..."
+
+      local old_hash
+      old_hash=$(skill_dir_hash "$name" 2>/dev/null || true)
+      [ -z "$old_hash" ] && { echo "     ⚠️  could not hash local"; ((failed++)); continue; }
+
+      local tmpdir
+      tmpdir=$(mktemp -d)
+
+      local skill_src
+      if ! skill_src=$(clone_skill_source "$name" "$tmpdir" 2>/dev/null); then
+        echo "     ⚠️  clone failed, skipping"
+        rm -rf "$tmpdir"
+        ((failed++))
+        continue
+      fi
+
+      local new_hash
+      new_hash=$(find "$skill_src" -type f -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null | awk '{print $1}' | sort | sha256sum | cut -d' ' -f1)
+
+      if [ -z "$new_hash" ]; then
+        echo "     ⚠️  could not hash upstream, skipping"
+        rm -rf "$tmpdir"
+        ((failed++))
+        continue
+      fi
+
+      if [ "$old_hash" = "$new_hash" ]; then
+        echo "     ✅ up to date"
+        ((skipped++))
+      else
+        local _dest="$skill_dir"
+        if [ -L "$_dest" ]; then
+          _dest=$(readlink -f "$_dest")
+        fi
+        echo "     📦 updating (${old_hash:0:8}… → ${new_hash:0:8}…)"
+        rm -rf "$_dest"
+        cp -r "$skill_src" "$_dest"
+        chezmoi add "$_dest" &>/dev/null || true
+        ((updated++))
+      fi
+
+      rm -rf "$tmpdir"
+    done
+  done
+
+  echo ""
+  echo "───"
+  echo "  updated: $updated | skipped: $skipped | failed: $failed"
+}
+
+cmd_sources() {
+  echo "📦 Known skill sources:"
+  echo ""
+  if [ -f "$REGISTRY" ]; then
+    python3 -c "
+import json
+with open('$REGISTRY') as f:
+    reg = json.load(f)
+for src_id, src in reg.get('sources', {}).items():
+    count = len(src.get('skills', []))
+    pats = src.get('patterns', [])
+    print(f'  {src_id}: {count} skills, patterns: {pats}')
+    print(f'    url: {src[\"url\"]}')
+    print()
+" 2>/dev/null || echo "  (error reading registry)"
+  else
+    echo "  No registry found at $REGISTRY"
+  fi
+}
+
+# ── main ─────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  check|doctor)
+    cmd_check
+    ;;
+  list|ls)
+    cmd_list
+    ;;
+  install|add)
+    cmd_install "${2:-}"
+    ;;
+  update)
+    cmd_update "${2:-}"
+    ;;
+  update-all)
+    cmd_update_all
+    ;;
+  sources)
+    cmd_sources
+    ;;
+  *)
+    echo "Usage: skill-doctor {check|list|install|update|update-all|sources}"
+    echo ""
+    echo "  check       — scan all skill:// references and report missing dependencies"
+    echo "  list        — list all skills with their references"
+    echo "  install <n> — install a skill from known sources (asks for confirmation)"
+    echo "  update <n>  — update an installed skill from its upstream source"
+    echo "  update-all  — update all installed third-party skills from upstream"
+    echo "  sources     — list known skill sources from registry"
+    exit 1
+    ;;
+esac
