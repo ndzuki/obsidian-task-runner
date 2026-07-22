@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"syscall"
+
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -205,6 +207,20 @@ var kittyDebounceFile = func() string {
 const kittyDebounceInterval = 5 * time.Minute
 
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
+	// Acquire file lock to prevent concurrent tab creation
+	lockFile, err := os.OpenFile(kittyDebounceFile, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		log.Printf("grilling tab: cannot open lock: %v", err)
+		return false
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		log.Printf("grilling tab: cannot acquire lock: %v", err)
+		return false
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	// Debounce: skip if last tab was created within 5 minutes
 	if data, err := os.ReadFile(kittyDebounceFile); err == nil {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
 			if time.Since(t) < kittyDebounceInterval {
