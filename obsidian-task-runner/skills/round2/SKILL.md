@@ -85,3 +85,8 @@ merge_approved: false
 ## 新项目
 
 只有 Round 2 可以创建项目目录、Git repo 和脚手架。创建成功后执行 `otg register-project`。
+
+## Frontmatter Safety
+
+- **NEVER edit YAML frontmatter directly.** Use `otg update-status` for checkpoint commits, grill_context, and status transitions.
+- Run `otg validate-doc <task_path>` after every TASK file write to verify structural integrity.

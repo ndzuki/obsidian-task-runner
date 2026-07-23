@@ -78,7 +78,7 @@ otg update-status <task> status=planning grill_done=false
 otg update-status <task> status=needs-grilling grill_done=false
 ```
 
-把所有未通过项和建议追问维度写入 `grill_context`。Daemon 下一轮自动创建 Kitty tab。
+把所有未通过项和建议追问维度写入 `grill_context`。**MUST use `otg update-status` to write grill_context — NEVER edit YAML frontmatter directly.** Daemon 下一轮自动创建 Kitty tab。
 
 ## Step 5: 失败语义
 
@@ -96,3 +96,5 @@ otg update-status <task> status=needs-grilling grill_done=false
 - 不创建 Kitty tab。
 - 不清 pending_req。
 - 不修改 plan_version。
+- 不直接编辑 YAML frontmatter — 所有变更必须通过 `otg update-status`。
+- 不退出前不运行 `otg validate-doc <task_path>` 校验文件完整性。
