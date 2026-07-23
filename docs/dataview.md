@@ -155,6 +155,7 @@ SORT priority asc
 ## 8. 安全与版本控制建议
 
 - Dataview 查询不会改变 frontmatter；修改状态请在任务文件中编辑，或使用 `otg update-status`。
+如果 daemon 日志中出现 "parse error"，说明任务 frontmatter 已被损坏（通常 OMP agent 把纯文本写入了 YAML 区域）。可以用 `otg validate-doc <任务路径>` 诊断，再用 `otg repair-doc <任务路径>` 修复。
 - 不要把 `~/.omp/skills/.../vault-map.json` 提交到公共仓库，它可能包含本机路径和模型配置。
 - 可以使用 Obsidian Git 备份 Vault，但项目代码仓库仍应使用项目自己的 Git 工作流。
 - 看板是展示层，不是任务执行器；daemon 日志和任务文档才是排查执行问题的依据。

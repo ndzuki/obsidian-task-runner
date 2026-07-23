@@ -1,5 +1,6 @@
 // smoke-test: true
 package pipeline
+
 import (
 	"context"
 	"os"

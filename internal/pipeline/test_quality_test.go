@@ -76,9 +76,9 @@ func TestQuality_MockRunnerReturnsReport(t *testing.T) {
 // three-level classification (🔴/🟡/🟢) defined in the spec.
 func TestQuality_ThreeLevelClassification(t *testing.T) {
 	validLevels := map[string]bool{
-		"🔴 critical":   true,
+		"🔴 critical":  true,
 		"🟡 important": true,
-		"🟢 info":       true,
+		"🟢 info":      true,
 	}
 
 	report := tautologicalQualityReport()

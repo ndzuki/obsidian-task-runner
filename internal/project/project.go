@@ -26,8 +26,8 @@ func ResolveProject(mapFile, projectName string, isNew bool) ResolveResult {
 	}
 
 	var config struct {
-		Projects        []map[string]string `json:"projects"`
-		NewProjectRoot  string              `json:"new_project_root"`
+		Projects       []map[string]string `json:"projects"`
+		NewProjectRoot string              `json:"new_project_root"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		result.Error = fmt.Sprintf("failed to parse %s: %v", mapFile, err)

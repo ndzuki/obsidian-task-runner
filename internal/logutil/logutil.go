@@ -18,10 +18,10 @@ type RotatingWriter struct {
 	mu       sync.Mutex
 	file     *os.File
 	path     string
-	maxSize  int64  // max bytes before rotation
-	maxFiles int    // max rotated files to keep (0 = unlimited)
-	maxAge   int    // max days to keep (0 = unlimited)
-	written  int64  // bytes written to current file
+	maxSize  int64 // max bytes before rotation
+	maxFiles int   // max rotated files to keep (0 = unlimited)
+	maxAge   int   // max days to keep (0 = unlimited)
+	written  int64 // bytes written to current file
 }
 
 // NewRotatingWriter creates a writer that writes to path, rotates when
