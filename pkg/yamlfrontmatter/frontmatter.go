@@ -6,9 +6,11 @@
 package yamlfrontmatter
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,54 +20,61 @@ import (
 
 // Frontmatter maps all known fields in a task document frontmatter.
 // Unknown fields are preserved in Extra.
+
+// keyLineRE matches a valid YAML key: value line (with optional value).
+var keyLineRE = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\s*:\s*(\S.*)?$`)
+
+// listItemRE matches a YAML list item line (indented dash).
+var listItemRE = regexp.MustCompile(`^\s+-\s+\S`)
+
 type Frontmatter struct {
-	ID             string   `yaml:"id"`
-	Title          string   `yaml:"title"`
-	Project        string   `yaml:"project"`
-	ProjectID      string   `yaml:"project_id"`
-	NewProject     bool     `yaml:"new_project"`
-	Template       string   `yaml:"template"`
-	Status         string   `yaml:"status"`          // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done
-	PlanApproved   bool     `yaml:"plan_approved"`
-	MergeApproved  bool     `yaml:"merge_approved"`
-	AdrApproved    bool     `yaml:"adr_approved"`
-	AdrProposed    any      `yaml:"adr_proposed"`
-	AdrWritten     any      `yaml:"adr_written"`
-	GrillContext     string   `yaml:"grill_context"`
-	GrillPrevStatus  string   `yaml:"grill_prev_status"`
-	GrillDone        bool     `yaml:"grill_done"`
-	PendingReq     bool     `yaml:"pending_req"`
-	OffPeakOnly    bool     `yaml:"off_peak_only"`
-	PlanVersion    int      `yaml:"plan_version"`
-	Created        string   `yaml:"created"`
-	Updated        string   `yaml:"updated"`
-	Completed      string   `yaml:"completed"`
-	Priority       string   `yaml:"priority"`
-	DueDate        string   `yaml:"due_date"`
-	EstimatedHours float64  `yaml:"estimated_hours"`
-	ActualHours    float64  `yaml:"actual_hours"`
-	Assignee       string   `yaml:"assignee"`
-	Reviewer       string   `yaml:"reviewer"`
-	Author         string   `yaml:"author"`
-	ReqDoc         string   `yaml:"req_doc"`
-	Component      string   `yaml:"component"`
-	Tags           []string `yaml:"tags"`
-	Epic           string   `yaml:"epic"`
-	Parent         string   `yaml:"parent"`
-	Blocks         []string `yaml:"blocks"`
-	BlockedBy      []string `yaml:"blocked_by"`
-	TargetBranch   string   `yaml:"target_branch"`
-	TargetEnv      string   `yaml:"target_env"`
-	PRURL          string   `yaml:"pr_url"`
-	SwitchSettings bool     `yaml:"switch_settings"`
-	AutoApprove    bool     `yaml:"auto_approve"`
+	ID              string   `yaml:"id"`
+	Title           string   `yaml:"title"`
+	Project         string   `yaml:"project"`
+	ProjectID       string   `yaml:"project_id"`
+	NewProject      bool     `yaml:"new_project"`
+	Template        string   `yaml:"template"`
+	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done
+	PlanApproved    bool     `yaml:"plan_approved"`
+	MergeApproved   bool     `yaml:"merge_approved"`
+	AdrApproved     bool     `yaml:"adr_approved"`
+	AdrProposed     any      `yaml:"adr_proposed"`
+	AdrWritten      any      `yaml:"adr_written"`
+	GrillContext    string   `yaml:"grill_context"`
+	GrillPrevStatus string   `yaml:"grill_prev_status"`
+	GrillDone       bool     `yaml:"grill_done"`
+	PendingReq      bool     `yaml:"pending_req"`
+	OffPeakOnly     bool     `yaml:"off_peak_only"`
+	PlanVersion     int      `yaml:"plan_version"`
+	Created         string   `yaml:"created"`
+	Updated         string   `yaml:"updated"`
+	Completed       string   `yaml:"completed"`
+	Priority        string   `yaml:"priority"`
+	DueDate         string   `yaml:"due_date"`
+	EstimatedHours  float64  `yaml:"estimated_hours"`
+	ActualHours     float64  `yaml:"actual_hours"`
+	Assignee        string   `yaml:"assignee"`
+	Reviewer        string   `yaml:"reviewer"`
+	Author          string   `yaml:"author"`
+	ReqDoc          string   `yaml:"req_doc"`
+	Component       string   `yaml:"component"`
+	Tags            []string `yaml:"tags"`
+	Epic            string   `yaml:"epic"`
+	Parent          string   `yaml:"parent"`
+	Blocks          []string `yaml:"blocks"`
+	BlockedBy       []string `yaml:"blocked_by"`
+	TargetBranch    string   `yaml:"target_branch"`
+	TargetEnv       string   `yaml:"target_env"`
+	PRURL           string   `yaml:"pr_url"`
+	SwitchSettings  bool     `yaml:"switch_settings"`
+	AutoApprove     bool     `yaml:"auto_approve"`
 
 	// ── Maturity gate ──
-	Maturity       string `yaml:"maturity"`         // fully_mature | mostly_mature | immature
-	RefineVersion  int    `yaml:"refine_version"`
-	RefineReqHash  string `yaml:"refine_req_hash"`  // SHA-256 of full REQ bytes
-	RefineRetryCount int  `yaml:"refine_retry_count"`
-	RefineError    string `yaml:"refine_error"`
+	Maturity         string `yaml:"maturity"` // fully_mature | mostly_mature | immature
+	RefineVersion    int    `yaml:"refine_version"`
+	RefineReqHash    string `yaml:"refine_req_hash"` // SHA-256 of full REQ bytes
+	RefineRetryCount int    `yaml:"refine_retry_count"`
+	RefineError      string `yaml:"refine_error"`
 
 	// ── Planning ──
 	PlanReqHash        string `yaml:"plan_req_hash"` // REQ hash at planning start
@@ -78,10 +87,10 @@ type Frontmatter struct {
 	ResumeApproved bool   `yaml:"resume_approved"`
 
 	// ── Grilling ownership ──
-	GrillOwner           string `yaml:"grill_owner"`
-	GrillStartedAt       string `yaml:"grill_started_at"`
-	GrillTimeoutMinutes  int    `yaml:"grill_timeout_minutes"`
-	GrillResolution      string `yaml:"grill_resolution"` // resume | replan | ""
+	GrillOwner          string `yaml:"grill_owner"`
+	GrillStartedAt      string `yaml:"grill_started_at"`
+	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
+	GrillResolution     string `yaml:"grill_resolution"` // resume | replan | ""
 
 	// ── Checkpoint / refine ──
 	CheckpointCommit string `yaml:"checkpoint_commit"`
@@ -149,27 +158,40 @@ func Parse(data []byte) (*Frontmatter, error) {
 }
 
 // Update atomically updates frontmatter fields in a task markdown file.
+// Fields are updated via yaml.Node to preserve order and handle block scalars.
+// Validation runs BEFORE writing — a corrupt result is never persisted.
 func Update(path string, updates map[string]interface{}) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	content := string(data)
-
-	// Locate frontmatter boundaries
-	rest := content[3:] // after opening "---"
+	if !strings.HasPrefix(content, "---") {
+		return fmt.Errorf("%s has no frontmatter", path)
+	}
+	rest := content[3:]
 	end := strings.Index(rest, "\n---")
 	if end == -1 {
 		return fmt.Errorf("%s frontmatter not closed", path)
 	}
-	fmText := rest[:end] // frontmatter body
-	body := rest[end+4:] // skip "\n---\n"
+	fmText := rest[:end]
+	body := rest[end+4:]
 	if body == "" {
 		body = "\n"
 	}
 
+	// Parse existing frontmatter as a YAML mapping node to preserve field order.
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmText), &doc); err != nil {
+		return fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("frontmatter is not a mapping")
+	}
+	mapping := doc.Content[0]
+
 	// Timestamps
-	now := time.Now().Format("\"2006-01-02T15:04:05-07:00\"")
+	now := time.Now().Format("2006-01-02T15:04:05-07:00")
 	updates["updated"] = now
 	if _, ok := updates["created"]; !ok {
 		if created := extractFieldRaw(fmText, "created"); created == "" || created == `""` {
@@ -177,36 +199,53 @@ func Update(path string, updates map[string]interface{}) error {
 		}
 	}
 
-	// Line-by-line update
-	lines := strings.Split(fmText, "\n")
-	done := make(map[string]bool)
-	for i, line := range lines {
-		t := strings.TrimSpace(line)
-		if t == "" || strings.HasPrefix(t, "#") {
-			continue
-		}
-		for k, v := range updates {
-			if !done[k] && matchesKey(t, k) {
-				lines[i] = formatField(k, v)
-				done[k] = true
-				break
-			}
-		}
-	}
-	// Append new keys
+	// Apply updates to the mapping node — existing keys are replaced in place,
+	// new keys are appended at the end.  This preserves the original field order.
 	for k, v := range updates {
-		if !done[k] {
-			lines = append(lines, formatField(k, v))
-		}
+		setMappingValue(mapping, k, v)
 	}
 
-	newFM := strings.Join(lines, "\n")
-	// Remove trailing blank line
-	for strings.HasSuffix(newFM, "\n") {
-		newFM = newFM[:len(newFM)-1]
+	// Serialize back to YAML.
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return fmt.Errorf("encode frontmatter: %w", err)
 	}
+	enc.Close()
+	newFM := strings.TrimSuffix(buf.String(), "\n")
+
 	newContent := "---\n" + newFM + "\n---" + body
+
+	// Validate the generated content BEFORE writing — a corrupt frontmatter
+	// (e.g. invalid multi-line edit) must be surfaced, not silently persisted.
+	if _, err := Parse([]byte(newContent)); err != nil {
+		return fmt.Errorf("update would produce invalid frontmatter: %w", err)
+	}
+
 	return atomicWrite(path, []byte(newContent))
+}
+
+// setMappingValue replaces or appends a key-value pair in a YAML mapping node.
+func setMappingValue(mapping *yaml.Node, key string, val interface{}) {
+	// Search for an existing key.
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			newVal := &yaml.Node{}
+			if err := newVal.Encode(val); err != nil {
+				newVal.SetString(fmt.Sprint(val))
+			}
+			mapping.Content[i+1] = newVal
+			return
+		}
+	}
+	// Not found — append.
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key, Tag: "!!str"}
+	valNode := &yaml.Node{}
+	if err := valNode.Encode(val); err != nil {
+		valNode.SetString(fmt.Sprint(val))
+	}
+	mapping.Content = append(mapping.Content, keyNode, valNode)
 }
 
 // atomicWrite writes data to a temporary file, fsyncs, and renames.
@@ -233,6 +272,122 @@ func atomicWrite(path string, data []byte) error {
 		return fmt.Errorf("rename %s → %s: %w", tmpPath, path, err)
 	}
 	return nil
+}
+
+// Validate checks whether a file's frontmatter is parseable.
+// Returns nil if valid, or an error describing the parse failure.
+// A file without frontmatter is considered invalid.
+func Validate(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fm, err := Parse(data)
+	if err != nil {
+		return err
+	}
+	if fm == nil {
+		return fmt.Errorf("no frontmatter")
+	}
+	return nil
+}
+
+// Repair attempts to fix a corrupted frontmatter by extracting valid
+// key: value lines and discarding any text that does not belong to a
+// known YAML key. Returns nil if the file is already valid or after
+// a successful repair. Returns an error if the file cannot be salvaged
+// (e.g. no frontmatter delimiters).
+func Repair(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// If already valid, nothing to do. Parse returns nil, nil for files
+	// without frontmatter — we cannot repair those.
+	if fm, err := Parse(data); err == nil {
+		if fm == nil {
+			return fmt.Errorf("no frontmatter to repair")
+		}
+		return nil
+	}
+
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return fmt.Errorf("no frontmatter to repair")
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end == -1 {
+		// try space after ---
+		end = strings.Index(rest, "---")
+		if end == -1 {
+			return fmt.Errorf("frontmatter not closed; cannot repair")
+		}
+	}
+	fmText := rest[:end]
+	var body string
+	if rest[end:] == "---" {
+		body = "\n"
+	} else {
+		body = rest[end+4:] // skip "\n---\n"
+		if body == "" {
+			body = "\n"
+		}
+	}
+	// Rebuild frontmatter: keep valid key:value pairs and list items.
+	// Track block-scalar state so continuation lines (indented text after "|" or ">")
+	// are preserved instead of being discarded as orphaned text.
+	lines := strings.Split(fmText, "\n")
+	clean := make([]string, 0, len(lines))
+	inBlock := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+
+		if inBlock {
+			hasLeadingWS := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+			if t == "" || hasLeadingWS {
+				clean = append(clean, line)
+				continue
+			}
+			inBlock = false
+		}
+
+		if t == "" || strings.HasPrefix(t, "#") || t == "---" {
+			continue
+		}
+
+		isBlockHeader := false
+		if keyLineRE.MatchString(t) {
+			parts := strings.SplitN(t, ":", 2)
+			if len(parts) == 2 {
+				vp := strings.TrimSpace(parts[1])
+				if strings.HasPrefix(vp, "|") || strings.HasPrefix(vp, ">") {
+					isBlockHeader = true
+				}
+			}
+		}
+		if isBlockHeader {
+			clean = append(clean, line)
+			inBlock = true
+			continue
+		}
+
+		if keyLineRE.MatchString(t) || listItemRE.MatchString(line) {
+			clean = append(clean, line)
+		}
+	}
+	newFM := strings.Join(clean, "\n")
+	for strings.HasSuffix(newFM, "\n") {
+		newFM = newFM[:len(newFM)-1]
+	}
+	newContent := "---\n" + newFM + "\n---" + body
+
+	// Validate the repaired content before writing.
+	if _, err := Parse([]byte(newContent)); err != nil {
+		return fmt.Errorf("repair produced invalid frontmatter: %w", err)
+	}
+	return atomicWrite(path, []byte(newContent))
 }
 
 // extractFieldRaw extracts a field value from raw frontmatter text.
@@ -264,6 +419,10 @@ func formatField(key string, val interface{}) string {
 		// If it's already YAML-formatted (e.g. timestamps), don't re-quote
 		if strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
 			return key + ": " + v
+		}
+		// Multi-line strings: use YAML literal block scalar
+		if strings.Contains(v, "\n") {
+			return key + ": |\n" + indentLines(v)
 		}
 		// Simple strings: quote unless they look like YAML values
 		if isSimpleValue(v) {
@@ -318,4 +477,13 @@ func isSimpleValue(s string) bool {
 		}
 	}
 	return true
+}
+
+// indentLines prefixes each line with two spaces for YAML literal block scalar.
+func indentLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n")
 }

@@ -261,6 +261,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: failed to set refining: %v", t.ID, err)
 				continue
 			}
+			t.Status = "refining"
 			pending = append(pending, preparedTask{task: t, exclusive: false})
 			continue
 		}
@@ -282,7 +283,10 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if t.GrillDone || t.PlanApproved {
 				switch t.GrillResolution {
 				case "resume":
-					prev := t.GrillPrevStatus; if prev == "" { prev = "implementing" }
+					prev := t.GrillPrevStatus
+					if prev == "" {
+						prev = "implementing"
+					}
 					yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": prev, "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
 					notify.SendTaskAction(t.ID, t.Title, "✅", "阻塞已解决", "恢复实现", r.cfg.Notifications.Desktop)
 				case "replan":
@@ -470,7 +474,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
-
 		// ── Direct phase dispatch ──
 		model := r.selectModel(t.Assignee)
 		isMerge := t.MergeApproved && (t.Status == "review" || t.Status == "conflict")
@@ -505,7 +508,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		}
 
 		args := []string{"--model", model}
-		if isMerge { args = append(args, "--approval-mode", "yolo") } else { args = append(args, "--auto-approve") }
+		if isMerge {
+			args = append(args, "--approval-mode", "yolo")
+		} else {
+			args = append(args, "--auto-approve")
+		}
 		args = append(args, "-p", skillPrompt)
 		logDir := r.cfg.LogDir
 		if logDir == "" {
@@ -527,11 +534,16 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// Determine timeout based on phase
 		var timeout time.Duration
 		switch phase {
-		case "refining": timeout = 15 * time.Minute
-		case "planning": timeout = 30 * time.Minute
-		case "round2":   timeout = 60 * time.Minute
-		case "merge":    timeout = 15 * time.Minute
-		default:         timeout = 30 * time.Minute
+		case "refining":
+			timeout = 15 * time.Minute
+		case "planning":
+			timeout = 30 * time.Minute
+		case "round2":
+			timeout = 60 * time.Minute
+		case "merge":
+			timeout = 15 * time.Minute
+		default:
+			timeout = 30 * time.Minute
 		}
 		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
 		if phase == "refining" || phase == "planning" || phase == "round2" {
@@ -693,7 +705,6 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase, reason, 
 			}
 		}
 	}
-
 
 	if currentRetry == 0 {
 		yamlfrontmatter.Update(taskPath, map[string]interface{}{retryField: 1})

@@ -31,6 +31,8 @@ var rootCmd = &cobra.Command{
 a single compiled Go binary. It discovers ready tasks, handles
 requirement changes, updates frontmatter, and manages the
 Round 1 → Round 2 → Merge Phase lifecycle.`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 var versionCmd = &cobra.Command{
@@ -146,4 +148,41 @@ func isDigits(s string) bool {
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(updateStatusCmd)
+	rootCmd.AddCommand(validateDocCmd)
+	rootCmd.AddCommand(repairDocCmd)
+}
+
+// ── validate-doc ─────────────────────────────────────────────────────────────
+
+var validateDocCmd = &cobra.Command{
+	Use:   "validate-doc <task_path>",
+	Short: "Validate frontmatter in a task document",
+	Long:  `Parses the YAML frontmatter and reports any formatting errors.`,
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := yamlfrontmatter.Validate(args[0]); err != nil {
+			return fmt.Errorf("%s: %w", args[0], err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: frontmatter OK\n", args[0])
+		return nil
+	},
+}
+
+// ── repair-doc ───────────────────────────────────────────────────────────────
+
+var repairDocCmd = &cobra.Command{
+	Use:   "repair-doc <task_path>",
+	Short: "Repair corrupted frontmatter in a task document",
+	Long: `Attempts to salvage a corrupted frontmatter by keeping only valid
+key: value lines and discarding malformed text (e.g. OMP agent
+output that leaked into the YAML block). If the file is already
+valid, repair-doc is a no-op.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := yamlfrontmatter.Repair(args[0]); err != nil {
+			return fmt.Errorf("%s: %w", args[0], err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: repaired\n", args[0])
+		return nil
+	},
 }
