@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,5 +410,118 @@ Legacy flat structure.
 	taskPath := filepath.Join(vaultPath, "Projects", projDir, "Tasks", "TASK-001-legacy.md")
 	if _, err := os.Stat(taskPath); os.IsNotExist(err) {
 		t.Fatalf("TASK not created for old structure at: %s", taskPath)
+	}
+}
+
+func TestIsAutoUnblockable_BlockedPhaseGate(t *testing.T) {
+	dir := t.TempDir()
+	projDir := filepath.Join(dir, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	os.MkdirAll(tasksDir, 0755)
+
+	tests := []struct {
+		name          string
+		blockedPhase  string
+		resumeApproved bool
+		want           bool
+	}{
+		{
+			name:          "no blocked_phase → auto-unblock",
+			blockedPhase:  "",
+			resumeApproved: false,
+			want:           true,
+		},
+		{
+			name:          "blocked_phase set, not approved → stays blocked",
+			blockedPhase:  "refining",
+			resumeApproved: false,
+			want:           false,
+		},
+		{
+			name:          "blocked_phase set, approved → auto-unblock",
+			blockedPhase:  "planning",
+			resumeApproved: true,
+			want:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTask(tasksDir, "TASK-"+tt.name+".md", fmt.Sprintf(`
+id: "%s"
+title: "%s"
+project: my-project
+status: blocked
+assignee: deepseek
+blocked_by: []
+blocked_phase: "%s"
+resume_approved: %v
+`, tt.name, tt.name, tt.blockedPhase, tt.resumeApproved))
+			data, _ := os.ReadFile(path)
+			fm, _ := yamlfrontmatter.Parse(data)
+			if fm == nil {
+				t.Fatal("parse failed")
+			}
+			if got := IsAutoUnblockable(fm, dir); got != tt.want {
+				t.Errorf("IsAutoUnblockable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBlockedBy_CrossProjectFallback(t *testing.T) {
+	// Verify cross-project dependency resolves when directory name (002-b)
+	// differs from the frontmatter project field (b).
+	dir := t.TempDir()
+	aDir := filepath.Join(dir, "Projects", "002-a")
+	bDir := filepath.Join(dir, "Projects", "001-b")
+	aTasks := filepath.Join(aDir, "Tasks")
+	bTasks := filepath.Join(bDir, "Tasks")
+	os.MkdirAll(aTasks, 0755)
+	os.MkdirAll(bTasks, 0755)
+
+	// Dependency in project "b" (directory 001-b)
+	writeTask(bTasks, "TASK-010-done.md", `
+id: "010"
+title: "Dependency in b"
+project: b
+status: done
+assignee: deepseek
+`)
+
+	// Task in project "a" (directory 002-a) blocked by b:TASK-010
+	blockedPath := writeTask(aTasks, "TASK-020-blocked.md", `
+id: "020"
+title: "Cross project blocked"
+project: a
+status: blocked
+assignee: deepseek
+blocked_by:
+  - b:TASK-010
+`)
+
+	data, _ := os.ReadFile(blockedPath)
+	fm, _ := yamlfrontmatter.Parse(data)
+	if fm == nil {
+		t.Fatal("parse failed")
+	}
+
+	if !IsAutoUnblockable(fm, dir) {
+		t.Error("should be auto-unblockable; cross-project dependency b:TASK-010 is done")
+	}
+
+	tasks, err := FindReadyTasks(dir)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	found := false
+	for _, rt := range tasks {
+		if rt.ID == "020" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("cross-project blocked task with resolved dependency should appear in ready tasks")
 	}
 }

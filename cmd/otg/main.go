@@ -1,10 +1,18 @@
 package main
 
-import "github.com/ndzuki/obsidian-task-runner/internal/cli"
+import (
+	"fmt"
+	"os"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/cli"
+)
 
 // Version is set at build time via -ldflags "-X main.Version=...".
 var Version string
 
 func main() {
-	cli.Execute(Version)
+	if err := cli.Execute(Version); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
