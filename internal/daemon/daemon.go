@@ -382,8 +382,45 @@ func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[
 }
 
 // validatePhaseCompletion checks that the task file is structurally valid after
-// an OMP phase reports success. A corrupt file means the phase must be treated
-// as failed rather than completed.
+
+// validateChangedDocs scans git-tracked .md files modified in the working tree
+// since the last commit and validates them with ValidateDocument. Corrupted
+// documents (memory.md, CONTEXT.md, ADR files, etc.) are logged but do not
+// halt the pipeline.
+func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
+	files, err := gitDiffNameOnly(repoDir)
+	if err != nil {
+		r.logger.Printf("task %s: git diff scan failed: %v", taskID, err)
+		return
+	}
+	for _, f := range files {
+		if !strings.HasSuffix(f, ".md") {
+			continue
+		}
+		absPath := filepath.Join(repoDir, f)
+		if err := yamlfrontmatter.ValidateDocument(absPath); err != nil {
+			r.logger.Printf("task %s: %s damaged after %s: %v", taskID, f, phase, err)
+			notify.SendTaskAction(taskID, "", "📄", "文档损坏",
+				fmt.Sprintf("%s 在 %s 阶段后被修改但无法通过校验: %v", f, phase, err),
+				r.cfg.Notifications.Desktop)
+		}
+	}
+}
+
+// gitDiffNameOnly returns the list of files modified in the working tree
+// relative to HEAD. Uses `git diff --name-only` for speed.
+func gitDiffNameOnly(repoDir string) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoDir, "diff", "--name-only")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff: %w: %s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil, nil
+	}
+	return lines, nil
+}
 func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
 	if err := yamlfrontmatter.Validate(taskPath); err != nil {
 		return fmt.Errorf("task %s: frontmatter corrupt after %s: %w", taskID, phase, err)
@@ -690,6 +727,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						fellback = true
 					} else {
 						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
+						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
+							r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
+						}
+						r.validateChangedDocs(repoDir, t.ID, phase)
 						if _, statErr := os.Stat(taskPath); statErr == nil {
 							notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 						}
@@ -704,6 +745,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		} else {
 			r.logger.Printf("task %s: completed", t.ID)
+			if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
+				r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
+			}
+			r.validateChangedDocs(repoDir, t.ID, phase)
 			if _, statErr := os.Stat(taskPath); statErr == nil {
 				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}

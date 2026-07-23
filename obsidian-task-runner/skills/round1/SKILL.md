@@ -76,10 +76,10 @@ AND pending_req=false
 
 ```yaml
 status: plan-review
-plan_version: <old+1>
+plan_version: \<old+1\>
 pending_req: false
 merge_approved: false
-plan_approved: <autoApproveEligible>
+plan_approved: \<autoApproveEligible\>
 planning_retry_count: 0
 phase_error: ""
 phase_log: ""

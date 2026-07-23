@@ -150,20 +150,22 @@ func init() {
 	rootCmd.AddCommand(updateStatusCmd)
 	rootCmd.AddCommand(validateDocCmd)
 	rootCmd.AddCommand(repairDocCmd)
+	rootCmd.AddCommand(writeAdrCmd)
+	rootCmd.AddCommand(validateAdrCmd)
 }
 
 // ── validate-doc ─────────────────────────────────────────────────────────────
 
 var validateDocCmd = &cobra.Command{
-	Use:   "validate-doc <task_path>",
-	Short: "Validate frontmatter in a task document",
-	Long:  `Parses the YAML frontmatter and reports any formatting errors.`,
+	Use:   "validate-doc <path>",
+	Short: "Validate any document (TASK/REQ/ADR) frontmatter and body",
+	Long:  `Auto-detects document type and applies appropriate validation.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := yamlfrontmatter.ValidateTaskDocument(args[0]); err != nil {
+		if err := yamlfrontmatter.ValidateDocument(args[0]); err != nil {
 			return fmt.Errorf("%s: %w", args[0], err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: frontmatter OK\n", args[0])
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: document OK\n", args[0])
 		return nil
 	},
 }

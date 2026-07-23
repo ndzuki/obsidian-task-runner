@@ -320,11 +320,14 @@ updated: "%s"
 # %s — 共享语言
 
 > 最后更新: %s
+> 本文件由以下阶段自动维护：
+> - Round 1：计划中引入新领域术语时追加
+> - Round 2 + ADR：ADR 引入新架构概念时追加
+> 不要手动编辑，agent 会按需追加新条目。
 
 ## Language
 
-<!-- Grilling agent 通过 domain-modeling skill 即时追加新术语 -->
-`
+<!-- 领域词汇表。每个条目格式：**Term**: 一句话定义。_Avoid_: 废弃旧称。 -->`
 
 // EnsureContextMD creates a CONTEXT.md template if one does not exist in the
 // project's Notes directory. Returns the path if created, empty string if it
