@@ -41,9 +41,9 @@ description: "Headless requirement maturity gate for initial tasks and pending r
 原子更新 frontmatter：
 
 ```yaml
-maturity: <result>
-refine_version: <old+1>
-refine_req_hash: "sha256:<hash>"
+maturity: \<result\>
+refine_version: \<old+1\>
+refine_req_hash: "sha256:\<hash\>"
 refine_error: ""
 ```
 
@@ -52,7 +52,7 @@ refine_error: ""
 ```markdown
 ## 需求成熟度评估
 
-> 版本: <refine_version> | REQ hash: <hash> | 时间: <local ISO8601>
+> 版本: <refine_version> | REQ hash: \<hash\> | 时间: <local ISO8601>
 
 | 检查项 | 状态 | 证据 |
 |--------|------|------|
@@ -69,13 +69,13 @@ refine_error: ""
 ### fully_mature
 
 ```bash
-otg update-status <task> status=planning grill_done=false
+otg update-status \<task\> status=planning grill_done=false
 ```
 
 ### mostly_mature / immature
 
 ```bash
-otg update-status <task> status=needs-grilling grill_done=false
+otg update-status \<task\> status=needs-grilling grill_done=false
 ```
 
 把所有未通过项和建议追问维度写入 `grill_context`。**MUST use `otg update-status` to write grill_context — NEVER edit YAML frontmatter directly.** Daemon 下一轮自动创建 Kitty tab。

@@ -12,7 +12,7 @@ disableModelInvocation: true
 1. TASK `status: implementing`，`plan_approved=true`。
 2. `pending_req=false` 才能开始新的 AC。
 3. blocked_by 全部满足。
-4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/<id>-<slug>`。
+4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/\<id\>-\<slug\>`。
 5. 读取已批准计划和 checkpoint 复用策略。
 
 ## Tracer Bullet
@@ -41,8 +41,8 @@ chore(task): checkpoint before requirement replan
 3. 写入 commit SHA：
 
 ```bash
-otg update-status <task> \
-  checkpoint_commit=<sha> \
+otg update-status \<task\> \
+  checkpoint_commit=\<sha\> \
   status=refining \
   merge_approved=false
 ```
@@ -75,7 +75,7 @@ otg update-status <task> \
 
 ```yaml
 status: review
-target_branch: task/<id>-<slug>
+target_branch: task/\<id\>-\<slug\>
 req_refine_count: 0
 merge_approved: false
 ```

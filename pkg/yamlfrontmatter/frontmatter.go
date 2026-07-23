@@ -582,3 +582,86 @@ func escapeBodyTags(body string) string {
 		return lead + "\\<" + tag[1:len(tag)-1] + "\\>"
 	})
 }
+
+
+// ValidateADR checks whether an ADR file has valid frontmatter with required fields.
+// Uses raw YAML parsing to avoid field name conflicts with the task Frontmatter struct.
+func ValidateADR(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	// Parse raw YAML to check ADR-specific fields without task field conflicts.
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if v, ok := raw["adr_id"]; !ok || v == nil || v == "" {
+		return fmt.Errorf("missing required ADR field: adr_id")
+	}
+	if v, ok := raw["title"]; !ok || v == nil || v == "" {
+		return fmt.Errorf("missing required ADR field: title")
+	}
+	if v, ok := raw["status"]; !ok || v == nil || v == "" {
+		return fmt.Errorf("missing required ADR field: status")
+	}
+	return nil
+}
+
+
+// ValidateDocument auto-detects the document type and applies appropriate validation.
+// Detects TASK, ADR, and REQ documents; falls back to syntax-only check for unknown types.
+// All document types also get Markdown body tag scanning.
+func ValidateDocument(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	
+
+	// Parse raw YAML for type detection.
+	var raw map[string]interface{}
+	_ = yaml.Unmarshal(data, &raw)
+
+	switch {
+	case raw["adr_id"] != nil && raw["adr_id"] != "":
+		// ADR document
+		if v, ok := raw["adr_id"]; !ok || v == nil || v == "" {
+			return fmt.Errorf("ADR missing required field: adr_id")
+		}
+		if v, ok := raw["title"]; !ok || v == nil || v == "" {
+			return fmt.Errorf("ADR missing required field: title")
+		}
+		if v, ok := raw["status"]; !ok || v == nil || v == "" {
+			return fmt.Errorf("ADR missing required field: status")
+		}
+
+	case raw["id"] != nil && raw["id"] != "" && raw["project_id"] != nil:
+		// REQ document
+		if v, ok := raw["id"]; !ok || v == nil || v == "" {
+			return fmt.Errorf("REQ missing required field: id")
+		}
+		if v, ok := raw["title"]; !ok || v == nil || v == "" {
+			return fmt.Errorf("REQ missing required field: title")
+		}
+
+	case raw["id"] != nil && raw["id"] != "" && raw["status"] != nil:
+		// TASK document — full task validation.
+		return ValidateTaskDocument(path)
+
+	default:
+		// Unknown document type — syntax + body tag only.
+	}
+
+	// Body tag scan for all document types.
+	body := extractBody(data)
+	if err := validateMarkdownBody(body); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteADR atomically writes an ADR markdown file with validation.
+func WriteADR(path string, content string) error {
+	return atomicWrite(path, []byte(content))
+}

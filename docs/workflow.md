@@ -392,6 +392,32 @@ merge_approved: false
 
 实现中其他需要用户决策的阻塞可进入 `needs-grilling`。Grilling 完成后同样回 `refining` 复验。
 
+### 7.1 ADR 写入
+
+若 `adr_approved=true` 且 `adr_proposed` 非空，Round 2 在全部 AC 完成后写入 ADR：
+
+1. 幂等检查：`adr_written` 中已有的文件不重写。
+2. 逐个调用 `otg write-adr` 原子写入 `Notes/adr/ADR-<id>-<slug>.md`。
+3. 写入后 `otg validate-adr` 双重确认。
+4. 全部成功后一次 `otg update-status` 更新 `adr_written`、清 `adr_proposed` 和 `adr_approved`。
+
+### 7.2 CONTEXT.md 自动维护
+
+项目的 `Notes/CONTEXT.md` 是领域词汇表，由两个阶段自动追加：
+
+- **Round 1**：计划中引入新术语时追加（零额外读，已支付）
+- **Round 2 + ADR**：ADR 引入新架构概念时追加（仅写 ADR 时触发，罕见）
+
+appended-only，不覆盖已有条目。
+
+### 7.3 阶段后文档完整性扫描
+
+daemon 在 OMP 成功后调用 `validateChangedDocs`：
+
+1. `git diff --name-only` 获取工作区变更文件列表。
+2. 对每个 `.md` 文件调用 `ValidateDocument`（自动识别 TASK/REQ/ADR 类型）。
+3. 损坏文件的路径和错误写入日志 + 桌面通知，不阻塞流水线。
+
 ## 8. Review、Conflict 与 Merge
 
 ### 8.1 pending_req 绝对门禁

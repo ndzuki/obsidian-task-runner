@@ -37,7 +37,7 @@ review -- merge conflict --> conflict -- approved retry --> done
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；其他状态的 true 自动清 false |
 | `merge_approved` | 审阅实现后设 true | `pending_req=true` 时绝对无效 |
-| `adr_approved` | 授权写入 ADR | 一次性授权当前 `adr_proposed` |
+| `adr_approved` | 授权写入 ADR | 一次性授权当前 `adr_proposed`；Round 2 写完后清 false |
 | `resume_approved` | 阶段失败修复后设 true | daemon 按 `blocked_phase` 恢复，随后清 false |
 
 ## 4. Frontmatter Schema
@@ -120,6 +120,35 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `pr_url` | string | `""` | PR URL |
 
 `pending_req` 仅在新 planning 成功后清 false。
+
+### 4.7 ADR（架构决策记录）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `adr_proposed` | list | `[]` | Round 1 提议的 ADR 标题列表 |
+| `adr_written` | list | `[]` | 已写入 `Notes/adr/` 的 ADR 文件名列表 |
+
+ADR 流程：Round 1 计划中遇到架构变更时在 `adr_proposed` 里提议 → 人工设 `adr_approved=true` → Round 2 在全部 AC 完成后调用 `otg write-adr` 原子写入 → 更新 `adr_written` 并清 `adr_approved`。
+
+### 4.8 文档校验
+
+| 命令 | 覆盖 |
+|------|------|
+| `otg validate-doc` | 自动识别 TASK/REQ/ADR，校验 frontmatter 必填字段 + body `<tag>` 扫描 |
+| `otg repair-doc` | 修复 frontmatter + 自动转义 body `<tag>` → `\<tag\>` |
+| `otg write-adr` | 原子写 ADR + fsync + validate |
+| `otg validate-adr` | ADR frontmatter 结构校验 |
+
+Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md` 变更，调用 `ValidateDocument` 兜底检测 memory.md、CONTEXT.md 等非 TASK 文件的损坏。
+
+### 4.9 CONTEXT.md 自动维护
+
+项目的 `Notes/CONTEXT.md` 是共享领域词汇表，由两个阶段自动维护：
+
+- **Round 1**：计划中引入新领域术语时追加到 `## Language` 区域
+- **Round 2 + ADR**：ADR 引入新架构概念时追加到 `## Language` 区域
+
+append-only，不覆盖已有条目。`pipeline.EnsureContextMD` 在项目初始化时创建骨架模板。
 
 ## 5. 需求变更行为
 
