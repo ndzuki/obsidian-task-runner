@@ -440,15 +440,34 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		taskPath := t.FilePath
 
 		if t.Status == "blocked" {
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}}); err != nil {
-				r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
-				continue
+			// Check if this is a phase-failure blocked task waiting for resume.
+			if data, err := os.ReadFile(taskPath); err == nil {
+				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
+					if fm.BlockedPhase != "" && fm.ResumeApproved {
+						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
+						yamlfrontmatter.Update(taskPath, map[string]interface{}{
+							"status":          fm.BlockedPhase,
+							"blocked_phase":   "",
+							"phase_error":     "",
+							"phase_log":       "",
+							"resume_approved": false,
+						})
+						t.Status = fm.BlockedPhase
+						// Fall through to normal dispatch below.
+					} else {
+						// Normal auto-unblock: blocked→ready
+						if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}}); err != nil {
+							r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
+							continue
+						}
+						t.Status = "ready"
+						t.PendingReq = false
+						notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
+						processed++
+						continue // let next scan round pick up the ready task for refining
+					}
+				}
 			}
-			t.Status = "ready"
-			t.PendingReq = false
-			notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
-			processed++
-			continue // let next scan round pick up the ready task for grilling
 		}
 
 
@@ -577,6 +596,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 
 			// Try fallback model if primary model failed (e.g., GPT → DeepSeek)
+			fellback := false
 			if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
 				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
@@ -597,37 +617,45 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				}
 				fbTailDone := make(chan struct{})
 				go tailOMPLog(ompLogPath, f, fbTailDone)
-				// Start fallback OMP and write PID file
 				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
 					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
 					fbCancel()
 					close(fbTailDone)
-					continue
-				}
-				_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0644)
-				retryErr := retryCmd.Wait()
-				fbCancel()
-				close(fbTailDone)
-				if retryErr != nil {
-					fbReason := "异常退出"
-					if errors.Is(retryErr, context.DeadlineExceeded) {
-						fbReason = "超时"
-					}
-					r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
-					notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
-						fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
+					fellback = true
 				} else {
-					r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
-					if _, statErr := os.Stat(taskPath); statErr == nil {
-						notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+					_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0644)
+					retryErr := retryCmd.Wait()
+					fbCancel()
+					close(fbTailDone)
+					if retryErr != nil {
+						fbReason := "异常退出"
+						if errors.Is(retryErr, context.DeadlineExceeded) {
+							fbReason = "超时"
+						}
+						r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
+						notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
+							fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
+						fellback = true
+					} else {
+						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
+						if _, statErr := os.Stat(taskPath); statErr == nil {
+							notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+						}
+						r.clearPhaseRetry(taskPath, phase)
 					}
 				}
+			}
+			// Phase retry/blocked: only if fallback also failed, or no fallback was attempted
+			noFallback := r.cfg.FallbackModel(t.Assignee) == "" || r.cfg.FallbackModel(t.Assignee) == model
+			if fellback || noFallback {
+				r.handlePhaseFailure(taskPath, t.ID, t.Title, phase, reason, logPath)
 			}
 		} else {
 			r.logger.Printf("task %s: completed", t.ID)
 			if _, statErr := os.Stat(taskPath); statErr == nil {
 				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}
+			r.clearPhaseRetry(taskPath, phase)
 		}
 		if f != nil {
 			f.Close()
@@ -635,6 +663,64 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		processed++
 	}
 	return processed
+}
+
+// handlePhaseFailure tracks retry counts for refining/planning phases and
+// transitions the task to blocked after the second consecutive failure.
+func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase, reason, logPath string) {
+	var retryField string
+	switch phase {
+	case "refining":
+		retryField = "refine_retry_count"
+	case "planning":
+		retryField = "planning_retry_count"
+	default:
+		return
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		r.logger.Printf("task %s: cannot read retry count (%v), assuming first failure", taskID, err)
+	}
+	currentRetry := 0
+	if err == nil {
+		fm, parseErr := yamlfrontmatter.Parse(data)
+		if parseErr != nil || fm == nil {
+			r.logger.Printf("task %s: cannot parse retry count (%v), assuming first failure", taskID, parseErr)
+		} else {
+			currentRetry = fm.RefineRetryCount
+			if phase == "planning" {
+				currentRetry = fm.PlanningRetryCount
+			}
+		}
+	}
+
+
+	if currentRetry == 0 {
+		yamlfrontmatter.Update(taskPath, map[string]interface{}{retryField: 1})
+		r.logger.Printf("task %s: %s auto-retry (1/2)", taskID, phase)
+	} else {
+		yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":        "blocked",
+			"blocked_phase": phase,
+			"phase_error":   reason,
+			"phase_log":     logPath,
+			retryField:      0,
+		})
+		notify.SendTaskAction(taskID, taskTitle, "🚫", "阶段失败",
+			fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase),
+			r.cfg.Notifications.Desktop)
+		r.logger.Printf("task %s: %s failed twice → blocked", taskID, phase)
+	}
+}
+
+// clearPhaseRetry resets the retry count after a successful phase execution.
+func (r *Runner) clearPhaseRetry(taskPath, phase string) {
+	switch phase {
+	case "refining":
+		yamlfrontmatter.Update(taskPath, map[string]interface{}{"refine_retry_count": 0})
+	case "planning":
+		yamlfrontmatter.Update(taskPath, map[string]interface{}{"planning_retry_count": 0})
+	}
 }
 
 func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {

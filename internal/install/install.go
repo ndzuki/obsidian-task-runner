@@ -73,6 +73,15 @@ func Run(opts Options) error {
 	if err := installPhaseSkills(opts); err != nil && !d {
 		return fmt.Errorf("phase skills: %w", err)
 	}
+	// 5e. Validate required external skills
+	if !d {
+		if missing, err := validateRequiredSkills(); err != nil {
+			return fmt.Errorf("cannot check required skills: %w", err)
+		} else if len(missing) > 0 {
+			return fmt.Errorf("missing required external skills: %s\n\nInstall them with:\n  skill-doctor install %s",
+				strings.Join(missing, ", "), strings.Join(missing, " "))
+		}
+	}
 	// 6. Configure shell environment
 	if err := configureShell(opts); err != nil && !d {
 		return fmt.Errorf("shell config: %w", err)
@@ -487,6 +496,42 @@ func copyDir(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+
+// validateRequiredSkills checks that the five mandatory external skills exist
+// on disk. Returns the list of missing skill names.
+func validateRequiredSkills() ([]string, error) {
+	required := []string{
+		"requirement-elaborator",
+		"grilling",
+		"domain-modeling",
+		"diagnosing-bugs",
+		"test-quality",
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home: %w", err)
+	}
+	searchDirs := []string{
+		filepath.Join(home, ".omp", "skills"),
+		filepath.Join(home, ".omp", "agent", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+	}
+	var missing []string
+	for _, name := range required {
+		found := false
+		for _, dir := range searchDirs {
+			if _, err := os.Stat(filepath.Join(dir, name, "SKILL.md")); err == nil {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, name)
+		}
+	}
+	return missing, nil
 }
 
 // stopDaemon gracefully stops any running otg daemon processes.

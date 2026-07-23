@@ -123,6 +123,15 @@ func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
 	if err != nil {
 		return
 	}
+	// Precompute whether any remaining key matches this directory's name directly.
+	dirMatches := false
+	for key := range remaining {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 && parts[0] == projName {
+			dirMatches = true
+			break
+		}
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
@@ -130,24 +139,44 @@ func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
 		name := entry.Name()
 		for key := range remaining {
 			parts := strings.SplitN(key, ":", 2)
-			if len(parts) != 2 || parts[0] != projName {
+			if len(parts) != 2 {
 				continue
 			}
 			numID := parts[1]
 			if !strings.HasPrefix(name, "TASK-"+numID+"-") {
 				continue
 			}
-			filePath := filepath.Join(tasksDir, name)
-			data, err := readFileWithRetry(filePath)
-			if err != nil {
-				continue
+			// Direct match: directory name equals project key.
+			if parts[0] == projName {
+				filePath := filepath.Join(tasksDir, name)
+				data, err := readFileWithRetry(filePath)
+				if err != nil {
+					continue
+				}
+				fm, err := yamlfrontmatter.Parse(data)
+				if err != nil || fm == nil {
+					continue
+				}
+				if fm.Status == "done" {
+					delete(remaining, key)
+				}
+				break
 			}
-			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil {
-				continue
-			}
-			if fm.Status == "done" {
-				delete(remaining, key)
+			// Cross-project fallback: read the task's project field to match.
+			if !dirMatches {
+				filePath := filepath.Join(tasksDir, name)
+				data, err := readFileWithRetry(filePath)
+				if err != nil {
+					continue
+				}
+				fm, err := yamlfrontmatter.Parse(data)
+				if err != nil || fm == nil {
+					continue
+				}
+				if fm.Project == parts[0] && fm.Status == "done" {
+					delete(remaining, key)
+					break
+				}
 			}
 			break
 		}
@@ -170,6 +199,9 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		if !AreBlockersDone(vaultPath, fm.Project, fm.BlockedBy) {
 			return false
 		}
+	}
+	if fm.BlockedPhase != "" && !fm.ResumeApproved {
+		return false
 	}
 	return true
 }
@@ -207,10 +239,7 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	case "done":
 		return fm.PendingReq // re-plan via refining
 	}
-	if fm.PendingReq {
-		return true
-	}
-	return false
+	return fm.PendingReq
 }
 
 // IsOffPeak returns true during Beijing off-peak hours (cheaper DeepSeek pricing).

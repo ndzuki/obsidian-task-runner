@@ -159,11 +159,9 @@ func SendTaskAction(taskID, taskTitle, emoji, title, description string, notifyE
 }
 
 // SendGrillingNotification notifies the user that a task needs interactive
-// grilling. Tries Kitty tab first; falls back to desktop notification.
+// grilling. Tries Kitty tab first (always); falls back to desktop notification
+// only if Kitty is unavailable and desktop notifications are enabled.
 func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string, notifyEnabled bool) {
-	if !notifyEnabled {
-		return
-	}
 	title := fmt.Sprintf("🟡 T%s 需要需求对齐", taskID)
 	if taskTitle != "" {
 		title = fmt.Sprintf("🟡 T%s %s 需要需求对齐", taskID, taskTitle)
@@ -178,12 +176,12 @@ func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string, notif
 }
 
 // SendGrillingReminder re-notifies the user that a task is still waiting for grilling.
-// Also tries to open a Kitty tab (debounced) in case the user missed the first one.
+// Kitty always attempted; desktop only if enabled.
 func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string, notifyEnabled bool) {
-	if !notifyEnabled {
+	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
 		return
 	}
-	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
+	if !notifyEnabled {
 		return
 	}
 	title := fmt.Sprintf("⏳ T%s 仍在等待需求对齐", taskID)
