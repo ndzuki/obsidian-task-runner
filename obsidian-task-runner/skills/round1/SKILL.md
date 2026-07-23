@@ -85,7 +85,11 @@ phase_error: ""
 phase_log: ""
 blocked_phase: ""
 resume_approved: false
-```
+
+## Step 7: Frontmatter Safety
+
+- **NEVER edit YAML frontmatter directly.** Use `otg update-status` for every field update.
+- After writing the task, run `otg validate-doc <task_path>` to verify structural integrity.
 
 新项目和所有 replan 必须 `plan_approved=false`。
 
@@ -101,3 +105,5 @@ resume_approved: false
 ```
 
 人工 resume 后 planning_retry_count 清零。
+
+- **NEVER edit YAML frontmatter directly.** All frontmatter mutations MUST use `otg update-status`. Run `otg validate-doc <task_path>` before exiting.

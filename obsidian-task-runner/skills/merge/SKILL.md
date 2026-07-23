@@ -54,3 +54,8 @@ merge_approved: false
 记录冲突文件、PR URL、分支和解决指引。
 
 如果 conflict 期间 REQ 发生变更：取消旧 Merge 流程，保留冲突审计记录和分支，直接转 refining，不继续解决旧需求版本的冲突。
+
+## Frontmatter Safety
+
+- **NEVER edit YAML frontmatter directly.** Use `otg update-status` for status, merge_approved, and PR URL.
+- Run `otg validate-doc <task_path>` after writing to verify structural integrity before exiting.

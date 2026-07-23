@@ -215,7 +215,8 @@ func Update(path string, updates map[string]interface{}) error {
 	enc.Close()
 	newFM := strings.TrimSuffix(buf.String(), "\n")
 
-	newContent := "---\n" + newFM + "\n---" + body
+	repairedBody := escapeBodyTags(body)
+	newContent := "---\n" + newFM + "\n---" + repairedBody
 
 	// Validate the generated content BEFORE writing — a corrupt frontmatter
 	// (e.g. invalid multi-line edit) must be surfaced, not silently persisted.
@@ -305,11 +306,22 @@ func Repair(path string) error {
 
 	// If already valid, nothing to do. Parse returns nil, nil for files
 	// without frontmatter — we cannot repair those.
+	// If already valid, apply body tag escaping if needed, then return.
 	if fm, err := Parse(data); err == nil {
 		if fm == nil {
 			return fmt.Errorf("no frontmatter to repair")
 		}
-		return nil
+		body := extractBody(data)
+		repairedBody := escapeBodyTags(body)
+		if repairedBody == body {
+			return nil
+		}
+		// Rebuild with escaped body.
+		newContent := string(data[:len(data)-len(body)]) + repairedBody
+		if _, err := Parse([]byte(newContent)); err != nil {
+			return fmt.Errorf("repair produced invalid frontmatter: %w", err)
+		}
+		return atomicWrite(path, []byte(newContent))
 	}
 
 	content := string(data)
@@ -381,7 +393,8 @@ func Repair(path string) error {
 	for strings.HasSuffix(newFM, "\n") {
 		newFM = newFM[:len(newFM)-1]
 	}
-	newContent := "---\n" + newFM + "\n---" + body
+	repairedBody := escapeBodyTags(body)
+	newContent := "---\n" + newFM + "\n---" + repairedBody
 
 	// Validate the repaired content before writing.
 	if _, err := Parse([]byte(newContent)); err != nil {
@@ -486,4 +499,86 @@ func indentLines(s string) string {
 		lines[i] = "  " + line
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ParseTaskDocument reads and validates a complete task document.
+func ParseTaskDocument(path string) (*Frontmatter, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	fm, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if fm == nil {
+		return nil, fmt.Errorf("no frontmatter")
+	}
+	if fm.ID == "" {
+		return nil, fmt.Errorf("missing required field: id")
+	}
+	if fm.Status == "" {
+		return nil, fmt.Errorf("missing required field: status")
+	}
+	if fm.Project == "" {
+		return nil, fmt.Errorf("missing required field: project")
+	}
+	if fm.ReqDoc == "" {
+		return nil, fmt.Errorf("missing required field: req_doc")
+	}
+	// Extract body for markdown validation.
+	body := extractBody(data)
+	if err := validateMarkdownBody(body); err != nil {
+		return nil, err
+	}
+	return fm, nil
+}
+
+// extractBody returns the markdown body portion after the closing frontmatter delimiter.
+func extractBody(data []byte) string {
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return ""
+	}
+	rest := content[3:]
+	idx := strings.Index(rest, "\n---")
+	if idx == -1 {
+		return ""
+	}
+	bodyStart := idx + 5 // skip "\n---\n"
+	if bodyStart >= len(rest) {
+		return ""
+	}
+	return rest[bodyStart:]
+}
+
+// ValidateTaskDocument checks parseability AND that required task fields are present.
+func ValidateTaskDocument(path string) error {
+	_, err := ParseTaskDocument(path)
+	return err
+}
+
+// unescapedTagRE matches an angle-bracket HTML tag that is NOT backslash-escaped.
+var unescapedTagRE = regexp.MustCompile(`(^|[^\\])<[a-zA-Z][a-zA-Z0-9-]*>`)
+
+// validateMarkdownBody checks the markdown body for known rendering pitfalls.
+func validateMarkdownBody(body string) error {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if m := unescapedTagRE.FindStringIndex(line); m != nil {
+			return fmt.Errorf("body line %d: unescaped HTML tag %q — use \\<...\\> to render as literal text", i+1, line[m[0]:m[1]])
+		}
+	}
+	return nil
+}
+
+// escapeBodyTags escapes unescaped angle-bracket HTML-like tags in Markdown body
+// text so that Obsidian renders them as literal text instead of treating them
+// as HTML elements.
+func escapeBodyTags(body string) string {
+	return unescapedTagRE.ReplaceAllStringFunc(body, func(match string) string {
+		lead := match[:1]
+		tag := match[1:]
+		return lead + "\\<" + tag[1:len(tag)-1] + "\\>"
+	})
 }

@@ -271,12 +271,16 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		}
 		if t.Status == "needs-grilling" {
 			if t.PendingReq {
-				yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+				if err := r.updateTask(t, map[string]interface{}{"status": "refining", "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
+					continue
+				}
 				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "重新进入 maturity gate", r.cfg.Notifications.Desktop)
 				continue
 			}
 			if t.GrillPrevStatus == "implementing" && t.PlanVersion == 0 {
-				yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "plan-review", "grill_done": true, "grill_context": "", "grill_prev_status": ""})
+				if err := r.updateTask(t, map[string]interface{}{"status": "plan-review", "grill_done": true, "grill_context": "", "grill_prev_status": ""}); err != nil {
+					continue
+				}
 				notify.SendTaskAction(t.ID, t.Title, "🔧", "实现受阻（无计划）", "已返回 plan-review", r.cfg.Notifications.Desktop)
 				continue
 			}
@@ -287,10 +291,14 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 					if prev == "" {
 						prev = "implementing"
 					}
-					yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": prev, "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+					if err := r.updateTask(t, map[string]interface{}{"status": prev, "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
+						continue
+					}
 					notify.SendTaskAction(t.ID, t.Title, "✅", "阻塞已解决", "恢复实现", r.cfg.Notifications.Desktop)
 				case "replan":
-					yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "grill_done": false, "pending_req": true, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""})
+					if err := r.updateTask(t, map[string]interface{}{"status": "refining", "grill_done": false, "pending_req": true, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
+						continue
+					}
 					notify.SendTaskAction(t.ID, t.Title, "✅", "需求/计划已更新", "进入 maturity gate", r.cfg.Notifications.Desktop)
 				default:
 					r.logger.Printf("task %s: grill_done but no resolution — waiting", t.ID)
@@ -306,15 +314,19 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		// ── review/conflict/done + pending_req → force refining ──
 		if (t.Status == "review" || t.Status == "conflict" || t.Status == "done") && t.PendingReq {
 			r.logger.Printf("task %s: %s + pending_req → refining", t.ID, t.Status)
-			yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"status": "refining", "merge_approved": false})
+			if err := r.updateTask(t, map[string]interface{}{"status": "refining", "merge_approved": false}); err != nil {
+				continue
+			}
 			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更", "已取消 Merge 授权并返回 maturity gate", r.cfg.Notifications.Desktop)
 			continue
 		}
 		// ── premature plan_approved reset ──
 		if t.PlanApproved && t.Status != "plan-review" && t.Status != "implementing" {
 			r.logger.Printf("task %s: plan_approved=true but status=%s → resetting", t.ID, t.Status)
-			yamlfrontmatter.Update(t.FilePath, map[string]interface{}{"plan_approved": false})
-		}
+			if err := r.updateTask(t, map[string]interface{}{"plan_approved": false}); err != nil {
+				continue
+			}
+			}
 
 		repoDir, err := r.resolveRepo(t)
 		if err != nil {
@@ -350,9 +362,33 @@ func (r *Runner) processPreparedTask(prepared preparedTask) int {
 		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", prepared.task.ID)
 		return 0
 	}
+
 	defer r.taskRuns.Delete(taskKey)
 
 	return r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
+}
+
+func (r *Runner) updateTask(t task.ReadyTask, updates map[string]interface{}) error {
+	return r.updateTaskFile(t.FilePath, t.ID, t.Title, updates)
+}
+
+func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[string]interface{}) error {
+	if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+		r.logger.Printf("task %s: frontmatter update failed: %v", taskID, err)
+		notify.SendTaskAction(taskID, taskTitle, "🚫", "任务文档写入失败", err.Error(), r.cfg.Notifications.Desktop)
+		return err
+	}
+	return nil
+}
+
+// validatePhaseCompletion checks that the task file is structurally valid after
+// an OMP phase reports success. A corrupt file means the phase must be treated
+// as failed rather than completed.
+func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
+	if err := yamlfrontmatter.Validate(taskPath); err != nil {
+		return fmt.Errorf("task %s: frontmatter corrupt after %s: %w", taskID, phase, err)
+	}
+	return nil
 }
 
 func taskRunKey(taskPath string) string {
@@ -449,13 +485,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
 					if fm.BlockedPhase != "" && fm.ResumeApproved {
 						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
-						yamlfrontmatter.Update(taskPath, map[string]interface{}{
+						if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
 							"status":          fm.BlockedPhase,
 							"blocked_phase":   "",
 							"phase_error":     "",
 							"phase_log":       "",
 							"resume_approved": false,
-						})
+						}); err != nil {
+							continue
+						}
 						t.Status = fm.BlockedPhase
 						// Fall through to normal dispatch below.
 					} else {
@@ -498,7 +536,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			phase = "round2"
 			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
 			if t.Status == "plan-review" {
-				yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "implementing"})
+				if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{"status": "implementing"}); err != nil {
+					continue
+				}
 				t.Status = "implementing"
 			}
 			notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
@@ -707,30 +747,36 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase, reason, 
 	}
 
 	if currentRetry == 0 {
-		yamlfrontmatter.Update(taskPath, map[string]interface{}{retryField: 1})
+		if err := r.updateTaskFile(taskPath, taskID, taskTitle, map[string]interface{}{retryField: 1}); err != nil {
+			return
+		}
 		r.logger.Printf("task %s: %s auto-retry (1/2)", taskID, phase)
 	} else {
-		yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		if err := r.updateTaskFile(taskPath, taskID, taskTitle, map[string]interface{}{
 			"status":        "blocked",
 			"blocked_phase": phase,
 			"phase_error":   reason,
 			"phase_log":     logPath,
 			retryField:      0,
-		})
+		}); err != nil {
+			return
+		}
 		notify.SendTaskAction(taskID, taskTitle, "🚫", "阶段失败",
 			fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase),
 			r.cfg.Notifications.Desktop)
 		r.logger.Printf("task %s: %s failed twice → blocked", taskID, phase)
 	}
 }
-
-// clearPhaseRetry resets the retry count after a successful phase execution.
 func (r *Runner) clearPhaseRetry(taskPath, phase string) {
 	switch phase {
 	case "refining":
-		yamlfrontmatter.Update(taskPath, map[string]interface{}{"refine_retry_count": 0})
+		if err := r.updateTaskFile(taskPath, "", "", map[string]interface{}{"refine_retry_count": 0}); err != nil {
+			r.logger.Printf("task %s: clear retry count failed: %v", taskPath, err)
+		}
 	case "planning":
-		yamlfrontmatter.Update(taskPath, map[string]interface{}{"planning_retry_count": 0})
+		if err := r.updateTaskFile(taskPath, "", "", map[string]interface{}{"planning_retry_count": 0}); err != nil {
+			r.logger.Printf("task %s: clear retry count failed: %v", taskPath, err)
+		}
 	}
 }
 

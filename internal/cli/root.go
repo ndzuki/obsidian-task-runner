@@ -160,7 +160,7 @@ var validateDocCmd = &cobra.Command{
 	Long:  `Parses the YAML frontmatter and reports any formatting errors.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := yamlfrontmatter.Validate(args[0]); err != nil {
+		if err := yamlfrontmatter.ValidateTaskDocument(args[0]); err != nil {
 			return fmt.Errorf("%s: %w", args[0], err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s: frontmatter OK\n", args[0])

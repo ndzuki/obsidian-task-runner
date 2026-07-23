@@ -5,10 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
-
 func TestParse(t *testing.T) {
 	t.Run("valid frontmatter", func(t *testing.T) {
 		content := []byte(`---
@@ -329,18 +326,38 @@ func TestUpdateDeclinesCorruptedFile(t *testing.T) {
 	}
 }
 
-func TestFormatFieldMultiLine(t *testing.T) {
-	result := formatField("grill_context", "line one\nline two\nline three")
-	if !contains(result, "grill_context: |") {
-		t.Errorf("expected literal block scalar, got: %s", result)
+func TestValidateTaskDocumentUnescapedTag(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("rejects unescaped <id> in body", func(t *testing.T) {
+		path := filepath.Join(dir, "unescaped.md")
+		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: <id> in body.\n"), 0644)
+		if err := ValidateTaskDocument(path); err == nil {
+			t.Error("expected error for unescaped <id> in body")
+		}
+	})
+
+	t.Run("accepts escaped \\<id\\> in body", func(t *testing.T) {
+		path := filepath.Join(dir, "escaped.md")
+		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: \\<id\\> escaped.\n"), 0644)
+		if err := ValidateTaskDocument(path); err != nil {
+			t.Errorf("unexpected error for escaped \\<id\\>: %v", err)
+		}
+	})
+}
+
+func TestEscapeBodyTags(t *testing.T) {
+	result := escapeBodyTags("use <id> and <slug> here")
+	if !strings.Contains(result, "\\<id\\>") {
+		t.Errorf("expected escaped \\<id\\>, got %q", result)
 	}
-	if !contains(result, "  line one") {
-		t.Errorf("expected indented lines, got: %s", result)
+	if !strings.Contains(result, "\\<slug\\>") {
+		t.Errorf("expected escaped \\<slug\\>, got %q", result)
 	}
-	// The output must be valid YAML
-	var node yaml.Node
-	if err := yaml.Unmarshal([]byte(result), &node); err != nil {
-		t.Fatalf("formatField multi-line output is not valid YAML: %v\n%s", err, result)
+	// Already escaped should be unchanged
+	rawEscaped := string([]byte{'u', 's', 'e', ' ', '\\', '<', 'i', 'd', '\\', '>', ' ', 'h', 'e', 'r', 'e'})
+	if escapeBodyTags(rawEscaped) != rawEscaped {
+		t.Error("already-escaped tag should be unchanged")
 	}
 }
 
@@ -350,21 +367,6 @@ func TestUpdatePreservesFileOnInvalid(t *testing.T) {
 	original := "---\nid: \"001\"\nstatus: ready\n---\n# Body\n"
 	os.WriteFile(path, []byte(original), 0644)
 
-	// grill_context with unquoted colon — the yaml.Encoder will produce
-	// valid YAML, but a bare colon in a value can trip up some parsers.
-	// Use a value that Encode produces but Parse rejects to verify the guard.
-	// Instead, write a file that the encoder would corrupt and verify the guard.
-
-	// Write a file with block scalar, then try to update with a value that
-	// would break — but the encoder won't produce invalid YAML for simple updates.
-	// The real guard is: if Parse ever fails after Encode, we don't write.
-	// We test this by using a file that is already valid, then verifying that
-	// a valid update succeeds and the file content changes.
-
-	// More direct test: write and corrupt the file manually between validate and write.
-	// Since the guard runs synchronously, this isn't racy.
-
-	// Test that a valid update succeeds.
 	err := Update(path, map[string]interface{}{"status": "refining"})
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)

@@ -383,49 +383,23 @@ func DebugReadyTasks(vaultPath string, logger *log.Logger) {
 func readFileWithRetry(path string) ([]byte, error) {
 	const maxRetries = 5
 	const retryDelay = 200 * time.Millisecond
-	for i := 0; i < maxRetries; i++ {
+	var lastErr error
+	for i := range maxRetries {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		// Verify it looks like a valid frontmatter file (starts with ---)
-		if len(data) >= 3 && string(data[:3]) == "---" {
-			// Verify frontmatter closes
-			rest := data[3:]
-			endIdx := frontmatterIsClosed(rest)
-			if endIdx {
-				return data, nil
-			}
+		if _, parseErr := yamlfrontmatter.Parse(data); parseErr == nil {
+			return data, nil
+		} else {
+			lastErr = parseErr
 		}
 		if i < maxRetries-1 {
 			time.Sleep(retryDelay)
 		}
 	}
-	// Last attempt: return raw data even if incomplete
+	if lastErr != nil {
+		return nil, lastErr
+	}
 	return os.ReadFile(path)
-}
-
-func frontmatterIsClosed(data []byte) bool {
-	lines := splitLines(data)
-	for _, line := range lines {
-		if string(line) == "---" {
-			return true
-		}
-	}
-	return false
-}
-
-func splitLines(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			lines = append(lines, data[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
 }
