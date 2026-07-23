@@ -53,123 +53,131 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 	var affected []AffectedResult
 	projEntries, _ := os.ReadDir(projectsDir)
 	for _, proj := range projEntries {
-		if !proj.IsDir() { continue }
+		if !proj.IsDir() {
+			continue
+		}
 		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
 		entries, err := os.ReadDir(tasksDir)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") { continue }
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
 			taskPath := filepath.Join(tasksDir, entry.Name())
 			data, err := os.ReadFile(taskPath)
-			if err != nil { continue }
-		fm, err := yamlfrontmatter.Parse(data)
-		if err != nil || fm == nil {
-			continue
-		}
-		if fm.ReqDoc == "" {
-			continue
-		}
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			if fm.ReqDoc == "" {
+				continue
+			}
 
-		// Normalize paths for comparison
-		taskReq := normalizePath(fm.ReqDoc)
-		reqPath := normalizePath(reqRelPath)
-		if !pathsMatch(taskReq, reqPath) {
-			continue
-		}
+			// Normalize paths for comparison
+			taskReq := normalizePath(fm.ReqDoc)
+			reqPath := normalizePath(reqRelPath)
+			if !pathsMatch(taskReq, reqPath) {
+				continue
+			}
 
-		switch fm.Status {
-		case "blocked":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req": true,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error updating blocked task %s: %v\n", taskPath, err)
-				continue
+			switch fm.Status {
+			case "blocked":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"pending_req": true,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error updating blocked task %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "ready":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"pending_req": true,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error updating ready task %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "refining", "planning":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"pending_req": true,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "needs-grilling":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"pending_req": true,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "plan-review":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"status":            "refining",
+					"pending_req":       true,
+					"plan_approved":     false,
+					"grill_done":        false,
+					"grill_context":     "",
+					"grill_prev_status": "",
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error resetting plan-review task %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "reset_to_ready", OldStatus: fm.Status,
+				})
+			case "implementing":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"pending_req":    true,
+					"merge_approved": false,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "review", "conflict", "done":
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+					"status":         "refining",
+					"pending_req":    true,
+					"merge_approved": false,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			default:
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "warn_only", OldStatus: fm.Status,
+				})
 			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		case "ready":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req": true,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error updating ready task %s: %v\n", taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		case "refining", "planning":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req": true,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		case "needs-grilling":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req": true,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		case "plan-review":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":            "refining",
-				"pending_req":       true,
-				"plan_approved":     false,
-				"grill_done":        false,
-				"grill_context":     "",
-				"grill_prev_status": "",
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error resetting plan-review task %s: %v\n", taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "reset_to_ready", OldStatus: fm.Status,
-			})
-		case "implementing":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"pending_req":    true,
-				"merge_approved": false,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		case "review", "conflict", "done":
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"status":         "refining",
-				"pending_req":    true,
-				"merge_approved": false,
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
-				continue
-			}
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "pending_req", OldStatus: fm.Status,
-			})
-		default:
-			affected = append(affected, AffectedResult{
-				TaskID: fm.ID, File: entry.Name(),
-				Action: "warn_only", OldStatus: fm.Status,
-			})
 		}
-	}
 	}
 
 	// Fallback: auto-create task if no existing task matched
@@ -464,7 +472,6 @@ func extractSection(content string, headings ...string) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
 
 // PrintAffected outputs affected results as JSON.
 func PrintAffected(results []AffectedResult) {

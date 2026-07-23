@@ -33,10 +33,10 @@ func RunPrototypes(ctx context.Context, plan *Plan) ([]PrototypeSpec, error) {
 // RiskForStep determines the risk level for a plan step using the two-factor
 // model: uncertainty × impact.
 //
-//   high   — high uncertainty (undocumented API, new framework, cross-system
-//            interaction) OR large impact (core data model change, breaking API)
-//   medium — some uncertainty but locally verifiable, or medium impact
-//   low    — high certainty (existing pattern, CRUD extension, docs), small impact
+//	high   — high uncertainty (undocumented API, new framework, cross-system
+//	         interaction) OR large impact (core data model change, breaking API)
+//	medium — some uncertainty but locally verifiable, or medium impact
+//	low    — high certainty (existing pattern, CRUD extension, docs), small impact
 func RiskForStep(description string, files []string) string {
 	// Simplified heuristic for smoke test.
 	highRiskTerms := []string{"fsnotify", "进程管理", "mock fixture", "kill", "跨系统", "破坏性"}

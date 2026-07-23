@@ -54,7 +54,7 @@ func TestRegisterProject(t *testing.T) {
 	mapFile := filepath.Join(dir, "vault-map.json")
 
 	config := map[string]interface{}{
-		"projects": []map[string]interface{}{},
+		"projects":         []map[string]interface{}{},
 		"new_project_root": dir,
 	}
 	data, _ := json.MarshalIndent(config, "", "  ")

@@ -45,20 +45,26 @@ func New(vaultPath string, debounceInterval time.Duration) (*Watcher, error) {
 	fsn.Add(projectsPath)
 	// Walk and add existing subdirs
 	filepath.Walk(projectsPath, func(p string, info os.FileInfo, err error) error {
-		if err != nil { return nil }
-		if info.IsDir() { fsn.Add(p) }
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			fsn.Add(p)
+		}
 		return nil
 	})
 	// Backward compat: old flat structure
 	for _, d := range []string{"Tasks", "Requirements"} {
 		p := filepath.Join(vaultPath, d)
-		if _, err := os.Stat(p); err == nil { fsn.Add(p) }
+		if _, err := os.Stat(p); err == nil {
+			fsn.Add(p)
+		}
 	}
 
 	return w, nil
 }
 
-func (w *Watcher) Events() <-chan Event   { return w.events }
+func (w *Watcher) Events() <-chan Event      { return w.events }
 func (w *Watcher) Start(ctx context.Context) { go w.loop(ctx) }
 
 func (w *Watcher) loop(ctx context.Context) {
@@ -66,12 +72,17 @@ func (w *Watcher) loop(ctx context.Context) {
 	defer w.fsn.Close()
 	for {
 		select {
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		case evt, ok := <-w.fsn.Events:
-			if !ok { return }
+			if !ok {
+				return
+			}
 			w.handle(evt)
 		case err, ok := <-w.fsn.Errors:
-			if !ok { return }
+			if !ok {
+				return
+			}
 			os.Stderr.WriteString("watcher error: " + err.Error() + "\n")
 		}
 	}
@@ -88,28 +99,40 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 		}
 	}
 
-	if evt.Op&(fsnotify.Create|fsnotify.Write) == 0 { return }
+	if evt.Op&(fsnotify.Create|fsnotify.Write) == 0 {
+		return
+	}
 	base := filepath.Base(path)
 	if strings.HasPrefix(base, ".") || strings.HasPrefix(base, "sed") ||
 		strings.HasSuffix(base, ".tmp") || strings.HasSuffix(base, ".swp") ||
-		strings.HasSuffix(base, "~") || filepath.Ext(base) != ".md" { return }
+		strings.HasSuffix(base, "~") || filepath.Ext(base) != ".md" {
+		return
+	}
 
 	parent := filepath.Base(filepath.Dir(path))
 	var dir string
 	switch parent {
-	case "Tasks": dir = "Tasks"
-	case "Requirements": dir = "Requirements"
-	default: return
+	case "Tasks":
+		dir = "Tasks"
+	case "Requirements":
+		dir = "Requirements"
+	default:
+		return
 	}
 
 	w.mu.Lock()
 	last := w.debounce[path]
 	now := time.Now()
-	if now.Sub(last) < w.interval { w.mu.Unlock(); return }
+	if now.Sub(last) < w.interval {
+		w.mu.Unlock()
+		return
+	}
 	w.debounce[path] = now
 	w.mu.Unlock()
 
 	op := "WRITE"
-	if evt.Op&fsnotify.Create != 0 { op = "CREATE" }
+	if evt.Op&fsnotify.Create != 0 {
+		op = "CREATE"
+	}
 	w.events <- Event{Path: path, Dir: dir, Operation: op}
 }

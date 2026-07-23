@@ -263,7 +263,6 @@ func TestDeriveProjectDir(t *testing.T) {
 	}
 }
 
-
 func TestCreateTaskForReqNewStructure(t *testing.T) {
 	dir := t.TempDir()
 	vaultPath := filepath.Join(dir, "vault")
@@ -420,26 +419,26 @@ func TestIsAutoUnblockable_BlockedPhaseGate(t *testing.T) {
 	os.MkdirAll(tasksDir, 0755)
 
 	tests := []struct {
-		name          string
-		blockedPhase  string
+		name           string
+		blockedPhase   string
 		resumeApproved bool
 		want           bool
 	}{
 		{
-			name:          "no blocked_phase → auto-unblock",
-			blockedPhase:  "",
+			name:           "no blocked_phase → auto-unblock",
+			blockedPhase:   "",
 			resumeApproved: false,
 			want:           true,
 		},
 		{
-			name:          "blocked_phase set, not approved → stays blocked",
-			blockedPhase:  "refining",
+			name:           "blocked_phase set, not approved → stays blocked",
+			blockedPhase:   "refining",
 			resumeApproved: false,
 			want:           false,
 		},
 		{
-			name:          "blocked_phase set, approved → auto-unblock",
-			blockedPhase:  "planning",
+			name:           "blocked_phase set, approved → auto-unblock",
+			blockedPhase:   "planning",
 			resumeApproved: true,
 			want:           true,
 		},

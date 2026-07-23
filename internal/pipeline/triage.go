@@ -126,6 +126,7 @@ type TestQualityIssue struct {
 	Description string
 	Suggestion  string
 }
+
 // extractCodeTerms naively extracts CamelCase and snake_case identifiers from text.
 func extractCodeTerms(content string) []string {
 	re := regexp.MustCompile(`\b([A-Z][a-zA-Z]+|[a-z]+(?:_[a-z]+)+)\b`)
@@ -140,6 +141,7 @@ func extractCodeTerms(content string) []string {
 	}
 	return result
 }
+
 type MockImplementRunner struct {
 	ACResults         []ACResult
 	TestQualityReport *TestQualityReport
@@ -171,9 +173,9 @@ var contextBugPattern = regexp.MustCompile(`(?i)(修复了.*(?:bug|问题).*后|
 
 // Triage classifies a requirement document into feature / bug / already-implemented.
 // It reads the requirement file at reqPath and applies the decision tree:
-//   1. already-implemented (highest priority) — code location search
-//   2. bug — keyword matching against bugKeywords
-//   3. feature — default fallback
+//  1. already-implemented (highest priority) — code location search
+//  2. bug — keyword matching against bugKeywords
+//  3. feature — default fallback
 //
 // The cfg parameter provides project context for code searches.
 func Triage(ctx context.Context, reqPath string, projectDir string) (*TriageResult, error) {
@@ -248,7 +250,6 @@ func checkAlreadyImplemented(ctx context.Context, content, projectDir string) *T
 	}
 	return nil
 }
-
 
 // searchCodebase greps for a term in .go files under projectDir at any depth.
 func searchCodebase(ctx context.Context, projectDir, term string) string {

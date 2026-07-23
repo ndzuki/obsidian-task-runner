@@ -236,6 +236,7 @@ func createOMPSymlink(opts Options) error {
 	os.Remove(linkPath) // remove old symlink/file
 	return os.Symlink(opts.SkillInstallDir, linkPath)
 }
+
 // installPhaseSkills copies the four phase sub-skills (refining, round1, round2, merge)
 func installPhaseSkills(opts Options) error {
 	home, _ := os.UserHomeDir()
@@ -497,7 +498,6 @@ func copyDir(src, dst string) error {
 	}
 	return nil
 }
-
 
 // validateRequiredSkills checks that the five mandatory external skills exist
 // on disk. Returns the list of missing skill names.

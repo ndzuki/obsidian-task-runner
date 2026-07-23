@@ -10,13 +10,13 @@ import (
 )
 
 var (
-	installForce    bool
-	installDryRun   bool
-	installVault    string
-	installNewRoot  string
-	installNotif    bool
-	installPoll     int
-	installSystemd  bool
+	installForce   bool
+	installDryRun  bool
+	installVault   string
+	installNewRoot string
+	installNotif   bool
+	installPoll    int
+	installSystemd bool
 )
 
 var installCmd = &cobra.Command{

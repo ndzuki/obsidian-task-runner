@@ -16,27 +16,27 @@ import (
 
 // ReadyTask is the NDJSON output format for find-ready.
 type ReadyTask struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Project       string `json:"project"`
-	NewProject    bool   `json:"new_project"`
-	Priority      string `json:"priority"`
-	FilePath      string `json:"file_path"`
-	FileName      string `json:"file_name"`
-	Status        string `json:"status"`
-	PlanApproved  bool   `json:"plan_approved"`
-	MergeApproved bool   `json:"merge_approved"`
-	ReqDoc        string `json:"req_doc"`
-	Template      string `json:"template"`
-	Assignee      string `json:"assignee"`
-	AutoApprove   bool   `json:"auto_approve"`
-	PendingReq    bool   `json:"pending_req"`
-	OffPeakOnly   bool   `json:"off_peak_only"`
-	TargetBranch  string `json:"target_branch"`
-	GrillDone        bool   `json:"grill_done"`
-	GrillPrevStatus  string `json:"grill_prev_status,omitempty"`
-	GrillResolution  string `json:"grill_resolution,omitempty"`
-	PlanVersion      int    `json:"plan_version,omitempty"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Project         string `json:"project"`
+	NewProject      bool   `json:"new_project"`
+	Priority        string `json:"priority"`
+	FilePath        string `json:"file_path"`
+	FileName        string `json:"file_name"`
+	Status          string `json:"status"`
+	PlanApproved    bool   `json:"plan_approved"`
+	MergeApproved   bool   `json:"merge_approved"`
+	ReqDoc          string `json:"req_doc"`
+	Template        string `json:"template"`
+	Assignee        string `json:"assignee"`
+	AutoApprove     bool   `json:"auto_approve"`
+	PendingReq      bool   `json:"pending_req"`
+	OffPeakOnly     bool   `json:"off_peak_only"`
+	TargetBranch    string `json:"target_branch"`
+	GrillDone       bool   `json:"grill_done"`
+	GrillPrevStatus string `json:"grill_prev_status,omitempty"`
+	GrillResolution string `json:"grill_resolution,omitempty"`
+	PlanVersion     int    `json:"plan_version,omitempty"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -81,8 +81,9 @@ func isEmptyList(v interface{}) bool {
 // AreBlockersDone checks whether every task referenced in blockedBy has
 // status "done" by scanning the specified project's Tasks/ directory.
 // References use format:
-//   "TASK-010" — within current project
-//   "project-key:TASK-010" — cross-project lookup via vault-map scan
+//
+//	"TASK-010" — within current project
+//	"project-key:TASK-010" — cross-project lookup via vault-map scan
 func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
 	if len(blockedBy) == 0 {
 		return true
