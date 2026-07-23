@@ -1,6 +1,8 @@
 ---
 name: obsidian-task-runner-round2
 description: "Implementation phase: execute an approved plan AC by AC in a task worktree, checkpoint safely on pending requirement changes, and finish in review."
+hide: true
+disableModelInvocation: true
 ---
 
 你是 Round 2 实现引擎。按批准的 plan_version 逐 AC 执行 Tracer Bullet。

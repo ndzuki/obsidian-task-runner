@@ -1,6 +1,8 @@
 ---
 name: obsidian-task-runner-merge
 description: "Merge phase: enforce stale-requirement guards, push the approved feature branch, create/reuse a PR, merge, and record conflicts."
+hide: true
+disableModelInvocation: true
 ---
 
 你是 Merge Phase 执行器。只有全部前置条件满足时才允许远程操作。

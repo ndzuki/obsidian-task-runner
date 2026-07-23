@@ -14,7 +14,62 @@ import (
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
+
+func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	argsDir := filepath.Join(dir, "args")
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+	t.Setenv("ARGS_DIR", argsDir)
+
+	taskPath := writeTaskFile(t, dir, "TASK-000.md", "ready")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID:       "000",
+		Title:    "Ready task",
+		FilePath: taskPath,
+		Status:   "ready",
+		Assignee: "default",
+	}})
+
+	waitForStartCount(t, startDir, 1)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "refining" {
+		t.Fatalf("status = %q, want refining", fm.Status)
+	}
+
+	entries, err := os.ReadDir(argsDir)
+	if err != nil {
+		t.Fatalf("read OMP args directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("OMP invocation count = %d, want 1", len(entries))
+	}
+	args, err := os.ReadFile(filepath.Join(argsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read OMP args: %v", err)
+	}
+	wantPrompt := "/obsidian-task-runner-refining " + taskPath
+	if !strings.Contains(string(args), wantPrompt) {
+		t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
+	}
+}
 
 func TestProcessBatchRunsIndependentTasksConcurrently(t *testing.T) {
 	dir := t.TempDir()
@@ -369,7 +424,7 @@ func writeBarrierOMP(t *testing.T, dir string) (string, string, string) {
 			t.Errorf("release barrier during cleanup: %v", err)
 		}
 	})
-	script := "#!/bin/sh\nmkdir -p \"$START_DIR\"\nprintf '%s\\n' \"$PWD\" > \"$START_DIR/$$\"\nwhile [ ! -f \"$RELEASE_FILE\" ]; do sleep 0.01; done\n"
+	script := "#!/bin/sh\nmkdir -p \"$START_DIR\"\nprintf '%s\\n' \"$PWD\" > \"$START_DIR/$$\"\nif [ -n \"$ARGS_DIR\" ]; then mkdir -p \"$ARGS_DIR\"; printf '%s\\n' \"$*\" > \"$ARGS_DIR/$$\"; fi\nwhile [ ! -f \"$RELEASE_FILE\" ]; do sleep 0.01; done\n"
 	if err := os.WriteFile(omp, []byte(script), 0755); err != nil {
 		t.Fatalf("write fake omp: %v", err)
 	}
