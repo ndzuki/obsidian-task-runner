@@ -131,7 +131,7 @@ func Parse(data []byte) (*Frontmatter, error) {
 		return nil, nil
 	}
 	rest := content[3:]
-	end := strings.Index(rest, "---")
+	end := strings.Index(rest, "\n---")
 	if end == -1 {
 		return nil, fmt.Errorf("frontmatter not closed")
 	}
@@ -249,7 +249,14 @@ func setMappingValue(mapping *yaml.Node, key string, val interface{}) {
 	mapping.Content = append(mapping.Content, keyNode, valNode)
 }
 
-// atomicWrite writes data to a temporary file, fsyncs, and renames.
+// AtomicWrite writes data to a temporary file, fsyncs, and renames atomically.
+// The destination is never left in a partial state — either the old content
+// survives or the new content is fully written.
+func AtomicWrite(path string, data []byte) error {
+	return atomicWrite(path, data)
+}
+
+// atomicWrite is the unexported implementation shared within the package.
 func atomicWrite(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-")
 	if err != nil {
@@ -350,8 +357,14 @@ func Repair(path string) error {
 	// Rebuild frontmatter: keep valid key:value pairs and list items.
 	// Track block-scalar state so continuation lines (indented text after "|" or ">")
 	// are preserved instead of being discarded as orphaned text.
+	//
+	// Lines that don't match YAML patterns are collected separately. If they look
+	// like markdown body (headings, blockquotes, tables), they are prepended to the
+	// body — this recovers content lost when the closing "---" delimiter is missing
+	// and a horizontal rule in the body is mistaken for the delimiter.
 	lines := strings.Split(fmText, "\n")
 	clean := make([]string, 0, len(lines))
+	var discarded []string
 	inBlock := false
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
@@ -366,6 +379,7 @@ func Repair(path string) error {
 		}
 
 		if t == "" || strings.HasPrefix(t, "#") || t == "---" {
+			discarded = append(discarded, line)
 			continue
 		}
 
@@ -387,13 +401,30 @@ func Repair(path string) error {
 
 		if keyLineRE.MatchString(t) || listItemRE.MatchString(line) {
 			clean = append(clean, line)
+		} else {
+			discarded = append(discarded, line)
 		}
 	}
 	newFM := strings.Join(clean, "\n")
 	for strings.HasSuffix(newFM, "\n") {
 		newFM = newFM[:len(newFM)-1]
 	}
+
+	// If discarded lines look like markdown body, prepend them to the body.
+	// Body content starts with markdown structural elements: headings, blockquotes,
+	// or table rows.  Orphaned free-text (no structural markers) is intentionally
+	// dropped — it's likely OMP output that leaked into the frontmatter block.
 	repairedBody := escapeBodyTags(body)
+	if len(discarded) > 0 && looksLikeMarkdownBody(discarded) {
+		// Trim leading blank lines from discarded block.
+		start := 0
+		for start < len(discarded) && strings.TrimSpace(discarded[start]) == "" {
+			start++
+		}
+		recovered := "\n" + strings.Join(discarded[start:], "\n")
+		repairedBody = recovered + repairedBody
+	}
+
 	newContent := "---\n" + newFM + "\n---" + repairedBody
 
 	// Validate the repaired content before writing.
@@ -401,6 +432,22 @@ func Repair(path string) error {
 		return fmt.Errorf("repair produced invalid frontmatter: %w", err)
 	}
 	return atomicWrite(path, []byte(newContent))
+}
+
+// markdownBodyStartRE matches lines that signal the start of markdown body content.
+// Headings, blockquotes, and table rows are structural markers; free-form text
+// without these markers is treated as orphaned YAML pollution.
+var markdownBodyStartRE = regexp.MustCompile(`^(#{1,6}\s|\>\s|\|)`)
+
+// looksLikeMarkdownBody returns true if the discarded lines appear to be markdown
+// body content rather than orphaned text that leaked into the frontmatter block.
+func looksLikeMarkdownBody(lines []string) bool {
+	for _, line := range lines {
+		if markdownBodyStartRE.MatchString(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractFieldRaw extracts a field value from raw frontmatter text.

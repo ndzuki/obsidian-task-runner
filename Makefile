@@ -52,3 +52,11 @@ install-force: build
 		systemctl --user start omp-task-watcher.service 2>/dev/null || true; \
 	fi
 	@echo "=== Done ==="
+	@$(MAKE) sync-docs
+
+.PHONY: sync-docs
+sync-docs:
+	@echo "=== Syncing skill docs to ~/.omp/ ==="
+	cp -r obsidian-task-runner/*.md $(HOME)/.omp/skills/obsidian-task-runner/
+	cp -r obsidian-task-runner/skills/ $(HOME)/.omp/skills/obsidian-task-runner/
+	@echo "=== Done ==="

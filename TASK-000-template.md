@@ -36,7 +36,7 @@ blocked_by: []
 # ══════════════════════════════
 plan_approved: false       # 审阅计划后设 true → 进入 Round 2
 merge_approved: false      # 审阅代码后设 true → 进入 Merge
-adr_approved: false        # 授权写入 ADR 到 Notes/adr/
+adr_approved: false        # 系统自动设置（plan-review→implementing 时）
 resume_approved: false     # 阶段失败修复后设 true → daemon 恢复
 
 # ══════════════════════════════
@@ -114,7 +114,7 @@ actual_hours: 0
 ---
 
 ## ADR 提议
-<!-- 🤖 Planning 提议；adr_approved=true 后写入 Notes/adr/ -->
+<!-- 🤖 Round 1 提议；daemon 自动授权，Round 2 写入 Notes/adr/ -->
 
 ---
 

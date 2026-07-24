@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // Options holds installation configuration.
@@ -228,9 +229,15 @@ func generateVaultMap(opts Options) error {
 					existingCfg[k] = v
 				}
 			}
-			data, _ := json.MarshalIndent(existingCfg, "", "  ")
-			data = append(data, '\n')
-			os.WriteFile(mapFile, data, 0644)
+			// Back up raw bytes before writing to prevent data loss on crash.
+			backup := existing
+			newData, _ := json.MarshalIndent(existingCfg, "", "  ")
+			newData = append(newData, '\n')
+			if err := yamlfrontmatter.AtomicWrite(mapFile, newData); err != nil {
+				// Restore backup on failure
+				os.WriteFile(mapFile, backup, 0644)
+				return fmt.Errorf("atomic write vault-map: %w", err)
+			}
 			fmt.Println("vault-map.json updated with new defaults")
 			return nil
 		}
@@ -238,21 +245,16 @@ func generateVaultMap(opts Options) error {
 		return nil
 	}
 
-	// No existing file — create fresh.
+	// No existing file — create fresh atomically.
 	if opts.DryRun {
 		data, _ := json.MarshalIndent(defaults, "", "  ")
-		fmt.Printf("[DRY RUN] Would write %s:\n%s\n", mapFile, string(data))
+		fmt.Printf("[DRY RUN] Would create vault-map.json:\n%s\n", string(data))
 		return nil
 	}
-
-	data, err := json.MarshalIndent(defaults, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
 	os.MkdirAll(filepath.Dir(mapFile), 0755)
-	return os.WriteFile(mapFile, data, 0644)
+	data, _ := json.MarshalIndent(defaults, "", "  ")
+	data = append(data, '\n')
+	return yamlfrontmatter.AtomicWrite(mapFile, data)
 }
 
 func createOMPSymlink(opts Options) error {
