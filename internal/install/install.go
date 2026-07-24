@@ -152,7 +152,14 @@ func installSkill(opts Options) error {
 		return nil
 	}
 
-	// Remove old installation if forced
+	// Protect user config: backup vault-map.json before any destructive operation.
+	vaultMapPath := filepath.Join(dest, "config", "vault-map.json")
+	var savedVaultMap []byte
+	if data, err := os.ReadFile(vaultMapPath); err == nil {
+		savedVaultMap = data
+	}
+
+	// Remove old installation if forced, then restore user config.
 	if opts.Force {
 		os.RemoveAll(dest)
 	}
@@ -163,6 +170,14 @@ func installSkill(opts Options) error {
 	// Copy skill files (native Go copy for portability)
 	if err := copyDir(src, dest); err != nil {
 		return fmt.Errorf("copy skill: %w", err)
+	}
+
+	// Restore user's vault-map.json — never overwritten by install.
+	if savedVaultMap != nil {
+		os.MkdirAll(filepath.Dir(vaultMapPath), 0755)
+		if err := os.WriteFile(vaultMapPath, savedVaultMap, 0644); err != nil {
+			return fmt.Errorf("restore vault-map: %w", err)
+		}
 	}
 
 	fmt.Println("skill installed to", dest)
@@ -193,12 +208,8 @@ func installTaskVerifier(opts Options) error {
 
 func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
-	if _, err := os.Stat(mapFile); err == nil {
-		fmt.Println("vault-map.json exists, skipping (never overwritten — contains user config)")
-		return nil
-	}
 
-	config := map[string]interface{}{
+	defaults := map[string]interface{}{
 		"obsidian_vault":        opts.ObsidianVault,
 		"new_project_root":      opts.NewProjectRoot,
 		"projects":              []interface{}{},
@@ -208,13 +219,33 @@ func generateVaultMap(opts Options) error {
 		"max_concurrent_tasks":  2,
 	}
 
+	// Merge new defaults into existing config — never overwrite user values.
+	if existing, err := os.ReadFile(mapFile); err == nil {
+		var existingCfg map[string]interface{}
+		if err := json.Unmarshal(existing, &existingCfg); err == nil {
+			for k, v := range defaults {
+				if _, exists := existingCfg[k]; !exists {
+					existingCfg[k] = v
+				}
+			}
+			data, _ := json.MarshalIndent(existingCfg, "", "  ")
+			data = append(data, '\n')
+			os.WriteFile(mapFile, data, 0644)
+			fmt.Println("vault-map.json updated with new defaults")
+			return nil
+		}
+		fmt.Println("vault-map.json exists but unparseable, skipping (never overwritten)")
+		return nil
+	}
+
+	// No existing file — create fresh.
 	if opts.DryRun {
-		data, _ := json.MarshalIndent(config, "", "  ")
+		data, _ := json.MarshalIndent(defaults, "", "  ")
 		fmt.Printf("[DRY RUN] Would write %s:\n%s\n", mapFile, string(data))
 		return nil
 	}
 
-	data, err := json.MarshalIndent(config, "", "  ")
+	data, err := json.MarshalIndent(defaults, "", "  ")
 	if err != nil {
 		return err
 	}
