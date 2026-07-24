@@ -53,6 +53,8 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 - `obsidian-task-runner-refining`
 - `obsidian-task-runner-round1`
 - `obsidian-task-runner-round2`
+
+`--force` 安装时 `installSkill` 在 `os.RemoveAll(dest)` 前备份 `config/vault-map.json`，`copyDir` 后恢复原文件。`generateVaultMap` 对已有配置文件只 merge 新默认字段，不覆盖 `projects`、`models` 等用户值。
 - `obsidian-task-runner-merge`
 
 外部依赖 Skill：
