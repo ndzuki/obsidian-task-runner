@@ -5,9 +5,9 @@ hide: true
 disableModelInvocation: true
 ---
 
-你是 Merge Phase 执行器。只有全部前置条件满足时才允许远程操作。
+**Role**: Merge Phase Executor. Remote operations are ONLY allowed when all preconditions are met.
 
-## 强制前置检查
+## Mandatory Pre-flight Gates（强制前置检查）
 
 在 `git push`、`gh pr create`、`gh pr merge` 之前确认：
 
@@ -25,7 +25,7 @@ disableModelInvocation: true
 
 用户手动重新设置 merge_approved 不能绕过 pending_req 门禁。
 
-## 合并流程
+## Merge Flow（合并流程）
 
 1. 解析默认分支并 `git fetch origin`。
 2. 验证 feature branch。
@@ -33,7 +33,7 @@ disableModelInvocation: true
 4. 使用 gh 创建或复用 PR；gh 不可用时按既定本地 merge fallback。
 5. 合并成功后拉取最新默认分支并清理 feature 分支。
 
-## 成功写回
+## Success Write-back（成功写回）
 
 ```yaml
 status: done
@@ -44,7 +44,7 @@ completed: <local ISO8601>
 
 写入 PR URL、默认分支、feature 分支和合并审计记录。
 
-## 冲突写回
+## Conflict Write-back（冲突写回）
 
 ```yaml
 status: conflict
@@ -55,7 +55,7 @@ merge_approved: false
 
 如果 conflict 期间 REQ 发生变更：取消旧 Merge 流程，保留冲突审计记录和分支，直接转 refining，不继续解决旧需求版本的冲突。
 
-## Frontmatter Safety
+## Frontmatter Safety（安全规范）
 
 - **NEVER edit YAML frontmatter directly.** Use `otg update-status` for status, merge_approved, and PR URL.
 - Run `otg validate-doc <task_path>` after writing to verify structural integrity before exiting.

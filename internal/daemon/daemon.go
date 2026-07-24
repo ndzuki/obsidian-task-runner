@@ -573,7 +573,19 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			phase = "round2"
 			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
 			if t.Status == "plan-review" {
-				if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{"status": "implementing"}); err != nil {
+				updates := map[string]interface{}{"status": "implementing"}
+				// Auto-approve ADRs: planner proposed architecture decisions;
+				// grant write permission so Round 2 can generate ADR files
+				// without manual intervention.
+				if data, err := os.ReadFile(taskPath); err == nil {
+					if fm, ferr := yamlfrontmatter.Parse(data); ferr == nil && fm != nil {
+						if hasNonEmptyList(fm.AdrProposed) && !fm.AdrApproved {
+							updates["adr_approved"] = true
+							r.logger.Printf("task %s: auto-approved ADR proposals", t.ID)
+						}
+					}
+				}
+				if err := r.updateTaskFile(taskPath, t.ID, t.Title, updates); err != nil {
 					continue
 				}
 				t.Status = "implementing"
@@ -582,6 +594,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
 			continue
+		}
+
+		// Inject project context (constraints, domain terms, relevant ADRs)
+		// from the Obsidian vault so the OMP agent has architecture alignment
+		// in the first screen of its prompt — no need to read separate files.
+		if needsContextInjection(t.Status) {
+			projectVaultDir := filepath.Dir(filepath.Dir(t.FilePath))
+			reqAbsPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
+			if ctx := BuildProjectContext(projectVaultDir, reqAbsPath); ctx != "" {
+				skillPrompt = ctx + "\n" + skillPrompt
+				r.logger.Printf("task %s: injected project context (%d bytes)", t.ID, len(ctx))
+			}
 		}
 
 		args := []string{"--model", model}
@@ -1019,4 +1043,26 @@ func procAlive(pid int) bool {
 	// Signal 0 is a null signal — checks existence without affecting the process
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// hasNonEmptyList returns true if v is a non-empty slice.
+// Mirrors task.isEmptyList but works on the any-typed frontmatter fields.
+func hasNonEmptyList(v any) bool {
+	switch val := v.(type) {
+	case []interface{}:
+		return len(val) > 0
+	case []string:
+		return len(val) > 0
+	}
+	return false
+}
+
+// needsContextInjection returns true for task phases that benefit from
+// project context (constraints, domain terms, ADRs) in the OMP prompt.
+func needsContextInjection(status string) bool {
+	switch status {
+	case "refining", "planning", "implementing", "plan-review":
+		return true
+	}
+	return false
 }

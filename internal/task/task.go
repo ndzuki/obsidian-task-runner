@@ -36,6 +36,7 @@ type ReadyTask struct {
 	GrillDone       bool   `json:"grill_done"`
 	GrillPrevStatus string `json:"grill_prev_status,omitempty"`
 	GrillResolution string `json:"grill_resolution,omitempty"`
+	GrillContext    string `json:"grill_context,omitempty"`
 	PlanVersion     int    `json:"plan_version,omitempty"`
 }
 
@@ -317,7 +318,8 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
 				OffPeakOnly: fm.OffPeakOnly, TargetBranch: fm.TargetBranch,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
-				GrillResolution: fm.GrillResolution, PlanVersion: fm.PlanVersion,
+				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
+				PlanVersion: fm.PlanVersion,
 			})
 		}
 	}

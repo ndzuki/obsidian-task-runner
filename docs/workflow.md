@@ -396,7 +396,7 @@ merge_approved: false
 
 ### 7.1 ADR 写入
 
-若 `adr_approved=true` 且 `adr_proposed` 非空，Round 2 在全部 AC 完成后写入 ADR：
+若 `adr_approved=true` 且 `adr_proposed` 非空，Round 2 在全部 AC 完成后写入 ADR（`adr_approved` 由 daemon 在 plan-review→implementing 时自动设置，无需人工干预）：
 
 1. 幂等检查：`adr_written` 中已有的文件不重写。
 2. 逐个调用 `otg write-adr` 原子写入 `Notes/adr/ADR-<id>-<slug>.md`。
@@ -411,6 +411,8 @@ merge_approved: false
 - **Round 2 + ADR**：ADR 引入新架构概念时追加（仅写 ADR 时触发，罕见）
 
 appended-only，不覆盖已有条目。
+
+Daemon 在调度 OMP 前从 CONTEXT.md 提取精简上下文注入到 prompt 头部（`[Project Context]`），包含 Constraints + Anti-patterns + Domain Terms + ADR 摘要。详见 `reference.md` §4.10。
 
 ### 7.3 阶段后文档完整性扫描
 

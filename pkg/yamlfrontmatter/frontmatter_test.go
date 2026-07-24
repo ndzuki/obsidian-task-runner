@@ -307,6 +307,54 @@ func TestRepair(t *testing.T) {
 			t.Error("expected error for file without frontmatter")
 		}
 	})
+
+	t.Run("recovers markdown body mistaken as frontmatter", func(t *testing.T) {
+		// Simulates the TASK-061 scenario: closing "---" delimiter is missing,
+		// the next "---" in the file is a horizontal rule in the body.
+		// Repair should detect that the discarded lines are markdown and preserve them.
+		path := filepath.Join(dir, "missing-delimiter.md")
+		original := "---\nid: \"061\"\nstatus: needs-grilling\nadr_proposed: []\n\n" +
+			"## 需求成熟度评估\n\n" +
+			"> 版本: 15 | REQ hash: sha256:abc\n\n" +
+			"| 检查项 | 状态 |\n" +
+			"|--------|------|\n" +
+			"| AC 完整 | ❌ |\n\n" +
+			"---\n\n" +
+			"## 实现计划\n\n" +
+			"Step 1 content here.\n"
+		os.WriteFile(path, []byte(original), 0644)
+
+		if err := Repair(path); err != nil {
+			t.Fatalf("repair failed: %v", err)
+		}
+
+		data, _ := os.ReadFile(path)
+		content := string(data)
+
+		// YAML fields preserved
+		for _, want := range []string{`id: "061"`, `status: needs-grilling`, `adr_proposed: []`} {
+			if !contains(content, want) {
+				t.Errorf("missing YAML field %q:\n%s", want, content)
+			}
+		}
+		// Markdown body recovered (not discarded as orphaned text)
+		for _, want := range []string{
+			"## 需求成熟度评估",
+			"> 版本: 15",
+			"| 检查项 | 状态 |",
+			"| AC 完整 | ❌ |",
+			"## 实现计划",
+			"Step 1 content here.",
+		} {
+			if !contains(content, want) {
+				t.Errorf("body content lost: missing %q:\n%s", want, content)
+			}
+		}
+		// Frontmatter-only section valid YAML
+		if err := Validate(path); err != nil {
+			t.Errorf("repaired file still invalid: %v", err)
+		}
+	})
 }
 
 func TestUpdateDeclinesCorruptedFile(t *testing.T) {

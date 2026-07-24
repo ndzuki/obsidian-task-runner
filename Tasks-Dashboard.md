@@ -66,7 +66,7 @@ WHERE file.name = "CONTEXT.md"
 SORT file.folder asc
 ```
 
-## ADR 提议待审
+## ADR 提议状态
 
 ```dataview
 TABLE
@@ -75,7 +75,7 @@ TABLE
   adr_approved as "已授权",
   status as "任务状态"
 FROM "Projects"
-WHERE contains(file.folder, "Tasks") AND adr_proposed != null AND adr_approved != true
+WHERE contains(file.folder, "Tasks") AND adr_proposed != null AND adr_approved != true AND status != "done"
 SORT file.mtime desc
 ```
 
