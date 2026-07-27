@@ -61,7 +61,6 @@ type Frontmatter struct {
 	Tags            []string `yaml:"tags"`
 	Epic            string   `yaml:"epic"`
 	Parent          string   `yaml:"parent"`
-	Blocks          []string `yaml:"blocks"`
 	BlockedBy       []string `yaml:"blocked_by"`
 	TargetBranch    string   `yaml:"target_branch"`
 	TargetEnv       string   `yaml:"target_env"`
@@ -83,7 +82,7 @@ type Frontmatter struct {
 	// ── Phase recovery ──
 	PhaseError     string `yaml:"phase_error"`
 	PhaseLog       string `yaml:"phase_log"`
-	BlockedPhase   string `yaml:"blocked_phase"` // refining | planning
+	BlockedPhase   string `yaml:"blocked_phase"` // refining | planning | implementing
 	ResumeApproved bool   `yaml:"resume_approved"`
 
 	// ── Grilling ownership ──
@@ -572,6 +571,9 @@ func ParseTaskDocument(path string) (*Frontmatter, error) {
 	}
 	if fm.ReqDoc == "" {
 		return nil, fmt.Errorf("missing required field: req_doc")
+	}
+	if fm.BlockedPhase != "" && fm.BlockedPhase != "refining" && fm.BlockedPhase != "planning" && fm.BlockedPhase != "implementing" {
+		return nil, fmt.Errorf("invalid blocked_phase: %q", fm.BlockedPhase)
 	}
 	// Extract body for markdown validation.
 	body := extractBody(data)

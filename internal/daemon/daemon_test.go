@@ -536,3 +536,197 @@ func createRepository(t *testing.T, dir string) string {
 	}
 	return repo
 }
+
+func TestResumeImplementingGate_NoPlanApproved(t *testing.T) {
+	// R2: blocked_phase=implementing, resume_approved=true, plan_approved=false
+	// → should be demoted to plan-review.
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := filepath.Join(dir, "tasks", "TASK-100.md")
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0755); err != nil {
+		t.Fatalf("create tasks dir: %v", err)
+	}
+	content := "---\nid: \"100\"\ntitle: \"Gate test\"\nstatus: blocked\nassignee: default\nproject: project-one\nblocked_by: []\nblocked_phase: implementing\nresume_approved: true\nplan_approved: false\nplan_version: 3\nrefine_req_hash: sha256:abc\nplan_req_hash: sha256:abc\nreq_doc: \"\"\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "100", Title: "Gate test", Project: "project-one",
+		FilePath: taskPath, Status: "blocked", Assignee: "default",
+		PlanApproved: false, GrillPrevStatus: "", PlanVersion: 3,
+	}})
+
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "plan-review" {
+		t.Fatalf("status = %q, want plan-review", fm.Status)
+	}
+	if fm.BlockedPhase != "" {
+		t.Fatalf("blocked_phase = %q, want empty", fm.BlockedPhase)
+	}
+}
+
+func TestSmartAutoUnblock_SkipsReady(t *testing.T) {
+	// R1: blocked_phase=empty, grill_prev_status=implementing, plan_version>0
+	// → should skip ready and go directly to plan-review.
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := filepath.Join(dir, "tasks", "TASK-101.md")
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0755); err != nil {
+		t.Fatalf("create tasks dir: %v", err)
+	}
+	content := "---\nid: \"101\"\ntitle: \"Smart unblock\"\nstatus: blocked\nassignee: default\nproject: project-one\nblocked_by: []\nblocked_phase: \"\"\ngrill_prev_status: implementing\nplan_version: 3\nreq_doc: \"\"\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "101", Title: "Smart unblock", Project: "project-one",
+		FilePath: taskPath, Status: "blocked", Assignee: "default",
+		GrillPrevStatus: "implementing", PlanVersion: 3,
+	}})
+
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "plan-review" {
+		t.Fatalf("status = %q, want plan-review", fm.Status)
+	}
+	if fm.GrillPrevStatus != "" {
+		t.Fatalf("grill_prev_status = %q, want empty", fm.GrillPrevStatus)
+	}
+	if len(fm.BlockedBy) != 0 {
+		t.Fatalf("blocked_by = %v, want empty", fm.BlockedBy)
+	}
+}
+
+func TestResumeImplementingGate_StaleHash(t *testing.T) {
+	// R2: blocked_phase=implementing, resume_approved=true, hash mismatch
+	// → should route to refining with pending_req=true.
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := filepath.Join(dir, "tasks", "TASK-102.md")
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0755); err != nil {
+		t.Fatalf("create tasks dir: %v", err)
+	}
+	content := "---\nid: \"102\"\ntitle: \"Hash mismatch\"\nstatus: blocked\nassignee: default\nproject: project-one\nblocked_by: []\nblocked_phase: implementing\nresume_approved: true\nplan_approved: true\nplan_version: 2\nrefine_req_hash: sha256:newhash\nplan_req_hash: sha256:oldhash\nreq_doc: \"\"\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "102", Title: "Hash mismatch", Project: "project-one",
+		FilePath: taskPath, Status: "blocked", Assignee: "default",
+		PlanApproved: true, PlanVersion: 2,
+	}})
+
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "refining" {
+		t.Fatalf("status = %q, want refining", fm.Status)
+	}
+	if !fm.PendingReq {
+		t.Fatal("pending_req = false, want true")
+	}
+	if fm.PlanApproved {
+		t.Fatal("plan_approved = true, want false")
+	}
+}
+
+func TestResumeUnknownBlockedPhase(t *testing.T) {
+	// R2: unknown blocked_phase value → revert to ready.
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := filepath.Join(dir, "tasks", "TASK-103.md")
+	if err := os.MkdirAll(filepath.Dir(taskPath), 0755); err != nil {
+		t.Fatalf("create tasks dir: %v", err)
+	}
+	content := "---\nid: \"103\"\ntitle: \"Bogus phase\"\nstatus: blocked\nassignee: default\nproject: project-one\nblocked_by: []\nblocked_phase: bogus\nresume_approved: true\nreq_doc: \"\"\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "103", Title: "Bogus phase", Project: "project-one",
+		FilePath: taskPath, Status: "blocked", Assignee: "default",
+	}})
+
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "ready" {
+		t.Fatalf("status = %q, want ready", fm.Status)
+	}
+}
+
+func TestBlockedPhaseValidation(t *testing.T) {
+	// R3: invalid blocked_phase values should be rejected.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.md")
+	content := "---\nid: \"001\"\nstatus: blocked\nproject: test\nreq_doc: Projects/test/REQ-001.md\nblocked_phase: round2\n---\n# Task\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := yamlfrontmatter.ValidateTaskDocument(path); err == nil {
+		t.Fatal("expected error for invalid blocked_phase")
+	}
+}

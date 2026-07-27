@@ -521,29 +521,89 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if data, err := os.ReadFile(taskPath); err == nil {
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
 					if fm.BlockedPhase != "" && fm.ResumeApproved {
-						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
-						if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
-							"status":          fm.BlockedPhase,
+						dest := fm.BlockedPhase
+
+						// Validate blocked_phase; unknown values revert to ready.
+						needsDispatch := true
+						switch dest {
+						case "refining", "planning", "implementing":
+						default:
+							r.logger.Printf("task %s: unknown blocked_phase %q, treating as ready", t.ID, dest)
+							if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
+								"status":          "ready",
+								"blocked_phase":   "",
+								"phase_error":     "",
+								"phase_log":       "",
+								"resume_approved": false,
+							}); err != nil {
+								continue
+							}
+							processed++
+							continue
+						}
+
+						updates := map[string]interface{}{
+							"status":          dest,
 							"blocked_phase":   "",
 							"phase_error":     "",
 							"phase_log":       "",
 							"resume_approved": false,
-						}); err != nil {
+						}
+
+						// R2: implementing resume gate — enforce plan_approved and REQ hash.
+						if dest == "implementing" {
+							if !fm.PlanApproved && fm.PlanVersion > 0 {
+								updates["status"] = "plan-review"
+								r.logger.Printf("task %s: implementing resume without plan_approved → plan-review", t.ID)
+								needsDispatch = false
+							}
+							if fm.RefineReqHash != "" && fm.PlanReqHash != "" && fm.RefineReqHash != fm.PlanReqHash {
+								updates["status"] = "refining"
+								updates["pending_req"] = true
+								updates["plan_approved"] = false
+								r.logger.Printf("task %s: implementing resume with stale plan (REQ hash mismatch) → refining", t.ID)
+								needsDispatch = false
+							}
+						}
+
+						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, updates["status"])
+						if err := r.updateTaskFile(taskPath, t.ID, t.Title, updates); err != nil {
 							continue
 						}
-						t.Status = fm.BlockedPhase
+						t.Status = updates["status"].(string)
+						if !needsDispatch {
+							processed++
+							continue
+						}
 						// Fall through to normal dispatch below.
 					} else {
-						// Normal auto-unblock: blocked→ready
-						if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "ready", "pending_req": false, "blocked_by": []string{}}); err != nil {
+						// Normal auto-unblock. R1: skip ready→refining when a plan already exists.
+						dest := "ready"
+						if fm.GrillPrevStatus == "implementing" && fm.PlanVersion > 0 {
+							dest = "plan-review"
+							r.logger.Printf("task %s: deps done, plan v%d exists → plan-review", t.ID, fm.PlanVersion)
+						}
+						if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
+							"status":            dest,
+							"pending_req":       false,
+							"blocked_by":        []string{},
+							"blocked_phase":     "",
+							"phase_error":       "",
+							"phase_log":         "",
+							"grill_prev_status": "",
+						}); err != nil {
 							r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
 							continue
 						}
-						t.Status = "ready"
+						t.Status = dest
 						t.PendingReq = false
-						notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
+						if dest == "ready" {
+							notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
+						} else {
+							notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "依赖已满足，任务进入 plan-review", r.cfg.Notifications.Desktop)
+						}
 						processed++
-						continue // let next scan round pick up the ready task for refining
+						continue // let next scan round handle dispatch with proper worktree setup
 					}
 				}
 			}
