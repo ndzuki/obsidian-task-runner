@@ -84,7 +84,7 @@ Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `blocked_phase` | string | `""` | `refining` 或 `planning` |
+| `blocked_phase` | string | `""` | `refining`、`planning` 或 `implementing` |
 | `phase_error` | string | `""` | 阶段失败原因 |
 | `phase_log` | string | `""` | 对应日志路径 |
 | `resume_approved` | bool | `false` | 人工恢复授权 |

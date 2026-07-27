@@ -84,7 +84,6 @@ component: api
 tags: [api, auth]
 epic: "用户系统-v2"
 parent: ""
-blocks: []
 blocked_by: []
 
 # 环境 & 部署

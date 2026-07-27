@@ -127,7 +127,7 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 // isListField returns true for frontmatter fields that accept list values.
 func isListField(key string) bool {
 	switch key {
-	case "blocked_by", "blocks", "tags":
+	case "blocked_by", "tags":
 		return true
 	}
 	return false

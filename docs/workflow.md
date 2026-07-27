@@ -75,6 +75,7 @@ stateDiagram-v2
     blocked --> ready: 字段完整且依赖满足
     blocked --> refining: resume_approved=true and blocked_phase=refining
     blocked --> planning: resume_approved=true and blocked_phase=planning
+    blocked --> implementing: resume_approved=true and blocked_phase=implementing
 
     ready --> refining: daemon 拾取
 
@@ -112,7 +113,7 @@ stateDiagram-v2
 
 | 状态 | 不变量 | 执行主体 | 成功出口 |
 |------|--------|----------|----------|
-| `blocked` | 缺字段、依赖未完成，或阶段连续失败 | daemon / 人工 | `ready`、`refining` 或 `planning` |
+| `blocked` | 缺字段、依赖未完成，或阶段连续失败 | daemon / 人工 | `ready`、`refining`、`planning` 或 `implementing` |
 | `ready` | 可以开始规格成熟度检查 | daemon | `refining` |
 | `refining` | 正在执行 headless maturity gate | default model | `planning` 或 `needs-grilling` |
 | `needs-grilling` | 等待用户交互补充规格或解决实现阻塞 | Kitty + requirement-elaborator/用户 | `refining` 或恢复 `grill_prev_status` |

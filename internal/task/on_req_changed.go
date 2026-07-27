@@ -330,7 +330,6 @@ tags:
 %s
 epic: "%s"
 parent: ""
-blocks: []
 blocked_by: []
 target_branch: ""
 pr_url: ""

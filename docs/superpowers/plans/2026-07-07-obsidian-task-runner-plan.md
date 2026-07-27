@@ -201,7 +201,6 @@ component: ""
 tags: []
 epic: ""
 parent: ""
-blocks: []
 blocked_by: []
 
 # ── 环境 & 部署 ──
