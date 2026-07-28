@@ -13,6 +13,6 @@ var Version string
 func main() {
 	if err := cli.Execute(Version); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(cli.ExitCode(err))
 	}
 }

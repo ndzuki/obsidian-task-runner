@@ -190,14 +190,22 @@ func atomicWriteJSON(path string, data []byte) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		closeErr := tmp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write temp: %w (close: %v)", err, closeErr)
+		}
 		return fmt.Errorf("write temp: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		closeErr := tmp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("fsync: %w (close: %v)", err, closeErr)
+		}
 		return fmt.Errorf("fsync: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

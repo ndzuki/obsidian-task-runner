@@ -89,13 +89,13 @@ func TestProcessBatchRunsIndependentTasksConcurrently(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, dir, "TASK-001.md", "review")
-	taskTwo := writeTaskFile(t, dir, "TASK-002.md", "review")
+	taskOne := writeTaskFile(t, dir, "TASK-001.md", "planning")
+	taskTwo := writeTaskFile(t, dir, "TASK-002.md", "planning")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
-		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
+		{ID: "002", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "planning", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -122,16 +122,16 @@ func TestProcessBatchUsesTaskPathForDuplicateIDs(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "review")
-	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-001.md", "review")
+	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "planning")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-001.md", "planning")
 	if taskRunKey(taskOne) == taskRunKey(taskTwo) {
 		t.Fatal("different task files must have distinct run keys")
 	}
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
-		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
+		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "planning", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
@@ -229,50 +229,45 @@ func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
 	}
 }
 
-func TestProcessBatchDoesNotLetExclusiveWaiterConsumeOMPConcurrency(t *testing.T) {
+func TestRepositoryWriteWaiterDoesNotConsumeUnlockedWork(t *testing.T) {
+	runner := New(&config.Config{})
+	repoOne := filepath.Join(t.TempDir(), "repo-one")
+	repoTwo := filepath.Join(t.TempDir(), "repo-two")
+
+	if !runner.tryRepoLock(repoOne, repoLockRead) {
+		t.Fatal("expected initial read lock")
+	}
+	defer runner.unlockRepo(repoOne, repoLockRead)
+
+	if runner.tryRepoLock(repoOne, repoLockWrite) {
+		runner.unlockRepo(repoOne, repoLockWrite)
+		t.Fatal("write waiter must not acquire while a reader is active")
+	}
+	if !runner.tryRepoLock(repoTwo, repoLockWrite) {
+		t.Fatal("unrelated repository write must remain schedulable")
+	}
+	runner.unlockRepo(repoTwo, repoLockWrite)
+}
+
+func TestProcessBatchRunsSameRepositoryPlanningTasksConcurrently(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
 	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	mergeOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "review")
-	roundTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-002.md", "plan-review")
-	mergeTwo := writeTaskFile(t, filepath.Join(dir, "three"), "TASK-003.md", "review")
+	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-031.md", "planning")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-032.md", "planning")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "First merge", Project: "shared", FilePath: mergeOne, Status: "review", MergeApproved: true, Assignee: "default"},
-		{ID: "002", Title: "Round two", Project: "shared", FilePath: roundTwo, Status: "plan-review", PlanApproved: true, Assignee: "default"},
-		{ID: "003", Title: "Second merge", Project: "shared", FilePath: mergeTwo, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "031", Title: "One", Project: "shared", FilePath: taskOne, Status: "planning", Assignee: "default"},
+		{ID: "032", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "planning", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 2)
-
-	entries, err := os.ReadDir(startDir)
-	if err != nil {
-		t.Fatalf("read start directory: %v", err)
-	}
-	startedInPrimary := false
-	startedInWorktree := false
-	for _, entry := range entries {
-		workDir, readErr := os.ReadFile(filepath.Join(startDir, entry.Name()))
-		if readErr != nil {
-			t.Fatalf("read start marker: %v", readErr)
-		}
-		if strings.TrimSpace(string(workDir)) == repo {
-			startedInPrimary = true
-		} else {
-			startedInWorktree = true
-		}
-	}
-	if !startedInPrimary || !startedInWorktree {
-		t.Fatalf("expected one primary-repository and one worktree execution; primary=%v worktree=%v", startedInPrimary, startedInWorktree)
-	}
-
 	releaseBarrier(t, releaseFile)
-	if processed := waitForBatch(t, done); processed != 3 {
-		t.Fatalf("processed = %d, want 3", processed)
+	if processed := waitForBatch(t, done); processed != 2 {
+		t.Fatalf("processed = %d, want 2", processed)
 	}
 }
 
@@ -294,12 +289,12 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, dir, "TASK-021.md", "review")
-	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "review")
+	taskOne := writeTaskFile(t, dir, "TASK-021.md", "planning")
+	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "planning")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "review", MergeApproved: true, Assignee: "default"},
-		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "review", MergeApproved: true, Assignee: "default"},
+		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
+		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "planning", Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 1)
 	assertStartCount(t, startDir, 1)
@@ -520,6 +515,7 @@ func createRepository(t *testing.T, dir string) string {
 		{"init", repo},
 		{"-C", repo, "config", "user.email", "test@example.com"},
 		{"-C", repo, "config", "user.name", "Test User"},
+		{"-C", repo, "config", "commit.gpgsign", "false"},
 	} {
 		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)

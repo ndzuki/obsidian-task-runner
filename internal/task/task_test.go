@@ -10,10 +10,13 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-func writeTask(dir, name, frontmatter string) string {
+func writeTask(t *testing.T, dir, name, frontmatter string) string {
+	t.Helper()
 	path := filepath.Join(dir, name)
 	content := "---\n" + strings.TrimSpace(frontmatter) + "\n---\n# Task\n"
-	os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write task %s: %v", path, err)
+	}
 	return path
 }
 
@@ -33,9 +36,11 @@ func TestIsAutoUnblockable(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
 	tasksDir := filepath.Join(projDir, "Tasks")
-	os.MkdirAll(tasksDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
 
-	path := writeTask(tasksDir, "TASK-001.md", `
+	path := writeTask(t, tasksDir, "TASK-001.md", `
 id: "001"
 title: "Test"
 project: my-project
@@ -54,7 +59,7 @@ blocked_by: []
 	}
 
 	// Test with missing assignee
-	path2 := writeTask(tasksDir, "TASK-002.md", `
+	path2 := writeTask(t, tasksDir, "TASK-002.md", `
 id: "002"
 title: "Test"
 project: my-project
@@ -73,9 +78,11 @@ func TestBlockedByDependencyResolution(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
 	tasksDir := filepath.Join(projDir, "Tasks")
-	os.MkdirAll(tasksDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
 
-	writeTask(tasksDir, "TASK-010-done.md", `
+	writeTask(t, tasksDir, "TASK-010-done.md", `
 id: "010"
 title: "Dependency Done"
 project: "001-test"
@@ -83,7 +90,7 @@ status: done
 assignee: deepseek
 `)
 
-	blockedPath := writeTask(tasksDir, "TASK-020-blocked.md", `
+	blockedPath := writeTask(t, tasksDir, "TASK-020-blocked.md", `
 id: "020"
 title: "Blocked Task"
 project: "001-test"
@@ -121,10 +128,12 @@ func TestBlockedByUnresolvedDependency(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
 	tasksDir := filepath.Join(projDir, "Tasks")
-	os.MkdirAll(tasksDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
 
 	// Create a dependency task that is NOT done
-	writeTask(tasksDir, "TASK-011-planning.md", `
+	writeTask(t, tasksDir, "TASK-011-planning.md", `
 id: "011"
 title: "Still Planning"
 project: my-project
@@ -133,7 +142,7 @@ assignee: deepseek
 `)
 
 	// Create a task blocked by the non-done dependency
-	blockedPath := writeTask(tasksDir, "TASK-021-blocked.md", `
+	blockedPath := writeTask(t, tasksDir, "TASK-021-blocked.md", `
 id: "021"
 title: "Still Blocked"
 project: my-project
@@ -164,9 +173,11 @@ func TestFindReadyTasks(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := filepath.Join(dir, "Projects", "001-test", "Tasks")
 
-	os.MkdirAll(tasksDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
 	// Ready task
-	writeTask(tasksDir, "TASK-001-ready.md", `
+	writeTask(t, tasksDir, "TASK-001-ready.md", `
 id: "001"
 title: "Ready Task"
 project: my-app
@@ -176,7 +187,7 @@ priority: P1
 `)
 
 	// Blocked task with valid assignee → should be auto-unblocked
-	writeTask(tasksDir, "TASK-002-blocked.md", `
+	writeTask(t, tasksDir, "TASK-002-blocked.md", `
 id: "002"
 title: "Blocked but Fillable"
 project: my-app
@@ -187,7 +198,7 @@ priority: P0
 `)
 
 	// Blocked with no assignee → not ready
-	writeTask(tasksDir, "TASK-003-no-assignee.md", `
+	writeTask(t, tasksDir, "TASK-003-no-assignee.md", `
 id: "003"
 title: "No Assignee"
 project: my-app
@@ -271,7 +282,9 @@ func TestCreateTaskForReqNewStructure(t *testing.T) {
 
 	projectName := "001-release-manager"
 	reqDir := filepath.Join(vaultPath, "Projects", projectName, "Requirements")
-	os.MkdirAll(reqDir, 0755)
+	if err := os.MkdirAll(reqDir, 0755); err != nil {
+		t.Fatalf("create requirements directory: %v", err)
+	}
 
 	reqContent := `---
 id: "002"
@@ -286,7 +299,9 @@ author: test-user
 Add a test feature.
 `
 	reqPath := filepath.Join(reqDir, "REQ-002-test-feature.md")
-	os.WriteFile(reqPath, []byte(reqContent), 0644)
+	if err := os.WriteFile(reqPath, []byte(reqContent), 0644); err != nil {
+		t.Fatalf("write requirement: %v", err)
+	}
 
 	reqRelPath := filepath.Join("Projects", projectName, "Requirements", "REQ-002-test-feature.md")
 	result := createTaskForReq(vaultPath, reqRelPath)
@@ -338,13 +353,19 @@ func TestCreateTaskForReqWithVaultMap(t *testing.T) {
 
 	// Set up vault-map with "release-manager" project
 	ompDir := filepath.Join(dir, ".omp", "skills", "obsidian-task-runner", "config")
-	os.MkdirAll(ompDir, 0755)
+	if err := os.MkdirAll(ompDir, 0755); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
 	vaultMap := `{"projects":[{"name":"release-manager","path":"/tmp/release-manager"}],"new_project_root":"/tmp"}`
-	os.WriteFile(filepath.Join(ompDir, "vault-map.json"), []byte(vaultMap), 0644)
+	if err := os.WriteFile(filepath.Join(ompDir, "vault-map.json"), []byte(vaultMap), 0644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
 
 	projectName := "001-release-manager"
 	reqDir := filepath.Join(vaultPath, "Projects", projectName, "Requirements")
-	os.MkdirAll(reqDir, 0755)
+	if err := os.MkdirAll(reqDir, 0755); err != nil {
+		t.Fatalf("create requirements directory: %v", err)
+	}
 
 	reqContent := `---
 id: "003"
@@ -357,7 +378,9 @@ title: "Vault Map Feature"
 Test vault-map project matching.
 `
 	reqPath := filepath.Join(reqDir, "REQ-003-vault-map.md")
-	os.WriteFile(reqPath, []byte(reqContent), 0644)
+	if err := os.WriteFile(reqPath, []byte(reqContent), 0644); err != nil {
+		t.Fatalf("write requirement: %v", err)
+	}
 
 	reqRelPath := filepath.Join("Projects", projectName, "Requirements", "REQ-003-vault-map.md")
 	result := createTaskForReq(vaultPath, reqRelPath)
@@ -382,7 +405,9 @@ func TestCreateTaskForReqOldStructure(t *testing.T) {
 	vaultPath := filepath.Join(dir, "vault")
 
 	reqDir := filepath.Join(vaultPath, "Requirements")
-	os.MkdirAll(reqDir, 0755)
+	if err := os.MkdirAll(reqDir, 0755); err != nil {
+		t.Fatalf("create requirements directory: %v", err)
+	}
 
 	reqContent := `---
 id: "001"
@@ -395,7 +420,9 @@ title: "Legacy Feature"
 Legacy flat structure.
 `
 	reqPath := filepath.Join(reqDir, "REQ-001-legacy.md")
-	os.WriteFile(reqPath, []byte(reqContent), 0644)
+	if err := os.WriteFile(reqPath, []byte(reqContent), 0644); err != nil {
+		t.Fatalf("write requirement: %v", err)
+	}
 
 	reqRelPath := "Requirements/REQ-001-legacy.md"
 	result := createTaskForReq(vaultPath, reqRelPath)
@@ -416,7 +443,9 @@ func TestIsAutoUnblockable_BlockedPhaseGate(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
 	tasksDir := filepath.Join(projDir, "Tasks")
-	os.MkdirAll(tasksDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
 
 	tests := []struct {
 		name           string
@@ -446,7 +475,7 @@ func TestIsAutoUnblockable_BlockedPhaseGate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := writeTask(tasksDir, "TASK-"+tt.name+".md", fmt.Sprintf(`
+			path := writeTask(t, tasksDir, "TASK-"+tt.name+".md", fmt.Sprintf(`
 id: "%s"
 title: "%s"
 project: my-project
@@ -476,11 +505,15 @@ func TestBlockedBy_CrossProjectFallback(t *testing.T) {
 	bDir := filepath.Join(dir, "Projects", "001-b")
 	aTasks := filepath.Join(aDir, "Tasks")
 	bTasks := filepath.Join(bDir, "Tasks")
-	os.MkdirAll(aTasks, 0755)
-	os.MkdirAll(bTasks, 0755)
+	if err := os.MkdirAll(aTasks, 0755); err != nil {
+		t.Fatalf("create project a tasks directory: %v", err)
+	}
+	if err := os.MkdirAll(bTasks, 0755); err != nil {
+		t.Fatalf("create project b tasks directory: %v", err)
+	}
 
 	// Dependency in project "b" (directory 001-b)
-	writeTask(bTasks, "TASK-010-done.md", `
+	writeTask(t, bTasks, "TASK-010-done.md", `
 id: "010"
 title: "Dependency in b"
 project: b
@@ -489,7 +522,7 @@ assignee: deepseek
 `)
 
 	// Task in project "a" (directory 002-a) blocked by b:TASK-010
-	blockedPath := writeTask(aTasks, "TASK-020-blocked.md", `
+	blockedPath := writeTask(t, aTasks, "TASK-020-blocked.md", `
 id: "020"
 title: "Cross project blocked"
 project: a
@@ -522,5 +555,150 @@ blocked_by:
 	}
 	if !found {
 		t.Error("cross-project blocked task with resolved dependency should appear in ready tasks")
+	}
+}
+
+func TestIsReadyCompleteStateMachine(t *testing.T) {
+	tests := []struct {
+		name string
+		fm   yamlfrontmatter.Frontmatter
+		want bool
+	}{
+		{name: "closed is terminal", fm: yamlfrontmatter.Frontmatter{Status: "closed", Assignee: "gpt"}, want: false},
+		{name: "review feedback resumes", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "resume"}, want: true},
+		{name: "plan review replans", fm: yamlfrontmatter.Frontmatter{Status: "plan-review", Assignee: "gpt", ReworkResolution: "replan"}, want: true},
+		{name: "close gate waits for approval", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close"}, want: false},
+		{name: "close gate approved", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close", CloseApproved: true}, want: true},
+		{name: "done remains terminal without change", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsReady(&tt.fm, t.TempDir()); got != tt.want {
+				t.Fatalf("IsReady() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindReadyTasksSortsByPriorityThenCreated(t *testing.T) {
+	vault := t.TempDir()
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	writeTask(t, tasksDir, "TASK-003-new-p0.md", `
+id: "003"
+title: New P0
+project: test
+status: ready
+assignee: gpt
+priority: P0
+created: "2026-07-28T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-002-old-p1.md", `
+id: "002"
+title: Old P1
+project: test
+status: ready
+assignee: gpt
+priority: P1
+created: "2026-07-01T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-001-old-p0.md", `
+id: "001"
+title: Old P0
+project: test
+status: ready
+assignee: gpt
+priority: P0
+created: "2026-07-01T10:00:00+08:00"
+`)
+
+	ready, err := FindReadyTasks(vault)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	got := []string{ready[0].ID, ready[1].ID, ready[2].ID}
+	want := []string{"001", "003", "002"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ready order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCreateTaskForReqWithoutPriorityStartsAssessment(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	t.Setenv("HOME", dir)
+	reqDir := filepath.Join(vault, "Projects", "001-test", "Requirements")
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatalf("create requirements: %v", err)
+	}
+	reqPath := filepath.Join(reqDir, "REQ-004-priority.md")
+	if err := os.WriteFile(reqPath, []byte("---\nid: \"004\"\ntitle: Priority\npriority: \"\"\n---\n# Priority\n"), 0o644); err != nil {
+		t.Fatalf("write requirement: %v", err)
+	}
+
+	result := createTaskForReq(vault, "Projects/001-test/Requirements/REQ-004-priority.md")
+	if result == nil {
+		t.Fatal("expected TASK creation")
+	}
+	data, err := os.ReadFile(filepath.Join(vault, "Projects", "001-test", "Tasks", "TASK-004-priority.md"))
+	if err != nil {
+		t.Fatalf("read TASK: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse TASK: %v", err)
+	}
+	if fm.Priority != "" || fm.PriorityAssessmentStatus != "pending" || fm.Status != "blocked" {
+		t.Fatalf("new TASK priority state = priority %q assessment %q status %q", fm.Priority, fm.PriorityAssessmentStatus, fm.Status)
+	}
+}
+
+func TestClosedBlockerSatisfaction(t *testing.T) {
+	vault := t.TempDir()
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	writeTask(t, tasksDir, "TASK-010-implemented.md", `
+id: "010"
+project: 001-test
+status: closed
+closure_reason: already_implemented
+`)
+	if !AreBlockersDone(vault, "001-test", []string{"TASK-010"}) {
+		t.Fatal("already_implemented closed blocker should satisfy dependency")
+	}
+
+	writeTask(t, tasksDir, "TASK-011-cancelled.md", `
+id: "011"
+project: 001-test
+status: closed
+closure_reason: cancelled
+`)
+	if AreBlockersDone(vault, "001-test", []string{"TASK-011"}) {
+		t.Fatal("cancelled closed blocker must not satisfy dependency")
+	}
+
+	writeTask(t, tasksDir, "TASK-012-replacement.md", `
+id: "012"
+project: 001-test
+status: done
+`)
+	writeTask(t, tasksDir, "TASK-013-duplicate.md", `
+id: "013"
+project: 001-test
+status: closed
+closure_reason: duplicate
+replacement_task: TASK-012
+`)
+	if !AreBlockersDone(vault, "001-test", []string{"TASK-013"}) {
+		t.Fatal("duplicate closed blocker should satisfy dependency when replacement is done")
 	}
 }

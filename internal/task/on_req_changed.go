@@ -50,6 +50,7 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 		return nil
 	}
 
+	reqID, _ := ParseReqFilename(reqRelPath)
 	var affected []AffectedResult
 	projEntries, _ := os.ReadDir(projectsDir)
 	for _, proj := range projEntries {
@@ -78,6 +79,17 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 				continue
 			}
 
+
+			if fm.ID == reqID && sameProjectRequirementPath(fm.ReqDoc, reqRelPath) && normalizePath(fm.ReqDoc) != normalizePath(reqRelPath) {
+				updates := requirementChangeUpdates(fm.Status)
+				updates["req_doc"] = normalizeReqDoc(reqRelPath)
+				if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+					fmt.Fprintf(os.Stderr, "Error renaming requirement on %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{TaskID: fm.ID, File: entry.Name(), Action: "rename_req", OldStatus: fm.Status})
+				continue
+			}
 			// Normalize paths for comparison
 			taskReq := normalizePath(fm.ReqDoc)
 			reqPath := normalizePath(reqRelPath)
@@ -202,6 +214,69 @@ func pathsMatch(a, b string) bool {
 	return a == b
 }
 
+func normalizeReqDoc(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	if filepath.Ext(path) == "" {
+		path += ".md"
+	}
+	return path
+}
+
+func sameProjectRequirementPath(oldPath, newPath string) bool {
+	oldClean := strings.Split(normalizeReqDoc(oldPath), "/")
+	newClean := strings.Split(normalizeReqDoc(newPath), "/")
+	return len(oldClean) >= 4 && len(newClean) >= 4 && oldClean[0] == "Projects" && newClean[0] == "Projects" && oldClean[1] == newClean[1]
+}
+
+func requirementChangeUpdates(status string) map[string]interface{} {
+	updates := map[string]interface{}{"pending_req": true}
+	switch status {
+	case "plan-review":
+		updates["status"] = "refining"
+		updates["plan_approved"] = false
+	case "review", "conflict", "done":
+		updates["status"] = "refining"
+		updates["merge_approved"] = false
+	}
+	return updates
+}
+
+func OnReqDeleted(vaultPath, reqRelPath string) []AffectedResult {
+	var affected []AffectedResult
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	projects, _ := os.ReadDir(projectsDir)
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, project.Name(), "Tasks")
+		entries, _ := os.ReadDir(tasksDir)
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || normalizePath(fm.ReqDoc) != normalizePath(reqRelPath) {
+				continue
+			}
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{
+				"status": "blocked", "pending_req": false,
+				"plan_approved": false, "merge_approved": false, "resume_approved": false,
+				"phase_error_code": "REQ_MISSING", "phase_error": "requirement document was deleted",
+			}); err != nil {
+				continue
+			}
+			affected = append(affected, AffectedResult{TaskID: fm.ID, File: entry.Name(), Action: "req_missing", OldStatus: fm.Status})
+		}
+	}
+	return affected
+}
+
 // createTaskForReq auto-creates a TASK file from a new requirement.
 func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	id, slug := ParseReqFilename(reqRelPath)
@@ -219,8 +294,12 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	if targetName == "" {
 		return nil
 	}
-	os.MkdirAll(tasksDir, 0755)
-	os.MkdirAll(reqDir, 0755)
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		return nil
+	}
+	if err := os.MkdirAll(reqDir, 0755); err != nil {
+		return nil
+	}
 
 	if _, err := os.Stat(filepath.Join(tasksDir, targetName)); err == nil {
 		return nil
@@ -237,7 +316,8 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 
 	projName := ""
 	projectID := project_pkg.ExtractProjectID(projectDir)
-	priority := "P2"
+	priority := ""
+	priorityAssessmentStatus := "pending"
 	epic := ""
 	reviewer := ""
 	author := ""
@@ -245,16 +325,16 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	if reqFM != nil {
 		projName = reqFM.Project
 		if reqFM.ProjectID != "" {
-			projectID = reqFM.ProjectID // override from REQ frontmatter if set
+			projectID = reqFM.ProjectID
 		}
 		priority = reqFM.Priority
+		if priority != "" {
+			priorityAssessmentStatus = "completed"
+		}
 		epic = reqFM.Epic
 		reviewer = reqFM.Reviewer
 		author = reqFM.Author
 		tagsList = reqFM.Tags
-	}
-	if priority == "" {
-		priority = "P2"
 	}
 
 	// Resolve project field for vault-map matching.
@@ -286,12 +366,14 @@ id: "%s"
 title: "%s"
 project: "%s"
 project_id: "%s"
+task_schema_version: 1
 template: ""
 status: blocked
 plan_approved: false
 merge_approved: false
 adr_approved: false
 resume_approved: false
+close_approved: false
 pending_req: false
 maturity: ""
 refine_version: 0
@@ -304,9 +386,11 @@ refine_error: ""
 planning_retry_count: 0
 blocked_phase: ""
 phase_error: ""
+phase_error_code: ""
 phase_log: ""
 grill_owner: ""
 grill_started_at: ""
+grill_heartbeat_at: ""
 grill_timeout_minutes: 30
 grill_done: false
 grill_resolution: ""
@@ -318,7 +402,19 @@ off_peak_only: false
 created: "%s"
 updated: "%s"
 completed: ""
-priority: %s
+priority: "%s"
+priority_assessment_status: %s
+priority_assessment_attempts: 0
+priority_assessment_started_at: ""
+priority_assessed_at: ""
+priority_assessed_value: ""
+priority_impact: ""
+priority_urgency: ""
+priority_workaround: ""
+priority_score: 0
+priority_confidence: ""
+priority_reason: ""
+priority_recommendation: ""
 due_date: ""
 estimated_hours: 0
 actual_hours: 0
@@ -335,6 +431,16 @@ blocked_by: []
 target_branch: ""
 pr_url: ""
 target_env: staging
+review_feedback: ""
+rework_resolution: ""
+closure_reason: ""
+closure_note: ""
+replacement_task: ""
+remote_create: false
+github_owner: ""
+repository_name: ""
+repository_visibility: ""
+repository_description: ""
 ---
 
 # TASK-%s: %s
@@ -389,10 +495,9 @@ target_env: staging
 
 ## 变更记录
 1. %s — 任务创建，status=blocked
-`, id, title, projName, projectID, now, now, priority, reviewer, reqRelPath, author, tags, epic,
-		id, title, summary, ac, reqRelPath,
-		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""],
-		"`"+now+"`")
+`, id, title, projName, projectID, now, now, priority, priorityAssessmentStatus,
+		reviewer, reqRelPath, author, tags, epic, id, title, summary, ac, reqRelPath,
+		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""], "`"+now+"`")
 
 	targetPath := filepath.Join(tasksDir, targetName)
 	if err := os.WriteFile(targetPath, []byte(taskMD), 0644); err != nil {
