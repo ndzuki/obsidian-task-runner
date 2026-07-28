@@ -47,15 +47,16 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 
 ### 1.2 Skill 安装
 
-`otg install` 必须把以下五个 Skill 安装为 `~/.omp/skills/` 下的顶层独立 Skill，并创建对应的 agent skill symlink：
+`otg install` 必须把以下 Skill 安装为 `~/.omp/skills/` 下的顶层独立 Skill（真实文件，非 symlink）：
 
 - `obsidian-task-runner`
 - `obsidian-task-runner-refining`
 - `obsidian-task-runner-round1`
 - `obsidian-task-runner-round2`
-
-`--force` 安装时 `installSkill` 在 `os.RemoveAll(dest)` 前备份 `config/vault-map.json`，`copyDir` 后恢复原文件。`generateVaultMap` 对已有配置文件只 merge 新默认字段，不覆盖 `projects`、`models` 等用户值。
 - `obsidian-task-runner-merge`
+- `obsidian-task-runner-priority`
+
+子 Skill 同时安装到 `~/.omp/skills/obsidian-task-runner/skills/` 作为 daemon 直读副本。两个位置的内容必须一致。`--force` 安装时 `installSkill` 在 `os.RemoveAll(dest)` 前备份 `config/vault-map.json`，`copyDir` 后恢复原文件。`generateVaultMap` 对已有配置文件只 merge 新默认字段，不覆盖 `projects`、`models` 等用户值。
 
 外部依赖 Skill：
 
@@ -641,8 +642,7 @@ grill_prev_status: ""
 - [ ] Kitty 不可用时保持 needs-grilling 并周期重试。
 
 ### AC-12 安装
-
-- [ ] installer 安装 task-runner 五件套为顶层 Skill。
+- [ ] installer 安装 task-runner 全部顶层 Skill（共 6 个：core、refining、round1、round2、merge、priority）。
 - [ ] 所有 `skill://obsidian-task-runner-*` 在隔离 HOME 可解析。
 - [ ] 外部依赖缺失时 fail-fast。
 - [ ] `skill-doctor check` 在完整安装后返回 0。
@@ -863,9 +863,8 @@ grill_prev_status: ""
 - install 测试
 
 **变更**：
-
-1. 安装 core/refining/round1/round2/merge 为顶层 Skill。
-2. 为五件套创建 agent skill symlink。
+1. 安装 core/refining/round1/round2/merge/priority 为顶层 Skill（真实文件副本，非 symlink），同时写入 `skills/` 子目录供 daemon 直读。
+2. 验证顶层与嵌套副本内容一致（`diff -r` 无差异）。
 3. 外部依赖缺失时 `otg install` 返回非零并输出安装命令。
 4. 隔离 HOME 下验证所有 skill:// 可解析。
 

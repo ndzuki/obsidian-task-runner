@@ -35,7 +35,7 @@ flowchart TD
 
     subgraph "install 模式"
         Install --> Systemd[systemd 单元部署]
-        Install --> Symlink[OMP symlink 配置]
+        Install --> SkillDeploy[Skill 文件部署（真实副本）]
         Install --> Env[环境变量配置]
     end
 ```
