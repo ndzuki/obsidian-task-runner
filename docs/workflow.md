@@ -71,16 +71,17 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 
 ```mermaid
 stateDiagram-v2
-    [*] --> blocked: 自动创建 TASK
-    blocked --> ready: 字段完整且依赖满足
+    [*] --> blocked: 自动创建 TASK (priority_assessment_status=pending)
+    blocked --> ready: priority_assessment 完成 + 字段完整 + 依赖满足
     blocked --> refining: resume_approved=true and blocked_phase=refining
     blocked --> planning: resume_approved=true and blocked_phase=planning
     blocked --> implementing: resume_approved=true and blocked_phase=implementing
 
-    ready --> refining: daemon 拾取
+    ready --> refining: daemon 拾取 (首次调度前有界等待 priority_assessment)
 
     refining --> planning: maturity=fully_mature
     refining --> needs_grilling: maturity=mostly_mature or immature
+    refining --> wayfinder: 大型需求 (AC>10 / 3+服务) → 拆成决策票
     refining --> blocked: 自动恢复一次后再次失败
 
     needs_grilling --> needs_grilling: owner 有效 / Kitty 不可用 / resolution 为空
@@ -93,20 +94,25 @@ stateDiagram-v2
 
     plan_review --> implementing: plan_approved=true
     plan_review --> plan_review: 等待人工批准
+    plan_review --> closed: [*] rework_resolution=close + close_approved=true
 
-    implementing --> needs_grilling: 实现阻塞需要用户决策
+    implementing --> needs_grilling: 实现阻塞需要用户决策 (含 Prototype FAIL)
     implementing --> refining: pending_req，在当前 AC 完成并 checkpoint 后
     implementing --> review: 全部 AC、测试和验收完成
 
-    review --> refining: pending_req=true
-    review --> done: merge_approved=true and pending_req=false
+    review --> refining: pending_req=true or rework_resolution=replan
+    review --> implementing: rework_resolution=resume
+    review --> done: merge_approved=true and pending_req=false (含 checks 等待)
     review --> conflict: Merge 冲突
+    review --> closed: [*] rework_resolution=close + close_approved=true
 
     conflict --> refining: pending_req=true，取消旧 Merge
     conflict --> done: merge_approved=true and pending_req=false
 
     done --> refining: pending_req=true
     done --> [*]: pending_req=false
+
+    closed --> [*]: 终态
 ```
 
 ## 3. 状态语义
@@ -115,14 +121,15 @@ stateDiagram-v2
 |------|--------|----------|----------|
 | `blocked` | 缺字段、依赖未完成，或阶段连续失败 | daemon / 人工 | `ready`、`refining`、`planning` 或 `implementing` |
 | `ready` | 可以开始规格成熟度检查 | daemon | `refining` |
-| `refining` | 正在执行 headless maturity gate | default model | `planning` 或 `needs-grilling` |
+| `refining` | 正在执行 headless maturity gate | default model | `planning`、`needs-grilling` 或 `wayfinder` |
 | `needs-grilling` | 等待用户交互补充规格或解决实现阻塞 | Kitty + requirement-elaborator/用户 | `refining` 或恢复 `grill_prev_status` |
 | `planning` | 规格已成熟，正在生成版本化实现计划 | Round 1 Skill | `plan-review` |
-| `plan-review` | 具体 `plan_version` 已存在，等待或已获得批准 | 人工 Gate | `implementing` |
-| `implementing` | 在任务 worktree 执行已批准计划 | Round 2 Skill | `review`、`refining` 或 `needs-grilling` |
-| `review` | 本地实现已提交，等待 Merge 授权 | 人工 Gate | `done`、`conflict` 或 `refining` |
+| `plan-review` | 具体 `plan_version` 已存在，等待或已获得批准 | 人工 Gate | `implementing` 或 `closed` |
+| `implementing` | 在任务 worktree 执行已批准计划（含 Prototype Gate） | Round 2 Skill | `review`、`refining` 或 `needs-grilling` |
+| `review` | 本地实现已提交，等待 Merge 授权 | 人工 Gate | `done`、`conflict`、`refining`、`implementing` 或 `closed` |
 | `conflict` | Merge 冲突且旧授权已失效 | 人工 + Merge Skill | `done` 或 `refining` |
 | `done` | 已合并并推送；仅 `pending_req=false` 时终态 | — | `refining` 或终止 |
+| `closed` | 无需交付（已实现/重复/取消/不予处理） | 人工 Gate | 终态，不可恢复 |
 
 ### 3.1 提前审批
 

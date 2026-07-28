@@ -23,20 +23,21 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - `skill://domain-modeling`
 - `skill://diagnosing-bugs`
 - `skill://test-quality`
+- `skill://knowledge-base`
 
 ## Status Routing（状态路由）
 | status | 行为 |
 |--------|------|
 | `blocked` | 等待字段/依赖，或 `resume_approved=true` 后恢复 `blocked_phase` |
-| `ready` | daemon 转 `refining` |
-| `refining` | daemon 直接调用 refining Skill，使用 models.default |
-| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；成功路由后清 grilling 临时字段 |
+| `ready` | daemon 转 `refining`（首次调度前有界等待 priority_assessment） |
+| `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求→wayfinder 拆分 |
+| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue） |
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
-| `plan-review` | 等待 plan_approved；批准后进入 Round 2 |
-| `implementing` | daemon 直接调用 Round 2 Skill，使用 task worktree |
-| `review` / `conflict` | pending_req 优先；否则 merge_approved 后调用 Merge Skill |
+| `plan-review` | 等待 plan_approved→Round 2；或 close_approved→closed |
+| `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate |
+| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；rework=close→closed；否则 merge_approved 后调用 Merge Skill |
 | `done` | pending_req=true 时回 refining，否则终态 |
-
+| `closed` | 无需交付终态（Bets, Not Backlogs）。closure_reason: not-bet（评估后不下注）/ already-implemented / duplicate / cancelled / wont-fix。不可自动恢复。重要需求会以新 REQ 形式回来——不维护积压。 |
 ## Core Invariants（核心不变量）
 1. MUST route initial tasks through `ready → refining`；REQ 变更按当前状态设置 pending_req 并安全回 refining。
 2. Maturity Gate MUST be fully_mature to enter planning；其他进入 Grilling。
@@ -50,6 +51,9 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 10. MUST NOT create directories during planning for new projects；Round 2 才创建。
 11. MUST NOT push during Round 1/Round 2；Merge Phase 才允许远程操作。
 12. MUST use system local time for all timestamps。
+13. **MUST audit code against skill docs on every skill change** — 每次修改本 SKILL.md 或任何阶段 skill 文档时，必须同时审查 Go 代码（`internal/`、`pkg/`）是否实现了文档描述的能力。发现文档超前于代码的缺口，在计划中标注为"代码追赶项"并阻塞 plan-review。
+14. Frontmatter struct (`pkg/yamlfrontmatter/frontmatter.go`) MUST declare all fields referenced in TASK frontmatter schema.
+15. `IsReady()` MUST explicitly handle every status value in the status routing table.
 
 ## IDs & Dependencies（ID与依赖）
 - 数字 ID 项目内唯一。

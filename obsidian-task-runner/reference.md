@@ -8,12 +8,16 @@
 
 ```text
 blocked → ready → refining ─┬─ fully_mature → planning → plan-review → implementing → review → done
-                            └─ needs input → needs-grilling → refining
+                            ├─ needs input → needs-grilling → refining
+                            └─ 大型需求 → wayfinder（拆决策票）
 
 refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
-review/conflict/done -- pending_req --> refining
+implementing -- prototype FAIL → needs-grilling（带原型证据）
 review -- merge conflict --> conflict -- approved retry --> done
+plan-review -- close_approved --> closed
+review -- close_approved --> closed
+closed -- [终态，不可恢复]
 ```
 
 ## 2. 状态定义
@@ -28,6 +32,7 @@ review -- merge conflict --> conflict -- approved retry --> done
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` |
 | `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
 | `review` | 本地实现已提交，等待 Merge 授权 | 人工 | `done` / `conflict` / `refining` |
+| `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
 | `conflict` | Merge 冲突 | 人工 + Merge Skill | `done` / `refining` |
 | `done` | 已合并推送；pending_req=false 时终态 | — | `refining` 或结束 |
 
@@ -37,6 +42,9 @@ review -- merge conflict --> conflict -- approved retry --> done
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；其他状态的 true 自动清 false |
 | `merge_approved` | 审阅实现后设 true | `pending_req=true` 时绝对无效 |
+| `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
+| `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
+| `review_feedback` | review 阶段人工反馈摘要 | free text，`review` 状态下有效 |
 | `adr_approved` | 系统自动管理 | daemon 在 plan-review→implementing 时自动设为 true；Round 2 写 ADR 后清 false |
 
 ## 4. Frontmatter Schema
@@ -51,7 +59,8 @@ review -- merge conflict --> conflict -- approved retry --> done
 | `assignee` | string | planning/Round 2/Merge 模型 key |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
-| `template` | string | 新项目脚手架提示 |
+| `template` | string | 新项目脚手架提示（已弃用，见 `scaffold_intent`） |
+| `scaffold_intent` | string | 新项目脚手架意图描述，结构化技术栈/框架/构建/部署 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 只跳过首次既有项目计划的 Plan Review |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
@@ -86,6 +95,7 @@ Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得�
 |------|------|--------|------|
 | `blocked_phase` | string | `""` | `refining`、`planning` 或 `implementing` |
 | `phase_error` | string | `""` | 阶段失败原因 |
+| `phase_error_code` | string | `""` | 阶段失败机器可读错误码 |
 | `phase_log` | string | `""` | 对应日志路径 |
 | `resume_approved` | bool | `false` | 人工恢复授权 |
 
@@ -98,6 +108,7 @@ Refining/planning 第一次失败自动恢复；再次失败转 blocked。阶段
 | `grill_owner` | string | `""` | 当前交互会话 owner |
 | `grill_started_at` | ISO8601 | `""` | owner 获取时间 |
 | `grill_timeout_minutes` | int | `30` | 可配置 lease 超时 |
+| `grill_heartbeat_at` | ISO8601 | `""` | 最近心跳时间，用于 lease 存活检测 |
 | `grill_done` | bool | `false` | 规格写回完成标记 |
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
@@ -109,7 +120,7 @@ Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使�
 
 Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_context`、`grill_prev_status`，防止重复路由。
 
-### 4.6 需求变更与 Merge
+#### 4.6.1 需求变更与 Merge
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -120,7 +131,7 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 
 `pending_req` 仅在新 planning 成功后清 false。
 
-### 4.7 ADR（架构决策记录）
+#### 4.6.2 ADR（架构决策记录）
 
 ADR 是项目的架构宪法。三个原则：
 1. **决策前读 ADR** — Round 1 规划的第一步是读全部已有 ADR，新计划不能与已确立决策冲突。
@@ -134,7 +145,7 @@ ADR 是项目的架构宪法。三个原则：
 | `adr_written` | list | `[]` | 已写入 `Notes/adr/` 的 ADR 文件名列表 |
 
 ADR 生命周期：Round 1 读取已有 ADR → 检测新架构决策 → 写入 `adr_proposed` → daemon 自动授权 `adr_approved=true` → Round 2 在实现前写入 ADR 文件 → 全部 AC 完成后更新 `adr_written` 并清 `adr_proposed`/`adr_approved`。
-### 4.8 文档校验
+#### 4.6.3 文档校验（CLI 命令）
 
 | 命令 | 覆盖 |
 |------|------|
@@ -143,9 +154,9 @@ ADR 生命周期：Round 1 读取已有 ADR → 检测新架构决策 → 写入
 | `otg write-adr` | 原子写 ADR + fsync + validate |
 | `otg validate-adr` | ADR frontmatter 结构校验 |
 
-Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md` 变更，调用 `ValidateDocument` 兜底检测 memory.md、CONTEXT.md 等非 TASK 文件的损坏。
+Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md` 变更，调用 `ValidateDocument` 兜底检测 CONTEXT.md、ADR 等非 TASK 文件的损坏。
 
-### 4.9 CONTEXT.md 自动维护
+#### 4.6.4 CONTEXT.md 自动维护
 
 项目的 `Notes/CONTEXT.md` 是共享领域词汇表，由两个阶段自动维护：
 
@@ -154,7 +165,65 @@ Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md
 
 append-only，不覆盖已有条目。`pipeline.EnsureContextMD` 在项目初始化时创建骨架模板。
 
-### 4.10 Daemon 上下文注入
+#### 4.6.5 Priority Assessment（优先级评定）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `priority` | string | `""` | 优先级标签，人工或自动填写 |
+| `priority_assessment_status` | string | `""` | `pending` / `in_progress` / `done` |
+| `priority_impact` | string | `""` | 影响范围描述 |
+| `priority_urgency` | string | `""` | 紧急程度描述 |
+| `priority_workaround` | string | `""` | 已知变通方案 |
+| `priority_score` | int | `0` | 综合优先级分数 |
+| `priority_confidence` | float | `0.0` | 评定置信度 0.0–1.0 |
+| `priority_reason` | string | `""` | 评定理由 |
+| `priority_recommendation` | string | `""` | 推荐处理策略 |
+| `priority_assessed_value` | string | `""` | 评定结果值 |
+| `priority_assessed_at` | ISO8601 | `""` | 评定完成时间 |
+| `priority_assessment_attempts` | int | `0` | 评定重试次数 |
+| `priority_assessment_started_at` | ISO8601 | `""` | 评定开始时间 |
+
+Priority Assessment 由 daemon 在 refining 阶段触发，评定完成后写入结果字段。`priority_score` 用于调度排序。
+
+#### 4.6.6 Closed 终态字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `closure_reason` | string | `""` | 关闭原因：`completed` / `rejected` / `duplicate` / `wont_fix` |
+| `closure_note` | string | `""` | 关闭备注 |
+| `replacement_task` | string | `""` | 替代任务 ID（`project:TASK-NNN` 格式） |
+
+`closed` 是终态，不可恢复。`closure_reason` 提供审计追溯。
+
+#### 4.6.7 Scaffold Intent（脚手架意图）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `scaffold_intent` | string | `""` | 新项目脚手架意图描述，替代原 `template` 自由文本字段 |
+
+`scaffold_intent` 结构化描述新项目技术栈、框架、构建系统和部署目标，供 `project-scaffold` Skill 消费。原 `template` 字段保留向后兼容但优先使用 `scaffold_intent`。
+
+#### 4.6.8 GitHub Remote Creation（远程仓库创建）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `remote_create` | bool | `false` | 是否在 GitHub 创建远程仓库 |
+| `github_owner` | string | `""` | GitHub owner（用户或组织名） |
+| `repository_name` | string | `""` | 仓库名 |
+| `repository_visibility` | string | `"private"` | `private` / `public` / `internal` |
+| `repository_description` | string | `""` | 仓库描述 |
+
+`remote_create=true` 时 daemon 在 Round 2 开始前通过 GitHub API 创建远程仓库并设置 `origin`。
+
+#### 4.6.9 文档校验字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `task_schema_version` | int | `1` | TASK frontmatter schema 版本号，用于迁移和兼容性校验 |
+
+`otg validate-doc` 读取 `task_schema_version` 决定校验规则集。版本升级时 `otg repair-doc` 可自动迁移字段。
+
+### 4.7 Daemon 上下文注入
 
 Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle 注入到 prompt 头部（`[Project Context]`），agent 第一屏即可见，无需手动读文件。
 

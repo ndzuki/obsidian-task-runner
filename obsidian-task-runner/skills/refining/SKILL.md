@@ -61,12 +61,16 @@ refine_error: ""
 
 ## Step 4: Dispatch by Maturity（状态分流）
 
-### fully_mature
+### 4a: 大型需求 → wayfinder 决策地图
 
-```bash
-otg update-status \<task\> status=planning grill_done=false
-```
+在进入 needs-grilling 之前，若满足以下任一条件，先加载 `skill://wayfinder`：
+- AC > 10 条
+- 涉及 3 个以上服务/模块
+- `depends_on` 有 3 个以上未解决的依赖
 
+wayfinder 将模糊大需求拆成决策票，每张票独立可解决。输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
+
+### 4b: fully_mature
 ### mostly_mature / immature
 
 **MUST** write all failed items to `grill_context`. Include specific context so the user and requirement-elaborator have full information during grilling:
@@ -96,6 +100,62 @@ Follow-up dimensions:
 ```
 
 > **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a Kitty tab on the next scan.
+
+## Step 4.5: Async Grilling（异步 Grilling）
+
+When dispatching to `needs-grilling`, write pending questions directly into the
+TASK file so the user can answer offline without blocking the pipeline.
+
+### Write Grilling Questions
+
+1. Append a `## Grilling 待回答` section to the TASK file containing all
+   pending questions extracted from `grill_context`.
+2. Format:
+
+```markdown
+## Grilling 待回答
+
+> 成熟度: <maturity> | refine 版本: <refine_version> | 时间: <ISO8601>
+
+待确认问题：
+
+- **<问题标题>**：<具体发现 + 证据>
+  - 上下文：<引用 ADR 或 CONTEXT.md 的相关段落>
+  - 建议方向：<elaborator 应追问的方向>
+```
+
+3. Include every failed maturity check with its specific finding and evidence.
+4. Include ADR consistency failures with the conflicting ADR reference.
+
+### User Offline Workflow
+
+1. User opens the TASK file and reads `## Grilling 待回答`.
+2. User fills answers directly in this section (free-form markdown).
+3. After answering all questions, user sets `grill_continue: true` in frontmatter:
+   ```bash
+   otg update-status <task> grill_continue=true
+   ```
+
+### Daemon Handling
+
+1. On the next poll cycle, daemon detects `grill_continue=true` in `needs-grilling`
+   status.
+2. Daemon resets the task to `status=refining` with `grill_continue=false`,
+   `grill_done=false`.
+3. The maturity gate re-runs with the user's answers available in the TASK file.
+4. If the answers are sufficient, the gate passes (`fully_mature`) and the task
+   proceeds to `planning`.
+5. If further clarification is needed, the refined gate writes new questions
+   (overwriting the old `## Grilling 待回答` section).
+
+### Kitty Tab
+
+Kitty tab creation is still attempted as a non-blocking best-effort action. If
+the user has a Kitty terminal available, real-time interactive grilling proceeds
+as before. If not, the offline workflow above handles it gracefully.
+
+> **核心原则**：Grilling 不阻塞流程。用户离线填写答案后 daemon 自动恢复。
+
 ## Step 5: Failure Semantics（失败语义）
 
 本 Skill 返回非零时不要自行无限重试。Daemon 管理：

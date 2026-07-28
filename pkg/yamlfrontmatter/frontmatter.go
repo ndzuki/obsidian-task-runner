@@ -34,7 +34,7 @@ type Frontmatter struct {
 	ProjectID       string   `yaml:"project_id"`
 	NewProject      bool     `yaml:"new_project"`
 	Template        string   `yaml:"template"`
-	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done
+	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done, closed
 	PlanApproved    bool     `yaml:"plan_approved"`
 	MergeApproved   bool     `yaml:"merge_approved"`
 	AdrApproved     bool     `yaml:"adr_approved"`
@@ -84,16 +84,46 @@ type Frontmatter struct {
 	PhaseLog       string `yaml:"phase_log"`
 	BlockedPhase   string `yaml:"blocked_phase"` // refining | planning | implementing
 	ResumeApproved bool   `yaml:"resume_approved"`
+	PhaseErrorCode string `yaml:"phase_error_code"` // stable machine-readable error code
 
 	// ── Grilling ownership ──
 	GrillOwner          string `yaml:"grill_owner"`
 	GrillStartedAt      string `yaml:"grill_started_at"`
 	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
+	GrillHeartbeatAt    string `yaml:"grill_heartbeat_at"` // last activity timestamp
 	GrillResolution     string `yaml:"grill_resolution"` // resume | replan | ""
+	GrillContinue       bool   `yaml:"grill_continue"`   // async grilling trigger
 
 	// ── Checkpoint / refine ──
 	CheckpointCommit string `yaml:"checkpoint_commit"`
 	ReqRefineCount   int    `yaml:"req_refine_count"`
+
+	// ── Closed terminal ──
+	CloseApproved   bool   `yaml:"close_approved"`
+	ClosureReason   string `yaml:"closure_reason"`   // already_implemented | duplicate | cancelled | wont_fix
+	ClosureNote     string `yaml:"closure_note"`
+	ReplacementTask string `yaml:"replacement_task"` // if closure_reason=duplicate
+
+	// ── Review rework ──
+	ReviewFeedback   string `yaml:"review_feedback"`
+	ReworkResolution string `yaml:"rework_resolution"` // resume | replan | close
+
+	// ── Priority Assessment ──
+	PriorityAssessmentStatus    string `yaml:"priority_assessment_status"`    // pending | running | completed | failed
+	PriorityAssessmentAttempts  int    `yaml:"priority_assessment_attempts"`
+	PriorityAssessmentStartedAt string `yaml:"priority_assessment_started_at"`
+	PriorityAssessedAt          string `yaml:"priority_assessed_at"`
+	PriorityAssessedValue       string `yaml:"priority_assessed_value"`
+	PriorityImpact              string `yaml:"priority_impact"`       // critical | high | medium | low
+	PriorityUrgency             string `yaml:"priority_urgency"`      // immediate | near_term | normal | deferred
+	PriorityWorkaround          string `yaml:"priority_workaround"`   // none | partial | effective
+	PriorityScore               int    `yaml:"priority_score"`
+	PriorityConfidence          string `yaml:"priority_confidence"`   // high | medium | low
+	PriorityReason              string `yaml:"priority_reason"`
+	PriorityRecommendation      string `yaml:"priority_recommendation"` // P0 recommendation
+
+	// ── Schema version ──
+	TaskSchemaVersion int `yaml:"task_schema_version"`
 
 	// Extra holds any YAML keys not explicitly mapped above.
 	Extra map[string]any `yaml:",inline"`

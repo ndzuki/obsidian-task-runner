@@ -171,6 +171,12 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 					TaskID: fm.ID, File: entry.Name(),
 					Action: "pending_req", OldStatus: fm.Status,
 				})
+			case "closed":
+				// closed is terminal; REQ change does not reopen
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "warn_only", OldStatus: fm.Status,
+				})
 			default:
 				affected = append(affected, AffectedResult{
 					TaskID: fm.ID, File: entry.Name(),
