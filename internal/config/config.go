@@ -10,6 +10,7 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
+	ConfigVersion      int         `json:"config_version"`
 	ObsidianVault      string      `json:"obsidian_vault"`
 	NewProjectRoot     string      `json:"new_project_root"`
 	Projects           []Project   `json:"projects"`
@@ -23,8 +24,37 @@ type Config struct {
 	OMPCmd string `json:"omp_cmd"`
 	LogDir string `json:"log_dir,omitempty"`
 
+	// Phase timeouts (minutes)
+	PhaseTimeoutsMinutes map[string]int `json:"phase_timeouts_minutes,omitempty"`
+	ShutdownGraceSeconds int            `json:"shutdown_grace_seconds"`
+
+	// Off-peak schedule
+	OffPeakTimezone string          `json:"off_peak_timezone,omitempty"`
+	OffPeakWindows  []OffPeakWindow `json:"off_peak_windows,omitempty"`
+
+	// Starvation warnings
+	StarvationWarningDays map[string]int `json:"starvation_warning_days,omitempty"`
+
+	// Registries
+	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
+	TemplateRegistry map[string]interface{}         `json:"template_registry,omitempty"`
+
 	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
+}
+
+// OffPeakWindow defines a time window for off-peak scheduling.
+type OffPeakWindow struct {
+	Start string `json:"start"` // "00:00"
+	End   string `json:"end"`   // "09:00"
+}
+
+// ScaffoldCapability defines a registered scaffold capability.
+type ScaffoldCapability struct {
+	Description string   `json:"description"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Conflicts   []string `json:"conflicts,omitempty"`
+	Requires    []string `json:"requires,omitempty"`
 }
 
 // Project defines a project mapping.
@@ -70,13 +100,30 @@ func ModelReference() string {
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		NewProjectRoot:     filepath.Join(home, "src"),
-		PollIntervalMin:    30,
-		MaxConcurrentTasks: 2,
-		SkillInstallDir:    filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
-		Models:             DefaultModels(),
-		OMPCmd:             "omp",
-		Notifications:      NotifConfig{Desktop: true},
+		ConfigVersion:        1,
+		NewProjectRoot:       filepath.Join(home, "src"),
+		PollIntervalMin:      30,
+		MaxConcurrentTasks:   2,
+		ShutdownGraceSeconds: 30,
+		OffPeakTimezone:      "Asia/Shanghai",
+		OffPeakWindows: []OffPeakWindow{
+			{Start: "00:00", End: "09:00"},
+			{Start: "12:00", End: "14:00"},
+			{Start: "18:00", End: "24:00"},
+		},
+		StarvationWarningDays: map[string]int{"P3": 14, "P4": 30},
+		PhaseTimeoutsMinutes: map[string]int{
+			"priority": 5,
+			"refining": 15,
+			"planning": 30,
+			"round2":   60,
+			"merge":    15,
+		},
+		SkillInstallDir: filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		LogDir:          filepath.Join(home, ".omp", "logs"),
+		Models:          DefaultModels(),
+		OMPCmd:          "omp",
+		Notifications:   NotifConfig{Desktop: true},
 	}
 }
 

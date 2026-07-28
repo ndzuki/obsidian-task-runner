@@ -28,13 +28,15 @@ import (
 )
 
 type Runner struct {
-	cfg           *config.Config
-	logger        *log.Logger
-	logWriter     *logutil.RotatingWriter
-	taskRuns      sync.Map
-	repoLocks     sync.Map
-	scanMu        sync.Mutex // prevents overlapping scanAndProcess calls
-	worktreeCache sync.Map   // taskRunKey → worktreePath (parallel warmup)
+	cfg             *config.Config
+	logger          *log.Logger
+	logWriter       *logutil.RotatingWriter
+	taskRuns        sync.Map
+	repoLocks       sync.Map
+	scanMu          sync.Mutex // prevents overlapping scanAndProcess calls
+	worktreeCache   sync.Map   // taskRunKey → worktreePath (parallel warmup)
+	initialScanDone bool
+	daemonCtx       context.Context // bound to daemon lifecycle; cancelled on shutdown
 }
 
 type preparedTask struct {
@@ -51,13 +53,14 @@ type taskResult struct {
 }
 
 func New(cfg *config.Config) *Runner {
-	return &Runner{cfg: cfg}
+	return &Runner{cfg: cfg, daemonCtx: context.Background()}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
 	}
+	r.daemonCtx = ctx
 	defer r.logWriter.Close()
 
 	if r.cfg.ObsidianVault == "" {
@@ -82,6 +85,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Run an initial scan to catch any tasks that became ready while daemon was down
 	go func() {
 		time.Sleep(2 * time.Second) // let watcher initialize
+		if r.initialScanDone {
+			r.logger.Printf("startup scan already completed, skipping")
+			return
+		}
 		r.logger.Printf("running startup scan")
 		if err := r.scanAndProcess(); err != nil {
 			r.logger.Printf("startup scan error: %v", err)
@@ -92,6 +99,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	r.scanAndProcess()
+	r.initialScanDone = true
 
 	for {
 		select {
@@ -119,7 +127,16 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 			time.Sleep(3 * time.Second) // wait for cloud-sync flush
-			r.scanAndProcess()
+			if evt.Dir == "Tasks" {
+				if rt, err := task.FindReadyTaskForFile(r.cfg.ObsidianVault, evt.Path); err != nil {
+					r.logger.Printf("watcher: FindReadyTaskForFile error: %v", err)
+				} else if rt != nil {
+					r.logger.Printf("watcher: task %s (%s) is ready, dispatching", rt.ID, rt.Status)
+					r.scanAndProcess()
+				}
+			} else {
+				r.scanAndProcess()
+			}
 		case <-ticker.C:
 			r.logger.Println("timer: periodic scan")
 			r.scanAndProcess()
@@ -178,9 +195,14 @@ func (r *Runner) scanAndProcess() error {
 		if r.processBatch(tasks) == 0 {
 			break
 		}
-		// Wait for cloud-sync filesystems to flush OMP's writes before re-scanning
-		time.Sleep(3 * time.Second)
-		tasks, _ = task.FindReadyTasks(r.cfg.ObsidianVault)
+		// Adaptive polling: check every 500ms for cloud-sync flush before re-scanning
+		for range 12 {
+			time.Sleep(500 * time.Millisecond)
+			tasks, _ = task.FindReadyTasks(r.cfg.ObsidianVault)
+			if len(tasks) > 0 {
+				break
+			}
+		}
 		if len(tasks) == 0 {
 			break
 		}
@@ -271,7 +293,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			pending = append(pending, preparedTask{task: t, exclusive: false})
 			continue
 		}
-		if t.Status == "refining" || t.Status == "planning" || t.Status == "blocked" {
+		if t.Status == "refining" || t.Status == "planning" || t.Status == "blocked" || t.Status == "wayfinder" {
 			pending = append(pending, preparedTask{task: t, exclusive: false})
 			continue
 		}
@@ -390,7 +412,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if err := r.updateTask(t, map[string]interface{}{"plan_approved": false}); err != nil {
 				continue
 			}
-			}
+		}
 
 		repoDir, err := r.resolveRepo(t)
 		if err != nil {
@@ -483,6 +505,13 @@ func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[
 }
 
 // validatePhaseCompletion checks that the task file is structurally valid after
+// a phase has run.
+func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
+	if err := yamlfrontmatter.Validate(taskPath); err != nil {
+		return fmt.Errorf("task %s: frontmatter corrupt after %s: %w", taskID, phase, err)
+	}
+	return nil
+}
 
 // validateChangedDocs scans git-tracked .md files modified in the working tree
 // since the last commit and validates them with ValidateDocument. Corrupted
@@ -521,12 +550,6 @@ func gitDiffNameOnly(repoDir string) ([]string, error) {
 		return nil, nil
 	}
 	return lines, nil
-}
-func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
-	if err := yamlfrontmatter.Validate(taskPath); err != nil {
-		return fmt.Errorf("task %s: frontmatter corrupt after %s: %w", taskID, phase, err)
-	}
-	return nil
 }
 
 func taskRunKey(taskPath string) string {
@@ -610,6 +633,13 @@ func gitCurrentBranch(workDir string) (string, error) {
 		return "", fmt.Errorf("resolve worktree branch: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// reqHashChanged reports whether the requirement document hash differs between
+// refine_req_hash and plan_req_hash, indicating the requirement changed after
+// the last plan was generated.
+func reqHashChanged(t task.ReadyTask) bool {
+	return t.RefineReqHash != "" && t.PlanReqHash != "" && t.RefineReqHash != t.PlanReqHash
 }
 
 func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {
@@ -723,12 +753,26 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, model)
 		case t.Status == "refining":
 			model = r.cfg.Model("default")
-			skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
-			r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
+			// ── Refining early-out: skip to planning if fully_mature and hash unchanged ──
+			if t.Maturity == "fully_mature" && !reqHashChanged(t) {
+				r.logger.Printf("task %s: fully mature, req hash unchanged → planning", t.ID)
+				phase = "planning"
+				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
+			} else {
+				skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
+				r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
+			}
 		case t.Status == "planning":
-			phase = "planning"
-			skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
-			r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
+			// ── Planning hash guard: redirect to refining if pending_req or hash changed ──
+			if t.PendingReq || reqHashChanged(t) {
+				r.logger.Printf("task %s: pending_req or req hash changed → refining", t.ID)
+				model = r.cfg.Model("default")
+				skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
+			} else {
+				phase = "planning"
+				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
+				r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
+			}
 		case isMerge:
 			phase = "merge"
 			skillPrompt = "/obsidian-task-runner-merge " + t.FilePath
@@ -826,8 +870,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Dir = repoDir
 		if f != nil {
 			cmd.Stdout = io.MultiWriter(f, os.Stderr)
@@ -885,7 +930,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				fallbackArgs := []string{"--model", fallbackModel}
 				fallbackArgs = append(fallbackArgs, args[2:]...) // skip --model and old model value
 
-				fbCtx, fbCancel := context.WithTimeout(context.Background(), timeout)
+				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
 				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
 				retryCmd.Dir = repoDir
 				if f != nil {

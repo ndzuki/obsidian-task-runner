@@ -97,7 +97,7 @@ func BuildProjectContext(projectVaultDir, reqPath string) string {
 		var sb strings.Builder
 		sb.WriteString("## Architecture Decisions\n")
 		for _, a := range selectedADRs {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s — %s\n", a.ID, a.Title, a.Decision))
+			sb.WriteString(fmt.Sprintf("- **%s**: %s — %s\n", a.ID, a.Title, truncateDef(a.Decision, 120)))
 		}
 		parts = append(parts, strings.TrimSuffix(sb.String(), "\n"))
 	}
@@ -368,7 +368,10 @@ func extractADRDecision(content string) string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Take first sentence.
+		// Take first sentence — English period or Chinese period.
+		if dot := strings.Index(line, "。"); dot > 0 {
+			return line[:dot+len("。")]
+		}
 		if dot := strings.Index(line, "."); dot > 0 {
 			return line[:dot+1]
 		}
@@ -431,7 +434,7 @@ func dynamicTermCount(parts []string, adrCount int) int {
 		baseBytes += len(p)
 	}
 	// Rough budget: 750 bytes total, minus base sections, minus ADR allocation.
-	budget := 750 - baseBytes - adrCount*200
+	budget := 750 - baseBytes - adrCount*300
 	if budget < 100 {
 		return 1 // at least one term for orientation
 	}

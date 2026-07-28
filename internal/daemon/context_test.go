@@ -1,23 +1,28 @@
 package daemon
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestBuildProjectContext_ReleaseManager(t *testing.T) {
-	projectVaultDir := "/home/nd/nutstore/Vault/Projects/001-release-manager"
-	reqPath := "/home/nd/nutstore/Vault/Projects/001-release-manager/Requirements/REQ-061-install-sdk-quality.md"
+	dir := t.TempDir()
 
-	ctx := BuildProjectContext(projectVaultDir, reqPath)
+	// Create a minimal CONTEXT.md with constraints, anti-patterns, and domain terms.
+	notesDir := dir + "/Notes"
+	os.MkdirAll(notesDir, 0755)
+	os.WriteFile(notesDir+"/CONTEXT.md", []byte("## Development Constraints\n- SDK-only: 运行时只使用 Go SDK\n- 技术栈: Go 1.26+\n\n## Anti-patterns\n- 禁止数据库直读写\n\n## Language\n**ReleaseDefinition**: 发布目标定义\n**ReleaseBundle**: 发布内容\n**ValuesRevision**: 配置快照\n"), 0644)
+
+	// Create a REQ file with keywords.
+	reqPath := dir + "/REQ.md"
+	os.WriteFile(reqPath, []byte("# REQ\n\nReleaseDefinition 和 ValuesRevision 需要 SDK-only 约束\n"), 0644)
+
+	ctx := BuildProjectContext(dir, reqPath)
 	if ctx == "" {
-		t.Fatal("expected non-empty context for release-manager project")
+		t.Fatal("expected non-empty context")
 	}
-	// Always log the full context for inspection.
 	t.Logf("\n=== Generated Context (%d bytes) ===\n%s\n=== End ===", len(ctx), ctx)
-
-	t.Logf("context: %d bytes", len(ctx))
-	t.Logf("\n%s", ctx)
 
 	// Must contain constraints
 	if !strings.Contains(ctx, "SDK-only") {
@@ -27,7 +32,7 @@ func TestBuildProjectContext_ReleaseManager(t *testing.T) {
 	if !strings.Contains(ctx, "Domain Terms") {
 		t.Error("missing Domain Terms section")
 	}
-	// Must not exceed ~600 bytes (rough token budget check)
+	// Must not exceed ~600 bytes
 	if len(ctx) > 700 {
 		t.Errorf("context too large: %d bytes (target < 700)", len(ctx))
 	}

@@ -1,8 +1,10 @@
 .PHONY: build test test-cover bench lint clean install install-force
 
 BINARY := otg
+GOBIN  := $(or $(shell go env GOBIN 2>/dev/null),$(HOME)/go/bin)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) ./cmd/otg/
@@ -24,8 +26,9 @@ clean:
 	rm -f $(BINARY) coverage.out coverage.html
 
 install: build
-	mkdir -p $(HOME)/.local/bin
+	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
+	cp $(BINARY) $(GOBIN)/$(BINARY)
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY)"
 
 install-force: build
@@ -38,9 +41,11 @@ install-force: build
 	-pkill -9 -U "$(id -u)" -f "otg daemon" 2>/dev/null || true
 	@sleep 1
 	@echo "=== Installing new binary ==="
-	mkdir -p $(HOME)/.local/bin
+	-rm -f $(HOME)/.local/bin/$(BINARY).old $(GOBIN)/$(BINARY).old 2>/dev/null || true
+	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	-mv $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(BINARY).old 2>/dev/null || true
 	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
+	cp $(BINARY) $(GOBIN)/$(BINARY)
 	@echo "=== Ensuring services are running ==="
 	-systemctl --user reset-failed omp-task-watcher.service omp-task-runner.service 2>/dev/null || true
 	systemctl --user start omp-task-runner.timer 2>/dev/null || true

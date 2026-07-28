@@ -424,7 +424,7 @@ func writeBarrierOMP(t *testing.T, dir string) (string, string, string) {
 			t.Errorf("release barrier during cleanup: %v", err)
 		}
 	})
-	script := "#!/bin/sh\nmkdir -p \"$START_DIR\"\nprintf '%s\\n' \"$PWD\" > \"$START_DIR/$$\"\nif [ -n \"$ARGS_DIR\" ]; then mkdir -p \"$ARGS_DIR\"; printf '%s\\n' \"$*\" > \"$ARGS_DIR/$$\"; fi\nwhile [ ! -f \"$RELEASE_FILE\" ]; do sleep 0.01; done\n"
+	script := "#!/bin/sh\nmkdir -p \"$START_DIR\"\nprintf '%s\\n' \"$PWD\" > \"$START_DIR/$$\"\nif [ -n \"$ARGS_DIR\" ]; then mkdir -p \"$ARGS_DIR\"; printf '%s\\n' \"$*\" > \"$ARGS_DIR/$$\"; fi\nfor i in $(seq 3000); do [ -f \"$RELEASE_FILE\" ] && exit 0; sleep 0.01; done; exit 1  # 30s safety timeout\n"
 	if err := os.WriteFile(omp, []byte(script), 0755); err != nil {
 		t.Fatalf("write fake omp: %v", err)
 	}

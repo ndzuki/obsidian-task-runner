@@ -68,11 +68,39 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		readyCount = len(tasks)
 	}
 
+	runningTasks := 0
+	logDir := cfg.LogDir
+	if logDir == "" {
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, ".omp", "logs")
+	}
+	taskLogDir := filepath.Join(logDir, "tasks")
+	matches, err := filepath.Glob(filepath.Join(taskLogDir, "TASK-*.pid"))
+	if err == nil {
+		for _, pidFile := range matches {
+			data, err := os.ReadFile(pidFile)
+			if err != nil {
+				continue
+			}
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+				continue
+			}
+			process, err := os.FindProcess(pid)
+			if err != nil {
+				continue
+			}
+			if process.Signal(syscall.Signal(0)) == nil {
+				runningTasks++
+			}
+		}
+	}
+
 	out := statusOutput{
 		Vault:        cfg.ObsidianVault,
 		LockStatus:   lockStatus,
 		LastScan:     lastScan,
-		RunningTasks: 0, // PID-file tracking not yet wired
+		RunningTasks: runningTasks,
 		ReadyCount:   readyCount,
 	}
 
