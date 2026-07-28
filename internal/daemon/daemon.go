@@ -28,12 +28,13 @@ import (
 )
 
 type Runner struct {
-	cfg       *config.Config
-	logger    *log.Logger
-	logWriter *logutil.RotatingWriter
-	taskRuns  sync.Map
-	repoLocks sync.Map
-	scanMu    sync.Mutex // prevents overlapping scanAndProcess calls
+	cfg           *config.Config
+	logger        *log.Logger
+	logWriter     *logutil.RotatingWriter
+	taskRuns      sync.Map
+	repoLocks     sync.Map
+	scanMu        sync.Mutex // prevents overlapping scanAndProcess calls
+	worktreeCache sync.Map   // taskRunKey → worktreePath (parallel warmup)
 }
 
 type preparedTask struct {
@@ -254,6 +255,11 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 	for _, t := range tasks {
 		// ── Grilling: handle before repo resolution ──
 		if t.Status == "ready" {
+			// Priority Assessment gate: run before refining if pending
+			if t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed" {
+				pending = append(pending, preparedTask{task: t, exclusive: false})
+				continue
+			}
 			r.logger.Printf("task %s: ready → refining", t.ID)
 			if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
 				"status": "refining",
@@ -270,6 +276,20 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			continue
 		}
 		if t.Status == "needs-grilling" {
+			// ── grill_continue: user answered offline grilling questions ──
+			if t.GrillContinue {
+				if err := r.updateTask(t, map[string]interface{}{
+					"status":         "refining",
+					"grill_continue": false,
+					"grill_done":     false,
+				}); err != nil {
+					continue
+				}
+				r.logger.Printf("task %s: grill_continue → refining (user answered offline)", t.ID)
+				notify.SendTaskAction(t.ID, t.Title, "📝", "Grilling 答案已填写", "重新进入 maturity gate", r.cfg.Notifications.Desktop)
+				continue
+			}
+
 			if t.PendingReq {
 				if err := r.updateTask(t, map[string]interface{}{"status": "refining", "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
 					continue
@@ -306,9 +326,48 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				}
 				continue
 			}
+			// ── timeout check: use heartbeat if available, otherwise started_at ──
+			checkAt := t.GrillHeartbeatAt
+			if checkAt == "" {
+				checkAt = t.GrillStartedAt
+			}
+			if t.GrillTimeoutMinutes > 0 && checkAt != "" {
+				if lastTime, err := time.Parse(time.RFC3339, checkAt); err == nil {
+					if time.Since(lastTime) > time.Duration(t.GrillTimeoutMinutes)*time.Minute {
+						r.logger.Printf("task %s: grilling lease expired (last=%s, timeout=%dm)", t.ID, checkAt, t.GrillTimeoutMinutes)
+						if err := r.updateTask(t, map[string]interface{}{
+							"grill_owner":       "",
+							"grill_started_at":   "",
+							"grill_heartbeat_at": "",
+						}); err != nil {
+							continue
+						}
+						continue
+					}
+				}
+			}
+
 			r.logger.Printf("task %s: still waiting for grilling", t.ID)
 			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
 			continue
+		}
+
+		// ── rework_resolution for review status ──
+		if t.Status == "review" && t.ReworkResolution != "" {
+			switch t.ReworkResolution {
+			case "resume":
+				if err := r.updateTask(t, map[string]interface{}{"status": "implementing", "rework_resolution": ""}); err != nil {
+					continue
+				}
+				notify.SendTaskAction(t.ID, t.Title, "🔧", "返工恢复", "根据反馈重新实现", r.cfg.Notifications.Desktop)
+				continue
+			case "close":
+				if err := r.updateTask(t, map[string]interface{}{"status": "closed", "rework_resolution": "", "closure_reason": "cancelled"}); err != nil {
+					continue
+				}
+				notify.SendTaskAction(t.ID, t.Title, "🚫", "任务关闭", "根据反馈关闭", r.cfg.Notifications.Desktop)
+				continue
+			}
 		}
 
 		// ── review/conflict/done + pending_req → force refining ──
@@ -318,6 +377,11 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				continue
 			}
 			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更", "已取消 Merge 授权并返回 maturity gate", r.cfg.Notifications.Desktop)
+			continue
+		}
+
+		// ── closed → terminal, skip ──
+		if t.Status == "closed" {
 			continue
 		}
 		// ── premature plan_approved reset ──
@@ -341,9 +405,22 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			exclusive: !isRound2(t),
 		}
 		if !prepared.exclusive {
+			// Check warmup cache first — parallel pre-creation may have finished.
+			cacheKey := taskRunKey(t.FilePath)
+			if cached, ok := r.worktreeCache.Load(cacheKey); ok {
+				if cachedPath, _ := cached.(string); cachedPath != "" {
+					if _, statErr := os.Stat(cachedPath); statErr == nil {
+						prepared.workDir = cachedPath
+						r.logger.Printf("task %s: reused warmed worktree %s", t.ID, cachedPath)
+						pending = append(pending, prepared)
+						continue
+					}
+					r.worktreeCache.Delete(cacheKey)
+				}
+			}
 			lock := r.repoLock(repoDir)
 			lock.Lock()
-			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch)
+			workDir, worktreeErr := ensureTaskWorktree(repoDir, cacheKey, t.TargetBranch)
 			lock.Unlock()
 			if worktreeErr != nil {
 				r.logger.Printf("task %s: prepare worktree: %v", t.ID, worktreeErr)
@@ -352,6 +429,30 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			prepared.workDir = workDir
 		}
 		pending = append(pending, prepared)
+		// ── Parallel warmup: pre-create worktree for plan-review tasks ──
+		// While the user reviews the plan, create the worktree in the background
+		// so Round 2 starts immediately when plan_approved becomes true.
+		if t.Status == "plan-review" && !t.PlanApproved && !t.NewProject {
+			warmKey := taskRunKey(t.FilePath)
+			if _, warming := r.worktreeCache.LoadOrStore(warmKey, ""); !warming {
+				warmRepo := repoDir
+				warmBranch := t.TargetBranch
+				go func() {
+					lock := r.repoLock(warmRepo)
+					lock.Lock()
+					wtPath, wtErr := ensureTaskWorktree(warmRepo, warmKey, warmBranch)
+					lock.Unlock()
+					if wtErr != nil {
+						r.logger.Printf("task %s: warm worktree failed: %v", t.ID, wtErr)
+						r.worktreeCache.Delete(warmKey)
+						return
+					}
+					r.worktreeCache.Store(warmKey, wtPath)
+					r.logger.Printf("task %s: worktree warmed at %s", t.ID, wtPath)
+				}()
+			}
+		}
+
 	}
 	return pending
 }
@@ -385,7 +486,7 @@ func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[
 
 // validateChangedDocs scans git-tracked .md files modified in the working tree
 // since the last commit and validates them with ValidateDocument. Corrupted
-// documents (memory.md, CONTEXT.md, ADR files, etc.) are logged but do not
+// documents (CONTEXT.md, ADR files, etc.) are logged but do not
 // halt the pipeline.
 func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
 	files, err := gitDiffNameOnly(repoDir)
@@ -615,8 +716,12 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		var phase, skillPrompt string
 
 		switch {
+		case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
+			phase = "priority"
+			model = r.cfg.Model("default")
+			skillPrompt = "/obsidian-task-runner-priority " + t.FilePath
+			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, model)
 		case t.Status == "refining":
-			phase = "refining"
 			model = r.cfg.Model("default")
 			skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
 			r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
@@ -695,6 +800,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// Determine timeout based on phase
 		var timeout time.Duration
 		switch phase {
+		case "priority":
+			timeout = 5 * time.Minute
 		case "refining":
 			timeout = 15 * time.Minute
 		case "planning":
@@ -707,7 +814,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			timeout = 30 * time.Minute
 		}
 		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
-		if phase == "refining" || phase == "planning" || phase == "round2" {
+		if phase == "priority" || phase == "refining" || phase == "planning" || phase == "round2" {
 			if data, err := os.ReadFile(pidFile); err == nil {
 				var existingPID int
 				if _, scanErr := fmt.Sscanf(string(data), "%d", &existingPID); scanErr == nil {

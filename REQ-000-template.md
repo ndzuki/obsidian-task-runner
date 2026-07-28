@@ -2,15 +2,18 @@
 id: ""
 title: ""
 project_id: ""
-priority: P2
+priority: ""
 created: ""
 updated: ""
 author: ""
 tags: []
+# priority: ""                  # 留空由系统自动评定 P1-P4（P0 仅人工）；亦可手工填写
+# appetite: ""                 # 时间预算: small(30m) / medium(2h) / large(6h)。约束 Round 2 实现范围
 # type: ""                    # 需求类型：空=原子需求, requirement-roadmap, requirement-index
 # depends_on: []              # 依赖的前序需求 ID 列表
 # project: ""                 # 关联项目名（与 vault-map.json 中的项目名一致）
 # reviewer: ""                # 审阅人
+# no_gos: []                  # 明确不做的事，防止 Agent 过度实现
 ---
 
 # <!-- 标题 -->
@@ -25,25 +28,76 @@ L3 完整 —— 加上 API 规格、数据模型等
 OMP 会自动识别你写到了哪个层次，缺失的部分它会根据上下文推断或标注为"需人工补充"。
 
 ══════════════════════════════════════════
-如何新增需求（追加到已有需求文档末尾）
+如何新增需求
 ══════════════════════════════════════════
 
-每个新需求用独立的 ## 标题 section，不要作为已有 section 的子项：
+有两种方式：追加到已有 REQ 尾部，或创建独立 REQ 文档。
 
-  ## 新增需求：操作审计日志         ← ✅ 独立 section
-  - 记录所有 API 调用
-  - 持久化到 SQLite/PG
+── 什么时候追加到已有 REQ？ ──
 
-  ## 新增需求：Swagger API 文档     ← ✅ 独立 section
-  - 使用 swaggo 生成 swagger.json
+✅ 追加（在文档末尾用 ## 新增需求：<标题> 追加），仅当：
 
-错误做法（Claude 会当作已有需求的子项）：
+- 新需求是原目标的自然扩展，不属于独立功能
+- 原关联 TASK 尚未交付（status 不是 done/closed）
+- 它们确实应共享同一个 TASK、同一轮 Planning、同一次 review
+
+例子：
+
+  REQ-018（ValuesRevision 管理）的 TASK 还在 implementing
+  → 追加 "## 新增需求：Values Diff & Audit Trail"
+  → daemon 设置 pending_req=true → Round 2 当前 AC 后自动重出计划
+
+✅ 新建独立 REQ，适用于：
+
+- 新功能可独立交付、独立验收
+- 原 TASK 已是 done/closed（追加会强行使已交付任务回 refining，丢失审计终态）
+- 新功能有自己的 stakeholder、优先级或 reviewer
+- 原需求是 L3 完整十章节格式（追加会破坏其作为单一契约源的语义）
+
+例子：
+
+  REQ-018 的 TASK 是 done
+  → 新建 REQ-071-values-diff-and-audit.md
+  → 独立 TASK-071 → 独立 maturity gate → 独立交付
+
+── 追加的推荐格式 ──
+
+每个追加 needs 用独立 ## 标题，包含结构化元数据和独立 AC 编号：
+
+  ---
+
+  ## 新增需求：Values Diff & Audit Trail
+
+  > 追加日期: 2026-07-28
+  > 类型: 功能扩展
+  > 关联原需求: REQ-018
+  > 新增 AC: AC-018-06 ~ AC-018-08
+
+  ### 要做什么
+  对 ValuesRevision 增加逐字段 diff 与变更审计追踪。
+
+  ### 完成标准
+  - [ ] AC-018-06 Given 两个 revision，When 请求 diff，Then 返回逐字段 before/after。
+  - [ ] AC-018-07 Given 审批操作，When 保存，Then 记录审批人、时间、变更摘要。
+
+  ### 与已有契约的关系
+  - 不修改已有 AC-018-01 ~ AC-018-05
+  - 不改变状态机
+  - 不影响现有 API 响应字段（仅追加可选字段）
+
+格式要点：
+- `---` 水平线作为解析边界
+- `> 追加日期/类型/关联` 结构化元数据，Agent 据此判断是否影响已有计划
+- `### 要做什么` 与模板一致，Agent 按相同规则提取摘要
+- 独立 AC 编号避免与原 AC 混淆
+- `### 与已有契约的关系` 最关键——Agent 必须知道是否破坏现有 API/状态机/数据模型
+
+错误做法：
   ## 新增需求：操作审计日志
   - 记录所有 API 调用
-  - 需支持 swaggo              ← ❌ 被当作审计日志的子项
+  - 需支持 swaggo              ← ❌ 会被 Agent 当作审计日志的子项
 
-保存后系统自动检测变化，找到关联任务并重新出计划。
--->
+每个 ## 新增需求 必须是独立同级 section，功能条目不混入。
 
 ---
 
@@ -60,6 +114,16 @@ OMP 会自动识别你写到了哪个层次，缺失的部分它会根据上下�
 - [ ] 
 
 ---
+
+## 关键决策预选
+<!-- 一次性预填以下关键决策，避免 grilling 阶段逐条追问。Agent 会据此生成差异化的后续追问。 -->
+- 认证方式: [ ] JWT / [ ] Session / [ ] OAuth2 / [ ] 无
+- 存储: [ ] PostgreSQL / [ ] SQLite / [ ] 无持久化
+- 部署: [ ] K8s / [ ] systemd / [ ] 仅本地
+- 协议: [ ] Connect/gRPC / [ ] HTTP REST / [ ] 双协议
+- 是否需要新项目: [ ] 是(template: ___) / [ ] 否
+
+
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!-- L2: 标准 —— 需要更多控制时展开以下 section                            -->
@@ -81,10 +145,15 @@ OMP 会自动识别你写到了哪个层次，缺失的部分它会根据上下�
 - 部署: k8s via Kustomize
 - 其他:
 
+## 已知风险（Rabbit Holes）
+<!-- 技术未知数、未验证的假设、可能有坑的地方。提前指出可防止 Agent 陷入死胡同 -->
+- 
+
+## 不在范围内（No Gos）
+<!-- 明确不做的事。防止 Agent 过度实现或 scope creep -->
+- 
+
 ## 验收标准
-- [ ] AC-1: 
-- [ ] AC-2: 
--->
 
 ---
 

@@ -27,11 +27,16 @@ disableModelInvocation: true
 
 ## Merge Flow（合并流程）
 
-1. 解析默认分支并 `git fetch origin`。
-2. 验证 feature branch。
-3. `git push -u origin <target_branch>`。
-4. 使用 gh 创建或复用 PR；gh 不可用时按既定本地 merge fallback。
-5. 合并成功后拉取最新默认分支并清理 feature 分支。
+### 0. Automated Conflict Resolution（status=conflict 时优先执行）
+
+若 `status=conflict` 且 `merge_approved=true`，先尝试自动解决：
+
+1. 加载 `skill://resolving-merge-conflicts`。
+2. 读取冲突文件的 commit 历史和关联 TASK/REQ，理解每个冲突侧意图。
+3. 逐 hunk 解决。简单冲突（空白/import）自动处理；语义冲突读取上下文提方案。
+4. 运行项目测试。PASS→继续 Step 1；FAIL→保留冲突+证据→通知用户。
+
+### 1. Standard Merge（review 或冲突已解决后）
 
 ## Success Write-back（成功写回）
 

@@ -152,6 +152,9 @@ func init() {
 	rootCmd.AddCommand(repairDocCmd)
 	rootCmd.AddCommand(writeAdrCmd)
 	rootCmd.AddCommand(validateAdrCmd)
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(reviewCmd)
+	rootCmd.AddCommand(configShowCmd)
 }
 
 // ── validate-doc ─────────────────────────────────────────────────────────────

@@ -541,6 +541,7 @@ func validateRequiredSkills() ([]string, error) {
 		"domain-modeling",
 		"diagnosing-bugs",
 		"test-quality",
+		"knowledge-base",
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

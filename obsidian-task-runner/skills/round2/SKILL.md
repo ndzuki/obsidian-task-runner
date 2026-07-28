@@ -14,6 +14,23 @@ disableModelInvocation: true
 3. blocked_by 全部满足。
 4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/\<id\>-\<slug\>`。
 5. 读取已批准计划和 checkpoint 复用策略。
+6. **加载 `skill://knowledge-base`**：按计划中的技术栈检索知识库 core/ 文档，引用已验证的最佳实践和版本约束。实现过程中发现的踩坑经验，在 Commit 或 ADR 写回后追加到对应的 References 文件。
+
+## Prototype Gate（高风险 Step 的前置验证）
+
+若已批准计划包含 `## Prototype 建议` section，在执行任何标记为 `risk: high` 的 Step 之前：
+
+1. 读取计划的 Prototype 建议，提取 PASS/FAIL 条件。
+2. 加载 `skill://prototype`，在 task worktree 中创建 throwaway 原型。
+3. 严格按 PASS/FAIL 条件评估原型结果。
+4. **原型 PASS** → 继续 Tracer Bullet 实现该 Step，在 `## 实现记录` 中标注 `✅ Prototype validated`。
+5. **原型 FAIL** → 不进入实现。写 `## Round 2 阻塞` + 结构化 grill_context，包含：
+   - 原型代码路径和运行输出
+   - 违反的具体 FAIL 条件
+   - 建议的替代方案
+   - 保存 `grill_prev_status=implementing`，转 `needs-grilling`
+
+这样 Grilling 不再是"你觉得应该怎么设计？"而是"原型验证了 X 不可行（证据见 /path），建议采用 Y。你同意吗？"——一轮定案。
 
 ## Tracer Bullet（逐AC推进）
 
@@ -25,8 +42,19 @@ disableModelInvocation: true
 4. 记录实现和测试证据。
 5. **AC 完成后重新读取 TASK frontmatter。**
 
-不得批量写完全部测试后再实现。
 
+### Scope Hammering（时间盒过半自动削 scope）
+
+若 REQ 声明了 `appetite`（small=30m / medium=2h / large=6h），在时间盒过半时执行：
+
+1. 评估剩余 AC 的核心程度：是否 must-have？能否降级？
+2. 非核心 AC 标为 `~nice-to-have`，写回 TASK 通知用户。
+3. 优先交付核心 AC。nice-to-have 不阻塞 review——可在后续 cycle 中作为新 REQ 追加。
+
+核心判断标准（From Shape Up Ch.14）：
+- 没有这个功能，用户能否完成核心任务？（能 → nice-to-have）
+- 这是新问题还是已有 workaround 的老问题？（老问题 → nice-to-have）
+- 这个情况发生的概率？（<5% → nice-to-have）
 ## Pending Requirement Handoff（pending_req安全交接）
 
 AC 完成后若 `pending_req=true`：
@@ -68,7 +96,8 @@ otg update-status \<task\> \
 2. 运行项目全部测试（Go: `go test -race ./...`）。
 3. 运行 lint。
 4. 加载 `skill://test-quality`，修复 critical/important 问题。
-5. 调 task-verifier 核验 AC。
+5. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
+6. 调 task-verifier 核验 AC。
 
 ### Write ADRs (BEFORE implementation — do not skip)
 
@@ -113,6 +142,28 @@ accepted
 7. Commit ADR files together with the implementation — **ADRs and code in the same commit.**
 
 6. 本地 commit，不 push。
+
+
+## Review Bundle 生成
+
+全部 AC 完成且测试通过后，生成 Review Bundle 摘要，写入 TASK：
+
+1. **diffstat**：`git diff --stat \<target_branch\>...HEAD`
+2. **测试结果**：`go test` 输出中的 PASS/FAIL 统计
+3. **test-quality 摘要**：🔴/🟡/🟢 计数
+4. **code-review 摘要**：Standards 轴发现数 + Spec 轴发现数
+5. **风险自评**：low/medium/high
+6. **Baseline 对比**（Shape Up Ch.14）：实现前用户如何解决？实现后改善了什么？一句对比帮助用户快速判断 merge 价值
+7. **Scope Hammering 结果**：若有降级的 AC，列出 `~nice-to-have` 项
+8. **通知摘要**：
+
+```text
+TASK-<id>: <N> files +<added>/-<deleted>, <M> tests PASS
+test-quality: 🔴0/🟡0/🟢<N> | code-review: St<N> Sp<N>
+appetite: <small|medium|large> | deferred: <N> AC (~nice-to-have)
+baseline: <一句话改善对比>
+risk: <level> → 快速 review 即可
+```
 
 成功写回：
 ## New Project（新项目）

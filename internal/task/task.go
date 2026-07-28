@@ -37,7 +37,14 @@ type ReadyTask struct {
 	GrillPrevStatus string `json:"grill_prev_status,omitempty"`
 	GrillResolution string `json:"grill_resolution,omitempty"`
 	GrillContext    string `json:"grill_context,omitempty"`
+	GrillContinue   bool   `json:"grill_continue,omitempty"`
+	PriorityAssessmentStatus string `json:"priority_assessment_status,omitempty"`
 	PlanVersion     int    `json:"plan_version,omitempty"`
+	ReworkResolution string `json:"rework_resolution,omitempty"`
+	CloseApproved    bool   `json:"close_approved,omitempty"`
+	GrillStartedAt     string `json:"grill_started_at,omitempty"`
+	GrillHeartbeatAt   string `json:"grill_heartbeat_at,omitempty"`
+	GrillTimeoutMinutes int   `json:"grill_timeout_minutes,omitempty"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -240,6 +247,8 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return fm.MergeApproved
 	case "done":
 		return fm.PendingReq // re-plan via refining
+	case "closed":
+		return false // terminal, never ready
 	}
 	return fm.PendingReq
 }
@@ -316,10 +325,15 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				MergeApproved: fm.MergeApproved, ReqDoc: fm.ReqDoc,
 				Template: fm.Template, Assignee: fm.Assignee,
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
-				OffPeakOnly: fm.OffPeakOnly, TargetBranch: fm.TargetBranch,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
 				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
-				PlanVersion: fm.PlanVersion,
+				GrillContinue: fm.GrillContinue, PlanVersion: fm.PlanVersion,
+				PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
+				ReworkResolution: fm.ReworkResolution,
+				CloseApproved: fm.CloseApproved,
+				GrillStartedAt: fm.GrillStartedAt,
+				GrillHeartbeatAt: fm.GrillHeartbeatAt,
+				GrillTimeoutMinutes: fm.GrillTimeoutMinutes,
 			})
 		}
 	}

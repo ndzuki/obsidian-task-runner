@@ -11,9 +11,9 @@ disableModelInvocation: true
 
 - TASK `status: planning`
 - daemon 使用 TASK `assignee` 模型调用本 Skill
-- REQ 已通过 maturity gate
 - **Daemon 已将项目上下文（Constraints + Anti-patterns + Domain Terms + ADR 摘要）注入到 prompt 顶部 `[Project Context]` 块中。以此为基线；仅在需要完整决策上下文时读取 `Notes/adr/` 中的完整 ADR 文件。**
 - `Notes/CONTEXT.md` 的完整术语表仅在注入摘要不覆盖所需术语时补充读取。
+- **必须在出计划前加载 `skill://knowledge-base`**：执行 Step -1（项目知识图谱）合成 CONTEXT + ADR + References 三源交叉引用，输出技术全景表。计划涉及的技术栈（Go、K8s、Helm、Docker 等），检索 core/ 文档的关键约束和版本要求纳入计划。发现知识缺口（ADR 引用了未入库的技术）标注在计划的"风险"或"前序契约"中。
 
 ## Step 0: Read ADRs — MANDATORY（读取ADR）
 
@@ -28,6 +28,43 @@ accepted ADR without explicitly superseding it is a planning failure.
    You MUST propose a new ADR that supersedes the old one.
 
 > Planning without reading ADRs = driving blindfolded.
+
+
+## Step 0.5: ADR Matching Mode（ADR 免批匹配）
+
+Before proposing new ADRs, check whether the plan's technical choices match known
+patterns. A match avoids repetitive ADR proposals and lets the planner focus on
+genuinely novel decisions.
+
+### Known Pattern Extraction
+
+1. Scan all `accepted` ADRs under `Notes/adr/` and extract their technology
+   decisions: databases, frameworks, RPC protocols, auth mechanisms, deployment
+   targets, etc.
+2. Read `Notes/CONTEXT.md` constraints and toolchain references.
+3. Build a **known patterns set** from these combined sources. Examples:
+   - `Go + Connect RPC + GORM + JWT`
+   - `Kubernetes + Helm + Docker`
+   - `SQLite + Litestream`
+
+### Matching Procedure
+
+1. Compare the plan's technical choices (Step 1 Architecture Decision Detection
+   triggers) against the known patterns set.
+2. **All choices match a known pattern** → the project has already decided this
+   architecture:
+   - In the plan, write: `引用 ADR-XXX（<决策摘要>），不新增 ADR 提案`
+   - Reference each relevant ADR by number and summary.
+   - Do **NOT** write `adr_proposed` — no new ADR is needed.
+   - The plan follows established project conventions.
+3. **Any choice deviates from known patterns** (new database, new framework,
+   new protocol, new auth mechanism, etc.):
+   - Proceed with the full Architecture Decision Detection trigger table (Step 1).
+   - Write `adr_proposed` only for the genuinely new architectural decisions.
+   - Still reference existing ADRs that apply to the unchanged parts.
+
+> **ADR 免批的核心原则**：已由项目 ADR 覆盖的技术选择，不重复提案。
+> 仅在计划引入全新架构决策时才写 adr_proposed。
 
 ## Step 1: REQ Consistency（需求一致性）
 
@@ -72,6 +109,11 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 
 ## Step 3: Generate Plan（生成计划）
 
+涉及新模块或接口设计的 Step，按 `skill://codebase-design` 的深度模块原则：
+- 接口是否简洁（≤3 方法）但背后隐藏足够复杂度（Depth > 1）？
+- Seam 是否放在调用方不需关心的位置（Locality）？
+- 删除该模块，复杂度是消失还是扩散（Deletion Test）？
+
 每个 Step 使用固定表格：
 
 ```markdown
@@ -87,7 +129,23 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 | 风险 | low/medium/high |
 ```
 
-高风险 Step 附 Prototype 建议。所有命名使用 CONTEXT.md 规范术语。
+高风险 Step **必须**附带 Prototype 建议，用于数据驱动 Grilling。格式：
+
+```markdown
+## Prototype 建议
+
+#### Step N: <名称>（risk: high）
+| 维度 | 内容 |
+|------|------|
+| 验证目标 | 验证 <假设 X> 在 <场景 Y> 下是否可行 |
+| PASS 条件 | <可观测的确定性结果>，如"单次查询<10ms"或"proto 编译通过" |
+| FAIL 条件 | <触发 Grilling 的条件>，如"需要新增依赖或 API 不兼容" |
+| 原型范围 | <最小可运行代码，不含测试/持久化> |
+| 预计耗时 | <10 分钟以内> |
+| 失败后分流 | needs-grilling + grill_context 附带原型证据 |
+```
+
+**设计意图**：原型在 plan-review 阶段仍只是建议。用户 `plan_approved=true` 后，Round 2 在执行该高风险 Step **之前**先运行原型。PASS → 跳过 Grilling 直接实现；FAIL → 带原型证据进入 Grilling，用户看到的是数据而非猜想。这样可将多轮"猜测型 Grilling"压缩为一轮"证据型 Grilling"。
 
 ## Step 4: Pre-commit Hash Verification（提交前Hash复核）
 

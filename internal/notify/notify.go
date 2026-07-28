@@ -91,6 +91,14 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 		icon = "emblem-system"
 		title = fmt.Sprintf("📝 T%s %s: 计划生成中", fm.ID, fm.Title)
 		body = "正在生成版本化实现计划"
+	case "closed":
+		urgency = "normal"
+		icon = "emblem-default"
+		title = fmt.Sprintf("🚫 T%s %s: 已关闭", fm.ID, fm.Title)
+		body = fmt.Sprintf("关闭原因: %s", fm.ClosureReason)
+		if fm.ClosureNote != "" {
+			body += fmt.Sprintf("\n备注: %s", fm.ClosureNote)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "notify: unknown status %q for task %s\n", fm.Status, fm.ID)
 		return

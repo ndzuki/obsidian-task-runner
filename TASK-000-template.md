@@ -1,28 +1,33 @@
 ---
-# ══════════════════════════════
-# 🔴 必填 — 你必须在创建任务时填写
-# ══════════════════════════════
+# 🔴 必填
 id: ""
 title: ""
 project: ""
-assignee: ""
+assignee: ""  # deepseek / gpt / gemini / claude / minimax / flash
 req_doc: ""
 
-# ══════════════════════════════
-# 🟡 推荐填写 — 按需设置
-# ══════════════════════════════
-priority: P2
+# 🟡 推荐
 tags: []
 epic: ""
 blocked_by: []
 
-# ══════════════════════════════
-# 🟢 高级选项 — 特殊场景使用
-# ══════════════════════════════
-# auto_approve: false       # 跳过 plan-review Gate（仅首次、既有项目生效）
-# off_peak_only: false      # Round 2 仅在北京时间低峰执行（省钱）
-# new_project: false        # 新项目标记（Round 1 只出脚手架，Round 2 才创建）
-# template: ""              # 新项目脚手架提示（如 go-gin-microservice）
+# 🟡 系统评分
+priority: ""
+priority_assessment_status: ""
+priority_assessed_value: ""
+priority_impact: ""
+priority_urgency: ""
+priority_workaround: ""
+priority_score: 0
+priority_confidence: 0
+priority_reason: ""
+priority_recommendation: ""
+
+# 🟢 高级（按需取消注释）
+# auto_approve: false
+# off_peak_only: false
+# new_project: false
+# template: ""
 # due_date: ""
 # estimated_hours: 0
 # component: ""
@@ -31,17 +36,31 @@ blocked_by: []
 # author: ""
 # target_env: staging
 
-# ══════════════════════════════
-# 🔵 人工 Gate — 由你批准
-# ══════════════════════════════
-plan_approved: false       # 审阅计划后设 true → 进入 Round 2
-merge_approved: false      # 审阅代码后设 true → 进入 Merge
-adr_approved: false        # 系统自动设置（plan-review→implementing 时）
-resume_approved: false     # 阶段失败修复后设 true → daemon 恢复
+# 🟠 新项目脚手架（按需取消注释）
+# scaffold.kind: ""
+# scaffold.capabilities: []
+# scaffold.preferences: ""
+# scaffold.notes: ""
+# remote_create: false
+# github_owner: ""
+# repository_name: ""
+# repository_visibility: private
+# repository_description: ""
 
-# ══════════════════════════════
-# ⚪ 以下字段由系统自动维护，你不需要手动修改
-# ══════════════════════════════
+# 🔵 Gate — 由你批准
+plan_approved: false
+merge_approved: false
+adr_approved: false
+resume_approved: false
+
+# review_feedback: ""        # 审阅反馈
+# rework_resolution: ""      # resume | replan | close
+# close_approved: false       # 关闭 Gate
+# closure_reason: ""          # already_implemented | duplicate | cancelled | wont_fix
+# closure_note: ""
+# replacement_task: ""        # closure_reason=duplicate
+
+# ⚪ 系统维护 — 不要手动改
 status: blocked
 pending_req: false
 maturity: ""
@@ -58,6 +77,7 @@ phase_error: ""
 phase_log: ""
 grill_owner: ""
 grill_started_at: ""
+grill_heartbeat_at: ""
 grill_timeout_minutes: 30
 grill_done: false
 grill_resolution: ""
@@ -70,8 +90,10 @@ completed: ""
 target_branch: ""
 pr_url: ""
 actual_hours: 0
-# adr_proposed: []          # 系统填充
-# adr_written: []           # 系统填充
+
+# ⚪ 系统维护（新增）
+task_schema_version: ""
+phase_error_code: ""
 ---
 
 # <!-- 标题 -->
