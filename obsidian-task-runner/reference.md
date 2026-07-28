@@ -299,7 +299,7 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 
 ## 9. Skill 安装
 
-Installer 随包安装五件套：core、refining、round1、round2、merge，均为顶层 Skill。
+Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 
