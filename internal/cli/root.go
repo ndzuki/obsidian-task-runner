@@ -13,34 +13,33 @@ import (
 
 var (
 	version string
+	commit  string
 )
 
-// Execute runs the root command. version is set via ldflags at build time.
-func Execute(v string) error {
+// Execute runs the root command. version and commit are set via ldflags at build time.
+func Execute(v, c string) error {
 	version = v
 	if version == "" {
 		version = "dev"
+	}
+	commit = c
+	if commit == "" {
+		commit = "unknown"
 	}
 	return rootCmd.Execute()
 }
 
 var rootCmd = &cobra.Command{
 	Use:   "otg",
-	Short: "Obsidian Task Runner — Go implementation",
-	Long: `otg replaces the Bash+Python Obsidian Task Runner scripts with
-a single compiled Go binary. It discovers ready tasks, handles
-requirement changes, updates frontmatter, and manages the
-Round 1 → Round 2 → Merge Phase lifecycle.`,
-	SilenceUsage:  true,
-	SilenceErrors: true,
+	Short: "Obsidian Task Runner — Go edition",
+	Long:  "Task lifecycle automation for Obsidian vaults. Watches project directories, drives OMP skills, and manages git worktrees.",
 }
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("otg %s\n", version)
-		fmt.Println("Obsidian Task Runner — Go edition")
+		fmt.Printf("otg %s (%s)\n", version, commit)
 	},
 }
 
@@ -154,11 +153,8 @@ func init() {
 	rootCmd.AddCommand(validateAdrCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(reviewCmd)
-	rootCmd.AddCommand(configShowCmd)
+	rootCmd.AddCommand(ensureContextTermCmd)
 }
-
-// ── validate-doc ─────────────────────────────────────────────────────────────
-
 var validateDocCmd = &cobra.Command{
 	Use:   "validate-doc <path>",
 	Short: "Validate any document (TASK/REQ/ADR) frontmatter and body",

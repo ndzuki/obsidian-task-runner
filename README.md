@@ -206,7 +206,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | 状态 | 含义 | 你的操作 |
 |------|------|----------|
 | `blocked` | 缺少项目、执行者或依赖未完成 | 补齐 `project`、`assignee`，检查 `blocked_by` |
-| `ready` | 已就绪 | daemon 自动转入 `refining` |
+| `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；成熟后自动进入 planning 或 needs-grilling |
 | `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
@@ -214,8 +214,9 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
 | `review` | 本地实现已提交 | 审阅代码和验收记录，确认后设 `merge_approved: true` |
 | `conflict` | 合并遇到冲突 | 手动解决并重新授权合并 |
-| `done` | 已合并完成 | 任务结束 |
-
+| `done` | 已合并完成 | 任务结束；REQ 变更时自动回 refining |
+| `closed` | 已关闭（重复/取消/不予处理） | 终态，不可恢复 |
+| `wayfinder` | 大型需求等待拆分为决策票 | 人工拆分为子任务后逐项推进 |
 Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。只有 `merge_approved: true` 才会进入 Merge Phase。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
 
 ## 常用命令
@@ -227,28 +228,27 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg daemon` | 常驻监听 Vault 并处理任务 |
 | `otg daemon --once` | 扫描一次后退出 |
 | `otg daemon --map-file <path>` | 使用指定的 `vault-map.json` |
+| `otg status` | 查看守护进程状态、运行中任务数 |
+| `otg config show` | 显示当前配置（含来源标注） |
 | `otg find-ready <vault>` | 输出可执行任务（NDJSON） |
 | `otg on-req-changed <vault> <req>` | 手动处理需求变化 |
 | `otg update-status <task> [key=value ...]` | 原子更新任务 frontmatter |
+| `otg review <task>` | 显示任务的 review bundle |
 | `otg validate-doc <path>` | 校验任意文档（自动识别 TASK/REQ/ADR）+ body tag 扫描 |
 | `otg repair-doc <task>` | 修复损坏的 frontmatter + body tag 自动转义 |
-| `otg resolve-path <map> <project>` | 查询项目本地路径 |
-| `otg register-project <map> <name> <dir>` | 注册项目映射 |
-| `otg version` | 查看版本 |
-| `otg write-adr <dir> <id> <title> <content>` | 原子写 ADR 文件 + 校验 |
-| `otg validate-adr <path>` | 校验 ADR frontmatter 结构 |
+| `otg version` | 查看版本（tag + commit hash） |
 
 ## 文件在哪里
 
 | 路径 | 内容 |
 |------|------|
-| `~/.local/bin/otg` | Go 二进制 |
+| `~/.local/bin/otg` | Go 二进制（systemd 守护进程使用） |
+| `~/go/bin/otg` | Go 二进制（终端直接调用） |
 | `~/.omp/skills/obsidian-task-runner/` | Agent Skill、参考文档和配置 |
 | `~/.omp/skills/obsidian-task-runner/config/vault-map.json` | Vault 与项目映射、模型映射 |
 | `~/.omp/logs/` | daemon 和任务审计日志 |
 | `~/Vault/Projects/<project>/Requirements/` | 你编写的需求 |
 | `~/Vault/Projects/<project>/Tasks/` | Agent 自动创建和更新的任务 |
-
 ## 故障排查
 
 1. **没有生成 TASK**：确认文件名是 `REQ-<id>-<slug>.md`，并查看 `~/.omp/logs/otg-daemon.log`。

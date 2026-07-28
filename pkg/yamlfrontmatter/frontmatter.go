@@ -34,7 +34,7 @@ type Frontmatter struct {
 	ProjectID       string   `yaml:"project_id"`
 	NewProject      bool     `yaml:"new_project"`
 	Template        string   `yaml:"template"`
-	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done, closed
+	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done, closed, wayfinder
 	PlanApproved    bool     `yaml:"plan_approved"`
 	MergeApproved   bool     `yaml:"merge_approved"`
 	AdrApproved     bool     `yaml:"adr_approved"`

@@ -45,6 +45,9 @@ type ReadyTask struct {
 	GrillStartedAt     string `json:"grill_started_at,omitempty"`
 	GrillHeartbeatAt   string `json:"grill_heartbeat_at,omitempty"`
 	GrillTimeoutMinutes int   `json:"grill_timeout_minutes,omitempty"`
+	RefineReqHash     string `json:"refine_req_hash,omitempty"`
+	PlanReqHash       string `json:"plan_req_hash,omitempty"`
+	Maturity          string `json:"maturity,omitempty"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -244,11 +247,10 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		if fm.PendingReq {
 			return true // force refining
 		}
-		return fm.MergeApproved
-	case "done":
-		return fm.PendingReq // re-plan via refining
 	case "closed":
 		return false // terminal, never ready
+	case "wayfinder":
+		return false // pending human decomposition into sub-tasks
 	}
 	return fm.PendingReq
 }
@@ -268,7 +270,59 @@ func IsOffPeak() bool {
 	return true
 }
 
-// FindReadyTasks scans the vault's Tasks/ directory and returns ready tasks.
+// FindReadyTaskForFile reads and checks a single task file for readiness.
+// Returns a populated ReadyTask if the task is ready, or nil, nil if the file
+// is not a ready task (no frontmatter, not ready, or no project). Returns an
+// error only for I/O failures reading the file.
+func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
+	data, err := readFileWithRetry(changedFile)
+	if err != nil {
+		return nil, fmt.Errorf("read task file %s: %w", changedFile, err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return nil, nil
+	}
+	if !IsReady(fm, vaultPath) {
+		return nil, nil
+	}
+	if fm.Project == "" {
+		return nil, nil
+	}
+	rt := &ReadyTask{
+		ID:                     fm.ID,
+		Title:                  fm.Title,
+		Project:                fm.Project,
+		NewProject:             fm.NewProject,
+		Priority:               fm.Priority,
+		FilePath:               changedFile,
+		FileName:               filepath.Base(changedFile),
+		Status:                 fm.Status,
+		PlanApproved:           fm.PlanApproved,
+		MergeApproved:          fm.MergeApproved,
+		ReqDoc:                 fm.ReqDoc,
+		Template:               fm.Template,
+		Assignee:               fm.Assignee,
+		AutoApprove:            fm.AutoApprove,
+		PendingReq:             fm.PendingReq,
+		OffPeakOnly:            fm.OffPeakOnly,
+		TargetBranch:           fm.TargetBranch,
+		GrillDone:              fm.GrillDone,
+		GrillPrevStatus:        fm.GrillPrevStatus,
+		GrillResolution:        fm.GrillResolution,
+		GrillContext:           fm.GrillContext,
+		GrillContinue:          fm.GrillContinue,
+		PlanVersion:            fm.PlanVersion,
+		PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
+		GrillHeartbeatAt:       fm.GrillHeartbeatAt,
+		GrillTimeoutMinutes:    fm.GrillTimeoutMinutes,
+		RefineReqHash:          fm.RefineReqHash,
+		PlanReqHash:            fm.PlanReqHash,
+		Maturity:               fm.Maturity,
+	}
+	return rt, nil
+}
+
 // FindReadyTasks scans vault's Projects/*/Tasks/ directories and returns ready tasks.
 func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 	projectsDir := filepath.Join(vaultPath, "Projects")
@@ -329,11 +383,11 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
 				GrillContinue: fm.GrillContinue, PlanVersion: fm.PlanVersion,
 				PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
-				ReworkResolution: fm.ReworkResolution,
-				CloseApproved: fm.CloseApproved,
-				GrillStartedAt: fm.GrillStartedAt,
 				GrillHeartbeatAt: fm.GrillHeartbeatAt,
 				GrillTimeoutMinutes: fm.GrillTimeoutMinutes,
+				RefineReqHash: fm.RefineReqHash,
+				PlanReqHash: fm.PlanReqHash,
+				Maturity: fm.Maturity,
 			})
 		}
 	}

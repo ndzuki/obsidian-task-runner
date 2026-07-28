@@ -21,20 +21,20 @@ closed -- [终态，不可恢复]
 ```
 
 ## 2. 状态定义
-
 | 状态 | 含义 | 执行者 | 下一步 |
 |------|------|--------|--------|
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败 | daemon / 人工 | `ready` 或按 `blocked_phase` 恢复 |
-| `ready` | 可开始统一 maturity gate | daemon | `refining` |
-| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `blocked` |
+| `ready` | 可开始 priority assessment + maturity gate | daemon | `refining` |
+| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `wayfinder` / `blocked` |
 | `needs-grilling` | 需要用户交互补充规格 | Kitty + requirement-elaborator | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
-| `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` |
+| `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
-| `review` | 本地实现已提交，等待 Merge 授权 | 人工 | `done` / `conflict` / `refining` |
+| `review` | 本地实现已提交，等待 Merge 授权 | 人工 | `done` / `conflict` / `refining` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
 | `conflict` | Merge 冲突 | 人工 + Merge Skill | `done` / `refining` |
 | `done` | 已合并推送；pending_req=false 时终态 | — | `refining` 或结束 |
+| `wayfinder` | 大型需求（AC>10 / 3+服务），等待人工拆分为决策票 | 人工 | `blocked → 子任务逐项推进` |
 
 ## 3. 人工 Gate
 
