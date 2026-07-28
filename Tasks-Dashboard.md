@@ -1,39 +1,66 @@
 # 任务总览
 
+> **状态缩写对照**：`blocked` 阻塞 | `ready` 就绪 | `refining` 成熟度检查 | `needs-grilling` 追问中 | `planning` 规划中 | `plan-review` 待审阅 | `implementing` 实现中 | `review` 待合并 | `conflict` 冲突 | `done` 已完成 | `closed` 已关闭 | `wayfinder` 待拆分
+
 ## 按项目汇总
 
 ```dataview
-TABLE 
-  length(rows) as "任务数",
-  filter(rows, (r) => r.status = "ready").length as "就绪",
-  filter(rows, (r) => r.status = "implementing").length as "实现中",
-  filter(rows, (r) => r.status = "plan-review").length as "待审阅",
-  filter(rows, (r) => r.status = "done").length as "已完成",
-  filter(rows, (r) => r.status = "blocked").length as "阻塞"
+TABLE
+  length(rows) as "任务数"
 FROM "Projects"
 WHERE contains(file.folder, "Tasks")
-GROUP BY regexreplace(file.folder, "Projects/([^/]+)/.*", "$1")
-SORT regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") asc
+GROUP BY regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目"
+SORT 项目 asc
+```
+
+## 按状态统计
+
+```dataview
+TABLE rows.file.link as "任务"
+FROM "Projects"
+WHERE contains(file.folder, "Tasks") AND status != "done" AND status != "closed"
+GROUP BY status
+SORT status asc
 ```
 
 ## 待处理任务
 
 ```dataview
-TABLE 
+TABLE
+  file.link as "任务",
   regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
   priority as "优先级",
   status as "状态",
   assignee as "执行者"
 FROM "Projects"
-WHERE contains(file.folder, "Tasks") AND status != "done" AND status != "blocked"
+WHERE contains(file.folder, "Tasks") AND status != "done" AND status != "closed" AND status != "blocked" AND status != "wayfinder"
 SORT priority asc
+```
+
+## 等待审批
+
+```dataview
+TABLE
+  file.link as "任务",
+  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  status as "状态",
+  plan_version as "计划版本",
+  priority as "优先级"
+FROM "Projects"
+WHERE contains(file.folder, "Tasks") AND (
+  (status = "plan-review" and plan_approved != true) OR
+  (status = "review" and merge_approved != true)
+)
+SORT status asc, priority asc
 ```
 
 ## 阻塞任务
 
 ```dataview
-TABLE 
+TABLE
+  file.link as "任务",
   regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
+  blocked_by as "依赖",
   assignee as "执行者",
   file.mtime as "最后更新"
 FROM "Projects"
@@ -44,7 +71,8 @@ SORT file.mtime desc
 ## 最近完成
 
 ```dataview
-TABLE 
+TABLE
+  file.link as "任务",
   regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
   completed as "完成时间",
   assignee as "执行者"
