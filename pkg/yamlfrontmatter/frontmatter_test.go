@@ -223,7 +223,9 @@ func TestValidate(t *testing.T) {
 
 	t.Run("valid file", func(t *testing.T) {
 		path := filepath.Join(dir, "valid.md")
-		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644)
+		if err := os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644); err != nil {
+			t.Fatalf("write valid file: %v", err)
+		}
 		if err := Validate(path); err != nil {
 			t.Errorf("expected valid, got: %v", err)
 		}
@@ -232,7 +234,9 @@ func TestValidate(t *testing.T) {
 	t.Run("corrupted file", func(t *testing.T) {
 		path := filepath.Join(dir, "corrupt.md")
 		// Simulates OMP agent writing orphaned text after grill_context: ""
-		os.WriteFile(path, []byte("---\nid: \"001\"\ngrill_context: \"\"\n  orphaned text\n---\n# Body\n"), 0644)
+		if err := os.WriteFile(path, []byte("---\nid: \"001\"\ngrill_context: \"\"\n  orphaned text\n---\n# Body\n"), 0644); err != nil {
+			t.Fatalf("write corrupt file: %v", err)
+		}
 		if err := Validate(path); err == nil {
 			t.Error("expected error for corrupted file, got nil")
 		}
@@ -250,7 +254,9 @@ func TestRepair(t *testing.T) {
 
 	t.Run("already valid", func(t *testing.T) {
 		path := filepath.Join(dir, "ok.md")
-		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644)
+		if err := os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644); err != nil {
+			t.Fatalf("write valid file: %v", err)
+		}
 		if err := Repair(path); err != nil {
 			t.Errorf("repair should be no-op on valid file: %v", err)
 		}
@@ -259,14 +265,16 @@ func TestRepair(t *testing.T) {
 	t.Run("removes orphaned text and preserves lists", func(t *testing.T) {
 		path := filepath.Join(dir, "corrupt-list.md")
 		// Corrupt: orphaned text after grill_context line, plus a valid multi-line blocked_by
-		os.WriteFile(path, []byte(
+		if err := os.WriteFile(path, []byte(
 			"---\nid: \"061\"\nstatus: needs-grilling\ngrill_context: \"\"\n"+
 				"  需求成熟度评估 immature\n"+
 				"  建议追问维度：\n"+
 				"blocked_by:\n"+
 				"  - TASK-010\n"+
 				"  - TASK-020\n"+
-				"grill_prev_status: \"\"\n---\n# Body text\n"), 0644)
+				"grill_prev_status: \"\"\n---\n# Body text\n"), 0644); err != nil {
+			t.Fatalf("write corrupt list file: %v", err)
+		}
 
 		if err := Repair(path); err != nil {
 			t.Fatalf("repair failed: %v", err)
@@ -305,7 +313,9 @@ func TestRepair(t *testing.T) {
 
 	t.Run("no frontmatter", func(t *testing.T) {
 		path := filepath.Join(dir, "no-fm.md")
-		os.WriteFile(path, []byte("# No frontmatter\n"), 0644)
+		if err := os.WriteFile(path, []byte("# No frontmatter\n"), 0644); err != nil {
+			t.Fatalf("write no-frontmatter file: %v", err)
+		}
 		if err := Repair(path); err == nil {
 			t.Error("expected error for file without frontmatter")
 		}
@@ -316,9 +326,11 @@ func TestUpdateDeclinesCorruptedFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corrupt.md")
 	// Corrupt file: text that is not valid YAML in the frontmatter block
-	os.WriteFile(path, []byte(
+	if err := os.WriteFile(path, []byte(
 		"---\nid: \"061\"\nstatus: needs-grilling\n"+
-			"非法的YAML键名无冒号\n---\n# Body\n"), 0644)
+			"非法的YAML键名无冒号\n---\n# Body\n"), 0644); err != nil {
+		t.Fatalf("write corrupted frontmatter: %v", err)
+	}
 
 	err := Update(path, map[string]interface{}{"status": "refining"})
 	if err == nil {
@@ -348,7 +360,9 @@ func TestUpdatePreservesFileOnInvalid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "valid.md")
 	original := "---\nid: \"001\"\nstatus: ready\n---\n# Body\n"
-	os.WriteFile(path, []byte(original), 0644)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write valid file: %v", err)
+	}
 
 	// grill_context with unquoted colon — the yaml.Encoder will produce
 	// valid YAML, but a bare colon in a value can trip up some parsers.
@@ -380,7 +394,9 @@ func TestUpdatePreservesBlockScalar(t *testing.T) {
 	path := filepath.Join(dir, "block.md")
 	// File with a block scalar field
 	original := "---\nid: \"001\"\nstatus: needs-grilling\ngrill_context: |\n  first question\n  second question\nassignee: gpt\n---\n# Body\n"
-	os.WriteFile(path, []byte(original), 0644)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write block scalar file: %v", err)
+	}
 
 	// Update an unrelated field — block scalar content must survive.
 	err := Update(path, map[string]interface{}{"status": "refining"})
@@ -404,7 +420,9 @@ func TestUpdateClearsBlockScalar(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "block-clear.md")
 	original := "---\nid: \"001\"\nstatus: needs-grilling\ngrill_context: |\n  first question\n  second question\n---\n# Body\n"
-	os.WriteFile(path, []byte(original), 0644)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write block scalar file: %v", err)
+	}
 
 	// Clear the block scalar field — set it to empty string.
 	err := Update(path, map[string]interface{}{
@@ -435,7 +453,9 @@ func TestUpdateFieldOrderPreserved(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "order.md")
 	original := "---\nid: \"001\"\ntitle: Test\nstatus: ready\nassignee: default\n---\n# Body\n"
-	os.WriteFile(path, []byte(original), 0644)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatalf("write order fixture: %v", err)
+	}
 
 	err := Update(path, map[string]interface{}{"plan_version": 2, "updated": "2024-01-01T00:00:00+08:00"})
 	if err != nil {
@@ -461,14 +481,18 @@ func TestValidateRejectsNoFrontmatter(t *testing.T) {
 
 	// File without frontmatter
 	path := filepath.Join(dir, "no-fm.md")
-	os.WriteFile(path, []byte("# No frontmatter here\n"), 0644)
+	if err := os.WriteFile(path, []byte("# No frontmatter here\n"), 0644); err != nil {
+		t.Fatalf("write no-frontmatter fixture: %v", err)
+	}
 	if err := Validate(path); err == nil {
 		t.Error("expected error for file without frontmatter")
 	}
 
 	// File with valid frontmatter should pass
 	path2 := filepath.Join(dir, "ok.md")
-	os.WriteFile(path2, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644)
+	if err := os.WriteFile(path2, []byte("---\nid: \"001\"\nstatus: ready\n---\n# Body\n"), 0644); err != nil {
+		t.Fatalf("write valid fixture: %v", err)
+	}
 	if err := Validate(path2); err != nil {
 		t.Errorf("expected valid, got: %v", err)
 	}
@@ -478,13 +502,14 @@ func TestRepairPreservesBlockScalar(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "block-repair.md")
 	// Valid block scalar field + corrupt orphaned text elsewhere
-	os.WriteFile(path, []byte(
+	if err := os.WriteFile(path, []byte(
 		"---\nid: \"061\"\nstatus: needs-grilling\ngrill_context: |\n"+
 			"  question one\n"+
 			"  question two\n"+
 			"BROKEN ORPHAN\n"+
-			"assignee: gpt\n---\n# Body text\n"), 0644)
-
+			"assignee: gpt\n---\n# Body text\n"), 0644); err != nil {
+		t.Fatalf("write block-repair fixture: %v", err)
+	}
 	if err := Repair(path); err != nil {
 		t.Fatalf("repair failed: %v", err)
 	}
@@ -513,5 +538,111 @@ func TestRepairPreservesBlockScalar(t *testing.T) {
 	}
 	if fm.GrillContext != "question one\nquestion two\n" {
 		t.Errorf("GrillContext = %q, want multi-line content", fm.GrillContext)
+	}
+}
+
+func TestParseTaskSchemaCompatibility(t *testing.T) {
+	content := []byte(`---
+id: "003"
+status: blocked
+priority: ""
+close_approved: true
+phase_error_code: TASK_FIELD_TAMPERED
+grill_heartbeat_at: "2026-07-28T10:00:00+08:00"
+priority_score: 6
+priority_recommendation: P0
+review_feedback: "resume from failed AC"
+rework_resolution: resume
+closure_reason: duplicate
+replacement_task: TASK-004
+remote_create: true
+github_owner: ndzuki
+repository_name: otg
+repository_visibility: private
+unknown_future_field: keep-me
+---
+# Task
+`)
+
+	fm, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fm.TaskSchemaVersion != 0 {
+		t.Fatalf("TaskSchemaVersion = %d, want legacy version 0", fm.TaskSchemaVersion)
+	}
+	if fm.PriorityAssessmentStatus != "pending" {
+		t.Fatalf("PriorityAssessmentStatus = %q, want compatibility default pending", fm.PriorityAssessmentStatus)
+	}
+	if !fm.CloseApproved || fm.PhaseErrorCode != "TASK_FIELD_TAMPERED" {
+		t.Fatalf("new system fields were not decoded: %+v", fm)
+	}
+	if fm.PriorityScore != 6 || fm.PriorityRecommendation != "P0" {
+		t.Fatalf("priority assessment fields were not decoded: %+v", fm)
+	}
+	if fm.ReworkResolution != "resume" || fm.ClosureReason != "duplicate" || fm.ReplacementTask != "TASK-004" {
+		t.Fatalf("rework/closed fields were not decoded: %+v", fm)
+	}
+	if !fm.RemoteCreate || fm.RepositoryVisibility != "private" {
+		t.Fatalf("GitHub fields were not decoded: %+v", fm)
+	}
+	if got := fm.Extra["unknown_future_field"]; got != "keep-me" {
+		t.Fatalf("unknown field = %#v, want keep-me", got)
+	}
+}
+
+func TestParseLegacyTaskWithPriorityDoesNotReassess(t *testing.T) {
+	fm, err := Parse([]byte(`---
+id: "002"
+status: done
+priority: P2
+---
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fm.PriorityAssessmentStatus != "completed" {
+		t.Fatalf("PriorityAssessmentStatus = %q, want compatibility default completed", fm.PriorityAssessmentStatus)
+	}
+}
+
+func TestUpdatePreservesUnknownFieldsWithNewSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-003-schema.md")
+	original := `---
+id: "003"
+task_schema_version: 1
+status: blocked
+priority_assessment_status: pending
+unknown_future_field:
+  nested: true
+---
+# Task
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	if err := Update(path, map[string]interface{}{
+		"priority_assessment_status": "completed",
+		"priority_score":             6,
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fm.PriorityAssessmentStatus != "completed" || fm.PriorityScore != 6 {
+		t.Fatalf("updated schema fields = %+v", fm)
+	}
+	nested, ok := fm.Extra["unknown_future_field"].(map[string]interface{})
+	if !ok || nested["nested"] != true {
+		t.Fatalf("unknown future field = %#v, want nested mapping", fm.Extra["unknown_future_field"])
 	}
 }

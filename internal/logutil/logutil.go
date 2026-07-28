@@ -85,7 +85,9 @@ func (w *RotatingWriter) open() error {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("stat log file: %w (close: %v)", err, closeErr)
+		}
 		return err
 	}
 	w.file = f
@@ -95,64 +97,66 @@ func (w *RotatingWriter) open() error {
 
 func (w *RotatingWriter) rotate() {
 	if w.file != nil {
-		w.file.Close()
+		if err := w.file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "logutil: close before rotation failed: %v\n", err)
+		}
 		w.file = nil
 	}
 
-	// Shift existing rotated files
-
-	// Compress the current file
 	compressedPath := w.path + ".1.gz"
-	w.compressFile(w.path, compressedPath)
+	if err := w.compressFile(w.path, compressedPath); err != nil {
+		fmt.Fprintf(os.Stderr, "logutil: compress %s failed: %v\n", w.path, err)
+	}
 
-	// Shift older files: .1.gz → .2.gz, .2.gz → .3.gz, etc.
 	for i := w.maxFiles; i > 1; i-- {
 		old := fmt.Sprintf("%s.%d.gz", w.path, i-1)
-		new := fmt.Sprintf("%s.%d.gz", w.path, i)
+		newPath := fmt.Sprintf("%s.%d.gz", w.path, i)
 		if _, err := os.Stat(old); err == nil {
-			os.Rename(old, new)
+			if err := os.Rename(old, newPath); err != nil {
+				fmt.Fprintf(os.Stderr, "logutil: rotate %s to %s failed: %v\n", old, newPath, err)
+			}
 		}
 	}
 
-	// Clean up excess rotated files
 	if w.maxFiles > 0 {
 		for i := w.maxFiles; i < w.maxFiles+5; i++ {
 			path := fmt.Sprintf("%s.%d.gz", w.path, i)
-			os.Remove(path)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "logutil: remove excess log %s failed: %v\n", path, err)
+			}
 		}
 	}
 
-	// Open new file
 	if err := w.open(); err != nil {
 		fmt.Fprintf(os.Stderr, "logutil: failed to reopen after rotation: %v\n", err)
 	}
-
-	// Clean old files
 	w.cleanOldLogs()
-
 }
 
-func (w *RotatingWriter) compressFile(src, dst string) {
+func (w *RotatingWriter) compressFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
-		return
+		return err
 	}
 
 	out, err := os.Create(dst)
 	if err != nil {
-		return
+		return err
 	}
-	defer out.Close()
-
 	gw := gzip.NewWriter(out)
-	defer gw.Close()
-
 	if _, err := gw.Write(data); err != nil {
-		return
+		_ = gw.Close()
+		_ = out.Close()
+		return err
 	}
-
-	// Truncate source after successful compression
-	os.Truncate(src, 0)
+	if err := gw.Close(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Truncate(src, 0)
 }
 
 func (w *RotatingWriter) cleanOldLogs() {
@@ -191,7 +195,9 @@ func (w *RotatingWriter) cleanOldLogs() {
 		// Delete by age
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(dir, name)
-			os.Remove(path)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "logutil: remove old log %s failed: %v\n", path, err)
+			}
 		}
 	}
 
@@ -210,7 +216,9 @@ func (w *RotatingWriter) cleanOldLogs() {
 		})
 		// Delete excess
 		for i := w.maxFiles; i < len(rotated); i++ {
-			os.Remove(filepath.Join(dir, rotated[i].Name()))
+			if err := os.Remove(filepath.Join(dir, rotated[i].Name())); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "logutil: remove rotated log %s failed: %v\n", rotated[i].Name(), err)
+			}
 		}
 	}
 }

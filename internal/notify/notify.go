@@ -102,7 +102,9 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 		"--icon="+icon,
 		title, body,
 	)
-	cmd.Run() // fire and forget
+	if err := cmd.Run(); err != nil {
+		log.Printf("notify: notify-send failed: %v", err)
+	}
 }
 
 // parseFile reads and parses a task document frontmatter with retry for cloud-sync filesystems.
@@ -143,7 +145,9 @@ func Send(title, body string, notifyEnabled bool) {
 		"--app-name=OMP Task Runner",
 		title, body,
 	)
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		log.Printf("notify: notify-send failed: %v", err)
+	}
 }
 
 // SendTaskAction sends a bounded action notification with the task ID and title.
@@ -212,12 +216,20 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		log.Printf("grilling tab: cannot open lock: %v", err)
 		return false
 	}
-	defer lockFile.Close()
+	defer func() {
+		if err := lockFile.Close(); err != nil {
+			log.Printf("grilling tab: close lock file: %v", err)
+		}
+	}()
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		log.Printf("grilling tab: cannot acquire lock: %v", err)
 		return false
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer func() {
+		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+			log.Printf("grilling tab: unlock lock file: %v", err)
+		}
+	}()
 
 	// Debounce: skip if last tab was created within 5 minutes
 	if data, err := os.ReadFile(kittyDebounceFile(taskID)); err == nil {
@@ -228,7 +240,9 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 			}
 		}
 	}
-	os.WriteFile(kittyDebounceFile(taskID), []byte(time.Now().Format(time.RFC3339)), 0644)
+	if err := os.WriteFile(kittyDebounceFile(taskID), []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+		log.Printf("grilling tab: write debounce timestamp: %v", err)
+	}
 
 	if _, err := exec.LookPath("kitty"); err != nil {
 		log.Printf("grilling tab: kitty not in PATH: %v", err)

@@ -7,12 +7,14 @@ package yamlfrontmatter
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,76 +30,129 @@ var keyLineRE = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\s*:\s*(\S.*)?$`)
 var listItemRE = regexp.MustCompile(`^\s+-\s+\S`)
 
 type Frontmatter struct {
+	// Human-owned fields.
 	ID              string   `yaml:"id"`
 	Title           string   `yaml:"title"`
 	Project         string   `yaml:"project"`
 	ProjectID       string   `yaml:"project_id"`
+	Assignee        string   `yaml:"assignee"`
+	ReqDoc          string   `yaml:"req_doc"`
 	NewProject      bool     `yaml:"new_project"`
-	Template        string   `yaml:"template"`
-	Status          string   `yaml:"status"` // blocked, ready, refining, needs-grilling, planning, plan-review, implementing, review, conflict, done
+	BlockedBy       []string `yaml:"blocked_by"`
+	AutoApprove     bool     `yaml:"auto_approve"`
+	OffPeakOnly     bool     `yaml:"off_peak_only"`
+	DueDate         string   `yaml:"due_date"`
 	PlanApproved    bool     `yaml:"plan_approved"`
 	MergeApproved   bool     `yaml:"merge_approved"`
-	AdrApproved     bool     `yaml:"adr_approved"`
-	AdrProposed     any      `yaml:"adr_proposed"`
-	AdrWritten      any      `yaml:"adr_written"`
-	GrillContext    string   `yaml:"grill_context"`
-	GrillPrevStatus string   `yaml:"grill_prev_status"`
-	GrillDone       bool     `yaml:"grill_done"`
-	PendingReq      bool     `yaml:"pending_req"`
-	OffPeakOnly     bool     `yaml:"off_peak_only"`
-	PlanVersion     int      `yaml:"plan_version"`
-	Created         string   `yaml:"created"`
-	Updated         string   `yaml:"updated"`
-	Completed       string   `yaml:"completed"`
-	Priority        string   `yaml:"priority"`
-	DueDate         string   `yaml:"due_date"`
-	EstimatedHours  float64  `yaml:"estimated_hours"`
-	ActualHours     float64  `yaml:"actual_hours"`
-	Assignee        string   `yaml:"assignee"`
-	Reviewer        string   `yaml:"reviewer"`
-	Author          string   `yaml:"author"`
-	ReqDoc          string   `yaml:"req_doc"`
-	Component       string   `yaml:"component"`
-	Tags            []string `yaml:"tags"`
-	Epic            string   `yaml:"epic"`
-	Parent          string   `yaml:"parent"`
-	Blocks          []string `yaml:"blocks"`
-	BlockedBy       []string `yaml:"blocked_by"`
-	TargetBranch    string   `yaml:"target_branch"`
-	TargetEnv       string   `yaml:"target_env"`
-	PRURL           string   `yaml:"pr_url"`
-	SwitchSettings  bool     `yaml:"switch_settings"`
-	AutoApprove     bool     `yaml:"auto_approve"`
+	ResumeApproved  bool     `yaml:"resume_approved"`
+	CloseApproved   bool     `yaml:"close_approved"`
 
-	// ── Maturity gate ──
-	Maturity         string `yaml:"maturity"` // fully_mature | mostly_mature | immature
-	RefineVersion    int    `yaml:"refine_version"`
-	RefineReqHash    string `yaml:"refine_req_hash"` // SHA-256 of full REQ bytes
-	RefineRetryCount int    `yaml:"refine_retry_count"`
-	RefineError      string `yaml:"refine_error"`
-
-	// ── Planning ──
-	PlanReqHash        string `yaml:"plan_req_hash"` // REQ hash at planning start
+	// System-owned lifecycle fields.
+	Status             string `yaml:"status"`
+	Maturity           string `yaml:"maturity"`
+	RefineVersion      int    `yaml:"refine_version"`
+	RefineReqHash      string `yaml:"refine_req_hash"`
+	RefineRetryCount   int    `yaml:"refine_retry_count"`
+	RefineError        string `yaml:"refine_error"`
+	PlanReqHash        string `yaml:"plan_req_hash"`
+	PlanVersion        int    `yaml:"plan_version"`
 	PlanningRetryCount int    `yaml:"planning_retry_count"`
+	PhaseError         string `yaml:"phase_error"`
+	PhaseErrorCode     string `yaml:"phase_error_code"`
+	PhaseLog           string `yaml:"phase_log"`
+	BlockedPhase       string `yaml:"blocked_phase"`
+	PendingReq        bool   `yaml:"pending_req"`
+	CheckpointCommit   string `yaml:"checkpoint_commit"`
+	TargetBranch       string `yaml:"target_branch"`
+	PRURL              string `yaml:"pr_url"`
+	Completed          string `yaml:"completed"`
+	AdrApproved        bool   `yaml:"adr_approved"`
+	AdrProposed        any    `yaml:"adr_proposed"`
+	AdrWritten         any    `yaml:"adr_written"`
+	GrillOwner         string `yaml:"grill_owner"`
+	GrillStartedAt     string `yaml:"grill_started_at"`
+	GrillHeartbeatAt   string `yaml:"grill_heartbeat_at"`
+	GrillTimeoutMinutes int   `yaml:"grill_timeout_minutes"`
+	GrillDone          bool   `yaml:"grill_done"`
+	GrillResolution    string `yaml:"grill_resolution"`
+	GrillContext       string `yaml:"grill_context"`
+	GrillPrevStatus    string `yaml:"grill_prev_status"`
+	ReqRefineCount     int    `yaml:"req_refine_count"`
+	TaskSchemaVersion  int    `yaml:"task_schema_version"`
 
-	// ── Phase recovery ──
-	PhaseError     string `yaml:"phase_error"`
-	PhaseLog       string `yaml:"phase_log"`
-	BlockedPhase   string `yaml:"blocked_phase"` // refining | planning
-	ResumeApproved bool   `yaml:"resume_approved"`
+	// Shared fields: daemon proposes, users may override.
+	Priority                    string `yaml:"priority"`
+	PriorityAssessmentStatus    string `yaml:"priority_assessment_status"`
+	PriorityAssessmentAttempts  int    `yaml:"priority_assessment_attempts"`
+	PriorityAssessmentStartedAt string `yaml:"priority_assessment_started_at"`
+	PriorityAssessedAt          string `yaml:"priority_assessed_at"`
+	PriorityAssessedValue       string `yaml:"priority_assessed_value"`
+	PriorityImpact              string `yaml:"priority_impact"`
+	PriorityUrgency             string `yaml:"priority_urgency"`
+	PriorityWorkaround          string `yaml:"priority_workaround"`
+	PriorityScore               int    `yaml:"priority_score"`
+	PriorityConfidence          string `yaml:"priority_confidence"`
+	PriorityReason              string `yaml:"priority_reason"`
+	PriorityRecommendation      string `yaml:"priority_recommendation"`
+	ReviewFeedback              string `yaml:"review_feedback"`
+	ReworkResolution            string `yaml:"rework_resolution"`
 
-	// ── Grilling ownership ──
-	GrillOwner          string `yaml:"grill_owner"`
-	GrillStartedAt      string `yaml:"grill_started_at"`
-	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
-	GrillResolution     string `yaml:"grill_resolution"` // resume | replan | ""
+	// Closed terminal state.
+	ClosureReason   string `yaml:"closure_reason"`
+	ClosureNote     string `yaml:"closure_note"`
+	ReplacementTask string `yaml:"replacement_task"`
 
-	// ── Checkpoint / refine ──
-	CheckpointCommit string `yaml:"checkpoint_commit"`
-	ReqRefineCount   int    `yaml:"req_refine_count"`
+	// Declarative project scaffold intent.
+	Scaffold ScaffoldIntent `yaml:"scaffold"`
+	Template string         `yaml:"template"`
 
-	// Extra holds any YAML keys not explicitly mapped above.
+	// GitHub remote creation and merge authorization.
+	RemoteCreate          bool   `yaml:"remote_create"`
+	GitHubOwner           string `yaml:"github_owner"`
+	RepositoryName        string `yaml:"repository_name"`
+	RepositoryVisibility  string `yaml:"repository_visibility"`
+	RepositoryDescription string `yaml:"repository_description"`
+	RepositoryURL         string `yaml:"repository_url"`
+	MergeStatus           string `yaml:"merge_status"`
+	ApprovedHead          string `yaml:"approved_head"`
+
+	// General task metadata retained by templates and dashboards.
+	Created        string   `yaml:"created"`
+	Updated        string   `yaml:"updated"`
+	EstimatedHours float64  `yaml:"estimated_hours"`
+	ActualHours    float64  `yaml:"actual_hours"`
+	Reviewer       string   `yaml:"reviewer"`
+	Author         string   `yaml:"author"`
+	Component      string   `yaml:"component"`
+	Tags           []string `yaml:"tags"`
+	Epic           string   `yaml:"epic"`
+	Parent         string   `yaml:"parent"`
+	Blocks         []string `yaml:"blocks"`
+	TargetEnv      string   `yaml:"target_env"`
+
+	// Deprecated migration-only field. New code must use Assignee.
+	SwitchSettings bool `yaml:"switch_settings"`
+
+	// Extra holds YAML keys not explicitly mapped above.
 	Extra map[string]any `yaml:",inline"`
+}
+
+type ScaffoldIntent struct {
+	Kind         string         `yaml:"kind"`
+	Capabilities []string       `yaml:"capabilities"`
+	Preferences  map[string]any `yaml:"preferences"`
+	Notes        string         `yaml:"notes"`
+}
+
+func applyCompatibilityDefaults(fm *Frontmatter) {
+	if fm.TaskSchemaVersion != 0 || fm.PriorityAssessmentStatus != "" {
+		return
+	}
+	if fm.Priority == "" {
+		fm.PriorityAssessmentStatus = "pending"
+		return
+	}
+	fm.PriorityAssessmentStatus = "completed"
 }
 
 // normalizeNumericStrings converts quoted numeric values for known numeric
@@ -137,9 +192,11 @@ func Parse(data []byte) (*Frontmatter, error) {
 	}
 	fmBlock := strings.TrimSpace(rest[:end])
 
-	// Empty frontmatter → return zero-value struct
+	// Empty frontmatter returns a zero-value legacy-compatible struct.
 	if fmBlock == "" {
-		return &Frontmatter{}, nil
+		fm := &Frontmatter{}
+		applyCompatibilityDefaults(fm)
+		return fm, nil
 	}
 
 	var doc yaml.Node
@@ -154,6 +211,7 @@ func Parse(data []byte) (*Frontmatter, error) {
 	if err := doc.Decode(&fm); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
+	applyCompatibilityDefaults(&fm)
 	return &fm, nil
 }
 
@@ -161,10 +219,46 @@ func Parse(data []byte) (*Frontmatter, error) {
 // Fields are updated via yaml.Node to preserve order and handle block scalars.
 // Validation runs BEFORE writing — a corrupt result is never persisted.
 func Update(path string, updates map[string]interface{}) error {
-	data, err := os.ReadFile(path)
+	return WithLockedFrontmatter(path, func(_ *Frontmatter) (map[string]interface{}, error) {
+		return updates, nil
+	})
+}
+
+// WithLockedFrontmatter serializes all TASK writes for a canonical path.
+// The callback observes the latest frontmatter while the task-path flock is held.
+func WithLockedFrontmatter(path string, mutate func(*Frontmatter) (map[string]interface{}, error)) error {
+	cleanPath, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("resolve task path: %w", err)
 	}
+	unlock, err := acquireTaskLock(cleanPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	fm, err := Parse(data)
+	if err != nil {
+		return err
+	}
+	if fm == nil {
+		return fmt.Errorf("%s has no frontmatter", cleanPath)
+	}
+	updates, err := mutate(fm)
+	if err != nil {
+		return err
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return updateUnlocked(cleanPath, data, updates)
+}
+
+func updateUnlocked(path string, data []byte, updates map[string]interface{}) error {
 	content := string(data)
 	if !strings.HasPrefix(content, "---") {
 		return fmt.Errorf("%s has no frontmatter", path)
@@ -180,7 +274,6 @@ func Update(path string, updates map[string]interface{}) error {
 		body = "\n"
 	}
 
-	// Parse existing frontmatter as a YAML mapping node to preserve field order.
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmText), &doc); err != nil {
 		return fmt.Errorf("parse frontmatter: %w", err)
@@ -190,7 +283,6 @@ func Update(path string, updates map[string]interface{}) error {
 	}
 	mapping := doc.Content[0]
 
-	// Timestamps
 	now := time.Now().Format("2006-01-02T15:04:05-07:00")
 	updates["updated"] = now
 	if _, ok := updates["created"]; !ok {
@@ -198,32 +290,41 @@ func Update(path string, updates map[string]interface{}) error {
 			updates["created"] = now
 		}
 	}
-
-	// Apply updates to the mapping node — existing keys are replaced in place,
-	// new keys are appended at the end.  This preserves the original field order.
-	for k, v := range updates {
-		setMappingValue(mapping, k, v)
+	for key, value := range updates {
+		setMappingValue(mapping, key, value)
 	}
 
-	// Serialize back to YAML.
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(&doc); err != nil {
 		return fmt.Errorf("encode frontmatter: %w", err)
 	}
-	enc.Close()
-	newFM := strings.TrimSuffix(buf.String(), "\n")
-
-	newContent := "---\n" + newFM + "\n---" + body
-
-	// Validate the generated content BEFORE writing — a corrupt frontmatter
-	// (e.g. invalid multi-line edit) must be surfaced, not silently persisted.
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("close frontmatter encoder: %w", err)
+	}
+	newContent := "---\n" + strings.TrimSuffix(buf.String(), "\n") + "\n---" + body
 	if _, err := Parse([]byte(newContent)); err != nil {
 		return fmt.Errorf("update would produce invalid frontmatter: %w", err)
 	}
-
 	return atomicWrite(path, []byte(newContent))
+}
+
+func acquireTaskLock(path string) (func(), error) {
+	sum := sha256.Sum256([]byte(path))
+	lockPath := filepath.Join(os.TempDir(), fmt.Sprintf("otg-task-%x.lock", sum[:]))
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open task lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock task: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
 // setMappingValue replaces or appends a key-value pair in a YAML mapping node.
@@ -255,14 +356,22 @@ func atomicWrite(path string, data []byte) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		closeErr := tmp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write temp: %w (close: %v)", err, closeErr)
+		}
 		return fmt.Errorf("write temp: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		closeErr := tmp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("fsync temp: %w (close: %v)", err, closeErr)
+		}
 		return fmt.Errorf("fsync temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
