@@ -90,8 +90,12 @@ func Run(opts Options) error {
 
 	// 7. Create required directories
 	if !d {
-		os.MkdirAll(filepath.Join(opts.ObsidianVault, "Projects"), 0755)
-		os.MkdirAll(opts.NewProjectRoot, 0755)
+		if err := os.MkdirAll(filepath.Join(opts.ObsidianVault, "Projects"), 0755); err != nil {
+			return fmt.Errorf("create Projects dir: %w", err)
+		}
+		if err := os.MkdirAll(opts.NewProjectRoot, 0755); err != nil {
+			return fmt.Errorf("create project root %s: %w", opts.NewProjectRoot, err)
+		}
 	}
 
 	// 7b. Deploy dashboard template to vault (Dataview-powered)
@@ -123,8 +127,9 @@ GROUP BY project_id
 SORT project_id ASC
 ` + "```")
 		}
-		os.WriteFile(dst, content, 0644)
-		fmt.Println("dashboard deployed to vault")
+		if err := os.WriteFile(dst, content, 0644); err != nil {
+			return fmt.Errorf("write dashboard to %s: %w", dst, err)
+		}
 	}
 
 	// 8. Configure systemd
@@ -146,9 +151,7 @@ func installSkill(opts Options) error {
 	if src == "" {
 		src = "obsidian-task-runner"
 	}
-
-	d := opts.DryRun
-	if d {
+	if opts.DryRun {
 		fmt.Printf("[DRY RUN] Would copy %s → %s\n", src, dest)
 		return nil
 	}
@@ -162,11 +165,15 @@ func installSkill(opts Options) error {
 
 	// Remove old installation if forced, then restore user config.
 	if opts.Force {
-		os.RemoveAll(dest)
+		if err := os.RemoveAll(dest); err != nil {
+			return fmt.Errorf("remove old installation %s: %w", dest, err)
+		}
 	}
 
 	// Create parent dir
-	os.MkdirAll(filepath.Dir(dest), 0755)
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return fmt.Errorf("create parent dir %s: %w", filepath.Dir(dest), err)
+	}
 
 	// Copy skill files (native Go copy for portability)
 	if err := copyDir(src, dest); err != nil {
@@ -192,7 +199,9 @@ func installTaskVerifier(opts Options) error {
 		return nil
 	}
 
-	os.MkdirAll(agentsDir, 0755)
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		return fmt.Errorf("create agents dir %s: %w", agentsDir, err)
+	}
 
 	src := filepath.Join("agents", "task-verifier.md")
 	dest := filepath.Join(agentsDir, "task-verifier.md")
@@ -210,21 +219,27 @@ func installTaskVerifier(opts Options) error {
 func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
 
-	defaults := map[string]interface{}{
-		"obsidian_vault":        opts.ObsidianVault,
-		"new_project_root":      opts.NewProjectRoot,
-		"projects":              []interface{}{},
-		"models":                map[string]string{"default": "deepseek/deepseek-v4-flash"},
-		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
-		"poll_interval_minutes": opts.PollIntervalMin,
-		"max_concurrent_tasks":  2,
+	config := map[string]interface{}{
+		"config_version":          1,
+		"obsidian_vault":          opts.ObsidianVault,
+		"new_project_root":        opts.NewProjectRoot,
+		"projects":                []interface{}{},
+		"models":                  map[string]string{"default": "deepseek/deepseek-v4-flash"},
+		"notifications":           map[string]interface{}{"desktop": opts.NotifyEnabled},
+		"poll_interval_minutes":   opts.PollIntervalMin,
+		"max_concurrent_tasks":    2,
+		"phase_timeouts_minutes":  map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
+		"shutdown_grace_seconds":  30,
+		"off_peak_timezone":       "Asia/Shanghai",
+		"off_peak_windows": []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
+		"starvation_warning_days": map[string]int{"P3": 14, "P4": 30},
 	}
 
 	// Merge new defaults into existing config — never overwrite user values.
 	if existing, err := os.ReadFile(mapFile); err == nil {
 		var existingCfg map[string]interface{}
 		if err := json.Unmarshal(existing, &existingCfg); err == nil {
-			for k, v := range defaults {
+			for k, v := range config {
 				if _, exists := existingCfg[k]; !exists {
 					existingCfg[k] = v
 				}
@@ -247,30 +262,35 @@ func generateVaultMap(opts Options) error {
 
 	// No existing file — create fresh atomically.
 	if opts.DryRun {
-		data, _ := json.MarshalIndent(defaults, "", "  ")
+		data, _ := json.MarshalIndent(config, "", "  ")
 		fmt.Printf("[DRY RUN] Would create vault-map.json:\n%s\n", string(data))
 		return nil
 	}
-	os.MkdirAll(filepath.Dir(mapFile), 0755)
-	data, _ := json.MarshalIndent(defaults, "", "  ")
+	data, _ := json.MarshalIndent(config, "", "  ")
 	data = append(data, '\n')
-	return yamlfrontmatter.AtomicWrite(mapFile, data)
+
+	if err := os.MkdirAll(filepath.Dir(mapFile), 0755); err != nil {
+		return fmt.Errorf("create vault-map dir: %w", err)
+	}
+	return os.WriteFile(mapFile, data, 0644)
 }
 
 func createOMPSymlink(opts Options) error {
 	linkPath := filepath.Join(os.Getenv("HOME"), ".omp", "agent", "skills", "obsidian-task-runner")
-
 	if opts.DryRun {
 		fmt.Printf("[DRY RUN] Would create symlink %s → %s\n", linkPath, opts.SkillInstallDir)
 		return nil
 	}
-
-	os.MkdirAll(filepath.Dir(linkPath), 0755)
-	os.Remove(linkPath) // remove old symlink/file
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		return fmt.Errorf("create symlink dir: %w", err)
+	}
+	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old symlink %s: %w", linkPath, err)
+	}
 	return os.Symlink(opts.SkillInstallDir, linkPath)
 }
 
-// installPhaseSkills copies the four phase sub-skills (refining, round1, round2, merge)
+// installPhaseSkills copies bundled phase and sidecar skills as top-level skills.
 func installPhaseSkills(opts Options) error {
 	home, _ := os.UserHomeDir()
 	skillRoot := filepath.Join(home, ".omp", "skills")
@@ -283,34 +303,40 @@ func installPhaseSkills(opts Options) error {
 		{"obsidian-task-runner-round1", "skills/round1/SKILL.md"},
 		{"obsidian-task-runner-round2", "skills/round2/SKILL.md"},
 		{"obsidian-task-runner-merge", "skills/merge/SKILL.md"},
+		{"obsidian-task-runner-priority", "skills/priority/SKILL.md"},
 	}
 	if opts.DryRun {
-		for _, p := range phases {
-			fmt.Printf("[DRY RUN] Would install %s\n", p.name)
+		for _, phase := range phases {
+			fmt.Printf("[DRY RUN] Would install %s\n", phase.name)
 		}
 		return nil
 	}
-	for _, p := range phases {
-		src := filepath.Join(srcBase, p.srcRel)
-		destDir := filepath.Join(skillRoot, p.name)
+	for _, phase := range phases {
+		src := filepath.Join(srcBase, phase.srcRel)
+		destDir := filepath.Join(skillRoot, phase.name)
 		dest := filepath.Join(destDir, "SKILL.md")
-		os.MkdirAll(destDir, 0755)
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			return fmt.Errorf("create phase skill dir %s: %w", destDir, err)
+		}
 		data, err := os.ReadFile(src)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", src, err)
 		}
-		if err := os.WriteFile(dest, data, 0644); err != nil {
+		if err := os.WriteFile(dest, data, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", dest, err)
 		}
-		// Agent skill symlink
 		agentDir := filepath.Join(home, ".omp", "agent", "skills")
-		os.MkdirAll(agentDir, 0755)
-		link := filepath.Join(agentDir, p.name)
-		os.Remove(link)
+		if err := os.MkdirAll(agentDir, 0o755); err != nil {
+			return fmt.Errorf("create agent skill dir %s: %w", agentDir, err)
+		}
+		link := filepath.Join(agentDir, phase.name)
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove old symlink %s: %w", link, err)
+		}
 		if err := os.Symlink(destDir, link); err != nil {
 			return fmt.Errorf("symlink %s → %s: %w", link, destDir, err)
 		}
-		fmt.Printf("phase skill installed: %s\n", p.name)
+		fmt.Printf("phase skill installed: %s\n", phase.name)
 	}
 	return nil
 }
@@ -337,7 +363,9 @@ func configureShell(opts Options) error {
 		rcFile = filepath.Join(home, ".bashrc")
 	}
 
-	os.MkdirAll(filepath.Dir(rcFile), 0755)
+	if err := os.MkdirAll(filepath.Dir(rcFile), 0755); err != nil {
+		return fmt.Errorf("create shell config dir: %w", err)
+	}
 
 	// Check if already configured
 	existing, _ := os.ReadFile(rcFile)
@@ -360,9 +388,23 @@ func configureShell(opts Options) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", rcFile, err)
 	}
-	defer f.Close()
-	f.WriteString("\n# Obsidian Task Runner\n")
-	f.WriteString(exportLine)
+	if _, err := f.WriteString("\n# Obsidian Task Runner\n"); err != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write header to %s: %w (close: %v)", rcFile, err, closeErr)
+		}
+		return fmt.Errorf("write header to %s: %w", rcFile, err)
+	}
+	if _, err := f.WriteString(exportLine); err != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write export line to %s: %w (close: %v)", rcFile, err, closeErr)
+		}
+		return fmt.Errorf("write export line to %s: %w", rcFile, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", rcFile, err)
+	}
 	return nil
 }
 
@@ -374,7 +416,9 @@ func configureSystemd(opts Options) error {
 
 	home := os.Getenv("HOME")
 	userDir := filepath.Join(home, ".config", "systemd", "user")
-	os.MkdirAll(userDir, 0755)
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		return fmt.Errorf("create systemd user dir: %w", err)
+	}
 
 	// Build PATH
 	path := "/usr/local/bin:/usr/bin:/bin"
@@ -460,7 +504,9 @@ func installSkillDoctor(opts Options) error {
 		return nil
 	}
 
-	os.MkdirAll(destDir, 0755)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("create skill-doctor dir: %w", err)
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("read skill-doctor: %w", err)
@@ -468,7 +514,9 @@ func installSkillDoctor(opts Options) error {
 	if err := os.WriteFile(dest, data, 0644); err != nil {
 		return fmt.Errorf("write skill-doctor: %w", err)
 	}
-	os.Chmod(dest, 0755)
+	if err := os.Chmod(dest, 0755); err != nil {
+		return fmt.Errorf("chmod skill-doctor: %w", err)
+	}
 	fmt.Println("skill-doctor installed to", dest)
 	return nil
 }
@@ -486,7 +534,9 @@ func installRegistry(opts Options) error {
 		return nil
 	}
 
-	os.MkdirAll(destDir, 0755)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("create skill registry dir: %w", err)
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("read skill registry: %w", err)
@@ -570,23 +620,32 @@ func validateRequiredSkills() ([]string, error) {
 
 // stopDaemon gracefully stops any running otg daemon processes.
 func stopDaemon() {
-	// Stop systemd units
-	exec.Command("systemctl", "--user", "stop", "--no-block", "omp-task-runner.timer").Run()
-	exec.Command("systemctl", "--user", "stop", "--no-block", "omp-task-watcher.service").Run()
+	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "--no-block", "omp-task-runner.timer")
+	runBestEffort("stop task watcher", "systemctl", "--user", "stop", "--no-block", "omp-task-watcher.service")
+	runBestEffort("terminate daemon", "pkill", "-TERM", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon")
 
-	// SIGTERM for graceful shutdown
-	exec.Command("pkill", "-TERM", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon").Run()
-
-	// Give processes time to exit, then force kill
+	// Give processes time to exit, then force kill.
 	time.Sleep(2 * time.Second)
-	exec.Command("pkill", "-9", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon").Run()
+	runBestEffort("kill daemon", "pkill", "-9", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon")
 	time.Sleep(1 * time.Second)
 
-	// Clean up stale lock files (daemon acquires vault-hash locks)
-	entries, _ := os.ReadDir(os.TempDir())
+	// Clean up stale lock files (daemon acquires vault-hash locks).
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: read temp dir for stale locks: %v\n", err)
+		return
+	}
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "otg-daemon-") && strings.HasSuffix(e.Name(), ".lock") {
-			os.Remove(filepath.Join(os.TempDir(), e.Name()))
+			if err := os.Remove(filepath.Join(os.TempDir(), e.Name())); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "warning: remove stale daemon lock %s: %v\n", e.Name(), err)
+			}
 		}
+	}
+}
+
+func runBestEffort(action, name string, args ...string) {
+	if err := exec.Command(name, args...).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", action, err)
 	}
 }

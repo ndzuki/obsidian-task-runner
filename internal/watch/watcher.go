@@ -3,6 +3,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,25 +40,34 @@ func New(vaultPath string, debounceInterval time.Duration) (*Watcher, error) {
 		interval: debounceInterval,
 	}
 
-	// Watch Projects/ and all subdirectories recursively
+	// Watch Projects/ and all subdirectories recursively.
 	projectsPath := filepath.Join(vaultPath, "Projects")
-	// Watch Projects/ itself (catches new project dirs)
-	fsn.Add(projectsPath)
-	// Walk and add existing subdirs
-	filepath.Walk(projectsPath, func(p string, info os.FileInfo, err error) error {
+	if err := fsn.Add(projectsPath); err != nil {
+		_ = fsn.Close()
+		return nil, fmt.Errorf("watch Projects directory: %w", err)
+	}
+	if err := filepath.Walk(projectsPath, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if info.IsDir() {
-			fsn.Add(p)
+			if err := fsn.Add(p); err != nil {
+				return fmt.Errorf("watch directory %s: %w", p, err)
+			}
 		}
 		return nil
-	})
-	// Backward compat: old flat structure
+	}); err != nil {
+		_ = fsn.Close()
+		return nil, err
+	}
+	// Backward compatibility: old flat structure.
 	for _, d := range []string{"Tasks", "Requirements"} {
 		p := filepath.Join(vaultPath, d)
 		if _, err := os.Stat(p); err == nil {
-			fsn.Add(p)
+			if err := fsn.Add(p); err != nil {
+				_ = fsn.Close()
+				return nil, fmt.Errorf("watch legacy directory %s: %w", p, err)
+			}
 		}
 	}
 
@@ -69,7 +79,11 @@ func (w *Watcher) Start(ctx context.Context) { go w.loop(ctx) }
 
 func (w *Watcher) loop(ctx context.Context) {
 	defer close(w.events)
-	defer w.fsn.Close()
+	defer func() {
+		if err := w.fsn.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "watcher close error: %v\n", err)
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,7 +97,9 @@ func (w *Watcher) loop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			os.Stderr.WriteString("watcher error: " + err.Error() + "\n")
+			if _, writeErr := os.Stderr.WriteString("watcher error: " + err.Error() + "\n"); writeErr != nil {
+				return
+			}
 		}
 	}
 }
@@ -94,7 +110,9 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 	// Auto-watch new directories under Projects/
 	if evt.Op&fsnotify.Create != 0 {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			w.fsn.Add(path)
+			if err := w.fsn.Add(path); err != nil {
+				fmt.Fprintf(os.Stderr, "watcher add directory %s: %v\n", path, err)
+			}
 			return
 		}
 	}

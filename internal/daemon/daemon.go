@@ -39,16 +39,24 @@ type Runner struct {
 	daemonCtx       context.Context // bound to daemon lifecycle; cancelled on shutdown
 }
 
+type repoLockMode uint8
+
+const (
+	repoLockNone repoLockMode = iota
+	repoLockRead
+	repoLockWrite
+)
+
 type preparedTask struct {
-	task      task.ReadyTask
-	repoDir   string
-	workDir   string
-	exclusive bool
+	task     task.ReadyTask
+	repoDir  string
+	workDir  string
+	lockMode repoLockMode
 }
 
 type taskResult struct {
 	repoDir   string
-	exclusive bool
+	lockMode  repoLockMode
 	processed int
 }
 
@@ -60,8 +68,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
 	}
-	r.daemonCtx = ctx
-	defer r.logWriter.Close()
+	defer func() {
+		if err := r.logWriter.Close(); err != nil {
+			r.logger.Printf("close log writer: %v", err)
+		}
+	}()
 
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
@@ -98,9 +109,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	ticker := time.NewTicker(time.Duration(r.cfg.PollIntervalMin) * time.Minute)
 	defer ticker.Stop()
 
-	r.scanAndProcess()
-	r.initialScanDone = true
-
+	if err := r.scanAndProcess(); err != nil {
+		r.logger.Printf("initial scan error: %v", err)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -110,36 +121,38 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.logger.Printf("watcher: %s %s changed", evt.Dir, filepath.Base(evt.Path))
 			if evt.Dir == "Requirements" {
 				reqRel, _ := filepath.Rel(r.cfg.ObsidianVault, evt.Path)
-				results := task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
-				for _, res := range results {
-					switch res.Action {
-					case "reset_to_ready":
-						notify.SendTaskAction(res.TaskID, "", "🔄", "需求变更", "重新出计划", r.cfg.Notifications.Desktop)
+				var results []task.AffectedResult
+				if _, statErr := os.Stat(evt.Path); os.IsNotExist(statErr) {
+					results = task.OnReqDeleted(r.cfg.ObsidianVault, reqRel)
+				} else {
+					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
+				}
+				for _, result := range results {
+					switch result.Action {
+					case "reset_to_ready", "rename_req":
+						notify.SendTaskAction(result.TaskID, "", "🔄", "需求变更", "重新出计划", r.cfg.Notifications.Desktop)
 					case "pending_req":
-						notify.SendTaskAction(res.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划", r.cfg.Notifications.Desktop)
+						notify.SendTaskAction(result.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划", r.cfg.Notifications.Desktop)
 					case "create_task":
-						notify.SendTaskAction(res.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段", r.cfg.Notifications.Desktop)
+						notify.SendTaskAction(result.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段", r.cfg.Notifications.Desktop)
+					case "req_missing":
+						notify.SendTaskAction(result.TaskID, "", "🚫", "需求文件缺失", "TASK 已阻塞，恢复 REQ 后重试", r.cfg.Notifications.Desktop)
 					case "warn_only":
-						notify.SendTaskAction(res.TaskID, "", "⚠️", "需求变更", "请手动评估影响", r.cfg.Notifications.Desktop)
+						notify.SendTaskAction(result.TaskID, "", "⚠️", "需求变更", "请手动评估影响", r.cfg.Notifications.Desktop)
 					default:
-						r.logger.Printf("task %s: unknown OnReqChanged action %q", res.TaskID, res.Action)
+						r.logger.Printf("task %s: unknown OnReqChanged action %q", result.TaskID, result.Action)
 					}
 				}
 			}
-			time.Sleep(3 * time.Second) // wait for cloud-sync flush
-			if evt.Dir == "Tasks" {
-				if rt, err := task.FindReadyTaskForFile(r.cfg.ObsidianVault, evt.Path); err != nil {
-					r.logger.Printf("watcher: FindReadyTaskForFile error: %v", err)
-				} else if rt != nil {
-					r.logger.Printf("watcher: task %s (%s) is ready, dispatching", rt.ID, rt.Status)
-					r.scanAndProcess()
-				}
-			} else {
-				r.scanAndProcess()
+			time.Sleep(3 * time.Second)
+			if err := r.scanAndProcess(); err != nil {
+				r.logger.Printf("event scan error: %v", err)
 			}
 		case <-ticker.C:
 			r.logger.Println("timer: periodic scan")
-			r.scanAndProcess()
+			if err := r.scanAndProcess(); err != nil {
+				r.logger.Printf("periodic scan error: %v", err)
+			}
 		}
 	}
 }
@@ -150,7 +163,11 @@ func (r *Runner) RunOnce() error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
 	}
-	defer r.logWriter.Close()
+	defer func() {
+		if err := r.logWriter.Close(); err != nil {
+			r.logger.Printf("close log writer: %v", err)
+		}
+	}()
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
@@ -189,6 +206,7 @@ func (r *Runner) scanAndProcess() error {
 	}
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
 	if len(tasks) == 0 {
+		r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
 		return nil
 	}
 	for round := 0; round < 3; round++ {
@@ -205,8 +223,9 @@ func (r *Runner) scanAndProcess() error {
 		}
 		if len(tasks) == 0 {
 			break
-		}
 	}
+	}
+	r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
 	return nil
 }
 
@@ -228,7 +247,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		for running < limit {
 			index := -1
 			for i, candidate := range pending {
-				if candidate.exclusive && !r.repoLock(candidate.repoDir).TryLock() {
+				if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
 					continue
 				}
 				index = i
@@ -244,7 +263,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			go func(p preparedTask) {
 				done <- taskResult{
 					repoDir:   p.repoDir,
-					exclusive: p.exclusive,
+					lockMode:  p.lockMode,
 					processed: r.processPreparedTask(p),
 				}
 			}(candidate)
@@ -258,9 +277,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		result := <-done
 		running--
 		processed += result.processed
-		if result.exclusive {
-			r.repoLock(result.repoDir).Unlock()
-		}
+		r.unlockRepo(result.repoDir, result.lockMode)
 	}
 
 	return processed
@@ -275,143 +292,58 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 	pending := make([]preparedTask, 0, len(tasks))
 	for _, t := range tasks {
-		// ── Grilling: handle before repo resolution ──
-		if t.Status == "ready" {
-			// Priority Assessment gate: run before refining if pending
-			if t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed" {
-				pending = append(pending, preparedTask{task: t, exclusive: false})
-				continue
-			}
-			r.logger.Printf("task %s: ready → refining", t.ID)
-			if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
-				"status": "refining",
-			}); err != nil {
-				r.logger.Printf("task %s: failed to set refining: %v", t.ID, err)
-				continue
-			}
-			t.Status = "refining"
-			pending = append(pending, preparedTask{task: t, exclusive: false})
+		data, err := os.ReadFile(t.FilePath)
+		if err != nil {
+			r.logger.Printf("task %s: read frontmatter before dispatch: %v", t.ID, err)
 			continue
 		}
-		if t.Status == "refining" || t.Status == "planning" || t.Status == "blocked" || t.Status == "wayfinder" {
-			pending = append(pending, preparedTask{task: t, exclusive: false})
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			r.logger.Printf("task %s: parse frontmatter before dispatch: %v", t.ID, err)
 			continue
 		}
+
+		if transition, ok := nextLocalTransition(fm); ok {
+			r.logger.Printf("task %s: local transition %s → %s (%s)", t.ID, fm.Status, transition.Status, transition.Reason)
+			if err := yamlfrontmatter.Update(t.FilePath, transition.Updates); err != nil {
+				r.logger.Printf("task %s: apply local transition: %v", t.ID, err)
+				continue
+			}
+			t.Status = transition.Status
+			t.PlanApproved = false
+			t.MergeApproved = false
+			t.PendingReq = transition.Updates["pending_req"] == true
+			if !transition.Dispatch {
+				continue
+			}
+		}
+
 		if t.Status == "needs-grilling" {
-			// ── grill_continue: user answered offline grilling questions ──
-			if t.GrillContinue {
-				if err := r.updateTask(t, map[string]interface{}{
-					"status":         "refining",
-					"grill_continue": false,
-					"grill_done":     false,
-				}); err != nil {
-					continue
-				}
-				r.logger.Printf("task %s: grill_continue → refining (user answered offline)", t.ID)
-				notify.SendTaskAction(t.ID, t.Title, "📝", "Grilling 答案已填写", "重新进入 maturity gate", r.cfg.Notifications.Desktop)
-				continue
+			if preempted, err := PreemptExpiredGrillLease(t.FilePath, time.Now()); err != nil {
+				r.logger.Printf("task %s: preempt grilling lease: %v", t.ID, err)
+			} else if preempted {
+				r.logger.Printf("task %s: expired grilling lease preempted", t.ID)
 			}
-
-			if t.PendingReq {
-				if err := r.updateTask(t, map[string]interface{}{"status": "refining", "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更已并入", "重新进入 maturity gate", r.cfg.Notifications.Desktop)
-				continue
-			}
-			if t.GrillPrevStatus == "implementing" && t.PlanVersion == 0 {
-				if err := r.updateTask(t, map[string]interface{}{"status": "plan-review", "grill_done": true, "grill_context": "", "grill_prev_status": ""}); err != nil {
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🔧", "实现受阻（无计划）", "已返回 plan-review", r.cfg.Notifications.Desktop)
-				continue
-			}
-			if t.GrillDone || t.PlanApproved {
-				switch t.GrillResolution {
-				case "resume":
-					prev := t.GrillPrevStatus
-					if prev == "" {
-						prev = "implementing"
-					}
-					if err := r.updateTask(t, map[string]interface{}{"status": prev, "grill_done": false, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
-						continue
-					}
-					notify.SendTaskAction(t.ID, t.Title, "✅", "阻塞已解决", "恢复实现", r.cfg.Notifications.Desktop)
-				case "replan":
-					if err := r.updateTask(t, map[string]interface{}{"status": "refining", "grill_done": false, "pending_req": true, "grill_resolution": "", "grill_context": "", "grill_prev_status": ""}); err != nil {
-						continue
-					}
-					notify.SendTaskAction(t.ID, t.Title, "✅", "需求/计划已更新", "进入 maturity gate", r.cfg.Notifications.Desktop)
-				default:
-					r.logger.Printf("task %s: grill_done but no resolution — waiting", t.ID)
-					notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
-				}
-				continue
-			}
-			// ── timeout check: use heartbeat if available, otherwise started_at ──
-			checkAt := t.GrillHeartbeatAt
-			if checkAt == "" {
-				checkAt = t.GrillStartedAt
-			}
-			if t.GrillTimeoutMinutes > 0 && checkAt != "" {
-				if lastTime, err := time.Parse(time.RFC3339, checkAt); err == nil {
-					if time.Since(lastTime) > time.Duration(t.GrillTimeoutMinutes)*time.Minute {
-						r.logger.Printf("task %s: grilling lease expired (last=%s, timeout=%dm)", t.ID, checkAt, t.GrillTimeoutMinutes)
-						if err := r.updateTask(t, map[string]interface{}{
-							"grill_owner":       "",
-							"grill_started_at":   "",
-							"grill_heartbeat_at": "",
-						}); err != nil {
-							continue
-						}
-						continue
-					}
-				}
-			}
-
-			r.logger.Printf("task %s: still waiting for grilling", t.ID)
+			r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
 			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
 			continue
 		}
-
-		// ── rework_resolution for review status ──
-		if t.Status == "review" && t.ReworkResolution != "" {
-			switch t.ReworkResolution {
-			case "resume":
-				if err := r.updateTask(t, map[string]interface{}{"status": "implementing", "rework_resolution": ""}); err != nil {
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🔧", "返工恢复", "根据反馈重新实现", r.cfg.Notifications.Desktop)
-				continue
-			case "close":
-				if err := r.updateTask(t, map[string]interface{}{"status": "closed", "rework_resolution": "", "closure_reason": "cancelled"}); err != nil {
-					continue
-				}
-				notify.SendTaskAction(t.ID, t.Title, "🚫", "任务关闭", "根据反馈关闭", r.cfg.Notifications.Desktop)
-				continue
-			}
-		}
-
-		// ── review/conflict/done + pending_req → force refining ──
-		if (t.Status == "review" || t.Status == "conflict" || t.Status == "done") && t.PendingReq {
-			r.logger.Printf("task %s: %s + pending_req → refining", t.ID, t.Status)
-			if err := r.updateTask(t, map[string]interface{}{"status": "refining", "merge_approved": false}); err != nil {
-				continue
-			}
-			notify.SendTaskAction(t.ID, t.Title, "🔄", "需求变更", "已取消 Merge 授权并返回 maturity gate", r.cfg.Notifications.Desktop)
-			continue
-		}
-
-		// ── closed → terminal, skip ──
 		if t.Status == "closed" {
 			continue
 		}
-		// ── premature plan_approved reset ──
-		if t.PlanApproved && t.Status != "plan-review" && t.Status != "implementing" {
-			r.logger.Printf("task %s: plan_approved=true but status=%s → resetting", t.ID, t.Status)
-			if err := r.updateTask(t, map[string]interface{}{"plan_approved": false}); err != nil {
-				continue
+
+		if t.Status == "blocked" || t.Status == "refining" || t.Status == "planning" {
+			repoDir := ""
+			if t.Project != "" {
+				resolved, resolveErr := r.resolveRepo(t)
+				if resolveErr != nil {
+					r.logger.Printf("task %s: %v", t.ID, resolveErr)
+					continue
+				}
+				repoDir = resolved
 			}
+			pending = append(pending, preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: repoLockRead})
+			continue
 		}
 
 		repoDir, err := r.resolveRepo(t)
@@ -420,29 +352,15 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			continue
 		}
 
-		prepared := preparedTask{
-			task:      t,
-			repoDir:   repoDir,
-			workDir:   repoDir,
-			exclusive: !isRound2(t),
+		lockMode := repoLockWrite
+		if isRound2(t) {
+			lockMode = repoLockNone
 		}
-		if !prepared.exclusive {
-			// Check warmup cache first — parallel pre-creation may have finished.
-			cacheKey := taskRunKey(t.FilePath)
-			if cached, ok := r.worktreeCache.Load(cacheKey); ok {
-				if cachedPath, _ := cached.(string); cachedPath != "" {
-					if _, statErr := os.Stat(cachedPath); statErr == nil {
-						prepared.workDir = cachedPath
-						r.logger.Printf("task %s: reused warmed worktree %s", t.ID, cachedPath)
-						pending = append(pending, prepared)
-						continue
-					}
-					r.worktreeCache.Delete(cacheKey)
-				}
-			}
+		prepared := preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode}
+		if isRound2(t) {
 			lock := r.repoLock(repoDir)
 			lock.Lock()
-			workDir, worktreeErr := ensureTaskWorktree(repoDir, cacheKey, t.TargetBranch)
+			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch)
 			lock.Unlock()
 			if worktreeErr != nil {
 				r.logger.Printf("task %s: prepare worktree: %v", t.ID, worktreeErr)
@@ -561,9 +479,32 @@ func taskPIDFile(taskLogDir, taskID, taskPath string) string {
 	return filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s.pid", taskID, taskRunKey(taskPath)))
 }
 
-func (r *Runner) repoLock(repoDir string) *sync.Mutex {
-	lock, _ := r.repoLocks.LoadOrStore(repoDir, &sync.Mutex{})
-	return lock.(*sync.Mutex)
+func (r *Runner) repoLock(repoDir string) *sync.RWMutex {
+	lock, _ := r.repoLocks.LoadOrStore(repoDir, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
+
+func (r *Runner) tryRepoLock(repoDir string, mode repoLockMode) bool {
+	if mode == repoLockNone || repoDir == "" {
+		return true
+	}
+	lock := r.repoLock(repoDir)
+	if mode == repoLockRead {
+		return lock.TryRLock()
+	}
+	return lock.TryLock()
+}
+
+func (r *Runner) unlockRepo(repoDir string, mode repoLockMode) {
+	if mode == repoLockNone || repoDir == "" {
+		return
+	}
+	lock := r.repoLock(repoDir)
+	if mode == repoLockRead {
+		lock.RUnlock()
+		return
+	}
+	lock.Unlock()
 }
 
 func isRound2(t task.ReadyTask) bool {
@@ -652,60 +593,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if data, err := os.ReadFile(taskPath); err == nil {
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
 					if fm.BlockedPhase != "" && fm.ResumeApproved {
-						dest := fm.BlockedPhase
-
-						// Validate blocked_phase; unknown values revert to ready.
-						needsDispatch := true
-						switch dest {
-						case "refining", "planning", "implementing":
-						default:
-							r.logger.Printf("task %s: unknown blocked_phase %q, treating as ready", t.ID, dest)
-							if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
-								"status":          "ready",
-								"blocked_phase":   "",
-								"phase_error":     "",
-								"phase_log":       "",
-								"resume_approved": false,
-							}); err != nil {
-								continue
-							}
-							processed++
-							continue
-						}
-
-						updates := map[string]interface{}{
-							"status":          dest,
+						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
+						if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+							"status":          fm.BlockedPhase,
 							"blocked_phase":   "",
 							"phase_error":     "",
 							"phase_log":       "",
 							"resume_approved": false,
-						}
-
-						// R2: implementing resume gate — enforce plan_approved and REQ hash.
-						if dest == "implementing" {
-							if !fm.PlanApproved && fm.PlanVersion > 0 {
-								updates["status"] = "plan-review"
-								r.logger.Printf("task %s: implementing resume without plan_approved → plan-review", t.ID)
-								needsDispatch = false
-							}
-							if fm.RefineReqHash != "" && fm.PlanReqHash != "" && fm.RefineReqHash != fm.PlanReqHash {
-								updates["status"] = "refining"
-								updates["pending_req"] = true
-								updates["plan_approved"] = false
-								r.logger.Printf("task %s: implementing resume with stale plan (REQ hash mismatch) → refining", t.ID)
-								needsDispatch = false
-							}
-						}
-
-						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, updates["status"])
-						if err := r.updateTaskFile(taskPath, t.ID, t.Title, updates); err != nil {
+						}); err != nil {
+							r.logger.Printf("task %s: restore blocked phase: %v", t.ID, err)
 							continue
 						}
-						t.Status = updates["status"].(string)
-						if !needsDispatch {
-							processed++
-							continue
-						}
+						t.Status = fm.BlockedPhase
 						// Fall through to normal dispatch below.
 					} else {
 						// Normal auto-unblock. R1: skip ready→refining when a plan already exists.
@@ -740,9 +639,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
+		if t.MergeApproved && (t.Status == "review" || t.Status == "conflict") {
+			if err := r.processMergeTask(t, repoDir); err != nil {
+				r.logger.Printf("task %s: Merge Phase: %v", t.ID, err)
+			}
+			processed++
+			continue
+		}
 		// ── Direct phase dispatch ──
 		model := r.selectModel(t.Assignee)
-		isMerge := t.MergeApproved && (t.Status == "review" || t.Status == "conflict")
 		var phase, skillPrompt string
 
 		switch {
@@ -763,41 +668,17 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
 			}
 		case t.Status == "planning":
-			// ── Planning hash guard: redirect to refining if pending_req or hash changed ──
-			if t.PendingReq || reqHashChanged(t) {
-				r.logger.Printf("task %s: pending_req or req hash changed → refining", t.ID)
-				model = r.cfg.Model("default")
-				skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
-			} else {
-				phase = "planning"
-				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
-				r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
-			}
-		case isMerge:
-			phase = "merge"
-			skillPrompt = "/obsidian-task-runner-merge " + t.FilePath
-			r.logger.Printf("task %s: Merge Phase authorized", t.ID)
-			notify.SendTaskAction(t.ID, t.Title, "🔀", "开始合并", "正在将功能分支合并到主分支", r.cfg.Notifications.Desktop)
+			phase = "planning"
+			skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
+			r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
 		case t.Status == "plan-review" || t.Status == "implementing":
 			phase = "round2"
 			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
 			if t.Status == "plan-review" {
-				updates := map[string]interface{}{"status": "implementing"}
-				// Auto-approve ADRs: planner proposed architecture decisions;
-				// grant write permission so Round 2 can generate ADR files
-				// without manual intervention.
-				if data, err := os.ReadFile(taskPath); err == nil {
-					if fm, ferr := yamlfrontmatter.Parse(data); ferr == nil && fm != nil {
-						if hasNonEmptyList(fm.AdrProposed) && !fm.AdrApproved {
-							updates["adr_approved"] = true
-							r.logger.Printf("task %s: auto-approved ADR proposals", t.ID)
-						}
-					}
-				}
-				if err := r.updateTaskFile(taskPath, t.ID, t.Title, updates); err != nil {
+				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "implementing"}); err != nil {
+					r.logger.Printf("task %s: set implementing: %v", t.ID, err)
 					continue
 				}
-				t.Status = "implementing"
 			}
 			notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
 		default:
@@ -805,56 +686,33 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			continue
 		}
 
-		// Inject project context (constraints, domain terms, relevant ADRs)
-		// from the Obsidian vault so the OMP agent has architecture alignment
-		// in the first screen of its prompt — no need to read separate files.
-		if needsContextInjection(t.Status) {
-			projectVaultDir := filepath.Dir(filepath.Dir(t.FilePath))
-			reqAbsPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
-			if ctx := BuildProjectContext(projectVaultDir, reqAbsPath); ctx != "" {
-				skillPrompt = ctx + "\n" + skillPrompt
-				r.logger.Printf("task %s: injected project context (%d bytes)", t.ID, len(ctx))
-			}
-		}
-
-		args := []string{"--model", model}
-		if isMerge {
-			args = append(args, "--approval-mode", "yolo")
-		} else {
-			args = append(args, "--auto-approve")
-		}
-		args = append(args, "-p", skillPrompt)
+		args := []string{"--model", model, "--auto-approve", "-p", skillPrompt}
 		logDir := r.cfg.LogDir
 		if logDir == "" {
 			home, _ := os.UserHomeDir()
 			logDir = filepath.Join(home, ".omp", "logs")
 		}
 		taskLogDir := filepath.Join(logDir, "tasks")
-		os.MkdirAll(taskLogDir, 0755)
+		if err := os.MkdirAll(taskLogDir, 0o700); err != nil {
+			r.logger.Printf("task %s: create task log directory: %v", t.ID, err)
+			continue
+		}
 		ts := time.Now().Format("20060102-150405")
 		taskKey := taskRunKey(t.FilePath)
 		logPath := filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s-%s-%s.log", t.ID, taskKey, ts, phase))
 
-		f, err := os.Create(logPath)
+		f, createErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if createErr != nil {
+			r.logger.Printf("task %s: create task log: %v", t.ID, createErr)
+		}
 		if f != nil {
 			header := fmt.Sprintf("# TASK-%s %s\n# model=%s phase=%s time=%s\n\n", t.ID, t.Title, model, phase, time.Now().Format(time.RFC3339))
-			f.WriteString(header)
+			if _, writeErr := f.WriteString(header); writeErr != nil {
+				r.logger.Printf("task %s: write task log header: %v", t.ID, writeErr)
+			}
 		}
-
-		// Determine timeout based on phase
-		var timeout time.Duration
-		switch phase {
-		case "priority":
-			timeout = 5 * time.Minute
-		case "refining":
-			timeout = 15 * time.Minute
-		case "planning":
-			timeout = 30 * time.Minute
-		case "round2":
-			timeout = 60 * time.Minute
-		case "merge":
-			timeout = 15 * time.Minute
-		default:
+		timeout := r.cfg.PhaseTimeout(phase)
+		if timeout <= 0 {
 			timeout = 30 * time.Minute
 		}
 		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
@@ -886,41 +744,47 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		ompLogPath := filepath.Join(logDir, "omp."+time.Now().Format("2006-01-02")+".log")
 		tailDone := make(chan struct{})
 		go tailOMPLog(ompLogPath, f, tailDone)
-
-		// Start OMP and write PID file for crash recovery
+		// Start OMP and write PID file for crash recovery.
 		if startErr := cmd.Start(); startErr != nil {
 			r.logger.Printf("task %s: OMP start failed: %v", t.ID, startErr)
 			cancel()
 			close(tailDone)
 			continue
 		}
-		_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
-		defer os.Remove(pidFile)
+		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+			r.logger.Printf("task %s: write PID file: %v", t.ID, err)
+		}
+		defer func() {
+			if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+				r.logger.Printf("task %s: remove PID file: %v", t.ID, err)
+			}
+		}()
 
 		r.logger.Printf("task %s: executing OMP (model=%s, phase=%s, timeout=%v, log=%s)", t.ID, model, phase, timeout, logPath)
-		err = cmd.Wait()
+		runErr := cmd.Wait()
 		cancel()
 		close(tailDone) // signal tail goroutine to stop
 
-		if err != nil {
+		if runErr != nil {
 			reason := "异常退出"
-			if errors.Is(err, context.DeadlineExceeded) {
+			failureCode := ErrModelFailed
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = fmt.Sprintf("超时（%v 无响应）", timeout)
+				failureCode = ErrPhaseTimeout
 			}
-			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, err)
+			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, runErr)
 
-			// Check if the failure is due to token quota exhaustion
 			if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
+				failureCode = ErrModelQuotaExhausted
 				notify.SendTaskAction(t.ID, t.Title, "💰", "Token 不足",
 					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), r.cfg.Notifications.Desktop)
-			} else if errors.Is(err, context.DeadlineExceeded) {
+			} else if failureCode == ErrPhaseTimeout {
 				notify.SendTaskAction(t.ID, t.Title, "⏰", "执行超时",
 					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout), r.cfg.Notifications.Desktop)
 			} else {
-				notify.SendTaskAction(t.ID, t.Title, "💥", "进程异常", fmt.Sprintf("%s: %v", reason, err), r.cfg.Notifications.Desktop)
+				notify.SendTaskAction(t.ID, t.Title, "💥", "进程异常", fmt.Sprintf("%s: %v", reason, runErr), r.cfg.Notifications.Desktop)
 			}
 
-			// Try fallback model if primary model failed (e.g., GPT → DeepSeek)
 			fellback := false
 			if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
 				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
@@ -928,9 +792,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
 
 				fallbackArgs := []string{"--model", fallbackModel}
-				fallbackArgs = append(fallbackArgs, args[2:]...) // skip --model and old model value
-
-				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
+				fallbackArgs = append(fallbackArgs, args[2:]...)
+				fbCtx, fbCancel := context.WithTimeout(context.Background(), timeout)
 				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
 				retryCmd.Dir = repoDir
 				if f != nil {
@@ -948,14 +811,17 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					close(fbTailDone)
 					fellback = true
 				} else {
-					_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0644)
+					if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0o600); err != nil {
+						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
+					}
 					retryErr := retryCmd.Wait()
 					fbCancel()
 					close(fbTailDone)
 					if retryErr != nil {
 						fbReason := "异常退出"
-						if errors.Is(retryErr, context.DeadlineExceeded) {
+						if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
 							fbReason = "超时"
+							failureCode = ErrPhaseTimeout
 						}
 						r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
 						notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
@@ -974,10 +840,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					}
 				}
 			}
-			// Phase retry/blocked: only if fallback also failed, or no fallback was attempted
 			noFallback := r.cfg.FallbackModel(t.Assignee) == "" || r.cfg.FallbackModel(t.Assignee) == model
 			if fellback || noFallback {
-				r.handlePhaseFailure(taskPath, t.ID, t.Title, phase, reason, logPath)
+				r.handlePhaseFailure(taskPath, t.ID, t.Title, phase, failureCode, reason, logPath)
 			}
 		} else {
 			r.logger.Printf("task %s: completed", t.ID)
@@ -991,7 +856,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.clearPhaseRetry(taskPath, phase)
 		}
 		if f != nil {
-			f.Close()
+			if err := f.Close(); err != nil {
+				r.logger.Printf("task %s: close task log: %v", t.ID, err)
+			}
 		}
 		processed++
 	}
@@ -1000,7 +867,46 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 // handlePhaseFailure tracks retry counts for refining/planning phases and
 // transitions the task to blocked after the second consecutive failure.
-func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase, reason, logPath string) {
+func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, code ErrorCode, reason, logPath string) {
+	policy := recoveryForPhase(phase, code)
+	if policy == recoveryConflict {
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":           "conflict",
+			"merge_approved":   false,
+			"phase_error_code": string(code),
+			"phase_error":      reason,
+			"phase_log":        logPath,
+		}); err != nil {
+			r.logger.Printf("task %s: record merge conflict: %v", taskID, err)
+		}
+		return
+	}
+	if policy == recoveryReview {
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":           "review",
+			"merge_approved":   false,
+			"phase_error_code": string(code),
+			"phase_error":      reason,
+			"phase_log":        logPath,
+		}); err != nil {
+			r.logger.Printf("task %s: record merge failure: %v", taskID, err)
+		}
+		return
+	}
+	if policy == recoveryFallbackThenBlock {
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":           "blocked",
+			"blocked_phase":    "implementing",
+			"phase_error_code": string(code),
+			"phase_error":      reason,
+			"phase_log":        logPath,
+			"resume_approved":  false,
+		}); err != nil {
+			r.logger.Printf("task %s: record Round 2 failure: %v", taskID, err)
+		}
+		return
+	}
+
 	var retryField string
 	switch phase {
 	case "refining":
@@ -1017,47 +923,49 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase, reason, 
 	currentRetry := 0
 	if err == nil {
 		fm, parseErr := yamlfrontmatter.Parse(data)
-		if parseErr != nil || fm == nil {
-			r.logger.Printf("task %s: cannot parse retry count (%v), assuming first failure", taskID, parseErr)
-		} else {
+		if parseErr == nil && fm != nil {
 			currentRetry = fm.RefineRetryCount
 			if phase == "planning" {
 				currentRetry = fm.PlanningRetryCount
 			}
 		}
 	}
-
 	if currentRetry == 0 {
-		if err := r.updateTaskFile(taskPath, taskID, taskTitle, map[string]interface{}{retryField: 1}); err != nil {
-			return
-		}
-		r.logger.Printf("task %s: %s auto-retry (1/2)", taskID, phase)
-	} else {
-		if err := r.updateTaskFile(taskPath, taskID, taskTitle, map[string]interface{}{
-			"status":        "blocked",
-			"blocked_phase": phase,
-			"phase_error":   reason,
-			"phase_log":     logPath,
-			retryField:      0,
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			retryField:        1,
+			"phase_error_code": string(code),
+			"phase_error":      reason,
+			"phase_log":        logPath,
 		}); err != nil {
-			return
+			r.logger.Printf("task %s: record retry: %v", taskID, err)
 		}
-		notify.SendTaskAction(taskID, taskTitle, "🚫", "阶段失败",
-			fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase),
-			r.cfg.Notifications.Desktop)
-		r.logger.Printf("task %s: %s failed twice → blocked", taskID, phase)
+		return
 	}
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"status":           "blocked",
+		"blocked_phase":    phase,
+		"phase_error_code": string(code),
+		"phase_error":      reason,
+		"phase_log":        logPath,
+		retryField:          0,
+	}); err != nil {
+		r.logger.Printf("task %s: record blocked phase: %v", taskID, err)
+		return
+	}
+	notify.SendTaskAction(taskID, taskTitle, "🚫", "阶段失败",
+		fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase),
+		r.cfg.Notifications.Desktop)
 }
 func (r *Runner) clearPhaseRetry(taskPath, phase string) {
+	var err error
 	switch phase {
 	case "refining":
-		if err := r.updateTaskFile(taskPath, "", "", map[string]interface{}{"refine_retry_count": 0}); err != nil {
-			r.logger.Printf("task %s: clear retry count failed: %v", taskPath, err)
-		}
+		err = yamlfrontmatter.Update(taskPath, map[string]interface{}{"refine_retry_count": 0})
 	case "planning":
-		if err := r.updateTaskFile(taskPath, "", "", map[string]interface{}{"planning_retry_count": 0}); err != nil {
-			r.logger.Printf("task %s: clear retry count failed: %v", taskPath, err)
-		}
+		err = yamlfrontmatter.Update(taskPath, map[string]interface{}{"planning_retry_count": 0})
+	}
+	if err != nil {
+		r.logger.Printf("clear %s retry count: %v", phase, err)
 	}
 }
 
@@ -1079,7 +987,9 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 		return "", fmt.Errorf("resolve project: %s", result.Error)
 	}
 	if result.Status == "new" {
-		os.MkdirAll(result.Path, 0755)
+		if err := os.MkdirAll(result.Path, 0755); err != nil {
+			return "", fmt.Errorf("create new project %s: %w", result.Path, err)
+		}
 	}
 	return result.Path, nil
 }
@@ -1111,7 +1021,9 @@ func (r *Runner) cleanupOldLogs() {
 		}
 		if info.ModTime().Before(cutoff) {
 			path := filepath.Join(taskLogDir, entry.Name())
-			os.Remove(path)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				r.logger.Printf("remove old task log %s: %v", path, err)
+			}
 		}
 	}
 }
@@ -1146,7 +1058,11 @@ func checkTokenQuota(logPath, model string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("close quota log %s: %v", logPath, err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -1193,8 +1109,10 @@ func tailOMPLog(logPath string, taskLog *os.File, done <-chan struct{}) {
 	if err != nil {
 		return
 	}
-	f.Seek(0, io.SeekEnd)
-	defer f.Close()
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		log.Printf("seek OMP log %s: %v", logPath, err)
+		return
+	}
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -1205,14 +1123,18 @@ func tailOMPLog(logPath string, taskLog *os.File, done <-chan struct{}) {
 		case <-done:
 			for scanner.Scan() {
 				if !isNoise(scanner.Text()) {
-					taskLog.Write(append(scanner.Bytes(), '\n'))
+					if _, err := taskLog.Write(append(scanner.Bytes(), '\n')); err != nil {
+						log.Printf("write tailed OMP log: %v", err)
+					}
 				}
 			}
 			return
 		case <-ticker.C:
 			for scanner.Scan() {
 				if !isNoise(scanner.Text()) {
-					taskLog.Write(append(scanner.Bytes(), '\n'))
+					if _, err := taskLog.Write(append(scanner.Bytes(), '\n')); err != nil {
+						log.Printf("write tailed OMP log: %v", err)
+					}
 				}
 			}
 		}
@@ -1236,13 +1158,21 @@ func acquireLock(cfg *config.Config) (func(), error) {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		if err := f.Close(); err != nil {
+			log.Printf("close daemon lock after flock failure: %v", err)
+		}
 		return nil, fmt.Errorf("another daemon instance is running for this vault")
 	}
 	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
-		os.Remove(lockFile)
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+			log.Printf("unlock daemon lock: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			log.Printf("close daemon lock: %v", err)
+		}
+		if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
+			log.Printf("remove daemon lock %s: %v", lockFile, err)
+		}
 	}, nil
 }
 

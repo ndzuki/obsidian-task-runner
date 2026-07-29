@@ -21,11 +21,13 @@ type ReadyTask struct {
 	Project         string `json:"project"`
 	NewProject      bool   `json:"new_project"`
 	Priority        string `json:"priority"`
+	Created         string `json:"created,omitempty"`
 	FilePath        string `json:"file_path"`
 	FileName        string `json:"file_name"`
 	Status          string `json:"status"`
 	PlanApproved    bool   `json:"plan_approved"`
 	MergeApproved   bool   `json:"merge_approved"`
+	CloseApproved   bool   `json:"close_approved,omitempty"`
 	ReqDoc          string `json:"req_doc"`
 	Template        string `json:"template"`
 	Assignee        string `json:"assignee"`
@@ -41,7 +43,8 @@ type ReadyTask struct {
 	PriorityAssessmentStatus string `json:"priority_assessment_status,omitempty"`
 	PlanVersion     int    `json:"plan_version,omitempty"`
 	ReworkResolution string `json:"rework_resolution,omitempty"`
-	CloseApproved    bool   `json:"close_approved,omitempty"`
+	ReviewFeedback   string `json:"review_feedback,omitempty"`
+	ClosureReason    string `json:"closure_reason,omitempty"`
 	GrillStartedAt     string `json:"grill_started_at,omitempty"`
 	GrillHeartbeatAt   string `json:"grill_heartbeat_at,omitempty"`
 	GrillTimeoutMinutes int   `json:"grill_timeout_minutes,omitempty"`
@@ -155,43 +158,53 @@ func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
 				continue
 			}
 			numID := parts[1]
-			if !strings.HasPrefix(name, "TASK-"+numID+"-") {
+			if !strings.HasPrefix(name, "TASK-"+numID+"-") && name != "TASK-"+numID+".md" {
 				continue
 			}
-			// Direct match: directory name equals project key.
+			filePath := filepath.Join(tasksDir, name)
+			data, err := readFileWithRetry(filePath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
 			if parts[0] == projName {
-				filePath := filepath.Join(tasksDir, name)
-				data, err := readFileWithRetry(filePath)
-				if err != nil {
-					continue
-				}
-				fm, err := yamlfrontmatter.Parse(data)
-				if err != nil || fm == nil {
-					continue
-				}
-				if fm.Status == "done" {
+				if blockerSatisfied(fm, tasksDir, projName) {
 					delete(remaining, key)
 				}
 				break
 			}
-			// Cross-project fallback: read the task's project field to match.
-			if !dirMatches {
-				filePath := filepath.Join(tasksDir, name)
-				data, err := readFileWithRetry(filePath)
-				if err != nil {
-					continue
-				}
-				fm, err := yamlfrontmatter.Parse(data)
-				if err != nil || fm == nil {
-					continue
-				}
-				if fm.Project == parts[0] && fm.Status == "done" {
+			if !dirMatches && fm.Project == parts[0] {
+				if blockerSatisfied(fm, tasksDir, projName) {
 					delete(remaining, key)
-					break
 				}
+				break
 			}
-			break
 		}
+	}
+}
+
+func blockerSatisfied(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName string) bool {
+	if fm.Status == "done" {
+		return true
+	}
+	if fm.Status != "closed" {
+		return false
+	}
+	switch fm.ClosureReason {
+	case "already_implemented":
+		return true
+	case "duplicate":
+		if fm.ReplacementTask == "" {
+			return false
+		}
+		remaining := map[string]bool{projectName + ":" + strings.TrimPrefix(fm.ReplacementTask, "TASK-"): true}
+		checkDirDeps(tasksDir, projectName, remaining)
+		return len(remaining) == 0
+	default:
+		return false
 	}
 }
 
@@ -221,38 +234,38 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 // IsReady checks if a task should be picked up by the daemon.
 // vaultPath is used to resolve blocked_by dependencies.
 func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
-	if fm.Assignee == "" {
+	if fm == nil || fm.Assignee == "" || fm.Status == "closed" {
 		return false
 	}
 	if IsAutoUnblockable(fm, vaultPath) {
 		return true
 	}
+	if fm.ReworkResolution != "" {
+		switch fm.ReworkResolution {
+		case "resume":
+			return fm.Status == "review"
+		case "replan":
+			return fm.Status == "plan-review" || fm.Status == "review"
+		case "close":
+			return fm.CloseApproved && (fm.Status == "plan-review" || fm.Status == "review")
+		}
+	}
 	switch fm.Status {
 	case "ready", "needs-grilling", "refining", "planning":
 		return true
 	case "implementing":
-		if fm.OffPeakOnly && !IsOffPeak() {
-			return false
-		}
-		return true
+		return !fm.OffPeakOnly || IsOffPeak()
 	case "plan-review":
-		if !fm.PlanApproved {
-			return false
-		}
-		if fm.OffPeakOnly && !IsOffPeak() {
-			return false
-		}
-		return true
+		return fm.PlanApproved && (!fm.OffPeakOnly || IsOffPeak())
 	case "review", "conflict":
-		if fm.PendingReq {
-			return true // force refining
-		}
-	case "closed":
-		return false // terminal, never ready
-	case "wayfinder":
-		return false // pending human decomposition into sub-tasks
+		return fm.PendingReq || fm.MergeApproved
+	case "done":
+		return fm.PendingReq
+	case "closed", "wayfinder":
+		return false
+	default:
+		return false
 	}
-	return fm.PendingReq
 }
 
 // IsOffPeak returns true during Beijing off-peak hours (cheaper DeepSeek pricing).
@@ -373,11 +386,11 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 			}
 			ready = append(ready, ReadyTask{
 				ID: fm.ID, Title: fm.Title, Project: fm.Project,
-				NewProject: fm.NewProject, Priority: fm.Priority,
+				NewProject: fm.NewProject, Priority: fm.Priority, Created: fm.Created,
 				FilePath: filePath, FileName: entry.Name(),
 				Status: fm.Status, PlanApproved: fm.PlanApproved,
-				MergeApproved: fm.MergeApproved, ReqDoc: fm.ReqDoc,
-				Template: fm.Template, Assignee: fm.Assignee,
+				MergeApproved: fm.MergeApproved, CloseApproved: fm.CloseApproved,
+				ReqDoc: fm.ReqDoc, Template: fm.Template, Assignee: fm.Assignee,
 				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
 				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
@@ -388,6 +401,8 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				RefineReqHash: fm.RefineReqHash,
 				PlanReqHash: fm.PlanReqHash,
 				Maturity: fm.Maturity,
+				ReviewFeedback: fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
+				ClosureReason: fm.ClosureReason,
 			})
 		}
 	}
@@ -397,7 +412,16 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 		if pi != pj {
 			return pi < pj
 		}
-		return ready[i].ID < ready[j].ID
+		if ready[i].Created != ready[j].Created {
+			return ready[i].Created < ready[j].Created
+		}
+		if ready[i].Project != ready[j].Project {
+			return ready[i].Project < ready[j].Project
+		}
+		if ready[i].ID != ready[j].ID {
+			return ready[i].ID < ready[j].ID
+		}
+		return ready[i].FilePath < ready[j].FilePath
 	})
 	return ready, nil
 }
