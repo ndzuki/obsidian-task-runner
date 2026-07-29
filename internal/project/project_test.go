@@ -17,9 +17,16 @@ func TestResolveProject(t *testing.T) {
 		},
 		"new_project_root": "/home/user/src",
 	}
-	os.MkdirAll(filepath.Join(dir, "my-app"), 0755)
-	data, _ := json.MarshalIndent(config, "", "  ")
-	os.WriteFile(mapFile, data, 0644)
+	if err := os.MkdirAll(filepath.Join(dir, "my-app"), 0755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(mapFile, data, 0644); err != nil {
+		t.Fatalf("write map file: %v", err)
+	}
 
 	t.Run("existing", func(t *testing.T) {
 		r := ResolveProject(mapFile, "my-app", false)
@@ -57,9 +64,16 @@ func TestRegisterProject(t *testing.T) {
 		"projects":         []map[string]interface{}{},
 		"new_project_root": dir,
 	}
-	data, _ := json.MarshalIndent(config, "", "  ")
-	os.WriteFile(mapFile, data, 0644)
-	os.MkdirAll(filepath.Join(dir, "e2e-test"), 0755)
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(mapFile, data, 0644); err != nil {
+		t.Fatalf("write map file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "e2e-test"), 0755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
 
 	t.Run("add new", func(t *testing.T) {
 		err := RegisterProject(mapFile, "e2e-test", filepath.Join(dir, "e2e-test"), "", false)
@@ -78,7 +92,9 @@ func TestRegisterProject(t *testing.T) {
 	})
 
 	t.Run("update existing", func(t *testing.T) {
-		os.MkdirAll(filepath.Join(dir, "e2e-test-v2"), 0755)
+		if err := os.MkdirAll(filepath.Join(dir, "e2e-test-v2"), 0755); err != nil {
+			t.Fatalf("create update directory: %v", err)
+		}
 		err := RegisterProject(mapFile, "e2e-test", filepath.Join(dir, "e2e-test-v2"), "git@github.com:x/y.git", false)
 		if err != nil {
 			t.Fatalf("RegisterProject update: %v", err)
@@ -115,8 +131,13 @@ func TestMatchVaultDir(t *testing.T) {
 		},
 		"new_project_root": "/home/user/src",
 	}
-	data, _ := json.MarshalIndent(config, "", "  ")
-	os.WriteFile(mapFile, data, 0644)
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(mapFile, data, 0644); err != nil {
+		t.Fatalf("write map file: %v", err)
+	}
 
 	tests := []struct {
 		name     string

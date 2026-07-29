@@ -71,25 +71,25 @@ type DiagnosisReport struct {
 // String renders the DiagnosisReport as Markdown for AC-7 interactive messages.
 func (r *DiagnosisReport) String() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Diagnosis Report — Phase: %s\n\n", r.Phase))
-	b.WriteString(fmt.Sprintf("**Reproduce Steps**: %s\n\n", r.ReproduceSteps))
+	b.WriteString("## Diagnosis Report — Phase: " + r.Phase + "\n\n")
+	b.WriteString("**Reproduce Steps**: " + r.ReproduceSteps + "\n\n")
 	if len(r.ExcludedHypotheses) > 0 {
 		b.WriteString("**Excluded Hypotheses**:\n")
 		for _, h := range r.ExcludedHypotheses {
-			b.WriteString(fmt.Sprintf("- %s\n", h))
+			b.WriteString("- " + h + "\n")
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("**Residual Symptoms**: %s\n\n", r.ResidualSymptoms))
+	b.WriteString("**Residual Symptoms**: " + r.ResidualSymptoms + "\n\n")
 	if len(r.PendingQuestions) > 0 {
 		b.WriteString("**Pending Questions**:\n")
 		for _, q := range r.PendingQuestions {
-			b.WriteString(fmt.Sprintf("- %s\n", q))
+			b.WriteString("- " + q + "\n")
 		}
 		b.WriteString("\n")
 	}
 	if r.Resolution != "" {
-		b.WriteString(fmt.Sprintf("**Resolution**: %s\n", r.Resolution))
+		b.WriteString("**Resolution**: " + r.Resolution + "\n")
 	}
 	return b.String()
 }
@@ -254,7 +254,7 @@ func checkAlreadyImplemented(ctx context.Context, content, projectDir string) *T
 // searchCodebase greps for a term in .go files under projectDir at any depth.
 func searchCodebase(ctx context.Context, projectDir, term string) string {
 	var found string
-	filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
 		select {
 		case <-ctx.Done():
 			return filepath.SkipAll
@@ -274,7 +274,9 @@ func searchCodebase(ctx context.Context, projectDir, term string) string {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return ""
+	}
 	return found
 }
 

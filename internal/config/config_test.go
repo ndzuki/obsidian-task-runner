@@ -64,3 +64,45 @@ func TestLoadReadsConfiguredDefaultModel(t *testing.T) {
 		t.Fatalf("Model(unknown) = %q, want %q", got, "provider/default-model")
 	}
 }
+
+func TestDefaultsSetsWorkflowConfiguration(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ConfigVersion != 1 || cfg.ShutdownGraceSeconds != 30 || cfg.OffPeakTimezone != "Asia/Shanghai" {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+	if got := cfg.PhaseTimeout("round2"); got.String() != "1h0m0s" {
+		t.Fatalf("round2 timeout = %v, want 1h", got)
+	}
+	if len(cfg.OffPeakWindows) != 3 || cfg.StarvationWarningDays["P3"] != 14 || cfg.StarvationWarningDays["P4"] != 30 {
+		t.Fatalf("workflow defaults = %+v", cfg)
+	}
+}
+
+func TestLoadAppliesOTGEnvironmentOverrides(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"obsidian_vault":"/file-vault","max_concurrent_tasks":2}`), 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	t.Setenv("OTG_OBSIDIAN_VAULT", "/env-vault")
+	t.Setenv("OTG_MAX_CONCURRENT_TASKS", "4")
+
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ObsidianVault != "/env-vault" || cfg.MaxConcurrentTasks != 4 {
+		t.Fatalf("environment overrides not applied: %+v", cfg)
+	}
+}
+
+func TestLoadRejectsInvalidConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"max_concurrent_tasks":-1,"off_peak_timezone":"Not/AZone"}`), 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	if _, err := Load(mapFile); err == nil {
+		t.Fatal("expected invalid configuration error")
+	}
+}

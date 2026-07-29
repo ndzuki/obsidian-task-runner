@@ -33,7 +33,11 @@ func MonitorRefineCount(ctx context.Context, taskPath string, process *os.Proces
 	if err != nil {
 		return nil, fmt.Errorf("monitor: create watcher: %w", err)
 	}
-	defer watcher.Close()
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "monitor: close watcher: %v\n", err)
+		}
+	}()
 
 	if err := watcher.Add(filepath.Dir(taskPath)); err != nil {
 		return nil, fmt.Errorf("monitor: watch dir: %w", err)
@@ -76,7 +80,9 @@ func MonitorRefineCount(ctx context.Context, taskPath string, process *os.Proces
 				result.Tripped = true
 				result.Message = fmt.Sprintf("req_refine_count=%d 已达上限，触发升级", count)
 				if process != nil {
-					process.Kill()
+					if err := process.Kill(); err != nil {
+						return result, fmt.Errorf("monitor: kill process: %w", err)
+					}
 				}
 				return result, nil
 			}

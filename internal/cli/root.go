@@ -3,7 +3,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -29,6 +28,25 @@ func Execute(v, c string) error {
 	return rootCmd.Execute()
 }
 
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "CONFIG_INVALID"):
+		return 3
+	case strings.Contains(message, "blocked") || strings.Contains(message, "precondition"):
+		return 4
+	case strings.Contains(message, "GITHUB_UNAVAILABLE") || strings.Contains(message, "external dependency"):
+		return 5
+	case strings.Contains(message, "unknown command") || strings.Contains(message, "accepts ") || strings.Contains(message, "requires "):
+		return 2
+	default:
+		return 1
+	}
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "otg",
 	Short: "Obsidian Task Runner — Go edition",
@@ -38,8 +56,10 @@ var rootCmd = &cobra.Command{
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("otg %s (%s)\n", version, commit)
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "otg %s (%s)\nObsidian Task Runner — Go edition\n", version, commit)
+		return err
 	},
 }
 
@@ -72,7 +92,7 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if eq == -1 {
-			fmt.Fprintf(os.Stderr, "warning: skipping invalid arg %q (expected key=value)\n", arg)
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid arg %q (expected key=value)\n", arg)
 			continue
 		}
 		key, val := arg[:eq], arg[eq+1:]
@@ -149,10 +169,6 @@ func init() {
 	rootCmd.AddCommand(updateStatusCmd)
 	rootCmd.AddCommand(validateDocCmd)
 	rootCmd.AddCommand(repairDocCmd)
-	rootCmd.AddCommand(writeAdrCmd)
-	rootCmd.AddCommand(validateAdrCmd)
-	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(ensureContextTermCmd)
 }
 var validateDocCmd = &cobra.Command{
@@ -164,8 +180,8 @@ var validateDocCmd = &cobra.Command{
 		if err := yamlfrontmatter.ValidateDocument(args[0]); err != nil {
 			return fmt.Errorf("%s: %w", args[0], err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: document OK\n", args[0])
-		return nil
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: frontmatter OK\n", args[0])
+		return err
 	},
 }
 
@@ -183,7 +199,7 @@ valid, repair-doc is a no-op.`,
 		if err := yamlfrontmatter.Repair(args[0]); err != nil {
 			return fmt.Errorf("%s: %w", args[0], err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: repaired\n", args[0])
-		return nil
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: repaired\n", args[0])
+		return err
 	},
 }
