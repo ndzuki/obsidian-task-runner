@@ -32,6 +32,36 @@ func TestIsValidAssignee(t *testing.T) {
 	}
 }
 
+func TestIsReadyForMerge(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        string
+		mergeApproved bool
+		pendingReq    bool
+		want          bool
+	}{
+		{name: "review approved", status: "review", mergeApproved: true, want: true},
+		{name: "conflict approved", status: "conflict", mergeApproved: true, want: true},
+		{name: "review awaiting approval", status: "review", want: false},
+		{name: "conflict awaiting approval", status: "conflict", want: false},
+		{name: "review pending requirement", status: "review", pendingReq: true, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm := &yamlfrontmatter.Frontmatter{
+				Assignee:      "gpt",
+				Status:        tt.status,
+				MergeApproved: tt.mergeApproved,
+				PendingReq:    tt.pendingReq,
+			}
+			if got := IsReady(fm, t.TempDir()); got != tt.want {
+				t.Fatalf("IsReady() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsAutoUnblockable(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
