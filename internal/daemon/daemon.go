@@ -512,7 +512,7 @@ func (r *Runner) unlockRepo(repoDir string, mode repoLockMode) {
 }
 
 func isRound2(t task.ReadyTask) bool {
-	return t.PlanApproved && (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
+	return (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
 }
 
 func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {

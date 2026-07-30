@@ -376,7 +376,7 @@ func TestIsRound2(t *testing.T) {
 	}{
 		{name: "approved plan review", task: task.ReadyTask{Status: "plan-review", PlanApproved: true}, want: true},
 		{name: "resumed implementation", task: task.ReadyTask{Status: "implementing", PlanApproved: true}, want: true},
-		{name: "unapproved plan", task: task.ReadyTask{Status: "plan-review"}, want: false},
+		{name: "unapproved plan", task: task.ReadyTask{Status: "plan-review"}, want: true},
 		{name: "round one", task: task.ReadyTask{Status: "ready", PlanApproved: true}, want: false},
 		{name: "new project", task: task.ReadyTask{Status: "plan-review", PlanApproved: true, NewProject: true}, want: false},
 	}
