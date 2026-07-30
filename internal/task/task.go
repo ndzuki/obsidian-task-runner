@@ -378,12 +378,6 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 			if fm.Project == "" {
 				continue
 			}
-			if fm.Status == "plan-review" && fm.PlanApproved && fm.OffPeakOnly && !IsOffPeak() {
-				now := time.Now().In(time.FixedZone("CST", 8*3600))
-				fmt.Fprintf(os.Stderr, "  %s (%s): Round 2 delayed by off_peak_only (CST %s, peak)\n",
-					fm.ID, entry.Name(), now.Format("15:04"))
-				continue
-			}
 			ready = append(ready, ReadyTask{
 				ID: fm.ID, Title: fm.Title, Project: fm.Project,
 				NewProject: fm.NewProject, Priority: fm.Priority, Created: fm.Created,
