@@ -199,16 +199,18 @@ func (r *Runner) initLogging() error {
 
 func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
-	defer r.scanMu.Unlock()
 	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
 	}
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
 	if len(tasks) == 0 {
+		r.scanMu.Unlock()
 		r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
 		return nil
 	}
+	r.scanMu.Unlock()
+
 	for round := 0; round < 3; round++ {
 		if r.processBatch(tasks) == 0 {
 			break
@@ -216,14 +218,16 @@ func (r *Runner) scanAndProcess() error {
 		// Adaptive polling: check every 500ms for cloud-sync flush before re-scanning
 		for range 12 {
 			time.Sleep(500 * time.Millisecond)
+			r.scanMu.Lock()
 			tasks, _ = task.FindReadyTasks(r.cfg.ObsidianVault)
+			r.scanMu.Unlock()
 			if len(tasks) > 0 {
 				break
 			}
 		}
 		if len(tasks) == 0 {
 			break
-	}
+		}
 	}
 	r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
 	return nil
