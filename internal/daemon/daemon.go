@@ -596,27 +596,11 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 		r.autoResumeInProject(downstreamAbs, downstreamAbs, downstreamTaskID, id)
 		return
 	}
-	projects, err := os.ReadDir(projectsDir)
-	if err != nil {
-		return
-	}
-	for _, projectEntry := range projects {
-		if !projectEntry.IsDir() {
-			continue
-		}
-		name := projectEntry.Name()
-		suffix := name
-		if idx := strings.IndexByte(name, '-'); idx > 0 {
-			suffix = name[idx+1:]
-		}
-		// Prefer exact directory-name match, then numeric-prefix suffix match
-		// (e.g. dir "release-manager" matches key "release-manager" directly;
-		// dir "001-alpha" matches key "alpha").
-		if name != projName && suffix != projName {
-			continue
-		}
-		r.autoResumeInProject(filepath.Join(projectsDir, name), downstreamAbs, downstreamTaskID, id)
-		return
+	// Exact dir-name pass, then suffix pass, then frontmatter-project pass are
+	// handled by findProjectDirByKey — reuse it to avoid single-pass ambiguity
+	// when both "release-manager" and "001-release-manager" directories exist.
+	if resolved := r.findProjectDirByKey(projName); resolved != "" {
+		r.autoResumeInProject(resolved, downstreamAbs, downstreamTaskID, id)
 	}
 }
 
@@ -640,7 +624,9 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 			continue
 		}
 		upstream, err := yamlfrontmatter.Parse(data)
-		if err != nil || upstream == nil {
+		if err != nil || upstream == nil || upstream.ID != id {
+			// Filename prefix alone is not authoritative; the frontmatter id
+			// must match the blocked_by reference.
 			continue
 		}
 		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved && isAutoResumableError(upstream.PhaseErrorCode) {
@@ -713,6 +699,14 @@ func (r *Runner) findProjectDirByKey(key string) string {
 	if err != nil {
 		return ""
 	}
+	// Exact directory-name match first (covers keys that equal the dir name,
+	// including hyphenated names like "release-manager").
+	for _, projectEntry := range projects {
+		if projectEntry.IsDir() && projectEntry.Name() == key {
+			return filepath.Join(projectsDir, key)
+		}
+	}
+	// Then numeric-prefix suffix match: "001-alpha" dir matches key "alpha".
 	for _, projectEntry := range projects {
 		if !projectEntry.IsDir() {
 			continue
@@ -722,8 +716,34 @@ func (r *Runner) findProjectDirByKey(key string) string {
 		if idx := strings.IndexByte(name, '-'); idx > 0 {
 			suffix = name[idx+1:]
 		}
-		if name == key || suffix == key {
+		if suffix == key {
 			return filepath.Join(projectsDir, name)
+		}
+	}
+	// Finally: a directory whose task frontmatter project field equals the key
+	// (mirrors AreBlockersDone's fallback when directory name and key differ).
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		tasks, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, t := range tasks {
+			if t.IsDir() || filepath.Ext(t.Name()) != ".md" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(tasksDir, t.Name()))
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Project != key {
+				continue
+			}
+			return filepath.Join(projectsDir, projectEntry.Name())
 		}
 	}
 	return ""
@@ -744,7 +764,16 @@ func (r *Runner) findTaskPath(projDir, id string) string {
 		if !strings.HasPrefix(name, "TASK-"+id+"-") && name != "TASK-"+id+".md" {
 			continue
 		}
-		return filepath.Join(tasksDir, name)
+		path := filepath.Join(tasksDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil || fm.ID != id {
+			continue
+		}
+		return path
 	}
 	return ""
 }
