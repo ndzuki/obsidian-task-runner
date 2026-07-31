@@ -811,7 +811,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, t.Project); projDir != "" {
 				reqPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
 				if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
-					skillPrompt = ctx + "\n\n" + skillPrompt
+					skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入）\n项目: %s\n\n%s\n</project_context>", skillPrompt, t.Project, ctx)
 				}
 			}
 		}
