@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,15 +29,15 @@ import (
 )
 
 type Runner struct {
-	cfg             *config.Config
-	logger          *log.Logger
-	logWriter       *logutil.RotatingWriter
-	taskRuns        sync.Map
-	repoLocks       sync.Map
-	scanMu          sync.Mutex // prevents overlapping scanAndProcess calls
-	worktreeCache   sync.Map   // taskRunKey → worktreePath (parallel warmup)
-	initialScanDone bool
-	daemonCtx       context.Context // bound to daemon lifecycle; cancelled on shutdown
+	cfg                *config.Config
+	logger             *log.Logger
+	logWriter          *logutil.RotatingWriter
+	taskRuns           sync.Map
+	repoLocks          sync.Map
+	scanMu             sync.Mutex // prevents overlapping scanAndProcess calls
+	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
+	implementationGate *implementationGate
+	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
 }
 
 type repoLockMode uint8
@@ -48,12 +49,12 @@ const (
 )
 
 type preparedTask struct {
-	task     task.ReadyTask
-	repoDir  string
-	workDir  string
-	lockMode repoLockMode
+	task                   task.ReadyTask
+	repoDir                string
+	workDir                string
+	lockMode               repoLockMode
+	implementationReserved bool
 }
-
 type taskResult struct {
 	repoDir   string
 	lockMode  repoLockMode
@@ -61,7 +62,11 @@ type taskResult struct {
 }
 
 func New(cfg *config.Config) *Runner {
-	return &Runner{cfg: cfg, daemonCtx: context.Background()}
+	return &Runner{
+		cfg:                cfg,
+		implementationGate: newImplementationGate(cfg.MaxConcurrentTasks),
+		daemonCtx:          context.Background(),
+	}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -93,18 +98,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	w.Start(ctx)
 
-	// Run an initial scan to catch any tasks that became ready while daemon was down
-	go func() {
-		time.Sleep(2 * time.Second) // let watcher initialize
-		if r.initialScanDone {
-			r.logger.Printf("startup scan already completed, skipping")
-			return
-		}
-		r.logger.Printf("running startup scan")
-		if err := r.scanAndProcess(); err != nil {
-			r.logger.Printf("startup scan error: %v", err)
-		}
-	}()
+	// Run an initial scan to catch any tasks that became ready while daemon was down.
 
 	ticker := time.NewTicker(time.Duration(r.cfg.PollIntervalMin) * time.Minute)
 	defer ticker.Stop()
@@ -206,7 +200,7 @@ func (r *Runner) scanAndProcess() error {
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
 	if len(tasks) == 0 {
 		r.scanMu.Unlock()
-		r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
+		r.processPriorityAssessments(context.Background())
 		return nil
 	}
 	r.scanMu.Unlock()
@@ -229,31 +223,43 @@ func (r *Runner) scanAndProcess() error {
 			break
 		}
 	}
-	r.processPriorityAssessments(context.Background(), r.cfg.MaxConcurrentTasks)
+	r.processPriorityAssessments(context.Background())
 	return nil
 }
 
-// processBatch schedules OMP executions up to the configured limit. Only an
-// executing OMP process consumes a global slot; tasks waiting for a repository
-// exclusive phase remain pending so Round 2 worktree tasks can use that slot.
+// processBatch dispatches every schedulable task. Repository locks protect
+// shared working directories; implementing tasks must reserve daemon-wide
+// capacity before their execution goroutine is created.
 func (r *Runner) processBatch(tasks []task.ReadyTask) int {
-	limit := r.cfg.MaxConcurrentTasks
-	if limit < 1 {
-		limit = 1
-	}
-
 	pending := r.prepareBatch(tasks)
-	done := make(chan taskResult, limit)
+	done := make(chan taskResult, len(pending))
 	processed := 0
 	running := 0
 
 	for len(pending) > 0 || running > 0 {
-		for running < limit {
+		var implementationChanged <-chan struct{}
+		implementationBlocked := false
+		for {
 			index := -1
-			for i, candidate := range pending {
+			for i := range pending {
+				candidate := &pending[i]
+				reservedImplementation := false
+				if candidate.task.Status == "implementing" {
+					acquired, changed := r.implementationGate.tryAcquireLocal()
+					if !acquired {
+						implementationBlocked = true
+						implementationChanged = changed
+						continue
+					}
+					reservedImplementation = true
+				}
 				if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
+					if reservedImplementation {
+						r.implementationGate.releaseLocal()
+					}
 					continue
 				}
+				candidate.implementationReserved = reservedImplementation
 				index = i
 				break
 			}
@@ -274,6 +280,14 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		}
 
 		if running == 0 {
+			if implementationBlocked {
+				if r.implementationGate.localActive() == 0 {
+					r.logger.Printf("scheduler: %d tasks waiting for adopted implementations — will retry on next scan", len(pending))
+				} else if implementationChanged != nil {
+					<-implementationChanged
+					continue
+				}
+			}
 			r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
 			break
 		}
@@ -402,12 +416,14 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 }
 
 func (r *Runner) processPreparedTask(prepared preparedTask) int {
+	if prepared.implementationReserved {
+		defer r.implementationGate.releaseLocal()
+	}
 	taskKey := taskRunKey(prepared.task.FilePath)
 	if _, loaded := r.taskRuns.LoadOrStore(taskKey, struct{}{}); loaded {
 		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", prepared.task.ID)
 		return 0
 	}
-
 	defer r.taskRuns.Delete(taskKey)
 
 	return r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
@@ -483,6 +499,103 @@ func taskPIDFile(taskLogDir, taskID, taskPath string) string {
 	return filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s.pid", taskID, taskRunKey(taskPath)))
 }
 
+func (r *Runner) findReadyTasks() ([]task.ReadyTask, error) {
+	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
+	if err != nil {
+		return nil, err
+	}
+	adopted := r.adoptSurvivingImplementations()
+	if len(adopted) == 0 {
+		return tasks, nil
+	}
+	filtered := tasks[:0]
+	for _, candidate := range tasks {
+		if _, running := adopted[taskRunKey(candidate.FilePath)]; !running {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered, nil
+}
+
+func (r *Runner) taskLogDir() string {
+	logDir := r.cfg.LogDir
+	if logDir == "" {
+		home, _ := os.UserHomeDir()
+		logDir = filepath.Join(home, ".omp", "logs")
+	}
+	return filepath.Join(logDir, "tasks")
+}
+
+func (r *Runner) adoptSurvivingImplementations() map[string]struct{} {
+	adopted := make(map[string]struct{})
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return adopted
+	}
+	taskLogDir := r.taskLogDir()
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			taskPath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(taskPath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Status != "implementing" {
+				continue
+			}
+			pidFile := taskPIDFile(taskLogDir, fm.ID, taskPath)
+			pidData, err := os.ReadFile(pidFile)
+			if err != nil {
+				continue
+			}
+			pid, startTime, recordedCmd := parsePIDRecord(pidData)
+			if pid == 0 || !procAlive(pid) {
+				if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+					r.logger.Printf("task %s: remove stale PID file: %v", fm.ID, err)
+				}
+				continue
+			}
+			if !startTime.IsZero() && !pidMatchesTask(pid, startTime, recordedCmd) {
+				r.logger.Printf("task %s: PID %d reused by different process — ignoring", fm.ID, pid)
+				if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+					r.logger.Printf("task %s: remove stale PID file: %v", fm.ID, err)
+				}
+				continue
+			}
+			adopted[taskRunKey(taskPath)] = struct{}{}
+			if r.implementationGate.adopt(pid) {
+				r.logger.Printf("task %s: adopted surviving implementation PID %d", fm.ID, pid)
+				go r.watchAdoptedImplementation(pid, pidFile)
+			}
+		}
+	}
+	return adopted
+}
+
+func (r *Runner) watchAdoptedImplementation(pid int, pidFile string) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for procExists(pid) {
+		<-ticker.C
+	}
+	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+		r.logger.Printf("remove adopted PID file %s: %v", pidFile, err)
+	}
+	r.implementationGate.releaseAdopted(pid)
+}
 func (r *Runner) repoLock(repoDir string) *sync.RWMutex {
 	lock, _ := r.repoLocks.LoadOrStore(repoDir, &sync.RWMutex{})
 	return lock.(*sync.RWMutex)
@@ -734,7 +847,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Dir = repoDir
 		if f != nil {
 			cmd.Stdout = io.MultiWriter(f, os.Stderr)
@@ -755,7 +868,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			close(tailDone)
 			continue
 		}
-		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+		if err := os.WriteFile(pidFile, []byte(formatPIDRecord(cmd.Process.Pid)), 0o644); err != nil {
 			r.logger.Printf("task %s: write PID file: %v", t.ID, err)
 		}
 		defer func() {
@@ -815,7 +928,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					close(fbTailDone)
 					fellback = true
 				} else {
-					if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", retryCmd.Process.Pid)), 0o600); err != nil {
+					if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
 						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
 					}
 					retryErr := retryCmd.Wait()
@@ -936,7 +1049,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, c
 	}
 	if currentRetry == 0 {
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-			retryField:        1,
+			retryField:         1,
 			"phase_error_code": string(code),
 			"phase_error":      reason,
 			"phase_log":        logPath,
@@ -951,7 +1064,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, c
 		"phase_error_code": string(code),
 		"phase_error":      reason,
 		"phase_log":        logPath,
-		retryField:          0,
+		retryField:         0,
 	}); err != nil {
 		r.logger.Printf("task %s: record blocked phase: %v", taskID, err)
 		return
@@ -1180,15 +1293,24 @@ func acquireLock(cfg *config.Config) (func(), error) {
 	}, nil
 }
 
-// procAlive checks if a process with the given PID is still running.
+// procAlive checks if a process with the given PID is running and not a zombie.
 func procAlive(pid int) bool {
+	if data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(pid), "stat")); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 2 && fields[2] == "Z" {
+			return false
+		}
+	}
+	return procExists(pid)
+}
+
+// procExists checks if a PID exists via signal 0.
+func procExists(pid int) bool {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	// Signal 0 is a null signal — checks existence without affecting the process
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return process.Signal(syscall.Signal(0)) == nil
 }
 
 // hasNonEmptyList returns true if v is a non-empty slice.
@@ -1211,4 +1333,64 @@ func needsContextInjection(status string) bool {
 		return true
 	}
 	return false
+}
+
+// formatPIDRecord writes PID+start_time+cmd for identity verification.
+func formatPIDRecord(pid int) string {
+	const longForm = "2006-01-02 15:04:05 -0700"
+	bootTime, _ := procStartTime(pid)
+	cmd, _ := os.Executable()
+	return fmt.Sprintf("%d\n%s\n%s\n", pid, bootTime.Format(longForm), cmd)
+}
+
+func procStartTime(pid int) (time.Time, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(pid), "stat"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 22 {
+		return time.Time{}, fmt.Errorf("unexpected stat format")
+	}
+	startTicks, _ := strconv.ParseInt(fields[21], 10, 64)
+	uptimeData, _ := os.ReadFile("/proc/uptime")
+	uptimeFields := strings.Fields(string(uptimeData))
+	if len(uptimeFields) < 1 {
+		return time.Time{}, fmt.Errorf("unexpected uptime format")
+	}
+	uptimeSec, _ := strconv.ParseFloat(uptimeFields[0], 64)
+	startSec := float64(startTicks) / float64(syscall.Getpagesize()/4096*100)
+	bootTime := time.Now().Add(-time.Duration(uptimeSec * float64(time.Second)))
+	return bootTime.Add(time.Duration(startSec * float64(time.Second))), nil
+}
+
+func parsePIDRecord(data []byte) (int, time.Time, string) {
+	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 3)
+	if len(lines) == 0 {
+		return 0, time.Time{}, ""
+	}
+	pid, err := strconv.Atoi(lines[0])
+	if err != nil {
+		return 0, time.Time{}, ""
+	}
+	if len(lines) < 3 {
+		return pid, time.Time{}, ""
+	}
+	const longForm = "2006-01-02 15:04:05 -0700"
+	startTime, err := time.Parse(longForm, lines[1])
+	if err != nil {
+		return pid, time.Time{}, lines[2]
+	}
+	return pid, startTime, lines[2]
+}
+
+func pidMatchesTask(pid int, recordedStart time.Time, recordedCmd string) bool {
+	if recordedStart.IsZero() || recordedCmd == "" {
+		return true
+	}
+	actualStart, err := procStartTime(pid)
+	if err != nil {
+		return false
+	}
+	return actualStart.Equal(recordedStart)
 }

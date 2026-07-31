@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
@@ -41,5 +44,77 @@ func TestRunPriorityAssessmentWritesNormalizedResult(t *testing.T) {
 	}
 	if fm.Priority != "P2" || fm.PriorityScore != 6 || fm.PriorityAssessmentStatus != "completed" {
 		t.Fatalf("assessment = priority %q score %d status %q", fm.Priority, fm.PriorityScore, fm.PriorityAssessmentStatus)
+	}
+}
+
+func TestProcessPriorityAssessmentsUsesIndependentBatchLimit(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "test", "Tasks")
+	reqsDir := filepath.Join(vault, "Projects", "test", "Requirements")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("create tasks directory: %v", err)
+	}
+	if err := os.MkdirAll(reqsDir, 0o755); err != nil {
+		t.Fatalf("create requirements directory: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("%03d", i)
+		reqRel := filepath.Join("Projects", "test", "Requirements", "REQ-"+id+".md")
+		if err := os.WriteFile(filepath.Join(vault, reqRel), []byte("# Requirement\n"), 0o644); err != nil {
+			t.Fatalf("write requirement: %v", err)
+		}
+		content := fmt.Sprintf(`---
+id: %q
+title: Priority %s
+project: test
+status: blocked
+priority: ""
+priority_assessment_status: pending
+priority_assessment_attempts: 0
+req_doc: %s
+---
+# TASK-%s
+`, id, id, reqRel, id)
+		if err := os.WriteFile(filepath.Join(tasksDir, "TASK-"+id+".md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write task: %v", err)
+		}
+	}
+
+	calls := filepath.Join(dir, "calls")
+	omp := filepath.Join(dir, "omp")
+	script := "#!/bin/sh\nprintf 'call\\n' >> \"$CALLS\"\nprintf '%s' '{\"priority\":\"P1\",\"impact\":\"high\",\"urgency\":\"near_term\",\"workaround\":\"partial\",\"score\":6,\"confidence\":\"high\",\"reason\":\"core path\",\"recommendation\":\"\"}'\n"
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatalf("write OMP: %v", err)
+	}
+	t.Setenv("CALLS", calls)
+	runner := New(&config.Config{
+		ObsidianVault: vault,
+		OMPCmd:        omp,
+		Models:        config.DefaultModels(),
+	})
+	runner.logger = log.New(os.Stderr, "", 0)
+
+	if processed := runner.processPriorityAssessments(context.Background()); processed != priorityAssessmentBatchLimit {
+		t.Fatalf("processed = %d, want %d", processed, priorityAssessmentBatchLimit)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatalf("read calls: %v", err)
+	}
+	if got := strings.Count(string(data), "call\n"); got != priorityAssessmentBatchLimit {
+		t.Fatalf("OMP calls = %d, want %d", got, priorityAssessmentBatchLimit)
+	}
+
+	thirdData, err := os.ReadFile(filepath.Join(tasksDir, "TASK-003.md"))
+	if err != nil {
+		t.Fatalf("read third task: %v", err)
+	}
+	third, err := yamlfrontmatter.Parse(thirdData)
+	if err != nil {
+		t.Fatalf("parse third task: %v", err)
+	}
+	if third.PriorityAssessmentStatus != "pending" {
+		t.Fatalf("third assessment status = %q, want pending", third.PriorityAssessmentStatus)
 	}
 }
