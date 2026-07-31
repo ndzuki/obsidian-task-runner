@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -126,11 +127,17 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		if output, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
 			return fmt.Errorf("%s: merge PR: %w: %s", ErrGitHubUnavailable, mergeErr, strings.TrimSpace(string(output)))
 		}
-		return yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+		// Transition to done
+		if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 			"status": "done", "merge_approved": false, "pending_req": false,
 			"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
 			"phase_error_code": "", "phase_error": "",
-		})
+		}); err != nil {
+			return err
+		}
+		// Step 0: Extract project knowledge to knowledge base (non-blocking)
+		go r.extractProjectKnowledge(candidate.Project)
+		return nil
 	default:
 		return fmt.Errorf("%s: unknown merge decision", ErrInternal)
 	}
@@ -176,4 +183,21 @@ func loadMergeChecks(repoDir, prURL string) (mergeChecks, error) {
 		}
 	}
 	return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL}, nil
+}
+
+func (r *Runner) extractProjectKnowledge(projectName string) {
+	vaultDir := r.cfg.ObsidianVault
+
+	result, err := knowledge.ExtractProjectKnowledge(vaultDir, projectName)
+	if err != nil {
+		r.logger.Printf("knowledge-base Step 0 failed: project=%s error=%v", projectName, err)
+		return
+	}
+	if result.ADRCount > 0 || result.NewRefs > 0 || result.UpdatedRefs > 0 {
+		r.logger.Printf("knowledge-base extracted: project=%s adrs=%d new=%d updated=%d",
+			projectName, result.ADRCount, result.NewRefs, result.UpdatedRefs)
+	}
+	if _, idxErr := knowledge.RebuildINDEX(vaultDir); idxErr != nil {
+		r.logger.Printf("knowledge-base INDEX rebuild failed: %v", idxErr)
+	}
 }

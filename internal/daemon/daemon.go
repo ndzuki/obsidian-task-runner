@@ -210,10 +210,12 @@ func (r *Runner) scanAndProcess() error {
 			break
 		}
 		// Adaptive polling: check every 500ms for cloud-sync flush before re-scanning
-		for range 12 {
+		// Adaptive polling: re-scan every 500ms for state changes after OMP dispatch.
+		// Covers filesystems where fsnotify is unreliable (e.g. Vault git sync).
+		for range 60 {
 			time.Sleep(500 * time.Millisecond)
 			r.scanMu.Lock()
-			tasks, _ = task.FindReadyTasks(r.cfg.ObsidianVault)
+			tasks, _ = r.findReadyTasks()
 			r.scanMu.Unlock()
 			if len(tasks) > 0 {
 				break
@@ -804,6 +806,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		}
 
 		args := []string{"--model", model, "--auto-approve", "-p", skillPrompt}
+
+		if needsContextInjection(t.Status) {
+			if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, t.Project); projDir != "" {
+				reqPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
+				if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
+					skillPrompt = ctx + "\n\n" + skillPrompt
+				}
+			}
+		}
 		logDir := r.cfg.LogDir
 		if logDir == "" {
 			home, _ := os.UserHomeDir()
@@ -1322,7 +1333,28 @@ func procExists(pid int) bool {
 
 // hasNonEmptyList returns true if v is a non-empty slice.
 // Mirrors task.isEmptyList but works on the any-typed frontmatter fields.
+func resolveVaultProjectDir(vaultPath, projectName string) string {
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Vault dirs use "NNN-name" format; match by suffix after the numeric prefix.
+		name := e.Name()
+		if idx := strings.IndexByte(name, '-'); idx > 0 {
+			if name[idx+1:] == projectName {
+				return filepath.Join(projectsDir, name)
+			}
+		}
+	}
+	return ""
+}
 func hasNonEmptyList(v any) bool {
+
 	switch val := v.(type) {
 	case []interface{}:
 		return len(val) > 0
