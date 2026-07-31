@@ -985,6 +985,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					}
 				}
 			}
+			if phase == "round2" {
+				go r.extractProjectKnowledge(t.Project)
+			}
 			if _, statErr := os.Stat(taskPath); statErr == nil {
 				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}
