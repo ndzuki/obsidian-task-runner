@@ -41,8 +41,8 @@ func TestNextLocalTransition_PlanApprovalStartsImplementation(t *testing.T) {
 	if transition.Status != "implementing" {
 		t.Fatalf("status = %q, want implementing", transition.Status)
 	}
-	if transition.Updates["plan_approved"] != false || transition.Updates["adr_approved"] != true {
-		t.Fatalf("updates = %#v, want consumed plan gate and approved ADRs", transition.Updates)
+	if transition.Updates["plan_approved"] != nil || transition.Updates["adr_approved"] != true {
+		t.Fatalf("updates = %#v, want plan_approved preserved and adr_approved", transition.Updates)
 	}
 }
 
