@@ -82,9 +82,8 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 				Dispatch: true,
 				Reason:   "plan gate approved",
 				Updates: map[string]interface{}{
-					"status":        "implementing",
-					"plan_approved": false,
-					"adr_approved":  hasADRProposal(fm.AdrProposed),
+					"status":       "implementing",
+					"adr_approved": hasADRProposal(fm.AdrProposed),
 				},
 			}, true
 		}
@@ -114,7 +113,7 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 		}
 	}
 
-	if fm.PlanApproved && fm.Status != "plan-review" {
+	if fm.PlanApproved && fm.Status != "plan-review" && fm.Status != "implementing" {
 		return localTransition{
 			Status:   fm.Status,
 			Dispatch: true,
@@ -144,14 +143,14 @@ func transitionToRefining(reason string) localTransition {
 
 func grillingReleaseUpdates(status string) map[string]interface{} {
 	return map[string]interface{}{
-		"status":              status,
-		"grill_done":          false,
-		"grill_owner":         "",
-		"grill_started_at":    "",
-		"grill_heartbeat_at":  "",
-		"grill_resolution":    "",
-		"grill_context":       "",
-		"grill_prev_status":   "",
+		"status":             status,
+		"grill_done":         false,
+		"grill_owner":        "",
+		"grill_started_at":   "",
+		"grill_heartbeat_at": "",
+		"grill_resolution":   "",
+		"grill_context":      "",
+		"grill_prev_status":  "",
 	}
 }
 
