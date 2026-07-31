@@ -72,7 +72,7 @@ type NotifConfig struct {
 // DefaultModels returns the built-in model mappings.
 func DefaultModels() map[string]string {
 	return map[string]string{
-		"deepseek": "deepseek/deepseek-v4-pro:xhigh",
+		"deepseek": "deepseek/deepseek-v4-pro",
 		"gpt":      "gateway/gpt-5.6-sol:xhigh",
 		"default":  "deepseek/deepseek-v4-flash",
 		"gemini":   "google/gemini-2.5-pro",
