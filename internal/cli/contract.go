@@ -14,10 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newRootCommand(v string) *cobra.Command {
-	if v == "" {
-		v = "dev"
-	}
+func newRootCommand(_ string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "otg",
 		Short:         "Obsidian Task Runner — Go implementation",

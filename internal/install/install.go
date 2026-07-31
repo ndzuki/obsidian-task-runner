@@ -182,7 +182,9 @@ func installSkill(opts Options) error {
 
 	// Restore user's vault-map.json — never overwritten by install.
 	if savedVaultMap != nil {
-		os.MkdirAll(filepath.Dir(vaultMapPath), 0755)
+		if err := os.MkdirAll(filepath.Dir(vaultMapPath), 0755); err != nil {
+			return fmt.Errorf("restore vault-map dir: %w", err)
+		}
 		if err := os.WriteFile(vaultMapPath, savedVaultMap, 0644); err != nil {
 			return fmt.Errorf("restore vault-map: %w", err)
 		}
@@ -250,7 +252,9 @@ func generateVaultMap(opts Options) error {
 			newData = append(newData, '\n')
 			if err := yamlfrontmatter.AtomicWrite(mapFile, newData); err != nil {
 				// Restore backup on failure
-				os.WriteFile(mapFile, backup, 0644)
+				if restoreErr := os.WriteFile(mapFile, backup, 0644); restoreErr != nil {
+					return fmt.Errorf("atomic write vault-map: %w (restore backup: %v)", err, restoreErr)
+				}
 				return fmt.Errorf("atomic write vault-map: %w", err)
 			}
 			fmt.Println("vault-map.json updated with new defaults")

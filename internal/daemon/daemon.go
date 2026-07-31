@@ -432,10 +432,6 @@ func (r *Runner) processPreparedTask(prepared preparedTask) int {
 	return r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
 }
 
-func (r *Runner) updateTask(t task.ReadyTask, updates map[string]interface{}) error {
-	return r.updateTaskFile(t.FilePath, t.ID, t.Title, updates)
-}
-
 func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[string]interface{}) error {
 	if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 		r.logger.Printf("task %s: frontmatter update failed: %v", taskID, err)
@@ -1632,8 +1628,7 @@ func procExists(pid int) bool {
 	return process.Signal(syscall.Signal(0)) == nil
 }
 
-// hasNonEmptyList returns true if v is a non-empty slice.
-// Mirrors task.isEmptyList but works on the any-typed frontmatter fields.
+// resolveVaultProjectDir resolves a project name to its vault directory.
 func resolveVaultProjectDir(vaultPath, projectName string) string {
 	projectsDir := filepath.Join(vaultPath, "Projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -1653,16 +1648,6 @@ func resolveVaultProjectDir(vaultPath, projectName string) string {
 		}
 	}
 	return ""
-}
-func hasNonEmptyList(v any) bool {
-
-	switch val := v.(type) {
-	case []interface{}:
-		return len(val) > 0
-	case []string:
-		return len(val) > 0
-	}
-	return false
 }
 
 // needsContextInjection returns true for task phases that benefit from

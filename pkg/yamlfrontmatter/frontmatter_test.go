@@ -332,7 +332,9 @@ func TestRepair(t *testing.T) {
 			"---\n\n" +
 			"## 实现计划\n\n" +
 			"Step 1 content here.\n"
-		os.WriteFile(path, []byte(original), 0644)
+		if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		if err := Repair(path); err != nil {
 			t.Fatalf("repair failed: %v", err)
@@ -391,7 +393,9 @@ func TestValidateTaskDocumentUnescapedTag(t *testing.T) {
 
 	t.Run("rejects unescaped <id> in body", func(t *testing.T) {
 		path := filepath.Join(dir, "unescaped.md")
-		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: <id> in body.\n"), 0644)
+		if err := os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: <id> in body.\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		if err := ValidateTaskDocument(path); err == nil {
 			t.Error("expected error for unescaped <id> in body")
 		}
@@ -399,7 +403,9 @@ func TestValidateTaskDocumentUnescapedTag(t *testing.T) {
 
 	t.Run("accepts escaped \\<id\\> in body", func(t *testing.T) {
 		path := filepath.Join(dir, "escaped.md")
-		os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: \\<id\\> escaped.\n"), 0644)
+		if err := os.WriteFile(path, []byte("---\nid: \"001\"\nstatus: ready\nproject: test\nreq_doc: Projects/test/REQ-001.md\n---\n# Title\n- AC: \\<id\\> escaped.\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		if err := ValidateTaskDocument(path); err != nil {
 			t.Errorf("unexpected error for escaped \\<id\\>: %v", err)
 		}

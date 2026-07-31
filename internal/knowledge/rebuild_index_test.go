@@ -99,7 +99,9 @@ func TestRebuildINDEX_Empty(t *testing.T) {
 	refs := filepath.Join(tmp, "References")
 	// Create empty directories
 	for _, d := range []string{"core", "extended", "archived"} {
-		os.MkdirAll(filepath.Join(refs, d), 0o755)
+		if err := os.MkdirAll(filepath.Join(refs, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	n, err := RebuildINDEX(tmp)
