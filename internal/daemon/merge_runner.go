@@ -85,7 +85,9 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	}
 	prURL := fm.PRURL
 	if prURL == "" {
-		output, createErr := exec.Command("gh", "pr", "create", "--head", fm.TargetBranch, "--fill").CombinedOutput()
+		createCmd := exec.Command("gh", "pr", "create", "--head", fm.TargetBranch, "--fill")
+		createCmd.Dir = repoDir
+		output, createErr := createCmd.CombinedOutput()
 		if createErr != nil {
 			return fmt.Errorf("%s: create PR: %w: %s", ErrGitHubUnavailable, createErr, strings.TrimSpace(string(output)))
 		}
@@ -119,7 +121,9 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 			"phase_error_code": string(ErrGitConflict), "phase_error": decision.Reason,
 		})
 	case mergeActionMerge:
-		if output, mergeErr := exec.Command("gh", "pr", "merge", prURL, "--merge", "--delete-branch").CombinedOutput(); mergeErr != nil {
+		mergeCmd := exec.Command("gh", "pr", "merge", prURL, "--merge", "--delete-branch")
+		mergeCmd.Dir = repoDir
+		if output, mergeErr := mergeCmd.CombinedOutput(); mergeErr != nil {
 			return fmt.Errorf("%s: merge PR: %w: %s", ErrGitHubUnavailable, mergeErr, strings.TrimSpace(string(output)))
 		}
 		return yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
@@ -141,7 +145,9 @@ func gitCurrentHead(repoDir, branch string) string {
 }
 
 func loadMergeChecks(repoDir, prURL string) (mergeChecks, error) {
-	output, err := exec.Command("gh", "pr", "view", prURL, "--json", "headRefOid,mergeStateStatus,statusCheckRollup,url").CombinedOutput()
+	cmd := exec.Command("gh", "pr", "view", prURL, "--json", "headRefOid,mergeStateStatus,statusCheckRollup,url")
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return mergeChecks{}, fmt.Errorf("%s: inspect PR checks: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
 	}
