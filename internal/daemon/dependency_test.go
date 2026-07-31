@@ -407,6 +407,133 @@ assignee: default
 	}
 }
 
+func TestResolveBlockedDependenciesHyphenatedDirExactMatch(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	// Project dir named exactly "release-manager" (no numeric prefix).
+	otherTasks := filepath.Join(vault, "Projects", "release-manager", "Tasks")
+	curTasks := filepath.Join(vault, "Projects", "001-current", "Tasks")
+	if err := os.MkdirAll(otherTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(curTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(otherTasks, "TASK-050-upstream.md"), []byte(`---
+id: "050"
+title: Upstream
+project: release-manager
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(curTasks, "TASK-051-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "051"
+title: Downstream
+project: current
+status: blocked
+blocked_by: ["release-manager:TASK-050"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if !mustParse(t, filepath.Join(otherTasks, "TASK-050-upstream.md")).ResumeApproved {
+		t.Fatal("hyphenated project dir must match by exact name")
+	}
+}
+
+func TestResolveBlockedDependenciesCycleNotResumed(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A blocked_by B, B blocked_by A — both phase-failure blocked. Neither may be auto-resumed.
+	for _, tc := range []struct{ id, title, blockedBy string }{
+		{"060", "A", `["TASK-061"]`},
+		{"061", "B", `["TASK-060"]`},
+	} {
+		content := "---\nid: \"" + tc.id + "\"\ntitle: " + tc.title + "\nproject: test\nstatus: blocked\nblocked_phase: implementing\nphase_error_code: MODEL_FAILED\nresume_approved: false\nassignee: default\nblocked_by: " + tc.blockedBy + "\n---\n# " + tc.title + "\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, "TASK-"+tc.id+"-"+tc.title+".md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if mustParse(t, filepath.Join(tasksDir, "TASK-060-A.md")).ResumeApproved {
+		t.Fatal("A in a cycle must not be auto-resumed")
+	}
+	if mustParse(t, filepath.Join(tasksDir, "TASK-061-B.md")).ResumeApproved {
+		t.Fatal("B in a cycle must not be auto-resumed")
+	}
+}
+
+func TestResolveBlockedDependenciesReqMissingNotResumed(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upstream has blocked_phase set but REQ_MISSING error — must NOT be auto-resumed.
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-070-upstream.md"), []byte(`---
+id: "070"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: REQ_MISSING
+resume_approved: false
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-071-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "071"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-070"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if mustParse(t, filepath.Join(tasksDir, "TASK-070-upstream.md")).ResumeApproved {
+		t.Fatal("REQ_MISSING blocked upstream must NOT be auto-resumed")
+	}
+}
+
 func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 	t.Helper()
 	data, err := os.ReadFile(path)

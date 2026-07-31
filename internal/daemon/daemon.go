@@ -561,16 +561,29 @@ func (r *Runner) resolveBlockedDependencies() {
 				continue
 			}
 			for _, ref := range fm.BlockedBy {
-				r.autoResumePhaseFailureBlocker(projectsDir, projectEntry.Name(), ref)
+				r.autoResumePhaseFailureBlocker(projectsDir, projectEntry.Name(), fm.ID, ref)
 			}
 		}
+	}
+}
+
+// isAutoResumableError reports whether a phase_error_code represents a genuine
+// transient phase failure that is safe to auto-resume. REQ_MISSING and other
+// content/validation errors require human intervention.
+func isAutoResumableError(code string) bool {
+	switch code {
+	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted):
+		return true
+	default:
+		// Empty code (legacy phase-failure blocks) is treated as resumable.
+		return code == ""
 	}
 }
 
 // autoResumePhaseFailureBlocker looks up the task referenced by a blocked_by
 // entry ("TASK-010" or "project-key:TASK-010") and approves its resume if it
 // is blocked on a phase failure (blocked_phase set) but not yet resumed.
-func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, ref string) {
+func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, downstreamTaskID, ref string) {
 	projName := ""
 	id := strings.TrimPrefix(ref, "TASK-")
 	if idx := strings.Index(ref, ":"); idx > 0 {
@@ -579,7 +592,7 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, r
 	}
 	// Unqualified references resolve within the downstream project only.
 	if projName == "" {
-		r.autoResumeInProject(filepath.Join(projectsDir, downstreamProjDir), id)
+		r.autoResumeInProject(filepath.Join(projectsDir, downstreamProjDir), downstreamProjDir, downstreamTaskID, id)
 		return
 	}
 	projects, err := os.ReadDir(projectsDir)
@@ -595,17 +608,22 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, r
 		if idx := strings.IndexByte(name, '-'); idx > 0 {
 			suffix = name[idx+1:]
 		}
-		if suffix != projName {
+		// Prefer exact directory-name match, then numeric-prefix suffix match
+		// (e.g. dir "release-manager" matches key "release-manager" directly;
+		// dir "001-alpha" matches key "alpha").
+		if name != projName && suffix != projName {
 			continue
 		}
-		r.autoResumeInProject(filepath.Join(projectsDir, name), id)
+		r.autoResumeInProject(filepath.Join(projectsDir, name), downstreamProjDir, downstreamTaskID, id)
 		return
 	}
 }
 
 // autoResumeInProject looks up a task by ID within a single project directory
-// and approves its resume if blocked on a phase failure.
-func (r *Runner) autoResumeInProject(projDir, id string) {
+// and approves its resume if blocked on a phase failure. It skips the upstream
+// when resuming it would create a dependency cycle (upstream transitively
+// blocked_by the downstream task).
+func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskID, id string) {
 	tasksDir := filepath.Join(projDir, "Tasks")
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
@@ -624,7 +642,11 @@ func (r *Runner) autoResumeInProject(projDir, id string) {
 		if err != nil || upstream == nil {
 			continue
 		}
-		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved {
+		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved && isAutoResumableError(upstream.PhaseErrorCode) {
+			if r.dependencyCycle(downstreamProjDir, downstreamTaskID, upstream, map[string]bool{}) {
+				r.logger.Printf("dependency: skip auto-resume TASK-%s — would create dependency cycle", id)
+				return
+			}
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true}); err != nil {
 				r.logger.Printf("dependency: FAILED to auto-resume upstream TASK-%s: %v", id, err)
 				return
@@ -633,6 +655,94 @@ func (r *Runner) autoResumeInProject(projDir, id string) {
 		}
 		return
 	}
+}
+
+// dependencyCycle reports whether the candidate upstream transitively depends
+// on the downstream project/task being resolved, which would make auto-resume
+// unsafe (A blocked_by B and B blocked_by A).
+func (r *Runner) dependencyCycle(downstreamProjDir, downstreamTaskID string, candidate *yamlfrontmatter.Frontmatter, visited map[string]bool) bool {
+	for _, ref := range candidate.BlockedBy {
+		projDir := downstreamProjDir
+		id := strings.TrimPrefix(ref, "TASK-")
+		if idx := strings.Index(ref, ":"); idx > 0 {
+			projName := ref[:idx]
+			id = strings.TrimPrefix(ref[idx+1:], "TASK-")
+			if resolved := r.findProjectDirByKey(projName); resolved != "" {
+				projDir = resolved
+			} else {
+				continue
+			}
+		}
+		key := projDir + "/" + id
+		if visited[key] {
+			continue
+		}
+		visited[key] = true
+		// Downstream task referenced as blocker → cycle.
+		if projDir == downstreamProjDir && id == downstreamTaskID {
+			return true
+		}
+		path := r.findTaskPath(projDir, id)
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			continue
+		}
+		if r.dependencyCycle(downstreamProjDir, downstreamTaskID, fm, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+// findProjectDirByKey locates a project directory by vault-map key: exact name
+// match first, then numeric-prefix suffix match.
+func (r *Runner) findProjectDirByKey(key string) string {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		name := projectEntry.Name()
+		suffix := name
+		if idx := strings.IndexByte(name, '-'); idx > 0 {
+			suffix = name[idx+1:]
+		}
+		if name == key || suffix == key {
+			return filepath.Join(projectsDir, name)
+		}
+	}
+	return ""
+}
+
+// findTaskPath resolves a task file path within a project directory by ID.
+func (r *Runner) findTaskPath(projDir, id string) string {
+	tasksDir := filepath.Join(projDir, "Tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "TASK-"+id+"-") && name != "TASK-"+id+".md" {
+			continue
+		}
+		return filepath.Join(tasksDir, name)
+	}
+	return ""
 }
 
 func (r *Runner) adoptSurvivingImplementations() map[string]struct{} {
