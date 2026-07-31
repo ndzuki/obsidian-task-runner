@@ -943,6 +943,50 @@ assignee: default
 	}
 }
 
+func TestHandlePhaseFailureNonPendingKeepsBudget(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tasksDir, "TASK-131-first-fail.md")
+	if err := os.WriteFile(path, []byte(`---
+id: "131"
+title: First Fail
+project: test
+status: implementing
+blocked_phase: ""
+auto_resume_count: 0
+auto_resume_pending: false
+assignee: default
+---
+# First Fail
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.handlePhaseFailure(path, "131", "First Fail", "round2", ErrModelFailed, "boom", "")
+
+	fm := mustParse(t, path)
+	if fm.AutoResumeCount != 0 {
+		t.Fatalf("auto_resume_count = %d, want 0 — initial failure must not consume budget", fm.AutoResumeCount)
+	}
+
+	// Manual-resume-then-fail also leaves count untouched (manual resets budget).
+	if err := yamlfrontmatter.Update(path, map[string]interface{}{
+		"status": "implementing", "blocked_phase": "", "resume_approved": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.handlePhaseFailure(path, "131", "First Fail", "round2", ErrModelFailed, "boom2", "")
+	fm = mustParse(t, path)
+	if fm.AutoResumeCount != 0 {
+		t.Fatalf("auto_resume_count = %d, want 0 after manual-resume failure", fm.AutoResumeCount)
+	}
+}
+
 func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
