@@ -193,6 +193,7 @@ func (r *Runner) initLogging() error {
 
 func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
+	r.resolveBlockedDependencies()
 	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
@@ -526,6 +527,109 @@ func (r *Runner) taskLogDir() string {
 		logDir = filepath.Join(home, ".omp", "logs")
 	}
 	return filepath.Join(logDir, "tasks")
+}
+
+// resolveBlockedDependencies scans blocked tasks and auto-resumes phase-failure
+// blocked upstream tasks referenced by blocked_by, unwinding dependency chains
+// so downstream tasks can proceed without manual intervention.
+func (r *Runner) resolveBlockedDependencies() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			taskPath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(taskPath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Status != "blocked" || len(fm.BlockedBy) == 0 {
+				continue
+			}
+			for _, ref := range fm.BlockedBy {
+				r.autoResumePhaseFailureBlocker(projectsDir, projectEntry.Name(), ref)
+			}
+		}
+	}
+}
+
+// autoResumePhaseFailureBlocker looks up the task referenced by a blocked_by
+// entry ("TASK-010" or "project-key:TASK-010") and approves its resume if it
+// is blocked on a phase failure (blocked_phase set) but not yet resumed.
+func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, ref string) {
+	projName := ""
+	id := strings.TrimPrefix(ref, "TASK-")
+	if idx := strings.Index(ref, ":"); idx > 0 {
+		projName = ref[:idx]
+		id = strings.TrimPrefix(ref[idx+1:], "TASK-")
+	}
+	// Unqualified references resolve within the downstream project only.
+	if projName == "" {
+		r.autoResumeInProject(filepath.Join(projectsDir, downstreamProjDir), id)
+		return
+	}
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		name := projectEntry.Name()
+		suffix := name
+		if idx := strings.IndexByte(name, '-'); idx > 0 {
+			suffix = name[idx+1:]
+		}
+		if suffix != projName {
+			continue
+		}
+		r.autoResumeInProject(filepath.Join(projectsDir, name), id)
+		return
+	}
+}
+
+// autoResumeInProject looks up a task by ID within a single project directory
+// and approves its resume if blocked on a phase failure.
+func (r *Runner) autoResumeInProject(projDir, id string) {
+	tasksDir := filepath.Join(projDir, "Tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-"+id+"-") && entry.Name() != "TASK-"+id+".md" {
+			continue
+		}
+		path := filepath.Join(tasksDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		upstream, err := yamlfrontmatter.Parse(data)
+		if err != nil || upstream == nil {
+			continue
+		}
+		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved {
+			r.logger.Printf("dependency: auto-resuming blocked upstream TASK-%s (blocked_phase=%s) to unwind blocked_by chain", id, upstream.BlockedPhase)
+			yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true})
+		}
+		return
+	}
 }
 
 func (r *Runner) adoptSurvivingImplementations() map[string]struct{} {
