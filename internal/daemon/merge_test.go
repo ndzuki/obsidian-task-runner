@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
 func TestValidateMergeAuthorization(t *testing.T) {
@@ -40,7 +42,7 @@ func TestMergeCommandRequiresGH(t *testing.T) {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
 	t.Setenv("PATH", dir)
-	err := executeMergeCLI(repo, "task/001", "", "")
+	err := executeMergeCLI(&config.Config{}, repo, "test", "task/001", "", "")
 	if err == nil || !strings.Contains(err.Error(), string(ErrGitHubUnavailable)) {
 		t.Fatalf("error = %v, want GITHUB_UNAVAILABLE", err)
 	}

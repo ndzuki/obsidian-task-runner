@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
+// ensureGitRemote is defined in merge_runner.go.
 type mergeAuthorization struct {
 	Status        string
 	MergeApproved bool
@@ -85,13 +88,15 @@ func evaluateMergeChecks(approvedHead string, checks mergeChecks) mergeDecision 
 		return mergeDecision{Action: mergeActionWait}
 	}
 }
-
-func executeMergeCLI(repoDir, targetBranch, approvedHead, prURL string) error {
+func executeMergeCLI(cfg *config.Config, repoDir, projectName, targetBranch, approvedHead, prURL string) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
 	}
 	if targetBranch == "" {
 		return fmt.Errorf("precondition: target branch is required")
+	}
+	if err := ensureGitRemote(cfg, repoDir, projectName); err != nil {
+		return err
 	}
 	if output, err := exec.Command("git", "-C", repoDir, "push", "-u", "origin", targetBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))

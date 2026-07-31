@@ -967,6 +967,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
 			}
 			r.validateChangedDocs(repoDir, t.ID, phase)
+			if phase == "round2" && t.TargetBranch == "" {
+				if branch, err := gitCurrentBranch(repoDir); err == nil && branch != "" && branch != "HEAD" {
+					if updateErr := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{"target_branch": branch}); updateErr != nil {
+						r.logger.Printf("task %s: write target_branch: %v", t.ID, updateErr)
+					}
+				}
+			}
 			if _, statErr := os.Stat(taskPath); statErr == nil {
 				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}

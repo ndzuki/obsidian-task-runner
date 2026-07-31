@@ -9,9 +9,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
+
+// ensureGitRemote adds the project's configured git_remote as the "origin"
+// remote if it does not already exist. Returns an error only when origin is
+// missing and no git_remote is configured in vault-map.json.
+func ensureGitRemote(cfg *config.Config, repoDir, projectName string) error {
+	if output, err := exec.Command("git", "-C", repoDir, "remote", "get-url", "origin").Output(); err == nil && len(output) > 0 {
+		return nil
+	}
+	var remoteURL string
+	for _, p := range cfg.Projects {
+		if p.Name == projectName && p.GitRemote != "" {
+			remoteURL = p.GitRemote
+			break
+		}
+	}
+	if remoteURL == "" {
+		return fmt.Errorf("%s: no origin remote and no git_remote configured in vault-map for project %q", ErrGitHubUnavailable, projectName)
+	}
+	if !strings.Contains(remoteURL, "://") && !strings.Contains(remoteURL, "@") {
+		remoteURL = fmt.Sprintf("https://%s", remoteURL)
+	}
+	if output, err := exec.Command("git", "-C", repoDir, "remote", "add", "origin", remoteURL).CombinedOutput(); err != nil {
+		return fmt.Errorf("add origin remote: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
 
 func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) error {
 	data, err := os.ReadFile(candidate.FilePath)
@@ -31,9 +58,9 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		ReqPath: reqPath, PlanReqHash: fm.PlanReqHash, TargetBranch: fm.TargetBranch,
 	}); err != nil {
 		updates := map[string]interface{}{
-			"merge_approved": false,
+			"merge_approved":   false,
 			"phase_error_code": string(ErrBaseCommitMismatch),
-			"phase_error": err.Error(),
+			"phase_error":      err.Error(),
 		}
 		if fm.PendingReq || strings.Contains(err.Error(), string(ErrBaseCommitMismatch)) {
 			updates["status"] = "refining"
@@ -50,6 +77,9 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
 	}
 
+	if err := ensureGitRemote(r.cfg, repoDir, candidate.Project); err != nil {
+		return err
+	}
 	if output, err := exec.Command("git", "-C", repoDir, "push", "-u", "origin", fm.TargetBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -116,10 +146,12 @@ func loadMergeChecks(repoDir, prURL string) (mergeChecks, error) {
 		return mergeChecks{}, fmt.Errorf("%s: inspect PR checks: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
 	}
 	var payload struct {
-		HeadRefOID       string `json:"headRefOid"`
-		MergeStateStatus string `json:"mergeStateStatus"`
-		URL              string `json:"url"`
-		StatusCheckRollup []struct{ State string `json:"state"` } `json:"statusCheckRollup"`
+		HeadRefOID        string `json:"headRefOid"`
+		MergeStateStatus  string `json:"mergeStateStatus"`
+		URL               string `json:"url"`
+		StatusCheckRollup []struct {
+			State string `json:"state"`
+		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return mergeChecks{}, fmt.Errorf("decode PR checks: %w", err)
