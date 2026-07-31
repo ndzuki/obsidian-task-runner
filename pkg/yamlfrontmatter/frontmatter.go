@@ -31,55 +31,57 @@ var listItemRE = regexp.MustCompile(`^\s+-\s+\S`)
 
 type Frontmatter struct {
 	// Human-owned fields.
-	ID              string   `yaml:"id"`
-	Title           string   `yaml:"title"`
-	Project         string   `yaml:"project"`
-	ProjectID       string   `yaml:"project_id"`
-	Assignee        string   `yaml:"assignee"`
-	ReqDoc          string   `yaml:"req_doc"`
-	NewProject      bool     `yaml:"new_project"`
-	BlockedBy       []string `yaml:"blocked_by"`
-	AutoApprove     bool     `yaml:"auto_approve"`
-	OffPeakOnly     bool     `yaml:"off_peak_only"`
-	DueDate         string   `yaml:"due_date"`
-	PlanApproved    bool     `yaml:"plan_approved"`
-	MergeApproved   bool     `yaml:"merge_approved"`
-	ResumeApproved  bool     `yaml:"resume_approved"`
-	CloseApproved   bool     `yaml:"close_approved"`
+	ID             string   `yaml:"id"`
+	Title          string   `yaml:"title"`
+	Project        string   `yaml:"project"`
+	ProjectID      string   `yaml:"project_id"`
+	Assignee       string   `yaml:"assignee"`
+	ReqDoc         string   `yaml:"req_doc"`
+	NewProject     bool     `yaml:"new_project"`
+	BlockedBy      []string `yaml:"blocked_by"`
+	AutoApprove    bool     `yaml:"auto_approve"`
+	OffPeakOnly    bool     `yaml:"off_peak_only"`
+	DueDate        string   `yaml:"due_date"`
+	PlanApproved   bool     `yaml:"plan_approved"`
+	MergeApproved  bool     `yaml:"merge_approved"`
+	ResumeApproved bool     `yaml:"resume_approved"`
+	CloseApproved  bool     `yaml:"close_approved"`
 
 	// System-owned lifecycle fields.
-	Status             string `yaml:"status"`
-	Maturity           string `yaml:"maturity"`
-	RefineVersion      int    `yaml:"refine_version"`
-	RefineReqHash      string `yaml:"refine_req_hash"`
-	RefineRetryCount   int    `yaml:"refine_retry_count"`
-	RefineError        string `yaml:"refine_error"`
-	PlanReqHash        string `yaml:"plan_req_hash"`
-	PlanVersion        int    `yaml:"plan_version"`
-	PlanningRetryCount int    `yaml:"planning_retry_count"`
-	PhaseError         string `yaml:"phase_error"`
-	PhaseErrorCode     string `yaml:"phase_error_code"`
-	PhaseLog           string `yaml:"phase_log"`
-	BlockedPhase       string `yaml:"blocked_phase"`
-	PendingReq        bool   `yaml:"pending_req"`
-	CheckpointCommit   string `yaml:"checkpoint_commit"`
-	TargetBranch       string `yaml:"target_branch"`
-	PRURL              string `yaml:"pr_url"`
-	Completed          string `yaml:"completed"`
-	AdrApproved        bool   `yaml:"adr_approved"`
-	AdrProposed        any    `yaml:"adr_proposed"`
-	AdrWritten         any    `yaml:"adr_written"`
-	GrillOwner         string `yaml:"grill_owner"`
-	GrillStartedAt     string `yaml:"grill_started_at"`
-	GrillHeartbeatAt   string `yaml:"grill_heartbeat_at"`
-	GrillTimeoutMinutes int   `yaml:"grill_timeout_minutes"`
-	GrillDone          bool   `yaml:"grill_done"`
-	GrillResolution    string `yaml:"grill_resolution"`
-	GrillContext       string `yaml:"grill_context"`
-	GrillContinue     bool   `yaml:"grill_continue"`
-	GrillPrevStatus    string `yaml:"grill_prev_status"`
-	ReqRefineCount     int    `yaml:"req_refine_count"`
-	TaskSchemaVersion  int    `yaml:"task_schema_version"`
+	Status              string `yaml:"status"`
+	Maturity            string `yaml:"maturity"`
+	RefineVersion       int    `yaml:"refine_version"`
+	RefineReqHash       string `yaml:"refine_req_hash"`
+	RefineRetryCount    int    `yaml:"refine_retry_count"`
+	AutoResumeCount     int    `yaml:"auto_resume_count"`
+	AutoResumePending   bool   `yaml:"auto_resume_pending"`
+	RefineError         string `yaml:"refine_error"`
+	PlanReqHash         string `yaml:"plan_req_hash"`
+	PlanVersion         int    `yaml:"plan_version"`
+	PlanningRetryCount  int    `yaml:"planning_retry_count"`
+	PhaseError          string `yaml:"phase_error"`
+	PhaseErrorCode      string `yaml:"phase_error_code"`
+	PhaseLog            string `yaml:"phase_log"`
+	BlockedPhase        string `yaml:"blocked_phase"`
+	PendingReq          bool   `yaml:"pending_req"`
+	CheckpointCommit    string `yaml:"checkpoint_commit"`
+	TargetBranch        string `yaml:"target_branch"`
+	PRURL               string `yaml:"pr_url"`
+	Completed           string `yaml:"completed"`
+	AdrApproved         bool   `yaml:"adr_approved"`
+	AdrProposed         any    `yaml:"adr_proposed"`
+	AdrWritten          any    `yaml:"adr_written"`
+	GrillOwner          string `yaml:"grill_owner"`
+	GrillStartedAt      string `yaml:"grill_started_at"`
+	GrillHeartbeatAt    string `yaml:"grill_heartbeat_at"`
+	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
+	GrillDone           bool   `yaml:"grill_done"`
+	GrillResolution     string `yaml:"grill_resolution"`
+	GrillContext        string `yaml:"grill_context"`
+	GrillContinue       bool   `yaml:"grill_continue"`
+	GrillPrevStatus     string `yaml:"grill_prev_status"`
+	ReqRefineCount      int    `yaml:"req_refine_count"`
+	TaskSchemaVersion   int    `yaml:"task_schema_version"`
 
 	// Shared fields: daemon proposes, users may override.
 	Priority                    string `yaml:"priority"`
@@ -748,7 +750,6 @@ func escapeBodyTags(body string) string {
 	})
 }
 
-
 // ValidateADR checks whether an ADR file has valid frontmatter with required fields.
 // Uses raw YAML parsing to avoid field name conflicts with the task Frontmatter struct.
 func ValidateADR(path string) error {
@@ -773,7 +774,6 @@ func ValidateADR(path string) error {
 	return nil
 }
 
-
 // ValidateDocument auto-detects the document type and applies appropriate validation.
 // Detects TASK, ADR, and REQ documents; falls back to syntax-only check for unknown types.
 // All document types also get Markdown body tag scanning.
@@ -782,7 +782,6 @@ func ValidateDocument(path string) error {
 	if err != nil {
 		return err
 	}
-	
 
 	// Parse raw YAML for type detection.
 	var raw map[string]interface{}
