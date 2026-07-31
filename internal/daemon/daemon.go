@@ -625,8 +625,11 @@ func (r *Runner) autoResumeInProject(projDir, id string) {
 			continue
 		}
 		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved {
-			r.logger.Printf("dependency: auto-resuming blocked upstream TASK-%s (blocked_phase=%s) to unwind blocked_by chain", id, upstream.BlockedPhase)
-			yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true})
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true}); err != nil {
+				r.logger.Printf("dependency: FAILED to auto-resume upstream TASK-%s: %v", id, err)
+				return
+			}
+			r.logger.Printf("dependency: auto-resumed blocked upstream TASK-%s (blocked_phase=%s) to unwind blocked_by chain", id, upstream.BlockedPhase)
 		}
 		return
 	}
