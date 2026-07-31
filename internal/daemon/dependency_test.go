@@ -656,6 +656,232 @@ blocked_by: ["alpha:TASK-020"]
 	}
 }
 
+func TestResolveBlockedDependenciesFilenameMismatchNotResumed(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// File named TASK-010-* but frontmatter id=011 — must NOT satisfy a
+	// blocked_by reference to TASK-010.
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-010-wrong-id.md"), []byte(`---
+id: "011"
+title: Wrong ID
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+---
+# Wrong ID
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-012-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "012"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-010"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if mustParse(t, filepath.Join(tasksDir, "TASK-010-wrong-id.md")).ResumeApproved {
+		t.Fatal("file with mismatched frontmatter id must NOT be auto-resumed")
+	}
+}
+
+func TestResolveBlockedDependenciesDuplicateDirsPreferExact(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	// Both "release-manager" and "001-release-manager" exist.
+	exactTasks := filepath.Join(vault, "Projects", "release-manager", "Tasks")
+	prefixedTasks := filepath.Join(vault, "Projects", "001-release-manager", "Tasks")
+	curTasks := filepath.Join(vault, "Projects", "002-current", "Tasks")
+	for _, d := range []string{exactTasks, prefixedTasks, curTasks} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Only the exact dir has the upstream blocker.
+	if err := os.WriteFile(filepath.Join(exactTasks, "TASK-100-upstream.md"), []byte(`---
+id: "100"
+title: Exact Upstream
+project: release-manager
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+---
+# Exact Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(curTasks, "TASK-101-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "101"
+title: Downstream
+project: current
+status: blocked
+blocked_by: ["release-manager:TASK-100"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if !mustParse(t, filepath.Join(exactTasks, "TASK-100-upstream.md")).ResumeApproved {
+		t.Fatal("exact-name dir must be preferred over numeric-prefix dir")
+	}
+}
+
+func TestResolveBlockedDependenciesFrontmatterProjectFallback(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	// Directory 001-storage-v2, but task frontmatter project=alpha.
+	otherTasks := filepath.Join(vault, "Projects", "001-storage-v2", "Tasks")
+	curTasks := filepath.Join(vault, "Projects", "002-current", "Tasks")
+	if err := os.MkdirAll(otherTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(curTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(otherTasks, "TASK-090-upstream.md"), []byte(`---
+id: "090"
+title: Upstream
+project: alpha
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(curTasks, "TASK-091-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "091"
+title: Downstream
+project: current
+status: blocked
+blocked_by: ["alpha:TASK-090"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	// Directory name storage-v2 doesn't match key alpha, but frontmatter does.
+	if !mustParse(t, filepath.Join(otherTasks, "TASK-090-upstream.md")).ResumeApproved {
+		t.Fatal("upstream in dir 001-storage-v2 with project=alpha should be auto-resumed via frontmatter fallback")
+	}
+}
+
+func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir = writeVaultMap(t, dir, map[string]string{"test": repo})
+
+	// Upstream blocked on phase failure; downstream blocked_by it.
+	upstream := filepath.Join(tasksDir, "TASK-080-upstream.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "080"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+req_doc: Projects/001-test/Requirements/REQ-080.md
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-081-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "081"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-080"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner.cfg.ObsidianVault = vault
+	runner.cfg.SkillInstallDir = skillDir
+
+	// resolveBlockedDependencies auto-resumes upstream; scanAndProcess restores
+	// it to implementing and dispatches OMP (runs async: barrier OMP blocks until
+	// release, so scanAndProcess won't return until then).
+	runner.resolveBlockedDependencies()
+	done := make(chan error, 1)
+	go func() { done <- runner.scanAndProcess() }()
+
+	waitForStartCount(t, startDir, 1)
+	data, err := os.ReadFile(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "implementing" {
+		t.Fatalf("upstream status = %q, want implementing", fm.Status)
+	}
+
+	releaseBarrier(t, releaseFile)
+}
+
 func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 	t.Helper()
 	data, err := os.ReadFile(path)
