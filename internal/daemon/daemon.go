@@ -809,7 +809,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		switch phase {
 		case "priority":
 			thinking = "off"
-		case "round2", "planning":
+		case "round2":
+			thinking = "max"
+		case "planning":
 			thinking = "high"
 		default:
 			thinking = "low"
