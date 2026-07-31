@@ -812,6 +812,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				reqPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
 				if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
 					skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入）\n项目: %s\n\n%s\n</project_context>", skillPrompt, t.Project, ctx)
+					args[4] = skillPrompt
 					r.logger.Printf("task %s: injected project context (%d bytes)", t.ID, len(ctx))
 				} else {
 					r.logger.Printf("task %s: no project context available", t.ID)
