@@ -805,7 +805,17 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			continue
 		}
 
-		args := []string{"--model", model, "--auto-approve", "-p", skillPrompt}
+		var thinking string
+		switch phase {
+		case "priority":
+			thinking = "off"
+		case "round2", "planning":
+			thinking = "high"
+		default:
+			thinking = "low"
+		}
+
+		args := []string{"--model", model, "--auto-approve", "-p", skillPrompt, "--thinking", thinking}
 
 		if needsContextInjection(t.Status) {
 			if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, t.Project); projDir != "" {
