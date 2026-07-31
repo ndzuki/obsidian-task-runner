@@ -811,7 +811,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, t.Project); projDir != "" {
 				reqPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
 				if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
-					skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入）\n项目: %s\n\n%s\n</project_context>", skillPrompt, t.Project, ctx)
+					skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入，配合 skill://knowledge-base 交叉引用 References）\n项目: %s\n\n%s\n</project_context>", skillPrompt, t.Project, ctx)
 					args[4] = skillPrompt
 					r.logger.Printf("task %s: injected project context (%d bytes)", t.ID, len(ctx))
 				} else {
