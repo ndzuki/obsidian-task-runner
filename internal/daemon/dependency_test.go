@@ -805,6 +805,144 @@ assignee: default
 	}
 }
 
+func TestResolveBlockedDependenciesAutoResumeBudgetExhausted(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upstream already auto-resumed twice — budget exhausted.
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-110-upstream.md"), []byte(`---
+id: "110"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+auto_resume_count: 2
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-111-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "111"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-110"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if mustParse(t, filepath.Join(tasksDir, "TASK-110-upstream.md")).ResumeApproved {
+		t.Fatal("upstream beyond auto-resume budget must NOT be auto-resumed")
+	}
+}
+
+func TestResolveBlockedDependenciesAutoResumeIncrementsBudget(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-120-upstream.md"), []byte(`---
+id: "120"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+auto_resume_count: 0
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-121-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "121"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-120"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	fm := mustParse(t, filepath.Join(tasksDir, "TASK-120-upstream.md"))
+	if !fm.ResumeApproved {
+		t.Fatal("upstream within budget should be auto-resumed")
+	}
+	if !fm.AutoResumePending {
+		t.Fatal("auto-resume must set auto_resume_pending marker")
+	}
+	if fm.AutoResumeCount != 0 {
+		t.Fatalf("auto_resume_count = %d, want 0 — count only increments on failure", fm.AutoResumeCount)
+	}
+}
+
+func TestHandlePhaseFailureIncrementsBudget(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tasksDir, "TASK-130-fail.md")
+	if err := os.WriteFile(path, []byte(`---
+id: "130"
+title: Failing
+project: test
+status: implementing
+blocked_phase: ""
+auto_resume_count: 1
+auto_resume_pending: true
+assignee: default
+---
+# Failing
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.handlePhaseFailure(path, "130", "Failing", "round2", ErrModelFailed, "boom", "")
+
+	fm := mustParse(t, path)
+	if fm.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", fm.Status)
+	}
+	if fm.AutoResumeCount != 2 {
+		t.Fatalf("auto_resume_count = %d, want 2 after failure", fm.AutoResumeCount)
+	}
+	if fm.AutoResumePending {
+		t.Fatal("auto_resume_pending must be cleared after failure")
+	}
+}
+
 func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)

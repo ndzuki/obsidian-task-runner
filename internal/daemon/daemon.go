@@ -532,6 +532,10 @@ func (r *Runner) taskLogDir() string {
 // resolveBlockedDependencies scans blocked tasks and auto-resumes phase-failure
 // blocked upstream tasks referenced by blocked_by, unwinding dependency chains
 // so downstream tasks can proceed without manual intervention.
+// maxAutoResumeAttempts bounds how many times the dependency resolver may
+// auto-approve a persistently failing upstream before requiring manual resume.
+const maxAutoResumeAttempts = 2
+
 func (r *Runner) resolveBlockedDependencies() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -593,14 +597,14 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 	// Unqualified references resolve within the downstream project only.
 	downstreamAbs := filepath.Join(projectsDir, downstreamProjDir)
 	if projName == "" {
-		r.autoResumeInProject(downstreamAbs, downstreamAbs, downstreamTaskID, id)
+		r.autoResumeInProject(downstreamAbs, downstreamAbs, downstreamTaskID, "", id)
 		return
 	}
 	// Exact dir-name pass, then suffix pass, then frontmatter-project pass are
 	// handled by findProjectDirByKey — reuse it to avoid single-pass ambiguity
 	// when both "release-manager" and "001-release-manager" directories exist.
 	if resolved := r.findProjectDirByKey(projName); resolved != "" {
-		r.autoResumeInProject(resolved, downstreamAbs, downstreamTaskID, id)
+		r.autoResumeInProject(resolved, downstreamAbs, downstreamTaskID, projName, id)
 	}
 }
 
@@ -608,7 +612,7 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 // and approves its resume if blocked on a phase failure. It skips the upstream
 // when resuming it would create a dependency cycle (upstream transitively
 // blocked_by the downstream task).
-func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskID, id string) {
+func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskID, expectProject, id string) {
 	tasksDir := filepath.Join(projDir, "Tasks")
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
@@ -629,12 +633,23 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 			// must match the blocked_by reference.
 			continue
 		}
+		// For qualified refs, the frontmatter project must match the reference key.
+		if expectProject != "" && upstream.Project != expectProject {
+			continue
+		}
 		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved && isAutoResumableError(upstream.PhaseErrorCode) {
+			if upstream.AutoResumeCount >= maxAutoResumeAttempts {
+				r.logger.Printf("dependency: TASK-%s exceeded %d auto-resume attempts, manual resume required", id, maxAutoResumeAttempts)
+				notify.SendTaskAction(id, upstream.Title, "🧩", "自动恢复达上限",
+					fmt.Sprintf("上游任务已自动重试 %d 次仍失败（%s），请修复后手动设置 resume_approved=true", maxAutoResumeAttempts, upstream.PhaseError),
+					r.cfg.Notifications.Desktop)
+				return
+			}
 			if r.dependencyCycle(projDir, downstreamProjDir, downstreamTaskID, upstream, map[string]bool{}) {
 				r.logger.Printf("dependency: skip auto-resume TASK-%s — would create dependency cycle", id)
 				return
 			}
-			if err := yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true}); err != nil {
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true, "auto_resume_pending": true}); err != nil {
 				r.logger.Printf("dependency: FAILED to auto-resume upstream TASK-%s: %v", id, err)
 				return
 			}
@@ -706,16 +721,18 @@ func (r *Runner) findProjectDirByKey(key string) string {
 			return filepath.Join(projectsDir, key)
 		}
 	}
-	// Then numeric-prefix suffix match: "001-alpha" dir matches key "alpha".
+	// Then numeric-prefix suffix match: only dirs whose prefix is ALL digits
+	// ("001-alpha" → "alpha") qualify; "release-manager" must never map to
+	// "manager".
 	for _, projectEntry := range projects {
 		if !projectEntry.IsDir() {
 			continue
 		}
 		name := projectEntry.Name()
-		suffix := name
-		if idx := strings.IndexByte(name, '-'); idx > 0 {
-			suffix = name[idx+1:]
+		if project.ExtractProjectID(name) == "" || len(name) <= len(project.ExtractProjectID(name))+1 {
+			continue
 		}
+		suffix := name[len(project.ExtractProjectID(name))+1:]
 		if suffix == key {
 			return filepath.Join(projectsDir, name)
 		}
@@ -963,13 +980,20 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
 					if fm.BlockedPhase != "" && fm.ResumeApproved {
 						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
-						if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-							"status":          fm.BlockedPhase,
-							"blocked_phase":   "",
-							"phase_error":     "",
-							"phase_log":       "",
-							"resume_approved": false,
-						}); err != nil {
+						updates := map[string]interface{}{
+							"status":              fm.BlockedPhase,
+							"blocked_phase":       "",
+							"phase_error":         "",
+							"phase_log":           "",
+							"resume_approved":     false,
+							"auto_resume_pending": false,
+						}
+						// Manual resume (no pending marker) resets the failure budget;
+						// resolver approvals keep the count so retries stay bounded.
+						if !fm.AutoResumePending {
+							updates["auto_resume_count"] = 0
+						}
+						if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 							r.logger.Printf("task %s: restore blocked phase: %v", t.ID, err)
 							continue
 						}
@@ -1295,13 +1319,23 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, c
 		return
 	}
 	if policy == recoveryFallbackThenBlock {
+		// Each failed round-2 attempt after an auto-resume increments the budget;
+		// only resume failures count (see auto_resume_pending in the resolver).
+		attempts := 0
+		if data, err := os.ReadFile(taskPath); err == nil {
+			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
+				attempts = fm.AutoResumeCount + 1
+			}
+		}
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-			"status":           "blocked",
-			"blocked_phase":    "implementing",
-			"phase_error_code": string(code),
-			"phase_error":      reason,
-			"phase_log":        logPath,
-			"resume_approved":  false,
+			"status":              "blocked",
+			"blocked_phase":       "implementing",
+			"phase_error_code":    string(code),
+			"phase_error":         reason,
+			"phase_log":           logPath,
+			"resume_approved":     false,
+			"auto_resume_count":   attempts,
+			"auto_resume_pending": false,
 		}); err != nil {
 			r.logger.Printf("task %s: record Round 2 failure: %v", taskID, err)
 		}
