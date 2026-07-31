@@ -108,6 +108,9 @@ priority: P2
 	t.Logf("grill_context: %d bytes with ADR+CONTEXT sections", len(gc))
 
 	// Test 3: prepareBatch handles needs-grilling inline
+	t.Setenv("PATH", t.TempDir()) // prevent tests from launching a real Kitty grilling tab
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("USER", "otg-test")
 	skillDir := filepath.Join(vault, "skills")
 	os.MkdirAll(skillDir, 0755)
 	runner := newTestRunner(skillDir, "/bin/true", filepath.Join(vault, "logs"), 1)

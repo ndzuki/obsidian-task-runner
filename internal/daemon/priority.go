@@ -13,17 +13,18 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-func (r *Runner) processPriorityAssessments(ctx context.Context, slots int) int {
-	if slots < 1 {
-		return 0
-	}
+// priorityAssessmentBatchLimit bounds lightweight assessment work per scan
+// independently from the implementation concurrency limit.
+const priorityAssessmentBatchLimit = 2
+
+func (r *Runner) processPriorityAssessments(ctx context.Context) int {
 	pending, err := task.FindPriorityTasks(r.cfg.ObsidianVault, time.Now())
 	if err != nil {
 		r.logger.Printf("priority scan: %v", err)
 		return 0
 	}
-	if len(pending) > slots {
-		pending = pending[:slots]
+	if len(pending) > priorityAssessmentBatchLimit {
+		pending = pending[:priorityAssessmentBatchLimit]
 	}
 
 	var processed int
@@ -95,20 +96,20 @@ func (r *Runner) recordPriorityFailure(candidate task.PriorityTask, attempts int
 
 func priorityUpdates(result priority.Result, status string) map[string]interface{} {
 	return map[string]interface{}{
-		"priority":                    result.Priority,
-		"priority_assessment_status":  status,
-		"priority_assessed_at":        time.Now().Format(time.RFC3339),
-		"priority_assessed_value":     result.Priority,
-		"priority_impact":            result.Impact,
-		"priority_urgency":           result.Urgency,
-		"priority_workaround":        result.Workaround,
-		"priority_score":             result.Score,
-		"priority_confidence":        result.Confidence,
-		"priority_reason":            result.Reason,
-		"priority_recommendation":    result.Recommendation,
+		"priority":                       result.Priority,
+		"priority_assessment_status":     status,
+		"priority_assessed_at":           time.Now().Format(time.RFC3339),
+		"priority_assessed_value":        result.Priority,
+		"priority_impact":                result.Impact,
+		"priority_urgency":               result.Urgency,
+		"priority_workaround":            result.Workaround,
+		"priority_score":                 result.Score,
+		"priority_confidence":            result.Confidence,
+		"priority_reason":                result.Reason,
+		"priority_recommendation":        result.Recommendation,
 		"priority_assessment_started_at": "",
-		"phase_error_code":           "",
-		"phase_error":                "",
+		"phase_error_code":               "",
+		"phase_error":                    "",
 	}
 }
 

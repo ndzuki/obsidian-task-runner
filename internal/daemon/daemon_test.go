@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -150,12 +151,39 @@ func TestTaskPIDFileUsesTaskPathKey(t *testing.T) {
 	}
 }
 
+func TestProcAliveRejectsZombie(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/pid/stat zombie detection is Linux-specific")
+	}
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	t.Cleanup(func() { _, _ = cmd.Process.Wait() })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(cmd.Process.Pid), "stat"))
+		if err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) > 2 && fields[2] == "Z" {
+				if procAlive(cmd.Process.Pid) {
+					t.Fatal("procAlive returned true for zombie process")
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("child did not enter zombie state")
+}
+
 func TestProcessBatchUsesTaskPathForImplementingPIDRecovery(t *testing.T) {
 	dir := t.TempDir()
 	projectOne := filepath.Join(dir, "project-one")
 	projectTwo := filepath.Join(dir, "project-two")
 	for _, project := range []string{projectOne, projectTwo} {
-		if err := os.MkdirAll(project, 0755); err != nil {
+		if err := os.MkdirAll(project, 0o755); err != nil {
 			t.Fatalf("create project directory: %v", err)
 		}
 	}
@@ -189,6 +217,122 @@ func TestProcessBatchUsesTaskPathForImplementingPIDRecovery(t *testing.T) {
 	if processed := waitForBatch(t, done); processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
+}
+
+func TestSurvivingImplementationsConsumeCapacityAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projects := map[string]string{}
+	var oldPaths []string
+	var oldCommands []*exec.Cmd
+	logDir := filepath.Join(dir, "logs")
+	taskLogDir := filepath.Join(logDir, "tasks")
+	if err := os.MkdirAll(taskLogDir, 0o755); err != nil {
+		t.Fatalf("create task log directory: %v", err)
+	}
+
+	for i := 1; i <= 2; i++ {
+		project := fmt.Sprintf("old-%d", i)
+		repo := filepath.Join(dir, project)
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatalf("create project directory: %v", err)
+		}
+		projects[project] = repo
+		tasksDir := filepath.Join(vault, "Projects", project, "Tasks")
+		if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+			t.Fatalf("create tasks directory: %v", err)
+		}
+		id := fmt.Sprintf("%03d", i)
+		taskPath := filepath.Join(tasksDir, "TASK-"+id+".md")
+		content := fmt.Sprintf("---\nid: %q\nproject: %s\nstatus: implementing\nassignee: default\n---\n# TASK-%s\n", id, project, id)
+		if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write task: %v", err)
+		}
+		oldPaths = append(oldPaths, taskPath)
+
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start surviving process: %v", err)
+		}
+		oldCommands = append(oldCommands, cmd)
+		if err := os.WriteFile(taskPIDFile(taskLogDir, id, taskPath), []byte(fmt.Sprint(cmd.Process.Pid)), 0o644); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, cmd := range oldCommands {
+			if cmd.ProcessState == nil {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}
+		}
+	})
+
+	newProject := "new"
+	newRepo := filepath.Join(dir, newProject)
+	if err := os.MkdirAll(newRepo, 0o755); err != nil {
+		t.Fatalf("create new project directory: %v", err)
+	}
+	projects[newProject] = newRepo
+	newTaskPath := writeTaskFile(t, filepath.Join(dir, "new-task"), "TASK-003.md", "implementing")
+
+	skillDir := writeVaultMap(t, dir, projects)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+	runner := newTestRunner(skillDir, omp, logDir, 2)
+	runner.cfg.ObsidianVault = vault
+
+	adopted := runner.adoptSurvivingImplementations()
+	if len(adopted) != 2 {
+		t.Fatalf("adopted implementations = %d, want 2", len(adopted))
+	}
+	for _, taskPath := range oldPaths {
+		if _, ok := adopted[taskRunKey(taskPath)]; !ok {
+			t.Fatalf("surviving task %s was not adopted", taskPath)
+		}
+	}
+
+	ready, err := runner.findReadyTasks()
+	if err != nil {
+		t.Fatalf("find ready tasks: %v", err)
+	}
+	if len(ready) != 0 {
+		t.Fatalf("ready tasks after adoption = %d, want 0", len(ready))
+	}
+	ready, err = runner.findReadyTasks()
+	if err != nil {
+		t.Fatalf("find ready tasks again: %v", err)
+	}
+	if len(ready) != 0 {
+		t.Fatalf("ready tasks on adaptive rescan = %d, want 0", len(ready))
+	}
+
+	newTask := task.ReadyTask{
+		ID: "003", Title: "New implementation", Project: newProject,
+		FilePath: newTaskPath, Status: "implementing", NewProject: true, Assignee: "default",
+	}
+	_ = runBatch(runner, []task.ReadyTask{newTask})
+	assertStartCount(t, startDir, 0)
+
+	if err := oldCommands[0].Process.Kill(); err != nil {
+		t.Fatalf("stop surviving process: %v", err)
+	}
+	_, _ = oldCommands[0].Process.Wait()
+	waitForFileRemoval(t, taskPIDFile(taskLogDir, "001", oldPaths[0]))
+
+	done := runBatch(runner, []task.ReadyTask{newTask})
+	waitForStartCount(t, startDir, 1)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed after capacity release = %d, want 1", processed)
+	}
+
+	if err := oldCommands[1].Process.Kill(); err != nil {
+		t.Fatalf("stop second surviving process: %v", err)
+	}
+	_, _ = oldCommands[1].Process.Wait()
+	waitForFileRemoval(t, taskPIDFile(taskLogDir, "002", oldPaths[1]))
 }
 
 func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
@@ -229,6 +373,145 @@ func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
 	}
 }
 
+func TestProcessBatchLimitsImplementingTasksAcrossConcurrentBatches(t *testing.T) {
+	dir := t.TempDir()
+	projects := make(map[string]string, 4)
+	for i := 1; i <= 4; i++ {
+		name := fmt.Sprintf("project-%d", i)
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("create project directory: %v", err)
+		}
+		projects[name] = path
+	}
+
+	skillDir := writeVaultMap(t, dir, projects)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+	activeDir := filepath.Join(dir, "active")
+	t.Setenv("ACTIVE_DIR", activeDir)
+
+	tasks := make([]task.ReadyTask, 0, 4)
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("04%d", i)
+		project := fmt.Sprintf("project-%d", i)
+		taskPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-"+id+".md", "implementing")
+		tasks = append(tasks, task.ReadyTask{
+			ID: id, Title: "Implementation " + id, Project: project,
+			FilePath: taskPath, Status: "implementing", NewProject: true, Assignee: "default",
+		})
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	firstDone := runBatch(runner, tasks[:2])
+	secondDone := runBatch(runner, tasks[2:])
+
+	waitForStartCount(t, startDir, 2)
+
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, firstDone) + waitForBatch(t, secondDone); processed != 4 {
+		t.Fatalf("processed = %d, want 4", processed)
+	}
+	assertMaxActive(t, activeDir, 2)
+}
+
+func TestPlanningTaskDoesNotConsumeImplementationSlot(t *testing.T) {
+	dir := t.TempDir()
+	implementationRepo := filepath.Join(dir, "implementation-repo")
+	planningRepo := filepath.Join(dir, "planning-repo")
+	for _, repo := range []string{implementationRepo, planningRepo} {
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatalf("create project directory: %v", err)
+		}
+	}
+
+	skillDir := writeVaultMap(t, dir, map[string]string{
+		"implementation": implementationRepo,
+		"planning":       planningRepo,
+	})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	implementationPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-051.md", "implementing")
+	planningPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-052.md", "planning")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	implementationDone := runBatch(runner, []task.ReadyTask{{
+		ID: "051", Title: "Implementation", Project: "implementation",
+		FilePath: implementationPath, Status: "implementing", NewProject: true, Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+	planningDone := runBatch(runner, []task.ReadyTask{{
+		ID: "052", Title: "Planning", Project: "planning",
+		FilePath: planningPath, Status: "planning", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 2)
+
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, implementationDone) + waitForBatch(t, planningDone); processed != 2 {
+		t.Fatalf("processed = %d, want 2", processed)
+	}
+}
+
+func TestResumedBlockedImplementationUsesImplementationSlot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	firstRepo := filepath.Join(dir, "first-repo")
+	if err := os.MkdirAll(firstRepo, 0o755); err != nil {
+		t.Fatalf("create first project directory: %v", err)
+	}
+	resumedRepo := createRepository(t, filepath.Join(dir, "resumed-root"))
+
+	skillDir := writeVaultMap(t, dir, map[string]string{
+		"first":   firstRepo,
+		"resumed": resumedRepo,
+	})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	firstPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-061.md", "implementing")
+	resumedPath := filepath.Join(dir, "tasks", "TASK-062.md")
+	if err := os.WriteFile(resumedPath, []byte(`---
+id: "062"
+title: Resumed implementation
+project: resumed
+status: blocked
+blocked_phase: implementing
+resume_approved: true
+assignee: default
+---
+# TASK-062
+`), 0o644); err != nil {
+		t.Fatalf("write resumed task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	firstDone := runBatch(runner, []task.ReadyTask{{
+		ID: "061", Title: "First", Project: "first",
+		FilePath: firstPath, Status: "implementing", NewProject: true, Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+	resumedDone := runBatch(runner, []task.ReadyTask{{
+		ID: "062", Title: "Resumed", Project: "resumed",
+		FilePath: resumedPath, Status: "blocked", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, firstDone) + waitForBatch(t, resumedDone); processed != 2 {
+		t.Fatalf("processed = %d, want 2", processed)
+	}
+
+	if runner.implementationGate.localActive() != 0 || runner.implementationGate.active != 0 {
+		t.Errorf("post-batch gate: local=%d active=%d, want 0/0",
+			runner.implementationGate.localActive(),
+			runner.implementationGate.active)
+	}
+
+}
+
 func TestRepositoryWriteWaiterDoesNotConsumeUnlockedWork(t *testing.T) {
 	runner := New(&config.Config{})
 	repoOne := filepath.Join(t.TempDir(), "repo-one")
@@ -259,7 +542,7 @@ func TestProcessBatchRunsSameRepositoryPlanningTasksConcurrently(t *testing.T) {
 
 	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-031.md", "planning")
 	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-032.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "031", Title: "One", Project: "shared", FilePath: taskOne, Status: "planning", Assignee: "default"},
 		{ID: "032", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "planning", Assignee: "default"},
@@ -289,12 +572,12 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
-	taskOne := writeTaskFile(t, dir, "TASK-021.md", "planning")
-	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "planning")
+	taskOne := writeTaskFile(t, dir, "TASK-021.md", "implementing")
+	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "implementing")
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
-		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
-		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "planning", Assignee: "default"},
+		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "implementing", NewProject: true, Assignee: "default"},
+		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "implementing", NewProject: true, Assignee: "default"},
 	})
 	waitForStartCount(t, startDir, 1)
 	assertStartCount(t, startDir, 1)
@@ -415,15 +698,45 @@ func writeBarrierOMP(t *testing.T, dir string) (string, string, string) {
 	releaseFile := filepath.Join(dir, "release")
 	omp := filepath.Join(dir, "fake-omp")
 	t.Cleanup(func() {
-		if err := os.WriteFile(releaseFile, nil, 0644); err != nil {
+		if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
 			t.Errorf("release barrier during cleanup: %v", err)
 		}
 	})
-	script := "#!/bin/sh\nmkdir -p \"$START_DIR\"\nprintf '%s\\n' \"$PWD\" > \"$START_DIR/$$\"\nif [ -n \"$ARGS_DIR\" ]; then mkdir -p \"$ARGS_DIR\"; printf '%s\\n' \"$*\" > \"$ARGS_DIR/$$\"; fi\nfor i in $(seq 3000); do [ -f \"$RELEASE_FILE\" ] && exit 0; sleep 0.01; done; exit 1  # 30s safety timeout\n"
-	if err := os.WriteFile(omp, []byte(script), 0755); err != nil {
+
+	script := `#!/bin/sh
+mkdir -p "$START_DIR"
+printf '%s\n' "$PWD" > "$START_DIR/$$"
+if [ -n "$ARGS_DIR" ]; then mkdir -p "$ARGS_DIR"; printf '%s\n' "$*" > "$ARGS_DIR/$$"; fi
+if [ -n "$ACTIVE_DIR" ]; then
+  mkdir -p "$ACTIVE_DIR"
+  (
+    flock 9
+    touch "$ACTIVE_DIR/active-$$"
+    active=$(find "$ACTIVE_DIR" -maxdepth 1 -type f -name 'active-*' | wc -l)
+    maximum=$(cat "$ACTIVE_DIR/max" 2>/dev/null || printf '0')
+    if [ "$active" -gt "$maximum" ]; then printf '%s\n' "$active" > "$ACTIVE_DIR/max"; fi
+  ) 9>"$ACTIVE_DIR/lock"
+  cleanup() { (flock 9; rm -f "$ACTIVE_DIR/active-$$") 9>"$ACTIVE_DIR/lock"; }
+  trap cleanup EXIT
+fi
+for i in $(seq 3000); do [ -f "$RELEASE_FILE" ] && exit 0; sleep 0.01; done
+exit 1
+`
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake omp: %v", err)
 	}
 	return omp, startDir, releaseFile
+}
+func waitForFileRemoval(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file was not removed: %s", path)
 }
 
 func writeTaskFile(t *testing.T, dir, name, status string) string {
@@ -488,6 +801,21 @@ func countStartFiles(t *testing.T, dir string) int {
 		t.Fatalf("read start directory: %v", err)
 	}
 	return len(entries)
+}
+
+func assertMaxActive(t *testing.T, dir string, want int) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "max"))
+	if err != nil {
+		t.Fatalf("read max active: %v", err)
+	}
+	var got int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &got); err != nil {
+		t.Fatalf("parse max active: %v", err)
+	}
+	if got != want {
+		t.Fatalf("max active = %d, want %d", got, want)
+	}
 }
 
 func releaseBarrier(t *testing.T, path string) {
