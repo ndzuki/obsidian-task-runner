@@ -534,6 +534,128 @@ assignee: default
 	}
 }
 
+func TestResolveBlockedDependenciesUnqualifiedRefInCandidateProject(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	alphaTasks := filepath.Join(vault, "Projects", "001-alpha", "Tasks")
+	currentTasks := filepath.Join(vault, "Projects", "002-current", "Tasks")
+	if err := os.MkdirAll(alphaTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(currentTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// current TASK-010 -> alpha:TASK-020; alpha TASK-020 blocked_by TASK-010
+	// (unqualified, resolves to ALPHA-local TASK-010 which is done). No cycle.
+	if err := os.WriteFile(filepath.Join(alphaTasks, "TASK-010-alpha-local.md"), []byte(`---
+id: "010"
+title: Alpha local done
+project: alpha
+status: done
+assignee: default
+---
+# Alpha local
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaTasks, "TASK-020-upstream.md"), []byte(`---
+id: "020"
+title: Alpha upstream
+project: alpha
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+blocked_by: ["TASK-010"]
+---
+# Alpha upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(currentTasks, "TASK-010-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "010"
+title: Current downstream
+project: current
+status: blocked
+blocked_by: ["alpha:TASK-020"]
+assignee: default
+---
+# Current downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	// Alpha TASK-020's unqualified TASK-010 is alpha-local (done), not the
+	// current project's TASK-010 — so NO cycle; alpha TASK-020 must be resumed.
+	if !mustParse(t, filepath.Join(alphaTasks, "TASK-020-upstream.md")).ResumeApproved {
+		t.Fatal("alpha TASK-020 should be auto-resumed (no cycle: its TASK-010 is alpha-local done)")
+	}
+}
+
+func TestResolveBlockedDependenciesExplicitCrossProjectCycleDetected(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	alphaTasks := filepath.Join(vault, "Projects", "001-alpha", "Tasks")
+	currentTasks := filepath.Join(vault, "Projects", "002-current", "Tasks")
+	if err := os.MkdirAll(alphaTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(currentTasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// current:TASK-010 <-> alpha:TASK-020 explicit cross-project cycle.
+	if err := os.WriteFile(filepath.Join(alphaTasks, "TASK-020-upstream.md"), []byte(`---
+id: "020"
+title: Alpha upstream
+project: alpha
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+blocked_by: ["current:TASK-010"]
+---
+# Alpha upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(currentTasks, "TASK-010-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "010"
+title: Current downstream
+project: current
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+assignee: default
+blocked_by: ["alpha:TASK-020"]
+---
+# Current downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if mustParse(t, filepath.Join(alphaTasks, "TASK-020-upstream.md")).ResumeApproved {
+		t.Fatal("alpha TASK-020 in explicit cross-project cycle must NOT be auto-resumed")
+	}
+	if mustParse(t, downstream).ResumeApproved {
+		t.Fatal("current TASK-010 in explicit cross-project cycle must NOT be auto-resumed")
+	}
+}
+
 func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 	t.Helper()
 	data, err := os.ReadFile(path)
