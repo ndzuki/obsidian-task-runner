@@ -12,25 +12,25 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ConfigVersion       int         `json:"config_version"`
-	ObsidianVault       string      `json:"obsidian_vault"`
-	NewProjectRoot      string      `json:"new_project_root"`
-	Projects            []Project   `json:"projects"`
-	Notifications       NotifConfig `json:"notifications"`
-	PollIntervalMin     int         `json:"poll_interval_minutes"`
-	MaxConcurrentTasks  int         `json:"max_concurrent_tasks"`
-	PhaseTimeoutMinutes map[string]int `json:"phase_timeouts_minutes"`
-	ShutdownGraceSeconds int        `json:"shutdown_grace_seconds"`
-	OffPeakTimezone      string     `json:"off_peak_timezone"`
-	OffPeakWindows       []TimeWindow `json:"off_peak_windows"`
-	StarvationWarningDays map[string]int `json:"starvation_warning_days"`
-	Models map[string]string `json:"models"`
-	OMPCmd string `json:"omp_cmd"`
-	LogDir string `json:"log_dir,omitempty"`
+	ConfigVersion         int               `json:"config_version"`
+	ObsidianVault         string            `json:"obsidian_vault"`
+	NewProjectRoot        string            `json:"new_project_root"`
+	Projects              []Project         `json:"projects"`
+	Notifications         NotifConfig       `json:"notifications"`
+	PollIntervalMin       int               `json:"poll_interval_minutes"`
+	MaxConcurrentTasks    int               `json:"max_concurrent_tasks"`
+	PhaseTimeoutMinutes   map[string]int    `json:"phase_timeouts_minutes"`
+	ShutdownGraceSeconds  int               `json:"shutdown_grace_seconds"`
+	OffPeakTimezone       string            `json:"off_peak_timezone"`
+	OffPeakWindows        []TimeWindow      `json:"off_peak_windows"`
+	StarvationWarningDays map[string]int    `json:"starvation_warning_days"`
+	Models                map[string]string `json:"models"`
+	OMPCmd                string            `json:"omp_cmd"`
+	LogDir                string            `json:"log_dir,omitempty"`
 
 	// Registries
 	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
-	TemplateRegistry map[string]interface{}         `json:"template_registry,omitempty"`
+	TemplateRegistry map[string]interface{}        `json:"template_registry,omitempty"`
 
 	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
@@ -83,35 +83,34 @@ func DefaultModels() map[string]string {
 
 // ModelReference returns a human-readable model reference table.
 func ModelReference() string {
-	return `| assignee | 模型标识 |
-|----------|---------|
-| deepseek | deepseek/deepseek-v4-pro:xhigh |
-| gpt      | gateway/gpt-5.6-sol:xhigh |
-| default  | deepseek/deepseek-v4-flash |
-| gemini   | google/gemini-2.5-pro |
-| claude   | anthropic/claude-sonnet-4-20250514 |
-| minimax  | minimax/minimax-m1 |
-
-通过 vault-map.json 的 models 字段扩展或覆盖。`
+	return `| assignee | 模型标识 | 用途 |
+|----------|---------|------|
+| default  | deepseek/deepseek-v4-flash | refining、planning、round2 日常任务（0731 更新，Agent 能力大幅增强） |
+| deepseek | deepseek/deepseek-v4-pro:xhigh | 复杂 AC fallback（即将发布正式版） |
+| gpt      | gateway/gpt-5.6-sol:xhigh | 高推理任务，default 不可用时 fallback |
+| gemini   | google/gemini-2.5-pro | 可选 |
+| claude   | anthropic/claude-sonnet-4-20250514 | 可选 |
+| minimax  | minimax/minimax-m1 | 可选 |
+`
 }
 
 // Defaults returns a Config with default values.
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		ConfigVersion:        1,
-		NewProjectRoot:       filepath.Join(home, "src"),
-		PollIntervalMin:      30,
-		MaxConcurrentTasks:   2,
-		PhaseTimeoutMinutes: map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
-		ShutdownGraceSeconds: 30,
-		OffPeakTimezone:      "Asia/Shanghai",
-		OffPeakWindows: []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
+		ConfigVersion:         1,
+		NewProjectRoot:        filepath.Join(home, "src"),
+		PollIntervalMin:       30,
+		MaxConcurrentTasks:    2,
+		PhaseTimeoutMinutes:   map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
+		ShutdownGraceSeconds:  30,
+		OffPeakTimezone:       "Asia/Shanghai",
+		OffPeakWindows:        []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
 		StarvationWarningDays: map[string]int{"P3": 14, "P4": 30},
-		SkillInstallDir:      filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
-		Models:               DefaultModels(),
-		OMPCmd:               "omp",
-		Notifications:        NotifConfig{Desktop: true},
+		SkillInstallDir:       filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		Models:                DefaultModels(),
+		OMPCmd:                "omp",
+		Notifications:         NotifConfig{Desktop: true},
 	}
 }
 
@@ -245,14 +244,18 @@ func (c *Config) Model(assignee string) string {
 }
 
 // FallbackModel returns the fallback model for an assignee.
-// If the assignee is "gpt", falls back to "deepseek".
+// "gpt" → "deepseek" (v4-pro); "default"/"deepseek" → "deepseek-v4-pro".
 // Returns empty string if no fallback is configured.
 func (c *Config) FallbackModel(assignee string) string {
-	if assignee == "gpt" {
+	preferPro := func() string {
 		if m, ok := c.Models["deepseek"]; ok && m != "" {
 			return m
 		}
 		return "deepseek/deepseek-v4-pro:xhigh"
+	}
+	switch assignee {
+	case "gpt", "default", "deepseek":
+		return preferPro()
 	}
 	return ""
 }
