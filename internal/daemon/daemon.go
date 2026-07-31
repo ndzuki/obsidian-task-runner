@@ -1319,11 +1319,12 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, c
 		return
 	}
 	if policy == recoveryFallbackThenBlock {
-		// Each failed round-2 attempt after an auto-resume increments the budget;
-		// only resume failures count (see auto_resume_pending in the resolver).
+		// Only a failure that follows an auto-resume (pending marker set) counts
+		// against the budget; an initial failure or one after a manual resume
+		// leaves the count untouched so auto-resume gets its full 2 attempts.
 		attempts := 0
 		if data, err := os.ReadFile(taskPath); err == nil {
-			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
+			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.AutoResumePending {
 				attempts = fm.AutoResumeCount + 1
 			}
 		}
