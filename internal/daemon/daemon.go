@@ -591,8 +591,9 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 		id = strings.TrimPrefix(ref[idx+1:], "TASK-")
 	}
 	// Unqualified references resolve within the downstream project only.
+	downstreamAbs := filepath.Join(projectsDir, downstreamProjDir)
 	if projName == "" {
-		r.autoResumeInProject(filepath.Join(projectsDir, downstreamProjDir), downstreamProjDir, downstreamTaskID, id)
+		r.autoResumeInProject(downstreamAbs, downstreamAbs, downstreamTaskID, id)
 		return
 	}
 	projects, err := os.ReadDir(projectsDir)
@@ -614,7 +615,7 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 		if name != projName && suffix != projName {
 			continue
 		}
-		r.autoResumeInProject(filepath.Join(projectsDir, name), downstreamProjDir, downstreamTaskID, id)
+		r.autoResumeInProject(filepath.Join(projectsDir, name), downstreamAbs, downstreamTaskID, id)
 		return
 	}
 }
@@ -643,7 +644,7 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 			continue
 		}
 		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved && isAutoResumableError(upstream.PhaseErrorCode) {
-			if r.dependencyCycle(downstreamProjDir, downstreamTaskID, upstream, map[string]bool{}) {
+			if r.dependencyCycle(projDir, downstreamProjDir, downstreamTaskID, upstream, map[string]bool{}) {
 				r.logger.Printf("dependency: skip auto-resume TASK-%s — would create dependency cycle", id)
 				return
 			}
@@ -660,9 +661,12 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 // dependencyCycle reports whether the candidate upstream transitively depends
 // on the downstream project/task being resolved, which would make auto-resume
 // unsafe (A blocked_by B and B blocked_by A).
-func (r *Runner) dependencyCycle(downstreamProjDir, downstreamTaskID string, candidate *yamlfrontmatter.Frontmatter, visited map[string]bool) bool {
+// candidateProjDir is the absolute project directory of the candidate; all
+// unqualified blocked_by refs resolve relative to it. Project identity is
+// compared by absolute directory path only.
+func (r *Runner) dependencyCycle(candidateProjDir, downstreamProjDir, downstreamTaskID string, candidate *yamlfrontmatter.Frontmatter, visited map[string]bool) bool {
 	for _, ref := range candidate.BlockedBy {
-		projDir := downstreamProjDir
+		projDir := candidateProjDir
 		id := strings.TrimPrefix(ref, "TASK-")
 		if idx := strings.Index(ref, ":"); idx > 0 {
 			projName := ref[:idx]
@@ -678,7 +682,7 @@ func (r *Runner) dependencyCycle(downstreamProjDir, downstreamTaskID string, can
 			continue
 		}
 		visited[key] = true
-		// Downstream task referenced as blocker → cycle.
+		// Downstream task referenced as blocker → cycle. Both dirs are absolute.
 		if projDir == downstreamProjDir && id == downstreamTaskID {
 			return true
 		}
@@ -694,7 +698,7 @@ func (r *Runner) dependencyCycle(downstreamProjDir, downstreamTaskID string, can
 		if err != nil || fm == nil {
 			continue
 		}
-		if r.dependencyCycle(downstreamProjDir, downstreamTaskID, fm, visited) {
+		if r.dependencyCycle(projDir, downstreamProjDir, downstreamTaskID, fm, visited) {
 			return true
 		}
 	}
