@@ -30,6 +30,8 @@ func runEnsureContextTerm(cmd *cobra.Command, args []string) error {
 	if err := task.EnsureContextTerm(projectDir, term, definition); err != nil {
 		return fmt.Errorf("ensure context term: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "CONTEXT.md: term %q ensured\n", term)
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "CONTEXT.md: term %q ensured\n", term); err != nil {
+		return err
+	}
 	return nil
 }

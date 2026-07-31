@@ -31,9 +31,6 @@ type contextADR struct {
 // contextCache avoids re-reading CONTEXT.md for multiple tasks in the same project.
 var contextCache sync.Map // projectVaultDir → string
 
-// maxContextTokens is the soft ceiling for the injected context bundle.
-const maxContextTokens = 300
-
 // BuildProjectContext reads CONTEXT.md and relevant ADR files, extracts the
 // most relevant domain terms and architecture decisions for the given REQ,
 // and returns a formatted string suitable for injecting into the OMP prompt.
@@ -82,9 +79,9 @@ func BuildProjectContext(projectVaultDir, reqPath string) string {
 		var sb strings.Builder
 		sb.WriteString("## Domain Terms\n")
 		for _, t := range selectedTerms {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s", t.Name, truncateDef(t.Def, 80)))
+			fmt.Fprintf(&sb, "- **%s**: %s", t.Name, truncateDef(t.Def, 80))
 			if t.Avoids != "" {
-				sb.WriteString(fmt.Sprintf(" _Avoid_: %s", t.Avoids))
+				fmt.Fprintf(&sb, " _Avoid_: %s", t.Avoids)
 			}
 			sb.WriteString("\n")
 		}
@@ -97,7 +94,7 @@ func BuildProjectContext(projectVaultDir, reqPath string) string {
 		var sb strings.Builder
 		sb.WriteString("## Architecture Decisions\n")
 		for _, a := range selectedADRs {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s — %s\n", a.ID, a.Title, truncateDef(a.Decision, 120)))
+			fmt.Fprintf(&sb, "- **%s**: %s — %s\n", a.ID, a.Title, truncateDef(a.Decision, 120))
 		}
 		parts = append(parts, strings.TrimSuffix(sb.String(), "\n"))
 	}

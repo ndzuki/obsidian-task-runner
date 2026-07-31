@@ -120,7 +120,7 @@ otg install \
   ],
   "new_project_root": "/home/you/src",
   "models": {
-    "deepseek": "deepseek/deepseek-v4-pro:xhigh",
+    "deepseek": "deepseek/deepseek-v4-pro",
     "gpt": "gateway/gpt-5.6-sol:xhigh",
     "default": "deepseek/deepseek-v4-flash"
   },
@@ -146,6 +146,28 @@ otg install \
 - **任务身份与恢复**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
 
 修改 `max_concurrent_tasks` 或安装新调度器二进制后，常驻 watcher daemon 需要重启才能生效；`otg daemon --once` 会在每次启动时读取配置。
+
+### 思考模式（Thinking Mode）
+
+DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `--thinking`，无需手动配置：
+
+| 阶段 | thinking | 理由 |
+|------|----------|------|
+| priority | `off` | 快速 JSON 评估 |
+| refining | `low` | 对话式，轻推理 |
+| planning | `high` | 深度思维链，提升计划质量 |
+| round2 | `max` | 最深推理，代码质量优先 |
+
+`deepseek/deepseek-v4-flash` 与 `deepseek/deepseek-v4-pro` 均支持 `max`；fallback 到 Pro 时保持相同 thinking 档位。模型标识不再使用 `:xhigh` 等后缀，推理强度完全由 `--thinking` 控制。
+
+### 阻塞依赖自动恢复
+
+daemon 每次扫描会检查 `blocked` 任务的 `blocked_by` 上游：若上游因**阶段失败**（`blocked_phase` + `MODEL_FAILED`/`PHASE_TIMEOUT` 等可恢复错误码）阻塞且未批准 resume，自动批准其恢复以解开依赖链。
+
+- **只有 resume 后再次失败才累计** `auto_resume_count`（首次失败和人工 resume 后失败不消耗预算）。
+- 连续失败达 2 次后停止自动恢复，并发桌面通知提醒你手动修复并设置 `resume_approved=true`。
+- 人工 resume（无 `auto_resume_pending` 标记）会清零计数，重新获得自动恢复机会。
+- 用户决策型阻塞（无 `blocked_phase`）与 `REQ_MISSING` 等错误永不自动恢复。
 
 ### 5. 确认服务状态
 

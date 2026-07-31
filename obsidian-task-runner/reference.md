@@ -40,7 +40,7 @@ closed -- [终态，不可恢复]
 
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
-| `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；其他状态的 true 自动清 false |
+| `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
 | `merge_approved` | 审阅实现后设 true | `pending_req=true` 时绝对无效 |
 | `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
 | `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
@@ -97,9 +97,13 @@ Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得�
 | `phase_error` | string | `""` | 阶段失败原因 |
 | `phase_error_code` | string | `""` | 阶段失败机器可读错误码 |
 | `phase_log` | string | `""` | 对应日志路径 |
-| `resume_approved` | bool | `false` | 人工恢复授权 |
+| `resume_approved` | bool | `false` | 恢复授权（人工或依赖链自动） |
+| `auto_resume_pending` | bool | `false` | 本次失败由自动 resume 发起（仅它计入预算） |
+| `auto_resume_count` | int | `0` | 自动 resume 连续失败累计，≥2 停止自动恢复 |
 
-Refining/planning 第一次失败自动恢复；再次失败转 blocked。阶段成功或人工 resume 后 retry count 清零。
+Refining/planning/implementing 第一次失败自动恢复；再次失败转 blocked。阶段成功或人工 resume 后 retry count 清零。
+
+`blocked_by` 上游处于阶段失败阻塞（`blocked_phase` 非空且错误码为 MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED/MODEL_QUOTA_EXHAUSTED 或空）时，daemon 自动设 `resume_approved=true` + `auto_resume_pending=true` 以解开依赖链；`auto_resume_count` 仅在这种自动恢复后再次失败时递增。人工 resume（无 pending 标记）清零计数。`REQ_MISSING` 等非瞬时错误与循环依赖永不自动恢复。
 
 ### 4.5 Grilling 所有权
 
@@ -225,7 +229,20 @@ Priority Assessment 由 daemon 在 refining 阶段触发，评定完成后写入
 
 ### 4.7 Daemon 上下文注入
 
-Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle 注入到 prompt 头部（`[Project Context]`），agent 第一屏即可见，无需手动读文件。
+Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。
+
+注入格式（技能命令后追加）：
+
+```text
+<skill prompt>
+
+<project_context>
+## 项目上下文（daemon 自动注入，配合 skill://knowledge-base 交叉引用 References）
+项目: <project-key>
+
+<Constraints + Anti-patterns + Domain Terms + ADR 摘要>
+</project_context>
+```
 
 注入内容（控制在 ~600 字节 / ~300 token）：
 
@@ -297,6 +314,28 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 
+### 8.1 Thinking Mode
+
+daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
+
+| 阶段 | thinking |
+|------|----------|
+| priority | `off` |
+| refining | `low` |
+| planning | `high` |
+| round2 | `max` |
+
+模型标识不含 `:xhigh` 等推理后缀，强度完全由 `--thinking` 控制。
+
+### 8.2 自动 resume 预算
+
+`resolveBlockedDependencies` 每次扫描自动解开 `blocked_by` 依赖链，预算规则：
+
+- `auto_resume_pending=true` 仅标记自动 resume 发起的尝试；`handlePhaseFailure` 只在 pending 时递增 `auto_resume_count`。
+- 首次失败不计数；人工 resume（无 pending）清零计数。
+- count ≥ 2：停止自动恢复，通知用户手动修复后设 `resume_approved=true`。
+- 循环依赖与 `REQ_MISSING`/`VALIDATION_FAILED` 等非瞬时错误不自动恢复。
+
 ## 9. Skill 安装
 
 Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
@@ -310,7 +349,7 @@ Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core�
 1. `otg find-ready <vault>`：检查 daemon 是否会拾取任务。
 2. `tail -f ~/.omp/logs/otg-daemon.log`：检查状态分派、锁和重试。
 3. `~/.omp/logs/tasks/`：检查阶段日志/PID。
-4. blocked 阶段失败：检查 `blocked_phase`、`phase_error`、`phase_log`；修复后设 `resume_approved=true`。
+4. blocked 阶段失败：检查 `blocked_phase`、`phase_error`、`phase_log`；修复后设 `resume_approved=true`。自动 resume 预算耗尽（`auto_resume_count>=2`）时会收到 🧩 桌面通知。
 5. Grilling 卡住：检查 `grill_owner`、`grill_started_at`、timeout 和 Kitty 日志。
 6. 安装后执行 `skill-doctor check`，必须返回 0。
 

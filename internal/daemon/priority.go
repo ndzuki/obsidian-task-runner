@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -111,8 +110,4 @@ func priorityUpdates(result priority.Result, status string) map[string]interface
 		"phase_error_code":               "",
 		"phase_error":                    "",
 	}
-}
-
-func priorityTempFile(dir string) (*os.File, error) {
-	return os.CreateTemp(dir, "otg-priority-*.json")
 }

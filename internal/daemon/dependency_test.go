@@ -989,7 +989,6 @@ assignee: default
 
 func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
 	dir := t.TempDir()
-	skillDir := writeVaultMap(t, dir, nil)
 	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
@@ -1004,7 +1003,8 @@ func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skillDir = writeVaultMap(t, dir, map[string]string{"test": repo})
+	// Re-write vault-map with repo mapping (first write used nil projects).
+	skillDir := writeVaultMap(t, dir, map[string]string{"test": repo})
 
 	// Upstream blocked on phase failure; downstream blocked_by it.
 	upstream := filepath.Join(tasksDir, "TASK-080-upstream.md")

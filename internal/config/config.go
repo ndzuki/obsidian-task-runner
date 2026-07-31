@@ -86,7 +86,7 @@ func ModelReference() string {
 	return `| assignee | 模型标识 | 用途 |
 |----------|---------|------|
 | default  | deepseek/deepseek-v4-flash | refining、planning、round2 日常任务（0731 更新，Agent 能力大幅增强） |
-| deepseek | deepseek/deepseek-v4-pro:xhigh | 复杂 AC fallback（即将发布正式版） |
+| deepseek | deepseek/deepseek-v4-pro | 复杂 AC fallback（即将发布正式版） |
 | gpt      | gateway/gpt-5.6-sol:xhigh | 高推理任务，default 不可用时 fallback |
 | gemini   | google/gemini-2.5-pro | 可选 |
 | claude   | anthropic/claude-sonnet-4-20250514 | 可选 |
@@ -251,7 +251,7 @@ func (c *Config) FallbackModel(assignee string) string {
 		if m, ok := c.Models["deepseek"]; ok && m != "" {
 			return m
 		}
-		return "deepseek/deepseek-v4-pro:xhigh"
+		return "deepseek/deepseek-v4-pro"
 	}
 	switch assignee {
 	case "gpt", "default", "deepseek":

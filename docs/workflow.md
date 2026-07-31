@@ -77,6 +77,7 @@ stateDiagram-v2
     blocked --> refining: resume_approved=true and blocked_phase=refining
     blocked --> planning: resume_approved=true and blocked_phase=planning
     blocked --> implementing: resume_approved=true and blocked_phase=implementing
+    blocked --> refining: 自动 resume (blocked_by 上游依赖链，恢复 blocked_phase 对应阶段)
 
     ready --> refining: daemon 拾取 (首次调度前有界等待 priority_assessment)
 
@@ -99,6 +100,7 @@ stateDiagram-v2
 
     implementing --> needs_grilling: 实现阻塞需要用户决策 (含 Prototype FAIL)
     implementing --> refining: pending_req，在当前 AC 完成并 checkpoint 后
+    implementing --> blocked: 阶段失败（自动恢复 2 次后停止）
     implementing --> review: 全部 AC、测试和验收完成
 
     review --> refining: pending_req=true or rework_resolution=replan
@@ -313,6 +315,8 @@ plan_approved: false # 仅 auto_approve 合格时为 true
 plan_version: <old + 1>
 ```
 
+`plan_approved` 在 `plan-review → implementing` 时**保留为 true**（v0.16.6 起）：它作为一次性审批门控被 daemon 消费后，Round 2 OMP 仍需读取该字段确认计划已批准。`implementing` 状态下不会被「提前审批重置」清除。
+
 ### 6.3 auto_approve
 
 `auto_approve=true` 只跳过 Plan Review，且必须同时满足：
@@ -421,7 +425,7 @@ merge_approved: false
 
 appended-only，不覆盖已有条目。
 
-Daemon 在调度 OMP 前从 CONTEXT.md 提取精简上下文注入到 prompt 头部（`[Project Context]`），包含 Constraints + Anti-patterns + Domain Terms + ADR 摘要。详见 `reference.md` §4.10。
+Daemon 在调度 OMP 前从 CONTEXT.md 提取精简上下文，以 `<project_context>` 标签块追加到 skill 命令**之后**的 prompt 尾部，包含 Constraints + Anti-patterns + Domain Terms + ADR 摘要，并提示配合 `skill://knowledge-base` 交叉引用 References。详见 `reference.md` §4.7。
 
 ### 7.3 阶段后文档完整性扫描
 
@@ -515,6 +519,23 @@ refining/planning 的 retry count 在以下时机清零：
 
 - 阶段成功。
 - 用户设置 `resume_approved=true`，daemon 执行人工恢复。
+
+### 10.4 blocked_by 依赖自动恢复
+
+每次扫描 daemon 执行 `resolveBlockedDependencies`：遍历 `blocked` 任务，解析其 `blocked_by` 上游引用（同项目 `TASK-010` 或跨项目 `project-key:TASK-010`），若上游处于**阶段失败阻塞**（`blocked_phase` 非空 + `MODEL_FAILED`/`PHASE_TIMEOUT`/`PHASE_INTERRUPTED`/`MODEL_QUOTA_EXHAUSTED` 或空错误码）且未批准 resume，则自动设 `resume_approved=true` 并标记 `auto_resume_pending=true`。
+
+重试预算（`auto_resume_count`）：
+
+- 仅当 `auto_resume_pending=true`（本次失败由自动 resume 发起）时，`handlePhaseFailure` 递增计数；首次失败和人工 resume 后失败不消耗预算。
+- 计数 ≥ 2 时停止自动恢复，并发桌面通知要求用户修复后手动设 `resume_approved=true`。
+- 人工恢复（无 pending 标记）清零计数，重新获得完整预算。
+
+安全边界：
+
+- 未限定引用只在**下游项目内**解析；跨项目引用按 vault-map key 精确匹配（目录名 → 数字前缀后缀 → 任务 frontmatter `project` 字段）。
+- 文件名前缀不能代表任务身份——必须校验 frontmatter `id` 与 `project`。
+- 循环依赖（A↔B）双方都不自动恢复。
+- `REQ_MISSING`、`VALIDATION_FAILED` 等非瞬时错误永不自动恢复。
 
 ## 11. TASK 流程控制字段
 

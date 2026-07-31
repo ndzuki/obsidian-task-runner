@@ -92,7 +92,7 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if eq == -1 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid arg %q (expected key=value)\n", arg)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid arg %q (expected key=value)\n", arg)
 			continue
 		}
 		key, val := arg[:eq], arg[eq+1:]

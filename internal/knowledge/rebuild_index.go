@@ -158,8 +158,8 @@ func toStringSlice(v any) []string {
 func buildINDEX(entries []RefEntry) string {
 	var b strings.Builder
 	b.WriteString("# References INDEX\n\n")
-	b.WriteString(fmt.Sprintf("> 自动生成于 %s\n", time.Now().Format("2006-01-02")))
-	b.WriteString(fmt.Sprintf("> 总计 %d 篇\n", len(entries)))
+	fmt.Fprintf(&b, "> 自动生成于 %s\n", time.Now().Format("2006-01-02"))
+	fmt.Fprintf(&b, "> 总计 %d 篇\n", len(entries))
 
 	layers := groupByLayer(entries)
 	for _, layer := range layerOrder {
@@ -172,7 +172,7 @@ func buildINDEX(entries []RefEntry) string {
 			"extended": "Extended（偶尔使用）",
 			"archived": "Archived（备份不检索）",
 		}[layer]
-		b.WriteString(fmt.Sprintf("\n## %s\n\n", label))
+		fmt.Fprintf(&b, "\n## %s\n\n", label)
 		b.WriteString("| 文件 | 标题 | topics | level | updated | verified |\n")
 		b.WriteString("|------|------|--------|-------|---------|----------|\n")
 		for _, e := range group {
@@ -185,8 +185,8 @@ func buildINDEX(entries []RefEntry) string {
 			if e.Verified {
 				verified = "true"
 			}
-			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
-				e.Path, title, topics, e.Level, e.Updated, verified))
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
+				e.Path, title, topics, e.Level, e.Updated, verified)
 		}
 	}
 	return b.String()

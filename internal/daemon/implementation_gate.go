@@ -74,13 +74,6 @@ func (g *implementationGate) releaseAdopted(pid int) {
 	g.signalLocked()
 }
 
-// adoptedActive returns the count of active slots held by adopted processes.
-func (g *implementationGate) adoptedActive() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.active - g.local
-}
-
 // localActive returns the count of active slots held by locally started processes.
 func (g *implementationGate) localActive() int {
 	g.mu.Lock()

@@ -18,11 +18,13 @@ func TestMaturityGateADRContextFlow(t *testing.T) {
 	tasksDir := filepath.Join(projDir, "Tasks")
 	adrDir := filepath.Join(projDir, "Notes", "adr")
 	for _, d := range []string{reqDir, tasksDir, adrDir} {
-		os.MkdirAll(d, 0755)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// ADR-001: PostgreSQL is the sole business database
-	os.WriteFile(filepath.Join(adrDir, "ADR-001-postgresql-sole-db.md"), []byte(`---
+	if err := os.WriteFile(filepath.Join(adrDir, "ADR-001-postgresql-sole-db.md"), []byte(`---
 adr_id: "001"
 title: "Use PostgreSQL as the sole business database"
 status: accepted
@@ -30,27 +32,35 @@ status: accepted
 # ADR-001: PostgreSQL as sole business database
 ## Decision
 PostgreSQL is the only business database. No other storage engine.
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// CONTEXT.md
-	os.MkdirAll(filepath.Join(projDir, "Notes"), 0755)
-	os.WriteFile(filepath.Join(projDir, "Notes", "CONTEXT.md"), []byte(`---
+	if err := os.MkdirAll(filepath.Join(projDir, "Notes"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "Notes", "CONTEXT.md"), []byte(`---
 project: "001-demo"
 ---
 ## Language
 **Orchestrator**: 调度引擎，管理 ReleaseBundle 生命周期。
 **CleanupService**: GC 服务，使用 PostgreSQL advisory lock。
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// REQ that introduces Redis → conflicts with ADR-001
-	os.WriteFile(filepath.Join(reqDir, "REQ-100-redis-cache.md"), []byte(`---
+	if err := os.WriteFile(filepath.Join(reqDir, "REQ-100-redis-cache.md"), []byte(`---
 id: "100"
 title: Add Redis Cache
 ---
 # Add Redis Cache
 ## 目标
 引入 Redis 作为 Orchestrator 查询缓存。
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// TASK with maturity gate grill_context
 	taskContent := `---
@@ -81,7 +91,9 @@ priority: P2
 # TASK-100
 `
 	taskPath := filepath.Join(tasksDir, "TASK-100-redis-cache.md")
-	os.WriteFile(taskPath, []byte(taskContent), 0644)
+	if err := os.WriteFile(taskPath, []byte(taskContent), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Test 1: FindReadyTasks picks it up
 	ready, err := task.FindReadyTasks(vault)
@@ -112,7 +124,9 @@ priority: P2
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("USER", "otg-test")
 	skillDir := filepath.Join(vault, "skills")
-	os.MkdirAll(skillDir, 0755)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	runner := newTestRunner(skillDir, "/bin/true", filepath.Join(vault, "logs"), 1)
 	pending := runner.prepareBatch(ready)
 	if len(pending) != 0 {
