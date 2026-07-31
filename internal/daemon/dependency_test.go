@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -265,4 +266,156 @@ assignee: default
 	if fm.ResumeApproved {
 		t.Fatal("other-project same-ID task must NOT be auto-resumed")
 	}
+}
+
+func TestResolveBlockedDependenciesTransitiveChain(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A (blocked on phase failure) <- B (blocked by A) <- C (blocked by B)
+	for _, tc := range []struct{ id, title, blockedBy string }{
+		{"001", "A", ""},
+		{"002", "B", `["TASK-001"]`},
+		{"003", "C", `["TASK-002"]`},
+	} {
+		content := "---\nid: \"" + tc.id + "\"\ntitle: " + tc.title + "\nproject: test\nstatus: blocked\nassignee: default\n"
+		if tc.blockedBy != "" {
+			content += "blocked_by: " + tc.blockedBy + "\n"
+		}
+		if tc.id == "001" {
+			content += "blocked_phase: implementing\nresume_approved: false\n"
+		}
+		content += "---\n# " + tc.title + "\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, "TASK-"+tc.id+"-"+tc.title+".md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	// One pass: A resumed (B blocked_by A), but B itself is not phase-failure blocked.
+	data, err := os.ReadFile(filepath.Join(tasksDir, "TASK-001-A.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, _ := yamlfrontmatter.Parse(data)
+	if !fm.ResumeApproved {
+		t.Fatal("chain head A should be auto-resumed")
+	}
+	data, err = os.ReadFile(filepath.Join(tasksDir, "TASK-002-B.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, _ = yamlfrontmatter.Parse(data)
+	if fm.ResumeApproved {
+		t.Fatal("B must not be resumed in same pass — it is not phase-failure blocked")
+	}
+
+	// Simulate A completing: next pass finds B auto-unblockable via IsAutoUnblockable,
+	// not via phase-failure resume.
+	if err := yamlfrontmatter.Update(filepath.Join(tasksDir, "TASK-001-A.md"), map[string]interface{}{"status": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if !task.IsAutoUnblockable(mustParse(t, filepath.Join(tasksDir, "TASK-002-B.md")), vault) {
+		t.Fatal("B should become auto-unblockable after A completes")
+	}
+}
+
+func TestResolveBlockedDependenciesMalformedRef(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	downstream := filepath.Join(tasksDir, "TASK-030-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "030"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies() // must not panic
+}
+
+func TestResolveBlockedDependenciesDownstreamStillGated(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-040-upstream.md"), []byte(`---
+id: "040"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+resume_approved: false
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-041-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "041"
+title: Downstream
+project: test
+status: blocked
+blocked_by: ["TASK-040"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	// Downstream must remain NOT ready while upstream is still blocked.
+	data, err := os.ReadFile(downstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.IsReady(fm, vault) {
+		t.Fatal("downstream must remain gated while upstream is blocked")
+	}
+}
+
+func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fm
 }
