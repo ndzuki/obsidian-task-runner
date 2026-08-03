@@ -1,5 +1,7 @@
 package daemon
 
+import "github.com/ndzuki/obsidian-task-runner/internal/task"
+
 type ErrorCode string
 
 const (
@@ -11,6 +13,7 @@ const (
 	ErrRemoteConfigIncomplete   ErrorCode = "REMOTE_CONFIG_INCOMPLETE"
 	ErrRemotePartialCreate      ErrorCode = "REMOTE_PARTIAL_CREATE"
 	ErrModelFailed              ErrorCode = "MODEL_FAILED"
+	ErrAPIKeyUnavailable        ErrorCode = task.PhaseErrorCodeAPIKeyUnavailable
 	ErrModelQuotaExhausted      ErrorCode = "MODEL_QUOTA_EXHAUSTED"
 	ErrPhaseTimeout             ErrorCode = "PHASE_TIMEOUT"
 	ErrPhaseInterrupted         ErrorCode = "PHASE_INTERRUPTED"
@@ -37,6 +40,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrRemoteConfigIncomplete,
 	ErrRemotePartialCreate,
 	ErrModelFailed,
+	ErrAPIKeyUnavailable,
 	ErrModelQuotaExhausted,
 	ErrPhaseTimeout,
 	ErrPhaseInterrupted,
@@ -66,6 +70,12 @@ const (
 )
 
 func recoveryForPhase(phase string, code ErrorCode) recoveryPolicy {
+	// API key unavailable is an external condition (e.g. KeePassXC locked):
+	// block immediately without burning the retry budget, and let the daemon
+	// auto-resume once the key becomes reachable again.
+	if code == ErrAPIKeyUnavailable {
+		return recoveryBlock
+	}
 	switch phase {
 	case "priority":
 		return recoveryPriorityFallback

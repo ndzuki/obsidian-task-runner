@@ -169,6 +169,18 @@ daemon 每次扫描会检查 `blocked` 任务的 `blocked_by` 上游：若上游
 - 人工 resume（无 `auto_resume_pending` 标记）会清零计数，重新获得自动恢复机会。
 - 用户决策型阻塞（无 `blocked_phase`）与 `REQ_MISSING` 等错误永不自动恢复。
 
+### API Key 不可用（KeePassXC 未解锁）
+
+当 OMP 因无法获取模型 API Key（`No API key found`，通常 KeePassXC/secret service 未解锁）而失败时，任务以 `phase_error_code=API_KEY_UNAVAILABLE` 进入 `blocked`：
+
+- **不重试、不 fallback**：所有 provider 共用同一 key 来源，重复尝试无意义；也不消耗 `planning_retry_count` 等重试预算。
+- **自动拾起**：daemon 每次扫描先探测 key 可用性（环境变量 `DEEPSEEK_API_KEY`/`CODEX_API_KEY`，或 `secret-tool lookup app keepassxc type db-password`），不可用则不启动 OMP 并保持 `blocked`；可用后自动还原 `blocked_phase` 继续执行，无需手动 `resume_approved`。
+- systemd 单元需要 `XDG_RUNTIME_DIR=/run/user/%U` 与 `DBUS_SESSION_BUS_ADDRESS` 才能访问 keyring；KeePassXC 未随桌面会话解锁时 key 不可达。
+
+### 优雅停机
+
+daemon 收到 SIGTERM（`systemctl stop`/重启）时，运行中的 OMP 会话先收 SIGTERM 保存 session 后退出，30 秒内未退出则强制终止；停机期间不会启动 fallback 模型。任务在下一轮扫描自动恢复。
+
 ### 5. 确认服务状态
 
 ```bash

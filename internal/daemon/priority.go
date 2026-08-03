@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/priority"
@@ -15,6 +17,12 @@ import (
 // priorityAssessmentBatchLimit bounds lightweight assessment work per scan
 // independently from the implementation concurrency limit.
 const priorityAssessmentBatchLimit = 2
+
+// errAPIKeyUnavailable is returned when the key probe fails so the caller can
+// skip the candidate without counting it as processed or consuming attempts.
+// Public wrappers (runPriorityAssessment) propagate it — callers should treat
+// it as "skip, retry next scan", not as a failure.
+var errAPIKeyUnavailable = errors.New("api key unavailable")
 
 func (r *Runner) processPriorityAssessments(ctx context.Context) int {
 	pending, err := task.FindPriorityTasks(r.cfg.ObsidianVault, time.Now())
@@ -29,6 +37,10 @@ func (r *Runner) processPriorityAssessments(ctx context.Context) int {
 	var processed int
 	for _, candidate := range pending {
 		if err := r.runPriorityAssessmentContext(ctx, candidate); err != nil {
+			if errors.Is(err, errAPIKeyUnavailable) {
+				// Key not reachable (e.g. KeePassXC locked): retry next scan.
+				continue
+			}
 			r.logger.Printf("task %s: priority assessment: %v", candidate.ID, err)
 			continue
 		}
@@ -42,6 +54,11 @@ func (r *Runner) runPriorityAssessment(candidate task.PriorityTask) error {
 }
 
 func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate task.PriorityTask) error {
+	// API key unavailable (e.g. KeePassXC locked): skip without claiming or
+	// burning attempts — the scan loop retries the assessment next round.
+	if !apiKeyAvailable() {
+		return errAPIKeyUnavailable
+	}
 	attempts := candidate.Attempts + 1
 	started := time.Now().Format(time.RFC3339)
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
@@ -61,6 +78,9 @@ func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, "--model", r.cfg.Model("default"), "--auto-approve", "-p", "/obsidian-task-runner-priority "+reqPath)
+	// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 30 * time.Second
 	output, runErr := cmd.Output()
 	if runErr != nil {
 		return r.recordPriorityFailure(candidate, attempts, fmt.Sprintf("model failed: %v", runErr))

@@ -442,6 +442,8 @@ Description=扫描 Obsidian Vault 并处理可执行的 OMP 任务(兜底轮询,
 Type=oneshot
 Environment=OBSIDIAN_VAULT=%s
 Environment=PATH=%s
+Environment=XDG_RUNTIME_DIR=/run/user/%%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
 ExecStart=%s/.local/bin/otg daemon --once
 `, opts.ObsidianVault, path, home),
 		"omp-task-runner.timer": fmt.Sprintf(`[Unit]
@@ -462,6 +464,8 @@ Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发 OMP �
 Type=simple
 Environment=OBSIDIAN_VAULT=%s
 Environment=PATH=%s
+Environment=XDG_RUNTIME_DIR=/run/user/%%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
 ExecStart=%s/.local/bin/otg daemon
 Restart=on-failure
 RestartSec=10

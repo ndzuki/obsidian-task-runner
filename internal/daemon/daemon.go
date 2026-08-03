@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -84,21 +85,45 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
+	// Bind task execution to the daemon lifecycle so shutdown cancels running
+	// OMP sessions (graceful SIGTERM) instead of leaving them until systemd's
+	// TimeoutStopSec hard-kills the process tree.
+	r.daemonCtx = ctx
 
-	unlock, err := acquireLock(r.cfg)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	r.logger.Printf("daemon started, vault=%s", r.cfg.ObsidianVault)
-	r.cleanupOldLogs()
-
+	// Start the filesystem watcher before acquiring the lock: events buffered
+	// while the --once fallback runner holds the flock are consumed immediately
+	// after it is released, so no file changes are silently missed.
 	w, err := watch.New(r.cfg.ObsidianVault, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("start watcher: %w", err)
 	}
 	w.Start(ctx)
+
+	// The --once fallback runner may hold the flock while a phase runs.
+	// Wait for it instead of crashing: systemd Restart=on-failure would
+	// otherwise restart-loop against the lock.
+	var unlock func()
+	var lastLog time.Time
+	for {
+		var err error
+		unlock, err = acquireLock(r.cfg)
+		if err == nil {
+			break
+		}
+		if time.Since(lastLog) > time.Minute {
+			r.logger.Printf("waiting for daemon lock: %v", err)
+			lastLog = time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(10 * time.Second):
+		}
+	}
+	defer unlock()
+
+	r.logger.Printf("daemon started, vault=%s", r.cfg.ObsidianVault)
+	r.cleanupOldLogs()
 
 	// Run an initial scan to catch any tasks that became ready while daemon was down.
 
@@ -997,6 +1022,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							"blocked_phase":       "",
 							"phase_error":         "",
 							"phase_log":           "",
+							"phase_error_code":    "",
 							"resume_approved":     false,
 							"auto_resume_pending": false,
 						}
@@ -1007,6 +1033,30 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						}
 						if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 							r.logger.Printf("task %s: restore blocked phase: %v", t.ID, err)
+							continue
+						}
+						t.Status = fm.BlockedPhase
+						// Fall through to normal dispatch below.
+					} else if fm.BlockedPhase != "" && fm.PhaseErrorCode == string(ErrAPIKeyUnavailable) {
+						// Blocked on missing API key (e.g. KeePassXC locked): probe the
+						// key source each scan and auto-resume once it becomes
+						// available. No manual resume_approved needed.
+						if !apiKeyAvailable() {
+							// Key still unavailable: stay blocked, do not launch OMP.
+							continue
+						}
+						r.logger.Printf("task %s: API key available, restoring %s", t.ID, fm.BlockedPhase)
+						updates := map[string]interface{}{
+							"status":              fm.BlockedPhase,
+							"blocked_phase":       "",
+							"phase_error":         "",
+							"phase_log":           "",
+							"phase_error_code":    "",
+							"resume_approved":     false,
+							"auto_resume_pending": false,
+						}
+						if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+							r.logger.Printf("task %s: restore API-key blocked phase: %v", t.ID, err)
 							continue
 						}
 						t.Status = fm.BlockedPhase
@@ -1172,6 +1222,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
+		// Graceful shutdown: on ctx cancellation (daemon stop or phase timeout)
+		// send SIGTERM so omp can persist its session, then hard-kill after
+		// WaitDelay if it does not exit.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = 30 * time.Second
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Dir = repoDir
 		if f != nil {
@@ -1220,7 +1275,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, runErr)
 
-			if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
+			if keyErr := checkAPIKeyUnavailable(logPath); keyErr != "" {
+				failureCode = ErrAPIKeyUnavailable
+				notify.SendTaskAction(t.ID, t.Title, "🔐", "API Key 不可用",
+					fmt.Sprintf("%s：%s", keyErr, "请解锁 KeePassXC，daemon 检测到 key 后会自动恢复"), r.cfg.Notifications.Desktop)
+			} else if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
 				failureCode = ErrModelQuotaExhausted
 				notify.SendTaskAction(t.ID, t.Title, "💰", "Token 不足",
 					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), r.cfg.Notifications.Desktop)
@@ -1232,7 +1291,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 
 			fellback := false
-			if !signalKilled {
+			// Do not start a fallback while the daemon is shutting down — the
+			// OMP would be killed right after. Phase timeout still falls back:
+			// the fallback command gets its own fresh timeout budget.
+			if !signalKilled && failureCode != ErrAPIKeyUnavailable && !errors.Is(ctx.Err(), context.Canceled) {
 				if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
 					r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
@@ -1240,8 +1302,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 				fallbackArgs := []string{"--model", fallbackModel}
 				fallbackArgs = append(fallbackArgs, args[2:]...)
-				fbCtx, fbCancel := context.WithTimeout(context.Background(), timeout)
+				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
 				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
+				retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
+				retryCmd.WaitDelay = 30 * time.Second
 				retryCmd.Dir = repoDir
 				if f != nil {
 					retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
@@ -1290,7 +1354,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			noFallback := r.cfg.FallbackModel(t.Assignee) == "" || r.cfg.FallbackModel(t.Assignee) == model
 			if fellback || noFallback {
-				r.handlePhaseFailure(taskPath, t.ID, t.Title, phase, failureCode, reason, logPath)
+				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
 			}
 		} else {
 			r.logger.Printf("task %s: completed", t.ID)
@@ -1322,8 +1386,25 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 // handlePhaseFailure tracks retry counts for refining/planning phases and
 // transitions the task to blocked after the second consecutive failure.
-func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, code ErrorCode, reason, logPath string) {
+func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase string, code ErrorCode, reason, logPath string) {
 	policy := recoveryForPhase(phase, code)
+	if policy == recoveryBlock {
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":           "blocked",
+			"blocked_phase":    status,
+			"phase_error_code": string(code),
+			"phase_error":      reason,
+			"phase_log":        logPath,
+			"resume_approved":  false,
+		}); err != nil {
+			r.logger.Printf("task %s: record phase block: %v", taskID, err)
+		}
+		if code == ErrAPIKeyUnavailable {
+			notify.SendTaskAction(taskID, taskTitle, "🔐", "等待 API Key",
+				"KeePassXC 未解锁，任务等待中。解锁后 daemon 自动恢复，无需手动操作。", r.cfg.Notifications.Desktop)
+		}
+		return
+	}
 	if policy == recoveryConflict {
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 			"status":           "conflict",
@@ -1516,6 +1597,61 @@ var tokenQuotaPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)充值`),
 	regexp.MustCompile(`(?i)tokens?\s*(limit|quota|exhausted)`),
 	regexp.MustCompile(`(?i)429\s`),
+}
+
+// keyUnavailablePatterns matches OMP log lines indicating the provider API key
+// could not be resolved (typically KeePassXC/secret service locked or missing).
+var keyUnavailablePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)no api key found`),
+	regexp.MustCompile(`(?i)no api key`),
+	regexp.MustCompile(`(?i)missing.*api[_-]?key`),
+}
+
+// checkAPIKeyUnavailable scans the OMP log for missing API key errors.
+// Returns a human-readable message if found, empty string otherwise.
+func checkAPIKeyUnavailable(logPath string) string {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("close key log %s: %v", logPath, err)
+		}
+	}()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		for _, pat := range keyUnavailablePatterns {
+			if pat.MatchString(line) {
+				return "OMP 无法获取模型 API Key（KeePassXC 未解锁或 key 未配置）"
+			}
+		}
+	}
+	return ""
+}
+
+// apiKeyProbe is the pluggable key-availability check; tests override it.
+var apiKeyProbe = defaultAPIKeyProbe
+
+// apiKeyAvailable probes whether any provider API key is reachable: either an
+// env var override (DEEPSEEK_API_KEY / CODEX_API_KEY as used by
+// ~/.omp/get-api-key.sh) or the KeePassXC database password in the secret
+// service. The probe is cheap (sub-second) and runs before dispatching OMP so
+// key-less runs never start a headless session.
+func apiKeyAvailable() bool {
+	return apiKeyProbe()
+}
+
+func defaultAPIKeyProbe() bool {
+	if os.Getenv("DEEPSEEK_API_KEY") != "" || os.Getenv("CODEX_API_KEY") != "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "secret-tool", "lookup", "app", "keepassxc", "type", "db-password").Output()
+	return err == nil && len(bytes.TrimSpace(out)) > 0
 }
 
 // checkTokenQuota scans the OMP log for token quota exhaustion errors.
