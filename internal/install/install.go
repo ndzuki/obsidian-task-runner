@@ -628,8 +628,14 @@ func validateRequiredSkills() ([]string, error) {
 
 // stopDaemon gracefully stops any running otg daemon processes.
 func stopDaemon() {
-	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "--no-block", "omp-task-runner.timer")
-	runBestEffort("stop task watcher", "systemctl", "--user", "stop", "--no-block", "omp-task-watcher.service")
+	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "omp-task-runner.timer")
+	// Wait for the watcher to finish its graceful shutdown (daemon SIGTERM →
+	// OMP session save → exit). Blocking here also serializes with the later
+	// enable --now, so the new instance never races the old one.
+	runBestEffort("stop task watcher", "systemctl", "--user", "stop", "omp-task-watcher.service")
+
+	// Residual daemons not managed by systemd: terminate, then force kill.
+	// (With the systemd stop above completed, these are normally no-ops.)
 	runBestEffort("terminate daemon", "pkill", "-TERM", "-U", fmt.Sprintf("%d", os.Getuid()), "-f", "otg daemon")
 
 	// Give processes time to exit, then force kill.

@@ -1262,7 +1262,22 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		cancel()
 		close(tailDone) // signal tail goroutine to stop
 
-		if runErr != nil {
+		if runErr != nil && errors.Is(ctx.Err(), context.Canceled) {
+			// Daemon-initiated shutdown (ctx canceled): the OMP was killed by
+			// our own SIGTERM, not a genuine failure. Keep the task status
+			// untouched and skip failure/fallback handling — the pid file is
+			// already removed, so the next scan re-dispatches the task
+			// automatically. Deploy-time daemon restarts are therefore
+			// lossless: no blocked state, no manual resume_approved.
+			r.logger.Printf("task %s: OMP interrupted by daemon shutdown, status=%s kept for auto-resume", t.ID, t.Status)
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"phase_error_code": string(ErrPhaseInterrupted),
+				"phase_error":      "daemon 重启中断，等待自动恢复",
+				"phase_log":        logPath,
+			}); err != nil {
+				r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+			}
+		} else if runErr != nil {
 			reason := "异常退出"
 			failureCode := ErrModelFailed
 			signalKilled := false
@@ -1320,7 +1335,12 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
 					fbCancel()
 					close(fbTailDone)
-					fellback = true
+					if !errors.Is(fbCtx.Err(), context.Canceled) {
+						fellback = true
+					} else {
+						// Shutdown raced the fallback start: keep status, auto-resume later.
+						r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
+					}
 				} else {
 					if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
 						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
@@ -1329,15 +1349,27 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					fbCancel()
 					close(fbTailDone)
 					if retryErr != nil {
-						fbReason := "异常退出"
-						if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
-							fbReason = "超时"
-							failureCode = ErrPhaseTimeout
+						if errors.Is(fbCtx.Err(), context.Canceled) {
+							// Shutdown interrupted the running fallback: keep status.
+							r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
+							if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+								"phase_error_code": string(ErrPhaseInterrupted),
+								"phase_error":      "daemon 重启中断，等待自动恢复",
+								"phase_log":        logPath,
+							}); err != nil {
+								r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+							}
+						} else {
+							fbReason := "异常退出"
+							if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
+								fbReason = "超时"
+								failureCode = ErrPhaseTimeout
+							}
+							r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
+							notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
+								fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
+							fellback = true
 						}
-						r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
-						notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
-							fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
-						fellback = true
 					} else {
 						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
 						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
@@ -1348,6 +1380,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 						}
 						r.clearPhaseRetry(taskPath, phase)
+						r.clearPhaseError(taskPath, t.ID)
 					}
 				}
 				}
@@ -1373,6 +1406,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
 			}
 			r.clearPhaseRetry(taskPath, phase)
+			r.clearPhaseError(taskPath, t.ID)
 		}
 		if f != nil {
 			if err := f.Close(); err != nil {
@@ -1514,6 +1548,19 @@ func (r *Runner) clearPhaseRetry(taskPath, phase string) {
 	}
 	if err != nil {
 		r.logger.Printf("clear %s retry count: %v", phase, err)
+	}
+}
+
+// clearPhaseError clears stale phase_error fields after a phase succeeds,
+// so an earlier interruption marker (PHASE_INTERRUPTED) does not linger on
+// the task.
+func (r *Runner) clearPhaseError(taskPath, taskID string) {
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"phase_error_code": "",
+		"phase_error":      "",
+		"phase_log":        "",
+	}); err != nil {
+		r.logger.Printf("task %s: clear phase error: %v", taskID, err)
 	}
 }
 
