@@ -38,6 +38,8 @@ type Runner struct {
 	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
 	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
+	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
+	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
 }
 
 type repoLockMode uint8
@@ -346,6 +348,13 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: expired grilling lease preempted", t.ID)
 			}
 			r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
+			// Debounce: suppress repeated reminders during active grilling sessions.
+			if last, ok := r.grillNotified.Load(t.ID); ok {
+				if time.Since(last.(time.Time)) < 5*time.Minute {
+					continue
+				}
+			}
+			r.grillNotified.Store(t.ID, time.Now())
 			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
 			continue
 		}
@@ -971,6 +980,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		taskPath := t.FilePath
 
 		if t.Status == "blocked" {
+			// Cooldown: don't touch a task that was recently blocked by phase failure.
+			if ts, ok := r.phaseFailures.Load(taskPath); ok {
+				if time.Since(ts.(time.Time)) < 2*time.Minute {
+					continue
+				}
+				r.phaseFailures.Delete(taskPath)
+			}
 			// Check if this is a phase-failure blocked task waiting for resume.
 			if data, err := os.ReadFile(taskPath); err == nil {
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
@@ -995,6 +1011,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						}
 						t.Status = fm.BlockedPhase
 						// Fall through to normal dispatch below.
+					} else if fm.BlockedPhase != "" {
+						// Phase-failure blocked, waiting for manual resume. Remain blocked.
+						continue
+					} else if fm.BlockedPhase == "" && (fm.PhaseError != "" || fm.PhaseErrorCode != "") {
+						// Defensive: blocked without blocked_phase → infer implementing.
+						r.logger.Printf("task %s: blocked without blocked_phase, defaulting to implementing", t.ID)
+						if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
+							"blocked_phase": "implementing",
+						}); err != nil {
+							r.logger.Printf("task %s: failed to fix blocked_phase: %v", t.ID, err)
+						}
+						continue
 					} else {
 						// Normal auto-unblock. R1: skip ready→refining when a plan already exists.
 						dest := "ready"
@@ -1182,9 +1210,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		if runErr != nil {
 			reason := "异常退出"
 			failureCode := ErrModelFailed
+			signalKilled := false
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = fmt.Sprintf("超时（%v 无响应）", timeout)
 				failureCode = ErrPhaseTimeout
+			} else if exitErr, ok := runErr.(*exec.ExitError); ok && exitErr.ExitCode() == -1 {
+				reason = "进程被终止（内存不足或系统信号）"
+				signalKilled = true
 			}
 			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, runErr)
 
@@ -1200,10 +1232,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 
 			fellback := false
-			if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
-				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
-				notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
-					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
+			if !signalKilled {
+				if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
+					r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
+					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
+						fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
 
 				fallbackArgs := []string{"--model", fallbackModel}
 				fallbackArgs = append(fallbackArgs, args[2:]...)
@@ -1252,6 +1285,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						}
 						r.clearPhaseRetry(taskPath, phase)
 					}
+				}
 				}
 			}
 			noFallback := r.cfg.FallbackModel(t.Assignee) == "" || r.cfg.FallbackModel(t.Assignee) == model
@@ -1336,6 +1370,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, phase string, c
 		}); err != nil {
 			r.logger.Printf("task %s: record Round 2 failure: %v", taskID, err)
 		}
+		r.phaseFailures.Store(taskPath, time.Now())
 		return
 	}
 

@@ -243,8 +243,8 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	if data, err := os.ReadFile(kittyDebounceFile(taskID)); err == nil {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
 			if time.Since(t) < kittyDebounceInterval {
-				log.Printf("grilling tab: debounced (last was %v ago)", time.Since(t))
-				return false
+				log.Printf("grilling tab: debounced (last was %v ago), tab already exists", time.Since(t))
+				return true
 			}
 		}
 	}
