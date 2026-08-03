@@ -28,14 +28,14 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 ## Status Routing（状态路由）
 | status | 行为 |
 |--------|------|
-| `blocked` | 等待字段/依赖，或 `resume_approved=true` 后恢复 `blocked_phase` |
-| `ready` | daemon 转 `refining`（首次调度前有界等待 priority_assessment） |
-| `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求→wayfinder 拆分 |
+| `blocked` | 四类：① 缺字段/依赖——补齐后自动 `ready`/`plan-review`；② 阶段失败——`resume_approved=true` 后恢复 `blocked_phase`；③ `API_KEY_UNAVAILABLE`——daemon 每轮探测 key，可用即自动恢复（无需 resume）；④ 人工暂停——`blocked_phase` 非空 + `REQ_MISSING` 等非瞬时错误码，保持阻塞直到手动 resume |
+| `ready` | daemon 转 `refining`；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
+| `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先加载 skill://wayfinder 生成 Wayfinder Map 决策地图，作为 Grilling 焦点 |
 | `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue） |
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
 | `plan-review` | 等待 plan_approved→Round 2；或 close_approved→closed |
 | `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate |
-| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；rework=close→closed；否则 merge_approved 后调用 Merge Skill |
+| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；rework=close→closed；否则 `review` 状态 auto_merge=true 时 daemon 自动授权合并（conflict 需人工重设 merge_approved） |
 | `done` | pending_req=true 时回 refining，否则终态 |
 | `closed` | 无需交付终态（Bets, Not Backlogs）。closure_reason: not-bet（评估后不下注）/ already-implemented / duplicate / cancelled / wont-fix。不可自动恢复。重要需求会以新 REQ 形式回来——不维护积压。 |
 ## Core Invariants（核心不变量）
@@ -71,6 +71,14 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - review/conflict/done：清 Merge 授权，转 refining。
 - 新自动创建 TASK：pending_req=false。
 
+## Daemon 重启与中断恢复
+
+- daemon 收到 SIGTERM（`systemctl stop`、`otg install`、重启）时优雅停机：运行中的 OMP 先收 SIGTERM 保存 session（30 秒内未退出则强制终止），停机期间不启动 fallback。
+- 被中断的 phase **不视为失败**：任务保持原状态（`refining`/`planning`/`implementing`），写入 `phase_error_code=PHASE_INTERRUPTED` 标记；daemon 重启后下一轮 scan 自动重新调度——无 `blocked`、无手动 `resume_approved`。
+- 阶段成功后自动清理 `PHASE_INTERRUPTED` 标记（`clearPhaseError`）。
+- `otg install` 的 stopDaemon 阻塞等待 systemd 优雅停机完成后再安装，不与新实例竞态。
+- 依赖链自动恢复（`resolveBlockedDependencies`）识别 `PHASE_INTERRUPTED` 为可恢复错误码（同 `MODEL_FAILED`/`PHASE_TIMEOUT`）。
+
 ## Notifications（通知）
 - `notifications.desktop` 只控制 notify-send。
 - Kitty Grilling tab 始终尝试创建，不受 desktop 开关控制。
@@ -79,3 +87,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 ## Documentation（文档）
 完整规范和实现验收清单见 `docs/workflow.md`；字段参考见 `reference.md`。
+
+## 知识库 KB v2 格式规范（References/）
+
+知识库文件格式的完整规范（frontmatter 6 字段、摘要前置、目录强制、要点化、噪音零容忍、verified 语义、交互经验归类规则、分类体系）见 `skill://knowledge-base` 的「知识库文件格式 — 强制要求」「分类体系」与「交互经验归类规则」章节——本文件不重复定义，仅在本 Skill 检索/入库时遵循该规范。

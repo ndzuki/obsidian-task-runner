@@ -22,3 +22,7 @@ coverage.html
 # OS
 .DS_Store
 Thumbs.db
+
+# Core dumps
+core.*
+core.[0-9]*

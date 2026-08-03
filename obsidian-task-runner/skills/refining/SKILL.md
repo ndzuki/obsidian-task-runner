@@ -61,7 +61,7 @@ refine_error: ""
 
 ## Step 4: Dispatch by Maturity（状态分流）
 
-### 4a: 大型需求 → wayfinder 决策地图
+### 4a: 大型需求 → Wayfinder Map 决策地图
 
 在进入 needs-grilling 之前，若满足以下任一条件，先加载 `skill://wayfinder`：
 - AC > 10 条

@@ -79,7 +79,7 @@ case "$current_status" in
     echo "[fake-omp] planning→plan-review (plan_version=$pv)" >&2
     ;;
   implementing)
-    # Simulate round2 skill: transition to review for human gate
+    # Simulate round2 skill: transition to review (daemon auto-approves merge when auto_merge=true)
     sed -i 's/^status:.*$/status: review/' "$taskfile"
     echo "[fake-omp] implementing→review" >&2
     ;;

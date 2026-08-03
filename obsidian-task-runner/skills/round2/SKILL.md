@@ -34,7 +34,7 @@ disableModelInvocation: true
 
 ## Tracer Bullet（逐AC推进）
 
-每条 AC 独立执行：
+每条 AC 独立执行，Red/Green/Refactor 标准参照 `skill://tdd`：
 
 1. Red：最小失败测试。
 2. Green：刚好足够的实现。
@@ -93,11 +93,12 @@ otg update-status \<task\> \
 ## Completion Checklist（完成检查）
 
 1. 全部 AC 有独立证据。
-2. 运行项目全部测试（Go: `go test -race ./...`）。
-3. 运行 lint。
-4. 加载 `skill://test-quality`，修复 critical/important 问题。
-5. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
-6. 调 task-verifier 核验 AC。
+2. **每个 `risk: high` Step 的实现记录必须含 Prototype 证据**（`✅ Prototype validated` 或 FAIL 记录 + grill_context）；缺失则补跑 Prototype Gate，不得跳过。
+3. 运行项目全部测试（Go: `go test -race ./...`）。
+4. 运行 lint。
+5. 加载 `skill://test-quality`，修复 critical/important 问题。
+6. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
+7. 调 task-verifier 核验 AC。
 
 ### Write ADRs (BEFORE implementation — do not skip)
 
@@ -162,10 +163,20 @@ TASK-<id>: <N> files +<added>/-<deleted>, <M> tests PASS
 test-quality: 🔴0/🟡0/🟢<N> | code-review: St<N> Sp<N>
 appetite: <small|medium|large> | deferred: <N> AC (~nice-to-have)
 baseline: <一句话改善对比>
-risk: <level> → 快速 review 即可
+risk: <level> → auto_merge 默认自动合并，无需人工 review（可设 auto_merge: false 恢复人工 gate）
 ```
 
 成功写回：
+
+全部 AC 完成、测试与检查通过后：
+
+```bash
+otg update-status <task> status=review
+```
+
+- `auto_merge: true`（默认）时 daemon 自动授权合并并执行 Merge Phase（push → PR → CI checks → merge），无需人工。
+- `auto_merge: false` 时保持 `merge_approved: false`，等待用户 review 后手动设 `merge_approved: true`。
+
 ## New Project（新项目）
 
 只有 Round 2 可以创建项目目录、Git repo 和脚手架。创建成功后执行 `otg register-project`。

@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // ExtractResult holds the outcome of a project knowledge extraction run.
@@ -14,6 +16,7 @@ type ExtractResult struct {
 	ADRCount    int
 	NewRefs     int
 	UpdatedRefs int
+	Touched     []string // absolute paths of knowledge files created/updated
 	Errors      []string
 }
 
@@ -37,13 +40,16 @@ func ExtractProjectKnowledge(vaultDir, projectName string) (*ExtractResult, erro
 
 	refsDir := filepath.Join(vaultDir, "References")
 	for _, adr := range adrs {
-		written, updated, err := extractADRKnowledge(adr, refsDir, projectName)
+		written, updated, touchedPath, err := extractADRKnowledge(adr, refsDir, projectName)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("extract %s: %v", adr.ID, err))
 			continue
 		}
 		result.NewRefs += written
 		result.UpdatedRefs += updated
+		if touchedPath != "" {
+			result.Touched = append(result.Touched, touchedPath)
+		}
 	}
 
 	return result, nil
@@ -111,27 +117,27 @@ func scanADRs(adrDir string) ([]adrInfo, error) {
 	return adrs, nil
 }
 
-func extractADRKnowledge(adr adrInfo, refsDir, projectName string) (int, int, error) {
+func extractADRKnowledge(adr adrInfo, refsDir, projectName string) (int, int, string, error) {
 	newCount, updateCount := 0, 0
 	target := classifyADR(adr)
 	if target == "" {
-		return 0, 0, nil
+		return 0, 0, "", nil
 	}
 
 	targetPath := filepath.Join(refsDir, target)
 	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
 		if err := createRefScaffold(targetPath, adr, projectName); err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		newCount++
 	} else {
 		if err := appendPracticeNote(targetPath, adr, projectName); err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		updateCount++
 	}
 
-	return newCount, updateCount, nil
+	return newCount, updateCount, targetPath, nil
 }
 
 func classifyADR(adr adrInfo) string {
@@ -239,4 +245,121 @@ func extractSection(content, heading string) string {
 		return rest[:nextHeader[0]]
 	}
 	return rest
+}
+
+// MarkVerified sets verified: true on the given knowledge files. Called after
+// a merge→done delivery: the ADR decisions extracted from that delivery have
+// been validated by real project practice, so the file-level verified flag
+// flips. Content added later (unverified ADRs) keeps the per-section notes
+// honest — the flag is file-level, practice notes stay section-level.
+// All errors are collected and reported together; files that succeeded stay
+// flipped (partial success is not rolled back).
+func MarkVerified(paths []string) error {
+	var errs []string
+	for _, p := range paths {
+		if err := yamlfrontmatter.Update(p, map[string]interface{}{"verified": true}); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", p, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("mark verified: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// failureRootCause maps stable error codes to known root causes / fixes used
+// by the auto-sink of daemon phase failures into the knowledge base.
+type failureRootCause struct {
+	RootCause string
+	Fix       string
+	Lesson    string
+}
+
+var failureRootCauses = map[string]failureRootCause{
+	"API_KEY_UNAVAILABLE": {
+		RootCause: "OMP 无法获取模型 API Key（KeePassXC 未解锁或 secret service 不可达；systemd 单元需 XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS）",
+		Fix:       "解锁 KeePassXC（或配置 DEEPSEEK_API_KEY/CODEX_API_KEY 环境变量）；daemon 探测到 key 后自动恢复",
+		Lesson:    "外部依赖不可用是可恢复条件，不应与真失败混为一谈；key 失败不重试不 fallback",
+	},
+	"PHASE_INTERRUPTED": {
+		RootCause: "daemon 停机/重启中断了执行中的 OMP（SIGTERM → 保存 session 退出）",
+		Fix:       "无需处理：重启后下一轮 scan 自动重新调度，阶段成功后标记自动清除",
+		Lesson:    "部署重启是运维常态，任务状态保持 + PHASE_INTERRUPTED 标记使重启无损",
+	},
+	"MODEL_FAILED": {
+		RootCause: "模型调用失败（进程异常退出、网络、模型服务错误）",
+		Fix:       "查看 phase_log 定位具体错误（key/quota/网络）；必要时手动 resume",
+		Lesson:    "先看日志再判断失败类别；MODEL_FAILED 是兜底分类",
+	},
+	"PHASE_TIMEOUT": {
+		RootCause: "模型在阶段超时内无响应",
+		Fix:       "检查网络与模型服务状态；fallback 模型会自动重试",
+		Lesson:    "超时走独立分类，不与其他失败混淆",
+	},
+	"MODEL_QUOTA_EXHAUSTED": {
+		RootCause: "模型 token 配额耗尽",
+		Fix:       "前往模型平台充值后续航",
+		Lesson:    "配额错误优先识别，避免误判为网络问题",
+	},
+}
+
+// AppendFailurePattern sinks a daemon phase failure into the knowledge base as
+// a bug pattern (现象/根因/修复/教训), deduplicated by error code + phase.
+// First occurrence per code+phase is recorded; later occurrences are skipped
+// (the file itself is the dedup store, surviving daemon restarts). Missing
+// knowledge base is silently skipped.
+func AppendFailurePattern(vaultDir, code, phase, taskID, logPath string) error {
+	if vaultDir == "" {
+		return nil
+	}
+	path := filepath.Join(vaultDir, "References", "core", "daemon-stuck-task-patterns.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // knowledge base not set up
+		}
+		return err
+	}
+	content := string(data)
+
+	marker := code + " — " + phase + " 阶段失败"
+	if strings.Contains(content, marker) {
+		return nil // already recorded
+	}
+
+	rc, known := failureRootCauses[code]
+	if !known {
+		rc = failureRootCause{
+			RootCause: "见 phase_log 定位具体原因",
+			Fix:       "分析日志后修复，必要时手动 resume_approved",
+			Lesson:    "未知错误码先归类再处理",
+		}
+	}
+
+	patternNo := strings.Count(content, "## 模式") + 1
+	now := time.Now().Format("2006-01-02")
+	entry := fmt.Sprintf(`
+---
+
+## 模式 %d：%s — %s 阶段失败
+
+**现象**：任务 TASK-%s 失败（错误码 %s，阶段 %s，日志：%s）。
+
+**根因**：%s
+
+**修复**：%s
+
+**教训**：%s
+
+**检查项**：出现 %s 错误码 → %s（自动沉淀于 %s）
+`, patternNo, code, phase, taskID, code, phase, logPath,
+		rc.RootCause, rc.Fix, rc.Lesson, code, rc.Fix, now)
+
+	// 追加到"更新记录"前:把条目插到文件末尾的检查清单/更新记录之前
+	if idx := strings.LastIndex(content, "## 检查清单"); idx >= 0 {
+		content = content[:idx] + entry + content[idx:]
+	} else {
+		content += entry
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }

@@ -9,12 +9,12 @@
 ```text
 blocked → ready → refining ─┬─ fully_mature → planning → plan-review → implementing → review → done
                             ├─ needs input → needs-grilling → refining
-                            └─ 大型需求 → wayfinder（拆决策票）
+                            └─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
 
 refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
 implementing -- prototype FAIL → needs-grilling（带原型证据）
-review -- merge conflict --> conflict -- approved retry --> done
+review -- merge conflict --> conflict -- AI 自动解决一次，失败后人工重授权 --> done
 plan-review -- close_approved --> closed
 review -- close_approved --> closed
 closed -- [终态，不可恢复]
@@ -23,25 +23,25 @@ closed -- [终态，不可恢复]
 ## 2. 状态定义
 | 状态 | 含义 | 执行者 | 下一步 |
 |------|------|--------|--------|
-| `blocked` | 缺字段/依赖，或 refining/planning 连续失败 | daemon / 人工 | `ready` 或按 `blocked_phase` 恢复 |
+| `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
 | `ready` | 可开始 priority assessment + maturity gate | daemon | `refining` |
-| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `wayfinder` / `blocked` |
+| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `blocked` |
 | `needs-grilling` | 需要用户交互补充规格 | Kitty + requirement-elaborator | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
-| `review` | 本地实现已提交，等待 Merge 授权 | 人工 | `done` / `conflict` / `refining` / `closed` |
+| `review` | 本地实现已提交；auto_merge=true 时自动授权合并，否则等待人工 | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
-| `conflict` | Merge 冲突 | 人工 + Merge Skill | `done` / `refining` |
+| `conflict` | Merge 冲突；AI 自动解决一次失败后交还人工 | daemon（AI 一次）+ 人工 | `done` / `refining` |
 | `done` | 已合并推送；pending_req=false 时终态 | — | `refining` 或结束 |
-| `wayfinder` | 大型需求（AC>10 / 3+服务），等待人工拆分为决策票 | 人工 | `blocked → 子任务逐项推进` |
 
 ## 3. 人工 Gate
 
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | 审阅实现后设 true | `pending_req=true` 时绝对无效 |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true，失败回退路径保持 false 需人工重设 |
+| `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
 | `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
 | `review_feedback` | review 阶段人工反馈摘要 | free text，`review` 状态下有效 |
@@ -105,6 +105,10 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 
 `blocked_by` 上游处于阶段失败阻塞（`blocked_phase` 非空且错误码为 MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED/MODEL_QUOTA_EXHAUSTED 或空）时，daemon 自动设 `resume_approved=true` + `auto_resume_pending=true` 以解开依赖链；`auto_resume_count` 仅在这种自动恢复后再次失败时递增。人工 resume（无 pending 标记）清零计数。`REQ_MISSING` 等非瞬时错误与循环依赖永不自动恢复。
 
+**`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 OMP 收 SIGTERM 保存 session 后退出，任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 自动重新调度，阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
+
+**人工暂停**：需要暂停任务等待外部条件（如用户完善需求）时，可设 `status=blocked` + `blocked_phase=<原状态>` + `phase_error_code=REQ_MISSING`（非自动恢复错误码），daemon 保持阻塞且不提醒；条件满足后设 `resume_approved=true` 恢复。
+
 ### 4.5 Grilling 所有权
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -116,6 +120,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_done` | bool | `false` | 规格写回完成标记 |
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
+| `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
 
 | `grill_resolution` | enum/string | `""` | `resume` 直接恢复实现；`replan` 转 refining；空值保持等待 |
 Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使用 `${TMPDIR}/otg-grill-<task-path-sha256>.lock` flock 强化本机原子性。
@@ -129,7 +134,8 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `pending_req` | bool | `false` | 新 REQ 尚未被新计划完整吸收 |
-| `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效 |
+| `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效；review 进入时按 auto_merge 自动置 true |
+| `auto_merge` | bool | `true` | 进入 review 自动授权合并；false 恢复人工 gate |
 | `target_branch` | string | `""` | Round 2 分支 |
 | `pr_url` | string | `""` | PR URL |
 
@@ -174,7 +180,7 @@ append-only，不覆盖已有条目。`pipeline.EnsureContextMD` 在项目初始
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `priority` | string | `""` | 优先级标签，人工或自动填写 |
-| `priority_assessment_status` | string | `""` | `pending` / `in_progress` / `done` |
+| `priority_assessment_status` | string | `""` | `pending` / `running` / `completed` / `failed` |
 | `priority_impact` | string | `""` | 影响范围描述 |
 | `priority_urgency` | string | `""` | 紧急程度描述 |
 | `priority_workaround` | string | `""` | 已知变通方案 |

@@ -1,18 +1,18 @@
 # Obsidian Task Runner
 
-> 在 Obsidian 写需求，自动生成任务、制定计划、实现代码，并在你确认后创建 PR 和合并。
+> 在 Obsidian 写需求，自动生成任务、制定计划、实现代码、创建 PR 并合并——你只负责写需求、把握方向，最后验收产品。
 
-Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求入口，把项目代码目录当作执行目标。你只需要写需求并在三个交互点确认，其他步骤由 OMP Agent 和守护进程自动完成。
+Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求入口，把项目代码目录当作执行目标。你只需要写需求、在两处确认、最后验收产品，其他步骤（计划、实现、测试、PR、合并）由 OMP Agent 和守护进程自动完成。
 
 ## 适合谁
 
 - 用 Obsidian 管理需求，同时希望 AI 在真实 Git 仓库中实现代码。
 - 需要保留计划、实现记录、验收结果和决策记忆，方便追溯。
-- 希望 AI 不能未经确认就进入下一阶段或推送代码。
+- 希望全程自动化：从需求到计划、实现、PR 创建与合并都由系统完成，只保留「需求方向」和「最终产品验收」两个人工节点。
 
 > 当前版本面向 Linux + systemd + OMP。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
 
-## 工作方式：你只需要参与三次交互
+## 工作方式：你只需确认方向并验收产品
 ```text
 写需求 REQ-xxx.md
         │
@@ -38,12 +38,45 @@ refining（headless 成熟度检查）
 Round 2 完成后：
         │
         ▼
-    review ──(你确认 merge_approved: true)──> Merge：push、PR、合并 ──> done
+    review ──(auto_merge 默认 true，全自动)──> 自动创建 PR + 合并 ──> done
+        │
+        ▼
+    最终验收：运行/试用产品
+        │
+        ├── 符合预期 ──> 任务结束
+        └── 有问题 ──> 修改 REQ，自动重新规划
 ```
 
 - **Grilling 对话**：AI 在 Kitty tab 中逐项追问，你确认方向。完成后自动回到成熟度检查。
-- `plan_approved: true`：允许 Agent 按计划写代码。
-- `merge_approved: true`：明确允许执行远程 Git 操作和合并。
+- `plan_approved: true`：允许 Agent 按计划写代码（实现前唯一需要你确认的步骤）。
+- **自动 PR 与合并**（`auto_merge: true` 默认）：实现完成后自动创建 PR、等待 CI 检查通过并合并，无需你操作；合并遇到冲突时 AI 自动尝试解决一次，仍失败才通知你手动处理。个别任务可设 `auto_merge: false` 恢复人工确认。
+- **最终验收**：合并完成后（done）运行/试用产品；不满意直接修改 REQ，系统自动重新规划实现。
+
+```mermaid
+flowchart TD
+    REQ[写需求 REQ] --> TASK[TASK 自动创建]
+    TASK -->|补齐 project+assignee| READY[ready]
+    READY --> REFINE[refining 成熟度检查]
+    REFINE -->|fully_mature| PLAN[planning 生成计划]
+    REFINE -->|needs input| GRILL[needs-grilling Kitty 对话]
+    GRILL --> REFINE
+    PLAN --> PR[plan-review]
+    PR -->|plan_approved| R2[Round 2 实现]
+    R2 --> RV[review]
+    RV -->|auto_merge 自动授权| DONE[done]
+    RV -->|PR 冲突| CF[conflict]
+    CF -->|AI 自动解决一次，失败后人工重授权| DONE
+    R2 -->|API key 不可用| KEYBLOCK[blocked API_KEY_UNAVAILABLE]
+    KEYBLOCK -->|key 恢复自动拾起| R2
+    R2 -->|daemon 重启中断| INTR[PHASE_INTERRUPTED]
+    INTR -->|重启后自动重跑| R2
+    DONE -->|最终验收：试用产品，不满意改 REQ| ACCEPT[验收通过 / 重新规划]
+    DONE -->|merge 后自动提取| KB[知识库 References]
+    KB -->|Round 1/2 检索| REFINE
+    KB -->|失败自动沉淀| KEYBLOCK
+```
+
+> 📖 想了解每一步系统具体做什么、调用哪个 Skill、写回哪些字段（含失败恢复与知识库回流）：见 [docs/workflow.md §0 自动化任务完整链路](docs/workflow.md)。
 ## 5 分钟安装
 
 ### 1. 准备依赖
@@ -179,7 +212,29 @@ daemon 每次扫描会检查 `blocked` 任务的 `blocked_by` 上游：若上游
 
 ### 优雅停机
 
-daemon 收到 SIGTERM（`systemctl stop`/重启）时，运行中的 OMP 会话先收 SIGTERM 保存 session 后退出，30 秒内未退出则强制终止；停机期间不会启动 fallback 模型。任务在下一轮扫描自动恢复。
+daemon 收到 SIGTERM（`systemctl stop`/重启/`otg install`）时，运行中的 OMP 会话先收 SIGTERM 保存 session 后退出，30 秒内未退出则强制终止；停机期间不会启动 fallback 模型。被中断的任务**不视为失败**：保持原状态并标记 `phase_error_code=PHASE_INTERRUPTED`，重启后下一轮扫描自动拾起继续执行（无 `blocked`、无需手动 `resume_approved`）；阶段成功后标记自动清除。`otg install` 的 stopDaemon 阻塞等待优雅停机完成，不与新实例竞态。
+
+### 知识库（KB v2）：自动沉淀 + 主动检索
+
+知识库位于 Vault 的 `References/`，按**主题域**分目录（分类稳定，不随项目活跃度变化）：`core/` 平台与架构技术（Go、K8s、容器、网络、GitOps）、`extended/` 运维与工具（数据库、可观测、Linux、Helm、方法论）、`archived/` 已废弃（仅人工归档）。使用频率是**元数据**（frontmatter `activity: high|normal|low`），由 INDEX 展示层按 `verified → activity → updated` 排序——**不移动文件、不破坏链接**，项目停更只影响元数据与检索优先级：
+
+```mermaid
+flowchart LR
+    FAIL[阶段失败] -->|首次错误码+阶段| SINK[自动沉淀模式: 现象/根因/修复/教训]
+    MERGE[merge→done 交付] -->|ADR 提取| EXTRACT[写入 References/]
+    EXTRACT -->|验证通过| VERIFIED[verified=true]
+    SINK --> KB[(References/ KB v2)]
+    EXTRACT --> KB
+    KB -->|RebuildINDEX 摘要层| IDX[(INDEX.md)]
+    IDX -->|Round 1/2 检索| AGENT[OMP agent]
+    AGENT -->|加载 knowledge-base| KB
+    AGENT -->|新踩坑写回| KB
+```
+
+- **自动沉淀**：阶段失败时，`handlePhaseFailure` 自动把首次出现的错误码+阶段组合（`API_KEY_UNAVAILABLE`/`PHASE_INTERRUPTED`/`MODEL_FAILED` 等）追加为知识库「模式」（现象→根因→修复→教训），按错误码+阶段去重，跨重启有效——**踩坑在发生时即记录，不等人工**。
+- **自动提取**：merge→done 交付后自动扫描项目 ADR 提取决策到 References/，并翻转 `verified=true`（实践验证信号）。
+- **主动检索**：Round 1/2 的 skill 强制加载 `skill://knowledge-base`：Round 1 执行 Step -1 项目知识图谱（CONTEXT + ADR + References 三源交叉）并把技术栈约束纳入计划；Round 2 按计划技术栈检索 `core/` 文档引用已验证最佳实践，实现中发现的坑写回知识库。
+- **KB v2 格式**：每个文件 H1 后强制摘要（INDEX 自动提取为检索摘要列）、>300 行强制目录、要点化/表格化、零 AI 聊天链接与项目文件清单（`RebuildINDEX` 自动标记噪音）。
 
 ### 5. 确认服务状态
 
@@ -246,12 +301,11 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | 审阅计划 + ADR 提议，确认后设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
-| `review` | 本地实现已提交 | 审阅代码和验收记录，确认后设 `merge_approved: true` |
-| `conflict` | 合并遇到冲突 | 手动解决并重新授权合并 |
+| `review` | 本地实现已提交，正在自动合并（`auto_merge: true`） | 无需操作；合并失败时按通知处理 |
+| `conflict` | 合并遇到冲突（AI 已自动尝试解决一次） | 手动解决并设 `merge_approved: true` 重新授权 |
 | `done` | 已合并完成 | 任务结束；REQ 变更时自动回 refining |
 | `closed` | 已关闭（重复/取消/不予处理） | 终态，不可恢复 |
-| `wayfinder` | 大型需求等待拆分为决策票 | 人工拆分为子任务后逐项推进 |
-Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。只有 `merge_approved: true` 才会进入 Merge Phase。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
+Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。进入 Merge Phase 需 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 在 review 阶段自动授权，无需你操作；PR 冲突时 AI 自动解决一次，失败才通知你手动处理。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
 
 ## 常用命令
 
@@ -298,9 +352,9 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 ## 文档索引
 
 - [`docs/dataview.md`](docs/dataview.md)：Dataview 安装和看板配置（推荐先读）。
+- [`docs/workflow.md`](docs/workflow.md)：架构和完整业务流程（含 §12 知识库知识流）。
+- [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md)：Agent 执行规则（含 KB v2 格式规范）。
 - [`obsidian-task-runner/reference.md`](obsidian-task-runner/reference.md)：状态、字段、故障排查参考。
-- [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md)：Agent 执行规则。
-- [`docs/workflow.md`](docs/workflow.md)：架构和完整业务流程。
 - [`REQ-000-template.md`](REQ-000-template.md)：需求模板。
 - [`TASK-000-template.md`](TASK-000-template.md)：任务模板。
 

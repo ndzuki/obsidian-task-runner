@@ -16,41 +16,43 @@ import (
 
 // ReadyTask is the NDJSON output format for find-ready.
 type ReadyTask struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Project         string `json:"project"`
-	NewProject      bool   `json:"new_project"`
-	Priority        string `json:"priority"`
-	Created         string `json:"created,omitempty"`
-	FilePath        string `json:"file_path"`
-	FileName        string `json:"file_name"`
-	Status          string `json:"status"`
-	PlanApproved    bool   `json:"plan_approved"`
-	MergeApproved   bool   `json:"merge_approved"`
-	CloseApproved   bool   `json:"close_approved,omitempty"`
-	ReqDoc          string `json:"req_doc"`
-	Template        string `json:"template"`
-	Assignee        string `json:"assignee"`
-	AutoApprove     bool   `json:"auto_approve"`
-	PendingReq      bool   `json:"pending_req"`
-	OffPeakOnly     bool   `json:"off_peak_only"`
-	TargetBranch    string `json:"target_branch"`
-	GrillDone       bool   `json:"grill_done"`
-	GrillPrevStatus string `json:"grill_prev_status,omitempty"`
-	GrillResolution string `json:"grill_resolution,omitempty"`
-	GrillContext    string `json:"grill_context,omitempty"`
-	GrillContinue   bool   `json:"grill_continue,omitempty"`
+	ID                       string `json:"id"`
+	Title                    string `json:"title"`
+	Project                  string `json:"project"`
+	NewProject               bool   `json:"new_project"`
+	Priority                 string `json:"priority"`
+	Created                  string `json:"created,omitempty"`
+	FilePath                 string `json:"file_path"`
+	FileName                 string `json:"file_name"`
+	Status                   string `json:"status"`
+	PlanApproved             bool   `json:"plan_approved"`
+	MergeApproved            bool   `json:"merge_approved"`
+	CloseApproved            bool   `json:"close_approved,omitempty"`
+	ReqDoc                   string `json:"req_doc"`
+	Template                 string `json:"template"`
+	Assignee                 string `json:"assignee"`
+	AutoApprove              bool   `json:"auto_approve"`
+	AutoMerge                bool   `json:"auto_merge"`
+	PendingReq               bool   `json:"pending_req"`
+	PhaseErrorCode           string `json:"phase_error_code,omitempty"`
+	OffPeakOnly              bool   `json:"off_peak_only"`
+	TargetBranch             string `json:"target_branch"`
+	GrillDone                bool   `json:"grill_done"`
+	GrillPrevStatus          string `json:"grill_prev_status,omitempty"`
+	GrillResolution          string `json:"grill_resolution,omitempty"`
+	GrillContext             string `json:"grill_context,omitempty"`
+	GrillContinue            bool   `json:"grill_continue,omitempty"`
 	PriorityAssessmentStatus string `json:"priority_assessment_status,omitempty"`
-	PlanVersion     int    `json:"plan_version,omitempty"`
-	ReworkResolution string `json:"rework_resolution,omitempty"`
-	ReviewFeedback   string `json:"review_feedback,omitempty"`
-	ClosureReason    string `json:"closure_reason,omitempty"`
-	GrillStartedAt     string `json:"grill_started_at,omitempty"`
-	GrillHeartbeatAt   string `json:"grill_heartbeat_at,omitempty"`
-	GrillTimeoutMinutes int   `json:"grill_timeout_minutes,omitempty"`
-	RefineReqHash     string `json:"refine_req_hash,omitempty"`
-	PlanReqHash       string `json:"plan_req_hash,omitempty"`
-	Maturity          string `json:"maturity,omitempty"`
+	PlanVersion              int    `json:"plan_version,omitempty"`
+	ReworkResolution         string `json:"rework_resolution,omitempty"`
+	ReviewFeedback           string `json:"review_feedback,omitempty"`
+	ClosureReason            string `json:"closure_reason,omitempty"`
+	GrillStartedAt           string `json:"grill_started_at,omitempty"`
+	GrillHeartbeatAt         string `json:"grill_heartbeat_at,omitempty"`
+	GrillTimeoutMinutes      int    `json:"grill_timeout_minutes,omitempty"`
+	RefineReqHash            string `json:"refine_req_hash,omitempty"`
+	PlanReqHash              string `json:"plan_req_hash,omitempty"`
+	Maturity                 string `json:"maturity,omitempty"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.
@@ -267,7 +269,11 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return !fm.OffPeakOnly || IsOffPeak()
 	case "plan-review":
 		return fm.PlanApproved && (!fm.OffPeakOnly || IsOffPeak())
-	case "review", "conflict":
+	case "review":
+		// Fresh review (Round 2 completed, no failure) with auto_merge is
+		// ready so the daemon auto-approves and merges without a manual gate.
+		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && fm.PhaseErrorCode == "")
+	case "conflict":
 		return fm.PendingReq || fm.MergeApproved
 	case "done":
 		return fm.PendingReq
@@ -327,7 +333,9 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 		Template:                 fm.Template,
 		Assignee:                 fm.Assignee,
 		AutoApprove:              fm.AutoApprove,
+		AutoMerge:                fm.AutoMerge,
 		PendingReq:               fm.PendingReq,
+		PhaseErrorCode:           fm.PhaseErrorCode,
 		OffPeakOnly:              fm.OffPeakOnly,
 		TargetBranch:             fm.TargetBranch,
 		GrillDone:                fm.GrillDone,
@@ -395,17 +403,18 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				Status: fm.Status, PlanApproved: fm.PlanApproved,
 				MergeApproved: fm.MergeApproved, CloseApproved: fm.CloseApproved,
 				ReqDoc: fm.ReqDoc, Template: fm.Template, Assignee: fm.Assignee,
-				AutoApprove: fm.AutoApprove, PendingReq: fm.PendingReq,
+				AutoApprove: fm.AutoApprove, AutoMerge: fm.AutoMerge, PendingReq: fm.PendingReq,
+				PhaseErrorCode: fm.PhaseErrorCode,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
 				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
 				GrillContinue: fm.GrillContinue, PlanVersion: fm.PlanVersion,
 				PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
-				GrillHeartbeatAt: fm.GrillHeartbeatAt,
-				GrillTimeoutMinutes: fm.GrillTimeoutMinutes,
-				RefineReqHash: fm.RefineReqHash,
-				PlanReqHash: fm.PlanReqHash,
-				Maturity: fm.Maturity,
-				ReviewFeedback: fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
+				GrillHeartbeatAt:         fm.GrillHeartbeatAt,
+				GrillTimeoutMinutes:      fm.GrillTimeoutMinutes,
+				RefineReqHash:            fm.RefineReqHash,
+				PlanReqHash:              fm.PlanReqHash,
+				Maturity:                 fm.Maturity,
+				ReviewFeedback:           fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
 				ClosureReason: fm.ClosureReason,
 			})
 		}
