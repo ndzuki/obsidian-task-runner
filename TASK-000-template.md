@@ -3,6 +3,7 @@
 id: ""
 title: ""
 project: ""
+project_id: ""  # 项目内唯一数字 ID，如 "001"
 assignee: ""  # deepseek / gpt / gemini / claude / minimax / flash
 req_doc: ""
 
@@ -10,10 +11,14 @@ req_doc: ""
 tags: []
 epic: ""
 blocked_by: []
+blocks: []
 
 # 🟡 系统评分
 priority: ""
 priority_assessment_status: ""
+priority_assessment_started_at: ""
+priority_assessed_at: ""
+priority_assessment_attempts: 0
 priority_assessed_value: ""
 priority_impact: ""
 priority_urgency: ""
@@ -37,15 +42,17 @@ priority_recommendation: ""
 # target_env: staging
 
 # 🟠 新项目脚手架（按需取消注释）
-# scaffold.kind: ""
-# scaffold.capabilities: []
-# scaffold.preferences: ""
-# scaffold.notes: ""
+# scaffold:
+#   kind: ""
+#   capabilities: []
+#   preferences: {}
+#   notes: ""
 # remote_create: false
 # github_owner: ""
 # repository_name: ""
 # repository_visibility: private
 # repository_description: ""
+# repository_url: ""
 
 # 🔵 Gate — 由你批准
 plan_approved: false
@@ -75,6 +82,9 @@ planning_retry_count: 0
 blocked_phase: ""
 phase_error: ""
 phase_log: ""
+auto_resume_count: 0
+auto_resume_pending: false
+phase_error_code: ""
 grill_owner: ""
 grill_started_at: ""
 grill_heartbeat_at: ""
@@ -83,17 +93,21 @@ grill_done: false
 grill_resolution: ""
 grill_context: ""
 grill_prev_status: ""
+grill_continue: ""
 req_refine_count: 0
+adr_proposed: ""
+adr_written: []
 created: ""
 updated: ""
 completed: ""
 target_branch: ""
 pr_url: ""
+merge_status: ""
+approved_head: ""
 actual_hours: 0
 
 # ⚪ 系统维护（新增）
-task_schema_version: ""
-phase_error_code: ""
+task_schema_version: 1
 ---
 
 # <!-- 标题 -->
