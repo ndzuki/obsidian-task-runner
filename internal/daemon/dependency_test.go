@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
@@ -929,7 +931,7 @@ assignee: default
 
 	runner := New(&config.Config{})
 	runner.logger = log.New(io.Discard, "", 0)
-	runner.handlePhaseFailure(path, "130", "Failing", "round2", ErrModelFailed, "boom", "")
+	runner.handlePhaseFailure(path, "130", "Failing", "implementing", "round2", ErrModelFailed, "boom", "")
 
 	fm := mustParse(t, path)
 	if fm.Status != "blocked" {
@@ -967,7 +969,7 @@ assignee: default
 
 	runner := New(&config.Config{})
 	runner.logger = log.New(io.Discard, "", 0)
-	runner.handlePhaseFailure(path, "131", "First Fail", "round2", ErrModelFailed, "boom", "")
+	runner.handlePhaseFailure(path, "131", "First Fail", "implementing", "round2", ErrModelFailed, "boom", "")
 
 	fm := mustParse(t, path)
 	if fm.AutoResumeCount != 0 {
@@ -980,7 +982,7 @@ assignee: default
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runner.handlePhaseFailure(path, "131", "First Fail", "round2", ErrModelFailed, "boom2", "")
+	runner.handlePhaseFailure(path, "131", "First Fail", "implementing", "round2", ErrModelFailed, "boom2", "")
 	fm = mustParse(t, path)
 	if fm.AutoResumeCount != 0 {
 		t.Fatalf("auto_resume_count = %d, want 0 after manual-resume failure", fm.AutoResumeCount)
@@ -1075,4 +1077,248 @@ func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 		t.Fatal(err)
 	}
 	return fm
+}
+
+func TestCheckAPIKeyUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "omp.log")
+
+	if got := checkAPIKeyUnavailable(filepath.Join(dir, "missing.log")); got != "" {
+		t.Fatalf("missing log = %q, want empty", got)
+	}
+
+	if err := os.WriteFile(logPath, []byte("Working...\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkAPIKeyUnavailable(logPath); got != "" {
+		t.Fatalf("clean log = %q, want empty", got)
+	}
+
+	if err := os.WriteFile(logPath, []byte("Working...\nerror: No API key found for gateway.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkAPIKeyUnavailable(logPath); got == "" {
+		t.Fatal("key error log = empty, want message")
+	}
+
+	if err := os.WriteFile(logPath, []byte("missing API_KEY for provider deepseek\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkAPIKeyUnavailable(logPath); got == "" {
+		t.Fatal("missing api key log = empty, want message")
+	}
+}
+
+// TestScanAndProcessAutoResumesKeyBlockedTask verifies that a task blocked on
+// API_KEY_UNAVAILABLE is restored to blocked_phase and dispatched in the SAME
+// scan round once the key probe succeeds (fall-through, no extra round wait).
+func TestScanAndProcessAutoResumesKeyBlockedTask(t *testing.T) {
+	dir := t.TempDir()
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"test": repo})
+
+	taskPath := filepath.Join(tasksDir, "TASK-082-keyblocked.md")
+	if err := os.WriteFile(taskPath, []byte(`---
+id: "082"
+title: Key Blocked
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: API_KEY_UNAVAILABLE
+phase_error: OMP 无法获取模型 API Key
+resume_approved: false
+priority: P2
+assignee: default
+req_doc: Projects/001-test/Requirements/REQ-082.md
+---
+# Key Blocked
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldProbe := apiKeyProbe
+	apiKeyProbe = func() bool { return true }
+	t.Cleanup(func() { apiKeyProbe = oldProbe })
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner.cfg.ObsidianVault = vault
+	runner.cfg.SkillInstallDir = skillDir
+
+	done := make(chan error, 1)
+	go func() { done <- runner.scanAndProcess() }()
+
+	waitForStartCount(t, startDir, 1)
+
+	fm := mustParse(t, taskPath)
+	if fm.Status != "implementing" {
+		t.Fatalf("status = %q, want implementing", fm.Status)
+	}
+	if fm.BlockedPhase != "" {
+		t.Fatalf("blocked_phase = %q, want empty", fm.BlockedPhase)
+	}
+	if fm.PhaseErrorCode != "" {
+		t.Fatalf("phase_error_code = %q, want empty", fm.PhaseErrorCode)
+	}
+	if fm.PhaseError != "" {
+		t.Fatalf("phase_error = %q, want empty", fm.PhaseError)
+	}
+
+	releaseBarrier(t, releaseFile)
+	if err := <-done; err != nil {
+		t.Fatalf("scanAndProcess: %v", err)
+	}
+}
+
+// TestScanAndProcessKeepsKeyBlockedWhenUnavailable verifies that a key-blocked
+// task stays blocked and OMP is NOT launched while the key probe fails.
+func TestScanAndProcessKeepsKeyBlockedWhenUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"test": repo})
+
+	taskPath := filepath.Join(tasksDir, "TASK-083-keyblocked.md")
+	if err := os.WriteFile(taskPath, []byte(`---
+id: "083"
+title: Key Blocked
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: API_KEY_UNAVAILABLE
+phase_error: OMP 无法获取模型 API Key
+resume_approved: false
+priority: P2
+assignee: default
+req_doc: Projects/001-test/Requirements/REQ-083.md
+---
+# Key Blocked
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldProbe := apiKeyProbe
+	apiKeyProbe = func() bool { return false }
+	t.Cleanup(func() { apiKeyProbe = oldProbe })
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner.cfg.ObsidianVault = vault
+	runner.cfg.SkillInstallDir = skillDir
+
+	if err := runner.scanAndProcess(); err != nil {
+		t.Fatalf("scanAndProcess: %v", err)
+	}
+
+	if n := countStartFiles(t, startDir); n != 0 {
+		t.Fatalf("OMP launched %d time(s) while key unavailable, want 0", n)
+	}
+	fm := mustParse(t, taskPath)
+	if fm.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", fm.Status)
+	}
+	if fm.BlockedPhase != "implementing" {
+		t.Fatalf("blocked_phase = %q, want implementing", fm.BlockedPhase)
+	}
+}
+
+// TestDaemonShutdownSignalsRunningOMP verifies that cancelling the daemon
+// context (systemd stop / shutdown) sends SIGTERM to the running OMP session
+// (graceful exit) instead of leaving it until a hard kill.
+func TestDaemonShutdownSignalsRunningOMP(t *testing.T) {
+	dir := t.TempDir()
+	startDir := filepath.Join(dir, "starts")
+	releaseFile := filepath.Join(dir, "release")
+	omp := filepath.Join(dir, "fake-omp")
+	script := `#!/bin/sh
+mkdir -p "$START_DIR"
+printf '%s\n' "$$" > "$START_DIR/started"
+trap 'echo term > "$START_DIR/term"; exit 143' TERM
+while [ ! -e "$RELEASE_FILE" ]; do sleep 0.2; done
+`
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(dir, "TASK-090-shutdown.md")
+	if err := os.WriteFile(taskPath, []byte(`---
+id: "090"
+title: Shutdown
+project: test
+status: implementing
+assignee: default
+req_doc: Projects/001-test/Requirements/REQ-090.md
+---
+# Shutdown
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newTestRunner(filepath.Join(dir, "skill"), omp, filepath.Join(dir, "logs"), 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.daemonCtx = ctx
+
+	done := make(chan int, 1)
+	go func() {
+		tasks, err := task.FindReadyTaskForFile("", taskPath)
+		if err != nil || tasks == nil {
+			done <- -1
+			return
+		}
+		done <- runner.processBatchSequential([]task.ReadyTask{*tasks}, repo)
+	}()
+
+	// Wait for OMP to start, then cancel the daemon context.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(startDir, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("OMP did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+
+	select {
+	case processed := <-done:
+		if processed < 0 {
+			t.Fatal("task not ready")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("processBatchSequential did not return after daemon cancel")
+	}
+	if _, err := os.Stat(filepath.Join(startDir, "term")); err != nil {
+		t.Fatalf("OMP did not receive SIGTERM on daemon shutdown: %v", err)
+	}
+	_ = os.WriteFile(releaseFile, nil, 0o644)
 }

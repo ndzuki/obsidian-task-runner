@@ -226,12 +226,22 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		}
 	}
 	if fm.BlockedPhase != "" && !fm.ResumeApproved {
-		return false
+		// API_KEY_UNAVAILABLE tasks are auto-resumed by the daemon's key probe
+		// (no manual resume_approved needed) — admit them for processing.
+		if fm.PhaseErrorCode != PhaseErrorCodeAPIKeyUnavailable {
+			return false
+		}
 	}
 	return true
 }
 
 // IsReady checks if a task should be picked up by the daemon.
+// PhaseErrorCodeAPIKeyUnavailable marks tasks blocked because the provider
+// API key could not be resolved (e.g. KeePassXC/secret service locked). The
+// daemon probes key availability each scan and auto-resumes these tasks
+// without manual resume_approved. Single source shared with internal/daemon.
+const PhaseErrorCodeAPIKeyUnavailable = "API_KEY_UNAVAILABLE"
+
 // vaultPath is used to resolve blocked_by dependencies.
 func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	if fm == nil || fm.Assignee == "" || fm.Status == "closed" {
