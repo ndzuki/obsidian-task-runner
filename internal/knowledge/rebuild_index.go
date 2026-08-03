@@ -18,10 +18,13 @@ import (
 type RefEntry struct {
 	Path     string   // relative to References/ (e.g. "core/go/connect-rpc.md")
 	Title    string   // first h1 in the document
+	Summary  string   // first blockquote after h1 — KB v2 mandatory abstract
 	Topics   []string // from frontmatter
 	Level    string   // beginner|intermediate|advanced|reference
 	Updated  string   // ISO 8601
 	Verified bool
+	Noisy    bool     // contains non-knowledge content (chat links, project file lists)
+	Activity string   // high|normal|low — usage frequency, metadata not directory
 }
 
 // layerOrder defines display order for the three layers.
@@ -83,8 +86,10 @@ func parseRefFile(path, rel string) (*RefEntry, error) {
 	}
 
 	entry := &RefEntry{
-		Path:  rel,
-		Title: extractH1(data),
+		Path:    rel,
+		Title:   extractH1(data),
+		Summary: extractSummary(data),
+		Noisy:   hasNoise(data),
 	}
 	if v, ok := fm["topics"]; ok {
 		entry.Topics = toStringSlice(v)
@@ -102,6 +107,17 @@ func parseRefFile(path, rel string) (*RefEntry, error) {
 		case string:
 			entry.Verified = vv == "true"
 		}
+	}
+	if v, ok := fm["activity"]; ok {
+		switch vv := v.(type) {
+		case string:
+			if vv == "high" || vv == "low" {
+				entry.Activity = vv
+			}
+		}
+	}
+	if entry.Activity == "" {
+		entry.Activity = "normal"
 	}
 	return entry, nil
 }
@@ -137,6 +153,36 @@ func extractH1(data []byte) string {
 	return ""
 }
 
+// extractSummary returns the first blockquote line following the h1 — the
+// KB v2 mandatory abstract (a "> ..." line directly after the title).
+// Empty when the document predates KB v2 or lacks the abstract.
+func extractSummary(data []byte) string {
+	re := regexp.MustCompile(`(?m)^# [^#\n].*$\n{1,2}>\s*(.+)$`)
+	m := re.FindSubmatch(data)
+	if m != nil {
+		return strings.TrimSpace(string(m[1]))
+	}
+	return ""
+}
+
+// kbNoisePatterns match non-knowledge content that pollutes entries: AI chat
+// session links and project-specific file listings. Such files fail the KB v2
+// quality bar and are flagged in INDEX instead of silently kept.
+var kbNoisePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)https?://(claude\.ai|chatgpt\.com|poe\.com)/`),
+	regexp.MustCompile(`(?m)^##? .*文件清单`),
+	regexp.MustCompile(`(?m)^##? .*项目结构`),
+}
+
+func hasNoise(data []byte) bool {
+	for _, pat := range kbNoisePatterns {
+		if pat.Match(data) {
+			return true
+		}
+	}
+	return false
+}
+
 // toStringSlice converts a frontmatter value to []string.
 func toStringSlice(v any) []string {
 	switch vv := v.(type) {
@@ -160,6 +206,21 @@ func buildINDEX(entries []RefEntry) string {
 	b.WriteString("# References INDEX\n\n")
 	fmt.Fprintf(&b, "> 自动生成于 %s\n", time.Now().Format("2006-01-02"))
 	fmt.Fprintf(&b, "> 总计 %d 篇\n", len(entries))
+	verifiedCount, highCount := 0, 0
+	staleCount := 0
+	for _, e := range entries {
+		if e.Verified {
+			verifiedCount++
+		}
+		if e.Activity == "high" {
+			highCount++
+		}
+		if t, err := time.Parse("2006-01-02", e.Updated); err == nil && time.Since(t) > 365*24*time.Hour {
+			staleCount++
+		}
+	}
+	fmt.Fprintf(&b, "> 可信度：verified %d/%d；活跃：high %d；可能过期(>365d)：%d\n",
+		verifiedCount, len(entries), highCount, staleCount)
 
 	layers := groupByLayer(entries)
 	for _, layer := range layerOrder {
@@ -167,29 +228,70 @@ func buildINDEX(entries []RefEntry) string {
 		if len(group) == 0 {
 			continue
 		}
+		// Retrieval priority: verified → activity(high>normal>low) → updated desc.
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].Verified != group[j].Verified {
+				return group[i].Verified
+			}
+			a, bv := activityRank(group[i].Activity), activityRank(group[j].Activity)
+			if a != bv {
+				return a > bv
+			}
+			return group[i].Updated > group[j].Updated
+		})
 		label := map[string]string{
-			"core":     "Core（项目高频）",
-			"extended": "Extended（偶尔使用）",
-			"archived": "Archived（备份不检索）",
+			"core":     "Core（平台与架构技术）",
+			"extended": "Extended（运维与工具）",
+			"archived": "Archived（已废弃，人工归档）",
 		}[layer]
 		fmt.Fprintf(&b, "\n## %s\n\n", label)
-		b.WriteString("| 文件 | 标题 | topics | level | updated | verified |\n")
-		b.WriteString("|------|------|--------|-------|---------|----------|\n")
+		b.WriteString("| 文件 | 标题 | 摘要 | topics | activity | level | updated | verified |\n")
+		b.WriteString("|------|------|------|--------|----------|-------|---------|----------|\n")
 		for _, e := range group {
 			title := e.Title
 			if title == "" {
 				title = "⚠️"
+			}
+			summary := e.Summary
+			if summary == "" {
+				summary = "⚠️"
+			}
+			if e.Noisy {
+				summary = "⚠️ 含噪音待清理: " + summary
+			}
+			summary = strings.ReplaceAll(summary, "|", "\\|")
+			if r := []rune(summary); len(r) > 80 {
+				summary = string(r[:77]) + "..."
 			}
 			topics := strings.Join(e.Topics, ", ")
 			verified := "false"
 			if e.Verified {
 				verified = "true"
 			}
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
-				e.Path, title, topics, e.Level, e.Updated, verified)
+			activity := e.Activity
+			if activity == "" {
+				activity = "normal"
+			}
+			if t, err := time.Parse("2006-01-02", e.Updated); err == nil && time.Since(t) > 365*24*time.Hour {
+				activity += " ⚠️可能过期"
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
+				e.Path, title, summary, topics, activity, e.Level, e.Updated, verified)
 		}
 	}
 	return b.String()
+}
+
+// activityRank maps the activity metadata to a sort weight.
+func activityRank(a string) int {
+	switch a {
+	case "high":
+		return 2
+	case "low":
+		return 0
+	default:
+		return 1
+	}
 }
 
 // groupByLayer partitions entries by their top-level directory.

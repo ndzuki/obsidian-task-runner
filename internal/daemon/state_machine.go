@@ -151,6 +151,7 @@ func grillingReleaseUpdates(status string) map[string]interface{} {
 		"grill_resolution":   "",
 		"grill_context":      "",
 		"grill_prev_status":  "",
+		"grill_continue":     false,
 	}
 }
 

@@ -18,10 +18,13 @@ level: reference
 updated: "2026-07-31"
 source: "https://connectrpc.com/docs/go/"
 verified: false
+activity: high
 aliases: [Connect-Go手册]
 ---
 
 # Connect-Go 完整手册
+
+> Connect 官方 Go 文档全量手册，RPC 框架速查。
 
 一些正文内容。
 `)
@@ -91,6 +94,60 @@ aliases: []
 	// Verify verified:true entry
 	if !strings.Contains(content, "wire-di.md") || !strings.Contains(content, "true") {
 		t.Error("INDEX.md should contain wire-di.md with verified:true")
+	}
+
+	// Verify the KB v2 summary column picks up the abstract after h1.
+	if !strings.Contains(content, "Connect 官方 Go 文档全量手册") {
+		t.Error("INDEX.md should contain the extracted summary for connect-rpc.md")
+	}
+
+	// Verify activity metadata column and the new domain-semantics layer label.
+	if !strings.Contains(content, "activity") {
+		t.Error("INDEX.md should have an activity column")
+	}
+	if !strings.Contains(content, "平台与架构技术") {
+		t.Error("INDEX.md core layer should be labeled 平台与架构技术")
+	}
+	// Sort: verified=true (wire-di) ranks before activity=high (connect-rpc).
+	wi := strings.Index(content, "wire-di.md")
+	ci := strings.Index(content, "connect-rpc.md")
+	if wi < 0 || ci < 0 || wi > ci {
+		t.Errorf("sort order wrong: wire-di(%d) should appear before connect-rpc(%d)", wi, ci)
+	}
+}
+
+func TestRebuildINDEXNoiseMarking(t *testing.T) {
+	tmp := t.TempDir()
+	refs := filepath.Join(tmp, "References")
+	createRefFile(t, refs, "core/networking/openresty.md", `---
+topics: [networking, openresty]
+level: intermediate
+updated: "2026-08-01"
+source: "https://claude.ai/chat/abc123"
+verified: false
+aliases: []
+---
+
+# OpenResty 安全
+
+> 安全防护配置模式。
+
+## 项目结构
+- openresty/
+  - lua/config.lua
+  - scripts/deploy.sh
+`)
+
+	if _, err := RebuildINDEX(tmp); err != nil {
+		t.Fatalf("RebuildINDEX: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(refs, "INDEX.md"))
+	content := string(data)
+	if !strings.Contains(content, "含噪音待清理") {
+		t.Error("INDEX.md should mark noisy file as 含噪音待清理")
+	}
+	if !strings.Contains(content, "openresty.md") {
+		t.Error("INDEX.md should list the noisy file")
 	}
 }
 
@@ -197,5 +254,130 @@ func createRefFile(t *testing.T, refsDir, relPath, content string) {
 	}
 	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMarkVerified(t *testing.T) {
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "core", "go")
+	if err := os.MkdirAll(ref, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(ref, "test-pattern.md")
+	if err := os.WriteFile(path, []byte(`---
+topics: [go, pattern]
+level: intermediate
+updated: "2026-08-01"
+source: local
+verified: false
+aliases: []
+---
+
+# Test Pattern
+
+> 摘要
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MarkVerified([]string{path}); err != nil {
+		t.Fatalf("MarkVerified: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	fm, _, err := parseFrontmatter(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm["verified"] != true {
+		t.Fatalf("verified = %v, want true", fm["verified"])
+	}
+	if fm["topics"] == nil {
+		t.Fatal("topics lost after MarkVerified")
+	}
+}
+
+func TestHasNoise(t *testing.T) {
+	cases := []struct {
+		content string
+		want    bool
+	}{
+		{"# A\n\n> summary\n## 目录\n- x", false},
+		{"# A\n\nhttps://claude.ai/chat/abc123\n", true},
+		{"# A\n\n## 项目结构\n```\ntree\n```\n", true},
+		{"# A\n\n## 文件清单和说明\n- a\n", true},
+	}
+	for _, c := range cases {
+		if got := hasNoise([]byte(c.content)); got != c.want {
+			t.Errorf("hasNoise(%q) = %v, want %v", c.content[:20], got, c.want)
+		}
+	}
+}
+
+func TestAppendFailurePattern(t *testing.T) {
+	tmp := t.TempDir()
+	refs := filepath.Join(tmp, "References", "core")
+	if err := os.MkdirAll(refs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kb := filepath.Join(refs, "daemon-stuck-task-patterns.md")
+	seed := `---
+topics: [daemon]
+level: reference
+updated: "2026-08-01"
+source: local
+verified: true
+aliases: []
+---
+
+# Daemon 卡死模式
+
+## 模式 1：已有模式
+
+**现象**：旧内容
+
+## 检查清单
+
+- [ ] 旧条目
+
+## 更新记录
+
+- 2026-08-01 — 初始
+`
+	if err := os.WriteFile(kb, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First occurrence: appended as 模式 2, before 检查清单.
+	if err := AppendFailurePattern(tmp, "API_KEY_UNAVAILABLE", "round2", "123", "/tmp/x.log"); err != nil {
+		t.Fatalf("AppendFailurePattern: %v", err)
+	}
+	data, _ := os.ReadFile(kb)
+	content := string(data)
+	if !strings.Contains(content, "## 模式 2：API_KEY_UNAVAILABLE") {
+		t.Fatal("pattern 2 not appended")
+	}
+	if !strings.Contains(content, "KeePassXC 未解锁") {
+		t.Fatal("root cause map missing for API_KEY_UNAVAILABLE")
+	}
+	// 检查清单 must stay after the pattern block.
+	ci := strings.Index(content, "## 检查清单")
+	pat := strings.Index(content, "## 模式 2")
+	if ci < pat {
+		t.Fatal("检查清单 should remain after the new pattern")
+	}
+
+	// Second occurrence with same code+phase: deduped, file unchanged.
+	before := string(data)
+	if err := AppendFailurePattern(tmp, "API_KEY_UNAVAILABLE", "round2", "456", "/tmp/y.log"); err != nil {
+		t.Fatalf("dedup call: %v", err)
+	}
+	after, _ := os.ReadFile(kb)
+	if string(after) != before {
+		t.Fatal("dedup failed: file changed on repeated code+phase")
+	}
+
+	// Missing knowledge base: silent no-op.
+	if err := AppendFailurePattern(filepath.Join(tmp, "nope"), "MODEL_FAILED", "planning", "1", ""); err != nil {
+		t.Fatalf("missing KB should be nil, got %v", err)
 	}
 }

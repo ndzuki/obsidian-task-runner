@@ -647,6 +647,35 @@ unknown_future_field: keep-me
 	}
 }
 
+func TestParseAutoMergeDefault(t *testing.T) {
+	// Absent auto_merge defaults to true (auto-approve merges on review).
+	fm, err := Parse([]byte(`---
+id: "001"
+status: blocked
+---
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !fm.AutoMerge {
+		t.Fatalf("AutoMerge = false, want default true")
+	}
+
+	// Explicit opt-out is honored.
+	fm, err = Parse([]byte(`---
+id: "002"
+status: blocked
+auto_merge: false
+---
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fm.AutoMerge {
+		t.Fatalf("AutoMerge = true, want explicit false")
+	}
+}
+
 func TestParseLegacyTaskWithPriorityDoesNotReassess(t *testing.T) {
 	fm, err := Parse([]byte(`---
 id: "002"

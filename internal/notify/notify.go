@@ -53,6 +53,13 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 				"  ① 先合并当前版本：设 merge_approved: true → 自动合并\n"+
 				"  ② 直接出 v%d 新计划：将 status 改为 ready\n"+
 				"请 %s 根据情况选择操作", fm.PlanVersion+1, reviewer)
+		} else if fm.PhaseErrorCode != "" {
+			urgency = "critical"
+			icon = "emblem-important"
+			title = fmt.Sprintf("⚠️ T%s %s: 自动合并被中止", fm.ID, fm.Title)
+			body = fmt.Sprintf("原因：%s\n请 %s 处理后设 merge_approved: true 重新授权合并", fm.PhaseError, reviewer)
+		} else if fm.AutoMerge {
+			body = fmt.Sprintf("代码已实现并通过检查，正在自动合并（%s 无需操作）", reviewer)
 		} else {
 			body = fmt.Sprintf("请 %s review 代码，确认无误后设 merge_approved: true", reviewer)
 		}

@@ -40,6 +40,7 @@ type Frontmatter struct {
 	NewProject     bool     `yaml:"new_project"`
 	BlockedBy      []string `yaml:"blocked_by"`
 	AutoApprove    bool     `yaml:"auto_approve"`
+	AutoMerge      bool     `yaml:"auto_merge"`
 	OffPeakOnly    bool     `yaml:"off_peak_only"`
 	DueDate        string   `yaml:"due_date"`
 	PlanApproved   bool     `yaml:"plan_approved"`
@@ -214,8 +215,26 @@ func Parse(data []byte) (*Frontmatter, error) {
 	if err := doc.Decode(&fm); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
+	// auto_merge defaults to true: entering review auto-approves the merge
+	// unless the task explicitly opts out (auto_merge: false in frontmatter).
+	if !hasFrontmatterKey(&doc, "auto_merge") {
+		fm.AutoMerge = true
+	}
 	applyCompatibilityDefaults(&fm)
 	return &fm, nil
+}
+
+// hasFrontmatterKey reports whether the YAML mapping node contains the key.
+func hasFrontmatterKey(doc *yaml.Node, key string) bool {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(doc.Content[0].Content); i += 2 {
+		if doc.Content[0].Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 // Update atomically updates frontmatter fields in a task markdown file.

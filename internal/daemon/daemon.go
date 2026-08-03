@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/logutil"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
@@ -372,16 +373,32 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			} else if preempted {
 				r.logger.Printf("task %s: expired grilling lease preempted", t.ID)
 			}
-			r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
-			// Debounce: suppress repeated reminders during active grilling sessions.
-			if last, ok := r.grillNotified.Load(t.ID); ok {
-				if time.Since(last.(time.Time)) < 5*time.Minute {
+			// Async Grilling: user answered the questions offline in the TASK
+			// file and set grill_continue=true → re-run the maturity gate with
+			// the answers available. Fall through to normal dispatch below.
+			if t.GrillContinue {
+				r.logger.Printf("task %s: grill_continue=true, re-running maturity gate", t.ID)
+				if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
+					"status": "refining", "grill_continue": false, "grill_done": false,
+				}); err != nil {
+					r.logger.Printf("task %s: apply grill_continue reset: %v", t.ID, err)
 					continue
 				}
+				t.Status = "refining"
+				t.GrillContinue = false
+				// Fall through: dispatch re-enters refining (maturity gate).
+			} else {
+				r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
+				// Debounce: suppress repeated reminders during active grilling sessions.
+				if last, ok := r.grillNotified.Load(t.ID); ok {
+					if time.Since(last.(time.Time)) < 5*time.Minute {
+						continue
+					}
+				}
+				r.grillNotified.Store(t.ID, time.Now())
+				notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
+				continue
 			}
-			r.grillNotified.Store(t.ID, time.Now())
-			notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
-			continue
 		}
 		if t.Status == "closed" {
 			continue
@@ -1088,6 +1105,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							"phase_error":       "",
 							"phase_log":         "",
 							"grill_prev_status": "",
+							"grill_continue":    false,
 						}); err != nil {
 							r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
 							continue
@@ -1103,6 +1121,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						continue // let next scan round handle dispatch with proper worktree setup
 					}
 				}
+			}
+		}
+
+		// Auto-merge gate: a fresh review (Round 2 completed, no failure) with
+		// auto_merge=true is approved without a manual gate. Merge-failure
+		// fallbacks carry phase_error_code, so they stay manual.
+		if t.Status == "review" && !t.MergeApproved && t.AutoMerge && !t.PendingReq && t.PhaseErrorCode == "" {
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"merge_approved": true}); err != nil {
+				r.logger.Printf("task %s: auto-approve merge failed: %v", t.ID, err)
+			} else {
+				t.MergeApproved = true
+				r.logger.Printf("task %s: auto-approve merge (auto_merge=true)", t.ID)
 			}
 		}
 
@@ -1421,6 +1451,12 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 // handlePhaseFailure tracks retry counts for refining/planning phases and
 // transitions the task to blocked after the second consecutive failure.
 func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase string, code ErrorCode, reason, logPath string) {
+	// Auto-sink the first occurrence of this failure code+phase into the
+	// knowledge base as a bug pattern (dedup inside AppendFailurePattern).
+	// Synchronous: small IO, and the file-level dedup store needs no locking.
+	if err := knowledge.AppendFailurePattern(r.cfg.ObsidianVault, string(code), phase, taskID, logPath); err != nil {
+		r.logger.Printf("task %s: knowledge base pattern sink failed: %v", taskID, err)
+	}
 	policy := recoveryForPhase(phase, code)
 	if policy == recoveryBlock {
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{

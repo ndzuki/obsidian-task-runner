@@ -56,6 +56,7 @@ priority_recommendation: ""
 
 # 🔵 Gate — 由你批准
 plan_approved: false
+auto_merge: true  # 默认自动合并：进入 review 后 daemon 自动授权 merge；设 false 恢复人工审查
 merge_approved: false
 adr_approved: false
 resume_approved: false

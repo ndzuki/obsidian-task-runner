@@ -38,6 +38,8 @@ func TestIsReadyForMerge(t *testing.T) {
 		status        string
 		mergeApproved bool
 		pendingReq    bool
+		autoMerge     bool
+		phaseError    string
 		want          bool
 	}{
 		{name: "review approved", status: "review", mergeApproved: true, want: true},
@@ -45,6 +47,11 @@ func TestIsReadyForMerge(t *testing.T) {
 		{name: "review awaiting approval", status: "review", want: false},
 		{name: "conflict awaiting approval", status: "conflict", want: false},
 		{name: "review pending requirement", status: "review", pendingReq: true, want: true},
+		{name: "review auto-merge", status: "review", autoMerge: true, want: true},
+		{name: "review auto-merge disabled", status: "review", autoMerge: false, want: false},
+		{name: "review auto-merge with failure", status: "review", autoMerge: true, phaseError: "checks failed", want: false},
+		{name: "review auto-merge with pending req", status: "review", autoMerge: true, pendingReq: true, want: true},
+		{name: "conflict never auto-merge", status: "conflict", autoMerge: true, want: false},
 	}
 
 	for _, tt := range tests {
@@ -54,6 +61,8 @@ func TestIsReadyForMerge(t *testing.T) {
 				Status:        tt.status,
 				MergeApproved: tt.mergeApproved,
 				PendingReq:    tt.pendingReq,
+				AutoMerge:     tt.autoMerge,
+				PhaseErrorCode: tt.phaseError,
 			}
 			if got := IsReady(fm, t.TempDir()); got != tt.want {
 				t.Fatalf("IsReady() = %v, want %v", got, tt.want)
