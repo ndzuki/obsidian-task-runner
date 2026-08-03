@@ -1320,5 +1320,49 @@ req_doc: Projects/001-test/Requirements/REQ-090.md
 	if _, err := os.Stat(filepath.Join(startDir, "term")); err != nil {
 		t.Fatalf("OMP did not receive SIGTERM on daemon shutdown: %v", err)
 	}
+
+	// Shutdown interruption must NOT be treated as a failure: task stays in
+	// implementing with PHASE_INTERRUPTED so the next scan auto-resumes it.
+	fm := mustParse(t, taskPath)
+	if fm.Status != "implementing" {
+		t.Fatalf("status = %q after shutdown, want implementing (not blocked)", fm.Status)
+	}
+	if fm.BlockedPhase != "" {
+		t.Fatalf("blocked_phase = %q, want empty after shutdown", fm.BlockedPhase)
+	}
+	if fm.PhaseErrorCode != string(ErrPhaseInterrupted) {
+		t.Fatalf("phase_error_code = %q, want %q", fm.PhaseErrorCode, ErrPhaseInterrupted)
+	}
+
 	_ = os.WriteFile(releaseFile, nil, 0o644)
+}
+
+func TestClearPhaseErrorClearsFields(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-091-interrupted.md")
+	if err := os.WriteFile(taskPath, []byte(`---
+id: "091"
+title: Interrupted
+status: implementing
+phase_error_code: PHASE_INTERRUPTED
+phase_error: daemon 重启中断，等待自动恢复
+phase_log: /tmp/some-round2.log
+assignee: default
+---
+# Interrupted
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.clearPhaseError(taskPath, "091")
+
+	fm := mustParse(t, taskPath)
+	if fm.PhaseErrorCode != "" || fm.PhaseError != "" || fm.PhaseLog != "" {
+		t.Fatalf("phase error fields not cleared: code=%q err=%q log=%q", fm.PhaseErrorCode, fm.PhaseError, fm.PhaseLog)
+	}
+	if fm.Status != "implementing" {
+		t.Fatalf("status = %q, want implementing (untouched)", fm.Status)
+	}
 }
