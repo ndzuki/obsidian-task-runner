@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -214,9 +217,13 @@ func TestProcessBatchUsesTaskPathForImplementingPIDRecovery(t *testing.T) {
 	})
 	waitForStartCount(t, startDir, 1)
 	releaseBarrier(t, releaseFile)
-	if processed := waitForBatch(t, done); processed != 1 {
-		t.Fatalf("processed = %d, want 1", processed)
+	// processBatch is dispatch-only: both tasks are dispatched; the live-PID
+	// task skips its OMP inside runTask (start count stays 1), the other runs.
+	if processed := waitForBatch(t, done); processed != 2 {
+		t.Fatalf("dispatched = %d, want 2", processed)
 	}
+	waitForTasksIdle(t, runner)
+	assertStartCount(t, startDir, 1)
 }
 
 func TestSurvivingImplementationsConsumeCapacityAfterRestart(t *testing.T) {
@@ -404,16 +411,36 @@ func TestProcessBatchLimitsImplementingTasksAcrossConcurrentBatches(t *testing.T
 	}
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	// Serial batches for determinism: concurrent runBatch goroutines race the
+	// shared implementation gate, and whichever schedules first takes the
+	// capacity slots.
 	firstDone := runBatch(runner, tasks[:2])
-	secondDone := runBatch(runner, tasks[2:])
-
 	waitForStartCount(t, startDir, 2)
+	secondDone := runBatch(runner, tasks[2:])
+	second := waitForBatch(t, secondDone) // returns immediately: capacity exhausted
 
 	releaseBarrier(t, releaseFile)
-	if processed := waitForBatch(t, firstDone) + waitForBatch(t, secondDone); processed != 4 {
-		t.Fatalf("processed = %d, want 4", processed)
+	// Dispatch-only semantics: the first batch takes both capacity slots;
+	// the second batch cannot schedule anything until capacity is released
+	// (which the next scan round does).
+	if first := waitForBatch(t, firstDone); first != 2 {
+		t.Fatalf("first batch dispatched = %d, want 2", first)
 	}
+	if second != 0 {
+		t.Fatalf("second batch dispatched = %d, want 0 (capacity exhausted)", second)
+	}
+	waitForTasksIdle(t, runner)
 	assertMaxActive(t, activeDir, 2)
+
+	// Capacity released: the next scan round (simulated by a fresh batch)
+	// dispatches and completes the remainder.
+	thirdDone := runBatch(runner, tasks[2:])
+	waitForStartCount(t, startDir, 4)
+	releaseBarrier(t, releaseFile)
+	if third := waitForBatch(t, thirdDone); third != 2 {
+		t.Fatalf("third batch dispatched = %d, want 2", third)
+	}
+	waitForTasksIdle(t, runner)
 }
 
 func TestPlanningTaskDoesNotConsumeImplementationSlot(t *testing.T) {
@@ -500,16 +527,33 @@ assignee: default
 	waitForStartCount(t, startDir, 1)
 
 	releaseBarrier(t, releaseFile)
+	// Dispatch-only: the implementing task takes the single capacity slot;
+	// the blocked task is dispatched regardless (blocked status does not
+	// consume implementation capacity at dispatch time), then runs after
+	// the barrier release.
 	if processed := waitForBatch(t, firstDone) + waitForBatch(t, resumedDone); processed != 2 {
-		t.Fatalf("processed = %d, want 2", processed)
+		t.Fatalf("dispatched = %d, want 2 (blocked resume does not consume capacity)", processed)
 	}
+	waitForTasksIdle(t, runner)
 
 	if runner.implementationGate.localActive() != 0 || runner.implementationGate.active != 0 {
-		t.Errorf("post-batch gate: local=%d active=%d, want 0/0",
+		t.Errorf("post-idle gate: local=%d active=%d, want 0/0",
 			runner.implementationGate.localActive(),
 			runner.implementationGate.active)
 	}
 
+	// Capacity released after the first task finished: a fresh round
+	// dispatches the implementing task that was waiting.
+	nextDone := runBatch(runner, []task.ReadyTask{{
+		ID: "062", Title: "Resumed", Project: "resumed",
+		FilePath: resumedPath, Status: "implementing", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 2)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, nextDone); processed != 1 {
+		t.Fatalf("next round dispatched = %d, want 1", processed)
+	}
+	waitForTasksIdle(t, runner)
 }
 
 func TestRepositoryWriteWaiterDoesNotConsumeUnlockedWork(t *testing.T) {
@@ -582,9 +626,21 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 	waitForStartCount(t, startDir, 1)
 	assertStartCount(t, startDir, 1)
 	releaseBarrier(t, releaseFile)
-	if processed := waitForBatch(t, done); processed != 2 {
-		t.Fatalf("processed = %d, want 2", processed)
+	// limit<=0 means one slot: only one task is dispatched per round; the
+	// second waits for capacity release on the next scan round.
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("dispatched = %d, want 1", processed)
 	}
+	waitForTasksIdle(t, runner)
+	nextDone := runBatch(runner, []task.ReadyTask{
+		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "implementing", NewProject: true, Assignee: "default"},
+	})
+	waitForStartCount(t, startDir, 2)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, nextDone); processed != 1 {
+		t.Fatalf("next round dispatched = %d, want 1", processed)
+	}
+	waitForTasksIdle(t, runner)
 }
 
 func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
@@ -836,6 +892,23 @@ func waitForBatch(t *testing.T, done <-chan int) int {
 	}
 }
 
+// waitForTasksIdle blocks until every dispatched task goroutine (runTask)
+// has finished. processBatch is dispatch-only now — it returns as soon as
+// tasks are scheduled — so tests that assert completion side effects
+// (frontmatter write-backs, gate release, pid cleanup) must wait for the
+// tasks themselves.
+func waitForTasksIdle(t *testing.T, runner *Runner) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runner.activeTasks.Load() == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("tasks did not finish within 5s (active=%d)", runner.activeTasks.Load())
+}
+
 func createRepository(t *testing.T, dir string) string {
 	t.Helper()
 	repo := filepath.Join(dir, "repo")
@@ -888,4 +961,270 @@ func TestBlockedPhaseValidation(t *testing.T) {
 	if err := yamlfrontmatter.ValidateTaskDocument(path); err == nil {
 		t.Fatal("expected error for invalid blocked_phase")
 	}
+}
+
+// TestProcessBatchReturnsOnDaemonCancel verifies that processBatch stops
+// waiting for in-flight task goroutines when the daemon context is cancelled
+// (systemd stop), so the event loop can reach ctx.Done promptly instead of
+// blocking behind a long-running OMP session.
+func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := writeTaskFile(t, dir, "TASK-000.md", "planning")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.daemonCtx = ctx
+
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "000", Title: "Plan", FilePath: taskPath,
+		Status: "planning", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1) // OMP launched and blocked on the barrier
+
+	cancel()
+	select {
+	case <-done:
+		// processBatch is dispatch-only: it returns promptly on cancel; the
+		// SIGTERMed OMP's PHASE_INTERRUPTED write-back lands in runTask.
+	case <-time.After(3 * time.Second):
+		t.Fatal("processBatch did not return after daemon context cancel")
+	}
+
+	// The interrupted phase's write-back must land once the dispatched task
+	// goroutine unwinds (production shutdown additionally waits for it via
+	// waitForScanExit before exiting).
+	waitForTasksIdle(t, runner)
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.PhaseErrorCode != string(ErrPhaseInterrupted) {
+		t.Fatalf("phase_error_code = %q, want %q landed before processBatch returned", fm.PhaseErrorCode, ErrPhaseInterrupted)
+	}
+
+	releaseBarrier(t, releaseFile) // let the interrupted OMP exit cleanly
+}
+
+// TestRunScanCycleCoalescesRequestsDuringScan verifies the scan gate: a
+// request arriving while a scan cycle is active is coalesced (no second scan
+// goroutine) and the gate unwinds to idle once the cycle finishes.
+func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project-one")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"project-one": projectDir})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	// Real vault layout so scanAndProcess → FindReadyTasks picks up the task.
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "project-one", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create vault tasks dir: %v", err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-000.md")
+	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.daemonCtx = ctx
+	defer cancel()
+
+	// First scan dispatches the planning task, then blocks in processBatch
+	// while the barrier holds the OMP session.
+	runner.requestScan()
+	waitForStartCount(t, startDir, 1)
+	runner.scanGateMu.Lock()
+	active := runner.scanActive
+	runner.scanGateMu.Unlock()
+	if !active {
+		t.Fatal("scan should be active while the batch is blocked")
+	}
+
+	// A burst of requests while the scan is active must not start a second
+	// scan goroutine; it is coalesced into a pending follow-up.
+	for range 5 {
+		runner.requestScan()
+	}
+	runner.scanGateMu.Lock()
+	pending := runner.scanPending
+	runner.scanGateMu.Unlock()
+	if !pending {
+		t.Fatal("requests during an active scan should be marked pending")
+	}
+
+	// Release the barrier: the cycle unwinds and the coalesced follow-up scan
+	// is scheduled. Consuming the pending marker and re-activating the gate
+	// happen deterministically in runScanCycle, so settle == idle gate with
+	// the pending marker cleared (the follow-up itself may finish too fast to
+	// observe as an active window, since the task may no longer be ready).
+	releaseBarrier(t, releaseFile)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.scanGateMu.Lock()
+		active = runner.scanActive
+		pending = runner.scanPending
+		runner.scanGateMu.Unlock()
+		if !active && !pending {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if active {
+		t.Fatal("scan gate did not unwind after barrier release")
+	}
+	if pending {
+		t.Fatal("coalesced pending scan was not scheduled after unwind")
+	}
+}
+
+// TestRunOnceExitsOnSigterm verifies that a --once instance (systemd timer)
+// binds SIGTERM: stopping it cancels the in-flight batch promptly and routes
+// the interrupted OMP through the auto-resume path instead of orphaning it.
+func TestRunOnceExitsOnSigterm(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project-one")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"project-one": projectDir})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	// Real vault layout so scanAndProcess → FindReadyTasks picks up the task,
+	// and a vault-map entry so prepareBatch can resolve the project repo.
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "project-one", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatalf("create vault tasks dir: %v", err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-000.md")
+	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+
+	done := make(chan error, 1)
+	go func() { done <- runner.RunOnce() }()
+	waitForStartCount(t, startDir, 1) // batch dispatched and blocked on the barrier
+
+	// SignalContext registers the handler synchronously before RunOnce
+	// proceeds, so this cannot hit the default SIGTERM disposition.
+	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunOnce after SIGTERM: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunOnce did not return after SIGTERM")
+	}
+
+	// The interrupted OMP must be routed through the auto-resume path, not
+	// treated as a phase failure: status stays planning with
+	// PHASE_INTERRUPTED, no blocked_phase. The shutdown drain makes the
+	// write-back land before RunOnce returns; the poll is a safety net.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatalf("read task: %v", err)
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil {
+			t.Fatalf("parse task: %v", err)
+		}
+		if fm.PhaseErrorCode == string(ErrPhaseInterrupted) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "planning" {
+		t.Fatalf("status = %q, want planning kept for auto-resume", fm.Status)
+	}
+	if fm.PhaseErrorCode != string(ErrPhaseInterrupted) {
+		t.Fatalf("phase_error_code = %q, want %q", fm.PhaseErrorCode, ErrPhaseInterrupted)
+	}
+	if fm.BlockedPhase != "" {
+		t.Fatalf("blocked_phase = %q, want empty", fm.BlockedPhase)
+	}
+	releaseBarrier(t, releaseFile)
+}
+
+// TestResolveMergeConflictExternalKillTreatedAsInterrupted verifies that a
+// merge-resolution session killed by an external SIGTERM (parent daemon still
+// alive, no context cancellation) is treated as an interrupted attempt — the
+// one-shot AI budget is preserved and the merge resumes on the next scan —
+// rather than a genuine resolution failure.
+func TestResolveMergeConflictExternalKillTreatedAsInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := writeTaskFile(t, dir, "TASK-000.md", "review")
+	runner := newTestRunner(filepath.Join(dir, "skill"), omp, filepath.Join(dir, "logs"), 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.daemonCtx = ctx // not cancelled: parent stays alive while the session is killed
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.resolveMergeConflict(task.ReadyTask{
+			ID: "000", Title: "Merge", FilePath: taskPath, Assignee: "default",
+		}, dir)
+	}()
+
+	// Wait for the barrier-held OMP session. The barrier script writes its
+	// PID as the START_DIR file name (content is $PWD).
+	var sessionPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(startDir)
+		if err == nil && len(entries) > 0 {
+			if _, scanErr := fmt.Sscanf(entries[0].Name(), "%d", &sessionPID); scanErr == nil {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sessionPID == 0 {
+		t.Fatal("merge resolution session did not start")
+	}
+
+	syscall.Kill(sessionPID, syscall.SIGTERM)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errConflictResolutionInterrupted) {
+			t.Fatalf("err = %v, want errConflictResolutionInterrupted", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolveMergeConflict did not return after killing the session")
+	}
+	releaseBarrier(t, releaseFile)
 }

@@ -1,6 +1,7 @@
 package yamlfrontmatter
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -729,5 +730,295 @@ unknown_future_field:
 	nested, ok := fm.Extra["unknown_future_field"].(map[string]interface{})
 	if !ok || nested["nested"] != true {
 		t.Fatalf("unknown future field = %#v, want nested mapping", fm.Extra["unknown_future_field"])
+	}
+}
+
+func TestMissingDefaults(t *testing.T) {
+	find := func(missing []FieldDefault, key string) (interface{}, bool) {
+		for _, m := range missing {
+			if m.Key == key {
+				return m.Value, true
+			}
+		}
+		return nil, false
+	}
+
+	t.Run("legacy task gets lifecycle fields", func(t *testing.T) {
+		data := []byte(`---
+id: "064"
+title: Legacy
+status: review
+---
+# Body
+`)
+		missing, err := MissingDefaults(data)
+		if err != nil {
+			t.Fatalf("MissingDefaults: %v", err)
+		}
+		if missing == nil {
+			t.Fatal("expected missing fields, got nil")
+		}
+		for _, key := range []string{
+			"auto_merge", "merge_approved", "plan_approved", "pending_req",
+			"task_schema_version", "target_branch", "pr_url", "phase_error_code",
+		} {
+			if _, ok := find(missing, key); !ok {
+				t.Fatalf("missing %q not reported", key)
+			}
+		}
+		if v, _ := find(missing, "auto_merge"); v != true {
+			t.Fatalf("auto_merge default = %v, want true", v)
+		}
+		if _, ok := find(missing, "status"); ok {
+			t.Fatalf("existing status must not be reported missing: %v", missing)
+		}
+		if v, _ := find(missing, "priority_assessment_status"); v != "pending" {
+			t.Fatalf("priority_assessment_status = %v, want pending (no priority)", v)
+		}
+	})
+
+	t.Run("priority set derives completed assessment", func(t *testing.T) {
+		missing, err := MissingDefaults([]byte("---\nid: \"001\"\npriority: P1\n---\n"))
+		if err != nil {
+			t.Fatalf("MissingDefaults: %v", err)
+		}
+		var found string
+		for _, m := range missing {
+			if m.Key == "priority_assessment_status" {
+				found = m.Value.(string)
+			}
+		}
+		if found != "completed" {
+			t.Fatalf("priority_assessment_status = %q, want completed", found)
+		}
+	})
+
+	t.Run("explicit auto_merge false is preserved", func(t *testing.T) {
+		missing, err := MissingDefaults([]byte("---\nid: \"001\"\nauto_merge: false\n---\n"))
+		if err != nil {
+			t.Fatalf("MissingDefaults: %v", err)
+		}
+		if _, ok := find(missing, "auto_merge"); ok {
+			t.Fatalf("explicit auto_merge: false must not be reported missing: %v", missing)
+		}
+	})
+
+	t.Run("complete document reports nothing", func(t *testing.T) {
+		var sb strings.Builder
+		sb.WriteString("---\n")
+		for key, def := range taskFieldDefaults {
+			switch v := def.(type) {
+			case string:
+				fmt.Fprintf(&sb, "%s: %q\n", key, v)
+			case bool:
+				fmt.Fprintf(&sb, "%s: %v\n", key, v)
+			case int:
+				fmt.Fprintf(&sb, "%s: %d\n", key, v)
+			case []interface{}:
+				fmt.Fprintf(&sb, "%s: []\n", key)
+			}
+		}
+		sb.WriteString("priority_assessment_status: pending\n---\n")
+		missing, err := MissingDefaults([]byte(sb.String()))
+		if err != nil {
+			t.Fatalf("MissingDefaults: %v", err)
+		}
+		if missing != nil {
+			t.Fatalf("complete document reported %d missing fields", len(missing))
+		}
+	})
+
+	t.Run("no frontmatter leaves document alone", func(t *testing.T) {
+		missing, err := MissingDefaults([]byte("# plain markdown\n"))
+		if err != nil || missing != nil {
+			t.Fatalf("MissingDefaults = %v, %v; want nil, nil", missing, err)
+		}
+	})
+}
+
+func TestNormalizeTaskFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-064-legacy.md")
+	original := `---
+id: "064"
+title: Legacy task
+status: review
+auto_merge: false
+---
+# Body
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	updated, err := NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("NormalizeTaskFrontmatter: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected normalization to update the document")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"auto_merge: false", "task_schema_version: 1", "merge_approved: false", "pending_req: false", "target_branch:"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("normalized document missing %q:\n%s", want, content)
+		}
+	}
+	// Explicit opt-out must survive the backfill.
+	if !strings.Contains(content, "auto_merge: false") {
+		t.Fatal("explicit auto_merge: false was overwritten")
+	}
+	// User-facing fields precede daemon-maintained ones (canonical order).
+	idPos := strings.Index(content, "id:")
+	statusPos := strings.Index(content, "status:")
+	phaseErrPos := strings.Index(content, "phase_error:")
+	autoMergePos := strings.Index(content, "auto_merge:")
+	if !(idPos < statusPos && statusPos < autoMergePos && autoMergePos < phaseErrPos) {
+		t.Fatalf("frontmatter not in canonical order (id=%d status=%d auto_merge=%d phase_error=%d):\n%s", idPos, statusPos, autoMergePos, phaseErrPos, content)
+	}
+
+	// Second pass: nothing left to normalize.
+	updated, err = NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("second NormalizeTaskFrontmatter: %v", err)
+	}
+	if updated {
+		t.Fatal("second pass must be a no-op")
+	}
+
+	// No frontmatter: leave untouched, report no update.
+	plain := filepath.Join(dir, "plain.md")
+	if err := os.WriteFile(plain, []byte("# no frontmatter\n"), 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+	updated, err = NormalizeTaskFrontmatter(plain)
+	if err != nil || updated {
+		t.Fatalf("plain doc: updated=%v err=%v; want false, nil", updated, err)
+	}
+
+	// Empty frontmatter (---\n---): leave untouched like Parse's empty block.
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(empty, []byte("---\n---\n# Body\n"), 0o644); err != nil {
+		t.Fatalf("write empty: %v", err)
+	}
+	updated, err = NormalizeTaskFrontmatter(empty)
+	if err != nil || updated {
+		t.Fatalf("empty frontmatter doc: updated=%v err=%v; want false, nil", updated, err)
+	}
+}
+
+func TestNormalizeTaskFrontmatterReorders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-065-scrambled.md")
+	// Scrambled: daemon-maintained fields before user-facing ones.
+	original := `---
+phase_error_code: ""
+auto_merge: true
+id: "065"
+status: blocked
+custom_field: keep-me
+pending_req: false
+title: Scrambled
+---
+# Body
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	updated, err := NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("NormalizeTaskFrontmatter: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected reorder to update the document")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+	// Canonical order: id → title → status → auto_merge → phase_error_code;
+	// unknown custom_field appended at the end.
+	positions := map[string]int{}
+	for _, key := range []string{"id:", "title:", "status:", "auto_merge:", "phase_error_code:", "custom_field:"} {
+		positions[key] = strings.Index(content, key)
+		if positions[key] < 0 {
+			t.Fatalf("key %q missing after normalize:\n%s", key, content)
+		}
+	}
+	if !(positions["id:"] < positions["title:"] && positions["title:"] < positions["status:"] &&
+		positions["status:"] < positions["auto_merge:"] && positions["auto_merge:"] < positions["phase_error_code:"] &&
+		positions["phase_error_code:"] < positions["custom_field:"]) {
+		t.Fatalf("canonical order violated: %v\n%s", positions, content)
+	}
+}
+
+func TestNormalizeTaskFrontmatterRejectsCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-066-corrupt.md")
+	// Unclosed frontmatter: Normalize must fail without touching the file, so
+	// a broken document is never "repaired" into a different broken shape.
+	corrupt := "---\nid: \"066\"\nstatus: blocked\n# no closing delimiter\n# Body\n"
+	if err := os.WriteFile(path, []byte(corrupt), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	updated, err := NormalizeTaskFrontmatter(path)
+	if err == nil {
+		t.Fatal("want error for unclosed frontmatter")
+	}
+	if updated {
+		t.Fatal("must not report update for corrupt document")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(data) != corrupt {
+		t.Fatal("corrupt document was modified by failed normalize")
+	}
+}
+
+// TestNormalizeTaskFrontmatterNumericStrings pins the Parse-consistent
+// numeric normalization: editors may serialize estimated_hours/actual_hours
+// as quoted strings, which must not block normalization (regression for
+// "cannot unmarshal !!str '42' into float64").
+func TestNormalizeTaskFrontmatterNumericStrings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-067-numeric.md")
+	original := `---
+id: "067"
+title: Numeric strings
+status: blocked
+estimated_hours: "42"
+---
+# Body
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	updated, err := NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("NormalizeTaskFrontmatter with quoted numeric: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected normalization to run")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	fm, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse after normalize: %v", err)
+	}
+	if fm.EstimatedHours != 42 {
+		t.Fatalf("estimated_hours = %v, want 42 (normalized from quoted string)", fm.EstimatedHours)
 	}
 }

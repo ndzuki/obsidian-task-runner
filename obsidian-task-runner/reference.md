@@ -40,7 +40,7 @@ closed -- [终态，不可恢复]
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true，失败回退路径保持 false 需人工重设 |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；硬失败回退（CI 拒绝/head 变更/gh 缺失）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
 | `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
@@ -316,9 +316,11 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - 同一 Vault watcher/timer 互斥。
 - 不同 Vault 可并行。
 - refining 不需要仓库。
-- 既有项目 planning、Merge 使用主工作区独占锁。
+- 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree OMP 隔离，避免被 planning/refining 读锁长期阻塞）。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
+- 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。
+- **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
 
 ### 8.1 Thinking Mode
 

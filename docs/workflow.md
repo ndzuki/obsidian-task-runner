@@ -30,8 +30,9 @@ flowchart TD
     PLAN --> PR[plan-review]
     PR -->|plan_approved=true| R2[implementing<br/>/obsidian-task-runner-round2 + worktree]
     R2 -->|全部 AC 完成| RV[review]
-    RV -->|auto_merge 默认自动授权| MERGE[processMergeTask 纯 Go<br/>push → PR → CI checks]
+    RV -->|auto_merge 默认自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>push → PR → CI checks]
     MERGE -->|SUCCESS| DONE[done<br/>+ 知识库提取]
+    MERGE -.->|环境性失败：2min 退避自动重试 ×5| MERGE
     MERGE -->|CONFLICTING| AI[AI 自动解决一次<br/>/obsidian-task-runner-merge]
     AI -->|本地解决 + 测试通过| MERGE
     AI -->|失败| CF[conflict<br/>critical 通知]
@@ -58,12 +59,14 @@ flowchart TD
 | 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high） | `/obsidian-task-runner-round1 <task>`：读 ADR 知识 → 版本化计划 + Prototype 建议 | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed` | plan-review |
 | 8 | plan-review | `plan_approved=true` | `nextLocalTransition` → implementing，自动 `adr_approved=true`；预热 worktree | 无 | `status=implementing` | Round 2 |
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时） | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining |
-| 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTask` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push → PR 创建/复用 → CI checks 轮询 | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
+| 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
 | 11 | 交付 | merge 成功 | 写 done；异步 `ExtractProjectKnowledge`（ADR → References，verified 翻转，INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（pending_req 则回 refining） |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
 
 ### 0.3 时序事实（与历史文档的差异说明）
 
+- **scan 单轮调度、任务事件驱动下一轮**：`processBatch` 只 dispatch 不等待——任务在独立 `runTask` goroutine 执行，完成后触发下一轮 scan（coalesce）。旧表述「批次同步等待 + 自适应轮询重查」已废弃：一个长 Round 2 不再冻结 scan 循环，plan-review transition / merge 重试 / REQ 变更实时响应；shutdown 等待在跑任务落盘后退出。
+- **scan 首步 Normalize frontmatter**：每轮 scan 自动补齐任务文档缺失的 schema 字段（默认值，不覆盖已有值、必填字段不补），并按规范序维护字段顺序（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 解决仅一次**：`merge_status=conflict-resolve-attempted` 标记已尝试；用户重授权后不再重复 AI 尝试。
 - **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退携带 `phase_error_code`，不会被自动重新授权（防循环）。
@@ -544,6 +547,8 @@ Merge Skill 必须在任何远程操作前确认：
 - `auto_merge: true`（默认）：Round 2 完成后 daemon 在下一轮 scan 自动设 `merge_approved=true`，直接进入 Merge Phase（push → PR → CI checks → merge）。用户无需操作。
 - `auto_merge: false`：保持人工 gate，用户确认后手动设 `merge_approved: true`。
 - Merge 失败回退（CI 失败 / head 变更 / gh 缺失）写 `status=review` + `merge_approved=false` + `phase_error`，通知用户处理；`phase_error_code` 非空时 daemon 不会自动重新授权。
+- 环境性失败自动重试：push / 网络 / 瞬时 GitHub API 错误（`GITHUB_UNAVAILABLE` 类）**不写回** `merge_approved`，`processMergeTaskWithRetry` 以 2 分钟退避独立重试（最多 5 次，daemonCtx 感知），不依赖下一轮 scan 批次——避免被同批长任务（最长 1h 的 Round 2）拖死。重试用尽后保持 `merge_approved=true`，下一轮 scan 继续。
+- 已合并收敛：`pr_url` 已知时先查 PR 状态，`MERGED`（手动合并或先前运行已合并）直接写 `done`，跳过 push/checks/merge，且不会重建 `gh pr merge --delete-branch` 已删除的远端分支。
 - PR 冲突（`CONFLICTING`）：daemon 以 Merge Skill 启动一次 AI 自动解决（`skill://resolving-merge-conflicts`，本地 commit，禁远程操作）。解决后 push 新 head 并重新评估 checks；仍冲突或 AI 失败 → `status=conflict` + critical 通知，用户手动解决后重设 `merge_approved: true`（`merge_status: conflict-resolve-attempted` 标记已尝试，不再重复 AI 解决）。
 
 ## 9. ID 与依赖作用域
