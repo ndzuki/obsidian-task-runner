@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,11 +38,15 @@ type Runner struct {
 	taskRuns           sync.Map
 	repoLocks          sync.Map
 	scanMu             sync.Mutex // prevents overlapping scanAndProcess calls
+	scanGateMu         sync.Mutex // serializes scan cycles; see requestScan
+	scanActive         bool
+	scanPending        bool
 	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
 	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
+	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 }
 
 type repoLockMode uint8
@@ -58,11 +63,6 @@ type preparedTask struct {
 	workDir                string
 	lockMode               repoLockMode
 	implementationReserved bool
-}
-type taskResult struct {
-	repoDir   string
-	lockMode  repoLockMode
-	processed int
 }
 
 func New(cfg *config.Config) *Runner {
@@ -127,19 +127,28 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.cleanupOldLogs()
 
 	// Run an initial scan to catch any tasks that became ready while daemon was down.
+	// Scans run on the scan-gate goroutine so this event loop never blocks
+	// behind a long batch (e.g. a 1h Round 2 session): watcher events, the
+	// periodic timer and SIGTERM stay responsive. Requests arriving while a
+	// scan is running are coalesced into exactly one follow-up scan.
 
 	ticker := time.NewTicker(time.Duration(r.cfg.PollIntervalMin) * time.Minute)
 	defer ticker.Stop()
 
-	if err := r.scanAndProcess(); err != nil {
-		r.logger.Printf("initial scan error: %v", err)
-	}
+	r.requestScan()
 	for {
 		select {
 		case <-ctx.Done():
 			r.logger.Println("daemon shutting down")
+			// Let the in-flight scan unwind: processBatch drains its task
+			// goroutines (scanDrainTimeout), so their PHASE_INTERRUPTED
+			// frontmatter write-backs land before the process exits.
+			r.waitForScanExit()
 			return nil
-		case evt := <-w.Events():
+		case evt, ok := <-w.Events():
+			if !ok {
+				continue // events channel closed; ctx.Done is imminent
+			}
 			r.logger.Printf("watcher: %s %s changed", evt.Dir, filepath.Base(evt.Path))
 			if evt.Dir == "Requirements" {
 				reqRel, _ := filepath.Rel(r.cfg.ObsidianVault, evt.Path)
@@ -166,17 +175,76 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 				}
 			}
-			time.Sleep(3 * time.Second)
-			if err := r.scanAndProcess(); err != nil {
-				r.logger.Printf("event scan error: %v", err)
+			select {
+			case <-r.daemonCtx.Done():
+				continue // re-enter select; ctx.Done branch handles shutdown
+			case <-time.After(3 * time.Second):
 			}
+			r.requestScan()
 		case <-ticker.C:
 			r.logger.Println("timer: periodic scan")
-			if err := r.scanAndProcess(); err != nil {
-				r.logger.Printf("periodic scan error: %v", err)
-			}
+			r.requestScan()
 		}
 	}
+}
+
+// requestScan schedules one scan cycle on a dedicated goroutine. If a scan
+// is already running the request is coalesced into exactly one follow-up
+// scan, so bursts of watcher events cannot pile up scan goroutines.
+func (r *Runner) requestScan() {
+	r.scanGateMu.Lock()
+	if r.scanActive {
+		r.scanPending = true
+		r.scanGateMu.Unlock()
+		return
+	}
+	r.scanActive = true
+	r.scanGateMu.Unlock()
+	go r.runScanCycle()
+}
+
+func (r *Runner) runScanCycle() {
+	r.scanAndProcess()
+	r.scanGateMu.Lock()
+	r.scanActive = false
+	// Clear the coalesced marker unconditionally; a follow-up scan runs only
+	// while the daemon is still up. Once the context is cancelled (shutdown)
+	// the marker is dropped so no extra scan goroutine is started behind
+	// waitForScanExit.
+	pending := r.scanPending
+	r.scanPending = false
+	run := pending && r.daemonCtx.Err() == nil
+	r.scanGateMu.Unlock()
+	if run {
+		r.requestScan()
+	}
+}
+
+// scanDrainTimeout bounds how long shutdown waits for in-flight task
+// goroutines after their OMP children were SIGTERMed. Typical graceful
+// persist is ~1-2s; the cap covers slower children without delaying
+// systemd TimeoutStopSec.
+const scanDrainTimeout = 10 * time.Second
+
+// waitForScanExit blocks until the in-flight scan cycle and dispatched task
+// goroutines unwind after shutdown. runTask's OMP children receive SIGTERM
+// via daemonCtx (graceful persist; WaitDelay hard-kill only if the child
+// ignores it), so the typical case is a quick child exit followed by the
+// PHASE_INTERRUPTED write-back — this wait lets those write-backs land
+// before the process exits. The cap is a safety net only, sized above the
+// drain window so it never cuts the drain short.
+func (r *Runner) waitForScanExit() {
+	deadline := time.Now().Add(scanDrainTimeout + 5*time.Second)
+	for time.Now().Before(deadline) {
+		r.scanGateMu.Lock()
+		active := r.scanActive
+		r.scanGateMu.Unlock()
+		if !active && r.activeTasks.Load() == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	r.logger.Printf("scan cycle did not unwind within %v, exiting anyway", scanDrainTimeout+5*time.Second)
 }
 
 // RunOnce performs a single scan-and-process cycle, used by the systemd timer.
@@ -190,6 +258,12 @@ func (r *Runner) RunOnce() error {
 			r.logger.Printf("close log writer: %v", err)
 		}
 	}()
+	// Bind SIGTERM/SIGINT so a stopped --once instance cancels its batch
+	// promptly instead of dying without signal handlers, which would orphan
+	// the OMP children (they keep running unattached until systemd reaps the
+	// cgroup). Cancellation also routes interrupted phases through the
+	// PHASE_INTERRUPTED/merge-resume paths instead of failure handling.
+	r.daemonCtx = SignalContext()
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
@@ -199,7 +273,23 @@ func (r *Runner) RunOnce() error {
 		return nil // not an error — watcher daemon is handling it
 	}
 	defer unlock()
-	return r.scanAndProcess()
+	r.scanAndProcess()
+	// A --once run has no resident scan loop to pick up completed tasks, so
+	// wait for the dispatched OMP sessions here (same synchronous semantics
+	// as the pre-async processBatch). On SIGTERM the OMP children get a
+	// graceful SIGTERM via daemonCtx; give their PHASE_INTERRUPTED
+	// write-backs a bounded window before exiting.
+	for r.activeTasks.Load() > 0 {
+		if r.daemonCtx.Err() != nil {
+			deadline := time.Now().Add(scanDrainTimeout)
+			for time.Now().Before(deadline) && r.activeTasks.Load() > 0 {
+				time.Sleep(50 * time.Millisecond)
+			}
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil
 }
 
 func (r *Runner) initLogging() error {
@@ -221,115 +311,104 @@ func (r *Runner) initLogging() error {
 
 func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
+	r.syncTaskSchemaDefaults()
 	r.resolveBlockedDependencies()
 	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
 	}
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
-	if len(tasks) == 0 {
-		r.scanMu.Unlock()
-		r.processPriorityAssessments(context.Background())
-		return nil
-	}
 	r.scanMu.Unlock()
 
-	for round := 0; round < 3; round++ {
-		if r.processBatch(tasks) == 0 {
-			break
-		}
-		// Adaptive polling: check every 500ms for cloud-sync flush before re-scanning
-		// Adaptive polling: re-scan every 500ms for state changes after OMP dispatch.
-		// Covers filesystems where fsnotify is unreliable (e.g. Vault git sync).
-		for range 60 {
-			time.Sleep(500 * time.Millisecond)
-			r.scanMu.Lock()
-			tasks, _ = r.findReadyTasks()
-			r.scanMu.Unlock()
-			if len(tasks) > 0 {
-				break
-			}
-		}
-		if len(tasks) == 0 {
-			break
-		}
+	// Single dispatch round: processBatch returns as soon as every
+	// schedulable task is dispatched, never waiting for the tasks
+	// themselves. Completed tasks trigger the next scan (runTask →
+	// requestScan), which picks up downstream state changes; the old
+	// adaptive-polling round loop is gone because it existed only to bridge
+	// the batch-synchronous wait.
+	r.processBatch(tasks)
+	if r.daemonCtx.Err() == nil {
+		// Skip on shutdown: a cancelled priority OMP would overwrite the
+		// PHASE_INTERRUPTED write-back of an interrupted task phase.
+		r.processPriorityAssessments(r.daemonCtx)
 	}
-	r.processPriorityAssessments(context.Background())
 	return nil
 }
 
-// processBatch dispatches every schedulable task. Repository locks protect
-// shared working directories; implementing tasks must reserve daemon-wide
+// processBatch dispatches every schedulable task and returns immediately —
+// it never waits for the dispatched work. OMP sessions (up to 1h for
+// Round 2) run in their own goroutines tracked by runTask; a completed task
+// triggers the next scan via requestScan, so batches can no longer freeze
+// the scan loop (previously one long Round 2 stalled every plan-review
+// transition and merge re-dispatch for up to an hour). Repository locks
+// protect shared working directories; implementing tasks reserve daemon-wide
 // capacity before their execution goroutine is created.
 func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 	pending := r.prepareBatch(tasks)
-	done := make(chan taskResult, len(pending))
-	processed := 0
-	running := 0
+	dispatched := 0
 
-	for len(pending) > 0 || running > 0 {
-		var implementationChanged <-chan struct{}
-		implementationBlocked := false
-		for {
-			index := -1
-			for i := range pending {
-				candidate := &pending[i]
-				reservedImplementation := false
-				if candidate.task.Status == "implementing" {
-					acquired, changed := r.implementationGate.tryAcquireLocal()
-					if !acquired {
-						implementationBlocked = true
-						implementationChanged = changed
-						continue
-					}
-					reservedImplementation = true
-				}
-				if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
-					if reservedImplementation {
-						r.implementationGate.releaseLocal()
-					}
-					continue
-				}
-				candidate.implementationReserved = reservedImplementation
-				index = i
-				break
-			}
-			if index == -1 {
-				break
-			}
-
-			candidate := pending[index]
-			pending = append(pending[:index], pending[index+1:]...)
-			running++
-			go func(p preparedTask) {
-				done <- taskResult{
-					repoDir:   p.repoDir,
-					lockMode:  p.lockMode,
-					processed: r.processPreparedTask(p),
-				}
-			}(candidate)
+	for len(pending) > 0 {
+		if r.daemonCtx.Err() != nil {
+			// Shutdown: stop dispatching; in-flight tasks drain via
+			// waitForScanExit, unscheduled remainder re-evaluates after
+			// restart.
+			r.logger.Printf("scheduler: shutdown, dropping %d unscheduled task(s)", len(pending))
+			break
 		}
-
-		if running == 0 {
-			if implementationBlocked {
-				if r.implementationGate.localActive() == 0 {
-					r.logger.Printf("scheduler: %d tasks waiting for adopted implementations — will retry on next scan", len(pending))
-				} else if implementationChanged != nil {
-					<-implementationChanged
+		index := -1
+		implementationBlocked := false
+		for i := range pending {
+			candidate := &pending[i]
+			reservedImplementation := false
+			if candidate.task.Status == "implementing" {
+				acquired, _ := r.implementationGate.tryAcquireLocal()
+				if !acquired {
+					implementationBlocked = true
 					continue
 				}
+				reservedImplementation = true
 			}
-			r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
+			if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
+				if reservedImplementation {
+					r.implementationGate.releaseLocal()
+				}
+				continue
+			}
+			candidate.implementationReserved = reservedImplementation
+			index = i
+			break
+		}
+		if index == -1 {
+			// Nothing schedulable right now. Capacity/lock releases happen
+			// inside runTask, which triggers the next scan — no need to wait
+			// on release channels here.
+			if implementationBlocked {
+				r.logger.Printf("scheduler: %d tasks waiting for implementation capacity — will retry on next scan", len(pending))
+			} else {
+				r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
+			}
 			break
 		}
 
-		result := <-done
-		running--
-		processed += result.processed
-		r.unlockRepo(result.repoDir, result.lockMode)
+		candidate := pending[index]
+		pending = append(pending[:index], pending[index+1:]...)
+		dispatched++
+		go r.runTask(candidate)
 	}
+	return dispatched
+}
 
-	return processed
+// runTask executes one dispatched task to completion, then releases its
+// repository lock and schedules a follow-up scan. The follow-up scan is what
+// picks up downstream state changes (review → merge, plan-review →
+// implementing, capacity released) — coalesced by the scan gate, so a
+// burst of task completions costs exactly one extra scan.
+func (r *Runner) runTask(p preparedTask) {
+	r.activeTasks.Add(1)
+	defer r.activeTasks.Add(-1)
+	defer r.unlockRepo(p.repoDir, p.lockMode)
+	r.processPreparedTask(p)
+	r.requestScan()
 }
 
 // prepareBatch resolves repositories and creates Round 2 worktrees before
@@ -425,7 +504,15 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		}
 
 		lockMode := repoLockWrite
-		if isRound2(t) {
+		switch {
+		case isRound2(t):
+			lockMode = repoLockNone
+		case (t.Status == "review" || t.Status == "conflict") && t.MergeApproved:
+			// Merge pushes and merges via git/gh on the main checkout; it
+			// never touches worktrees. Blocking on the repo write lock would
+			// stall merges behind every planning/refining read lock (up to
+			// 30-60min), freezing authorized merges. Worktree OMP sessions
+			// already run lock-free for the same isolation reason.
 			lockMode = repoLockNone
 		}
 		prepared := preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode}
@@ -582,6 +669,56 @@ func (r *Runner) taskLogDir() string {
 // maxAutoResumeAttempts bounds how many times the dependency resolver may
 // auto-approve a persistently failing upstream before requiring manual resume.
 const maxAutoResumeAttempts = 2
+
+// syncTaskSchemaDefaults backfills frontmatter fields added by newer daemon
+// versions into old task documents, so lifecycle judgement never depends on
+// keys the document never declared. Runs at the start of every scan;
+// documents that are already complete are left untouched (no writes, so no
+// scan feedback loop). Runs under scanMu: the writes are flock-protected
+// against concurrent OMP frontmatter updates.
+func (r *Runner) syncTaskSchemaDefaults() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	normalized := 0
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, project.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			updated, err := yamlfrontmatter.NormalizeTaskFrontmatter(path)
+			if err != nil {
+				r.logger.Printf("task %s: schema defaults sync failed: %v", strings.TrimPrefix(entry.Name(), "TASK-"), err)
+				continue
+			}
+			if !updated {
+				continue
+			}
+			normalized++
+			// Post-normalize completeness check: backfill never fabricates
+			// required fields, so a legacy document may still be missing
+			// id/status/project/req_doc. Surface that as a diagnostic so
+			// the task is not silently half-managed.
+			if _, err := yamlfrontmatter.ParseTaskDocument(path); err != nil {
+				r.logger.Printf("task %s: document incomplete after normalize: %v", strings.TrimPrefix(entry.Name(), "TASK-"), err)
+			}
+		}
+	}
+	if normalized > 0 {
+		r.logger.Printf("schema defaults: normalized %d task document(s) (backfilled/reordered schema fields)", normalized)
+	}
+}
 
 func (r *Runner) resolveBlockedDependencies() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
@@ -1137,7 +1274,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		}
 
 		if t.MergeApproved && (t.Status == "review" || t.Status == "conflict") {
-			if err := r.processMergeTask(t, repoDir); err != nil {
+			// Environmental merge failures (network/GitHub API) retry with a
+			// short backoff here instead of waiting for the next scan batch,
+			// which can be stalled behind a long Round 2 session.
+			if err := r.processMergeTaskWithRetry(t, repoDir); err != nil {
 				r.logger.Printf("task %s: Merge Phase: %v", t.ID, err)
 			}
 			processed++
@@ -1176,8 +1316,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					r.logger.Printf("task %s: set implementing: %v", t.ID, err)
 					continue
 				}
+				// Notify only on the plan-review → implementing transition.
+				// Resumed sessions (daemon restarts) must not re-spam the
+				// "OMP 正在执行" notification on every scan.
+				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
 			}
-			notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
 			continue
@@ -1661,11 +1804,19 @@ func (r *Runner) cleanupOldLogs() {
 
 func SignalContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
+	// Register before the goroutine starts: a SIGTERM arriving between the
+	// Notify call and the goroutine launch would otherwise hit the default
+	// handler and kill the process.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-		<-ch
-		cancel()
+		select {
+		case <-ch:
+			signal.Stop(ch)
+			cancel()
+		case <-ctx.Done():
+			signal.Stop(ch)
+		}
 	}()
 	return ctx
 }

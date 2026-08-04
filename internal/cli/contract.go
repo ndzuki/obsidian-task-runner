@@ -262,7 +262,7 @@ func newMigrateTasksCommand() *cobra.Command {
 	var write bool
 	command := &cobra.Command{
 		Use:   "migrate-tasks <path>",
-		Short: "Preview or write TASK schema upgrades",
+		Short: "Preview or write TASK schema upgrades (backfill + canonical field order)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := taskMarkdownPaths(args[0])
@@ -271,13 +271,34 @@ func newMigrateTasksCommand() *cobra.Command {
 			}
 			for _, path := range paths {
 				if !write {
-					if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: task_schema_version -> 1\n", path); err != nil {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					missing, err := yamlfrontmatter.MissingDefaults(data)
+					if err != nil {
+						return err
+					}
+					if len(missing) == 0 {
+						continue
+					}
+					keys := make([]string, 0, len(missing))
+					for _, m := range missing {
+						keys = append(keys, m.Key)
+					}
+					if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: missing %s\n", path, strings.Join(keys, ", ")); err != nil {
 						return err
 					}
 					continue
 				}
-				if err := yamlfrontmatter.Update(path, map[string]interface{}{"task_schema_version": 1}); err != nil {
+				updated, err := yamlfrontmatter.NormalizeTaskFrontmatter(path)
+				if err != nil {
 					return err
+				}
+				if updated {
+					if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: normalized\n", path); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

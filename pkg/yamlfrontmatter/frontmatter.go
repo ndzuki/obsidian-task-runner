@@ -237,6 +237,368 @@ func hasFrontmatterKey(doc *yaml.Node, key string) bool {
 	return false
 }
 
+// FieldDefault pairs a canonical frontmatter key with the value to write
+// when the key is absent.
+type FieldDefault struct {
+	Key   string
+	Value interface{}
+}
+
+// taskFieldOrder is the canonical frontmatter key order: user-facing fields
+// first, daemon-maintained fields last. NormalizeTaskFrontmatter reorders
+// documents to this sequence (unknown keys keep their relative order and are
+// appended after all known keys), so frontmatter stays readable and stable
+// as the schema evolves. Covers every known key so any existing field can be
+// placed.
+var taskFieldOrder = []string{
+	// Identity and status (required, human-owned).
+	"id", "title", "project", "project_id", "assignee", "req_doc", "status",
+	// Priority assessment (human-readable output).
+	"priority", "priority_assessment_status", "priority_assessment_attempts",
+	"priority_assessment_started_at", "priority_assessed_at", "priority_assessed_value",
+	"priority_impact", "priority_urgency", "priority_workaround",
+	"priority_score", "priority_confidence", "priority_reason", "priority_recommendation",
+	// Gate decisions (human-owned).
+	"plan_approved", "auto_merge", "merge_approved", "adr_approved",
+	"resume_approved", "close_approved", "pending_req",
+	// Metadata (template 🟡/🟢 sections).
+	"tags", "epic", "blocked_by", "blocks", "target_env", "new_project",
+	"due_date", "estimated_hours", "actual_hours", "component", "parent",
+	"reviewer", "author", "template", "off_peak_only", "auto_approve",
+	// Timestamps.
+	"created", "updated",
+	// Lifecycle (daemon-maintained).
+	"maturity", "refine_version", "refine_req_hash", "refine_retry_count",
+	"refine_error", "plan_req_hash", "plan_version", "planning_retry_count",
+	"checkpoint_commit", "target_branch", "pr_url", "completed",
+	"merge_status", "approved_head", "task_schema_version", "req_refine_count",
+	// Blocking and failure state (daemon-maintained, least user-facing).
+	"blocked_phase", "phase_error", "phase_error_code", "phase_log",
+	"auto_resume_pending", "auto_resume_count",
+	// Grilling lease (daemon-maintained).
+	"grill_owner", "grill_started_at", "grill_heartbeat_at",
+	"grill_timeout_minutes", "grill_done", "grill_resolution",
+	"grill_context", "grill_continue", "grill_prev_status",
+	// Review / rework / closure.
+	"review_feedback", "rework_resolution",
+	"closure_reason", "closure_note", "replacement_task",
+	// Project scaffold and remote creation.
+	"scaffold", "remote_create", "github_owner", "repository_name",
+	"repository_visibility", "repository_description", "repository_url",
+	// ADR bookkeeping.
+	"adr_proposed", "adr_written",
+	// Deprecated migration-only field.
+	"switch_settings",
+}
+
+// taskFieldDefaults maps backfillable keys to their template default values.
+// Required human fields (id/title/project/project_id/req_doc/assignee) are
+// deliberately absent: a missing required field marks an unready task and
+// must not be silently fabricated.
+var taskFieldDefaults = map[string]interface{}{
+	// Gate fields (template 🔵 section).
+	"plan_approved":   false,
+	"auto_merge":      true,
+	"merge_approved":  false,
+	"adr_approved":    false,
+	"resume_approved": false,
+	"close_approved":  false,
+	"pending_req":     false,
+
+	// System lifecycle fields (template ⚪ section).
+	"status":               "blocked",
+	"maturity":             "",
+	"refine_version":       0,
+	"refine_req_hash":      "",
+	"refine_retry_count":   0,
+	"refine_error":         "",
+	"plan_req_hash":        "",
+	"plan_version":         0,
+	"planning_retry_count": 0,
+	"blocked_phase":        "",
+	"phase_error":          "",
+	"phase_error_code":     "",
+	"phase_log":            "",
+	"checkpoint_commit":    "",
+	"target_branch":        "",
+	"pr_url":               "",
+	"completed":            "",
+	"task_schema_version":  1,
+	"auto_resume_pending":  false,
+	"auto_resume_count":    0,
+
+	// Merge loop fields.
+	"merge_status":  "",
+	"approved_head": "",
+
+	// Grilling lease fields.
+	"grill_owner":           "",
+	"grill_started_at":      "",
+	"grill_heartbeat_at":    "",
+	"grill_timeout_minutes": 30,
+	"grill_done":            false,
+	"grill_resolution":      "",
+	"grill_context":         "",
+	"grill_continue":        false,
+	"grill_prev_status":     "",
+
+	// Review / rework / closure fields.
+	"review_feedback":   "",
+	"rework_resolution": "",
+	"closure_reason":    "",
+	"closure_note":      "",
+	"replacement_task":  "",
+
+	// Template non-commented defaults.
+	"tags":                           []interface{}{},
+	"epic":                           "",
+	"blocked_by":                     []interface{}{},
+	"blocks":                         []interface{}{},
+	"priority":                       "",
+	"priority_assessment_started_at": "",
+	"priority_assessed_at":           "",
+	"priority_assessment_attempts":   0,
+	"priority_assessed_value":        "",
+	"priority_impact":                "",
+	"priority_urgency":               "",
+	"priority_workaround":            "",
+	"priority_score":                 0,
+	"priority_confidence":            0,
+	"priority_reason":                "",
+	"priority_recommendation":        "",
+	"new_project":                    false,
+	"target_env":                     "staging",
+	"adr_proposed":                   []interface{}{},
+	"adr_written":                    []interface{}{},
+	"switch_settings":                false,
+}
+
+// fieldOrderIndex maps canonical key → position in taskFieldOrder.
+var fieldOrderIndex = func() map[string]int {
+	index := make(map[string]int, len(taskFieldOrder))
+	for i, key := range taskFieldOrder {
+		index[key] = i
+	}
+	return index
+}()
+
+// missingDefaults computes the ordered list of absent keys with their
+// backfill values. priority_assessment_status follows Parse's compatibility
+// semantics: it derives from whether priority was set. Returns nil when
+// nothing is missing.
+func missingDefaults(doc *yaml.Node, fm *Frontmatter) []FieldDefault {
+	var missing []FieldDefault
+	for _, key := range taskFieldOrder {
+		if def, ok := taskFieldDefaults[key]; ok && !hasFrontmatterKey(doc, key) {
+			missing = append(missing, FieldDefault{Key: key, Value: def})
+		}
+	}
+	if !hasFrontmatterKey(doc, "priority_assessment_status") {
+		value := "pending"
+		if fm.Priority != "" {
+			value = "completed"
+		}
+		missing = append(missing, FieldDefault{Key: "priority_assessment_status", Value: value})
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return missing
+}
+
+// MissingDefaults returns the ordered list of frontmatter keys absent from
+// the document with their backfill values. Keys that are present — even with
+// empty values — are never touched. Returns nil when nothing is missing or
+// the document has no frontmatter.
+func MissingDefaults(data []byte) ([]FieldDefault, error) {
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return nil, nil // no frontmatter: leave the document alone
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end == -1 {
+		return nil, fmt.Errorf("frontmatter not closed")
+	}
+	fmBlock := strings.TrimSpace(rest[:end])
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if err := normalizeNumericStrings(&doc); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
+	var fm Frontmatter
+	if err := doc.Decode(&fm); err != nil {
+		return nil, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	return missingDefaults(&doc, &fm), nil
+}
+
+// buildCanonicalMapping returns the frontmatter mapping content reordered to
+// taskFieldOrder: existing key nodes are reused verbatim (comments and styles
+// preserved), absent backfillable keys are inserted at their canonical
+// position, and unknown keys keep their relative order appended at the end.
+// Returns the new content and whether its key sequence differs from the
+// input.
+func buildCanonicalMapping(mapping *yaml.Node, missing []FieldDefault) ([]*yaml.Node, bool) {
+	existing := make(map[string][2]*yaml.Node, len(mapping.Content)/2)
+	var unknown []*yaml.Node
+	for i := 0; i < len(mapping.Content); i += 2 {
+		key := mapping.Content[i].Value
+		if _, known := fieldOrderIndex[key]; known {
+			existing[key] = [2]*yaml.Node{mapping.Content[i], mapping.Content[i+1]}
+		} else {
+			unknown = append(unknown, mapping.Content[i], mapping.Content[i+1])
+		}
+	}
+	missingValue := make(map[string]interface{}, len(missing))
+	for _, m := range missing {
+		missingValue[m.Key] = m.Value
+	}
+
+	newContent := make([]*yaml.Node, 0, len(mapping.Content)+2*len(missing))
+	for _, key := range taskFieldOrder {
+		if pair, ok := existing[key]; ok {
+			newContent = append(newContent, pair[0], pair[1])
+			continue
+		}
+		val, ok := missingValue[key]
+		if !ok {
+			continue // absent and not backfillable
+		}
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key, Tag: "!!str"}
+		valNode := &yaml.Node{}
+		if err := valNode.Encode(val); err != nil {
+			valNode.SetString(fmt.Sprint(val))
+		}
+		newContent = append(newContent, keyNode, valNode)
+	}
+	newContent = append(newContent, unknown...)
+
+	changed := len(newContent) != len(mapping.Content)
+	if !changed {
+		for i := 0; i < len(newContent); i += 2 {
+			if newContent[i].Value != mapping.Content[i].Value {
+				changed = true
+				break
+			}
+		}
+	}
+	return newContent, changed
+}
+
+// NormalizeTaskFrontmatter backfills missing schema fields and reorders the
+// frontmatter to the canonical taskFieldOrder (user-facing fields first,
+// daemon-maintained fields last). Unknown keys keep their relative order and
+// move to the end. Returns true when the document was rewritten, false when
+// it was already canonical (or had no frontmatter). Existing values are never
+// overwritten; created is backfilled once when absent and updated refreshes,
+// matching Update's timestamp semantics.
+func NormalizeTaskFrontmatter(path string) (bool, error) {
+	cleanPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false, fmt.Errorf("resolve task path: %w", err)
+	}
+	unlock, err := acquireTaskLock(cleanPath)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return false, nil // no frontmatter: leave the document alone
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end == -1 {
+		return false, fmt.Errorf("frontmatter not closed")
+	}
+	fmText := rest[:end]
+	body := rest[end+4:]
+	if body == "" {
+		body = "\n"
+	}
+	// Empty frontmatter (---\n---) is left alone, matching Parse's
+	// legacy-compatible empty-block handling: nothing to backfill or reorder.
+	if strings.TrimSpace(fmText) == "" {
+		return false, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmText), &doc); err != nil {
+		return false, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	// Same numeric normalization as Parse: frontmatter editors may serialize
+	// estimated_hours/actual_hours as quoted strings ("42"), which would
+	// otherwise fail the Decode below and block normalization entirely.
+	if err := normalizeNumericStrings(&doc); err != nil {
+		return false, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false, fmt.Errorf("frontmatter is not a mapping")
+	}
+	mapping := doc.Content[0]
+
+	var fm Frontmatter
+	if err := doc.Decode(&fm); err != nil {
+		return false, fmt.Errorf("parse frontmatter: %w", err)
+	}
+	now := time.Now().Format("2006-01-02T15:04:05-07:00")
+	missing := missingDefaults(&doc, &fm)
+	if created := extractFieldRaw(fmText, "created"); created == "" || created == `""` {
+		missing = append(missing, FieldDefault{Key: "created", Value: now})
+	}
+	// updated refreshes on every rewrite (matching updateUnlocked); including
+	// it in missing places it at its canonical slot when absent instead of
+	// appending it at the tail, so a single normalization pass converges.
+	missing = append(missing, FieldDefault{Key: "updated", Value: now})
+
+	newContent, changed := buildCanonicalMapping(mapping, missing)
+	if !changed {
+		return false, nil
+	}
+	mapping.Content = newContent
+	// Refresh the timestamp value in place (position already canonical).
+	setMappingValue(mapping, "updated", now)
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return false, fmt.Errorf("encode frontmatter: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return false, fmt.Errorf("close frontmatter encoder: %w", err)
+	}
+	newFM := strings.TrimSuffix(buf.String(), "\n")
+
+	repairedBody := escapeBodyTags(body)
+	newDoc := "---\n" + newFM + "\n---" + repairedBody
+	if _, err := Parse([]byte(newDoc)); err != nil {
+		return false, fmt.Errorf("normalize would produce invalid frontmatter: %w", err)
+	}
+	if err := atomicWrite(cleanPath, []byte(newDoc)); err != nil {
+		return false, err
+	}
+	// Post-write validation: confirm the persisted document still parses, so
+	// a normalization defect can never leave a task file the daemon cannot
+	// read (the rewrite is atomic, but a logical corruption must surface).
+	if data, err := os.ReadFile(cleanPath); err != nil {
+		return true, fmt.Errorf("read back after normalize: %w", err)
+	} else if _, err := Parse(data); err != nil {
+		return true, fmt.Errorf("post-write validation failed: %w", err)
+	}
+	return true, nil
+}
+
 // Update atomically updates frontmatter fields in a task markdown file.
 // Fields are updated via yaml.Node to preserve order and handle block scalars.
 // Validation runs BEFORE writing — a corrupt result is never persisted.
