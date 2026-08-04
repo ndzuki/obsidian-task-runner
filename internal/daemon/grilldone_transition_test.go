@@ -355,3 +355,76 @@ assignee: gpt
 		t.Errorf("expected 0 ready tasks (plan-review without plan_approved), got %d", len(ready2))
 	}
 }
+
+// TestLegacyNeedsRefiningMigratesToNeedsGrilling pins the migration of the
+// old daemon's needs-refining status: the task must be schedulable (IsReady)
+// and nextLocalTransition must move it to needs-grilling so the normal
+// Grilling tab / reminder path picks it up.
+func TestLegacyNeedsRefiningMigratesToNeedsGrilling(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Projects", "001-release-manager", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	taskContent := `---
+id: "071"
+title: Legacy Needs Refining
+project: release-manager
+project_id: "001"
+status: needs-refining
+assignee: gpt
+---
+# TASK-071
+`
+	taskPath := filepath.Join(tasksDir, "TASK-071-values-create-list-connect.md")
+	if err := os.WriteFile(taskPath, []byte(taskContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. The legacy status must be schedulable so the scan picks it up.
+	ready, err := task.FindReadyTasks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 1 {
+		t.Fatalf("expected 1 ready task, got %d", len(ready))
+	}
+	if ready[0].Status != "needs-refining" {
+		t.Fatalf("Status = %q, want needs-refining", ready[0].Status)
+	}
+
+	// 2. nextLocalTransition migrates it to needs-grilling (Dispatch=true).
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal("parse frontmatter")
+	}
+	transition, ok := nextLocalTransition(fm)
+	if !ok {
+		t.Fatal("expected a local transition for legacy needs-refining")
+	}
+	if transition.Status != "needs-grilling" {
+		t.Fatalf("transition.Status = %q, want needs-grilling", transition.Status)
+	}
+	if !transition.Dispatch {
+		t.Fatal("migration must dispatch so the Grilling path runs this round")
+	}
+	if err := yamlfrontmatter.Update(taskPath, transition.Updates); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. After migration the task is a normal needs-grilling task.
+	ready2, err := task.FindReadyTasks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready2) != 1 {
+		t.Fatalf("expected 1 ready task after migration, got %d", len(ready2))
+	}
+	if ready2[0].Status != "needs-grilling" {
+		t.Fatalf("Status after migration = %q, want needs-grilling", ready2[0].Status)
+	}
+}

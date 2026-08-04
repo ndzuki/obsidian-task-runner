@@ -1866,8 +1866,15 @@ func checkAPIKeyUnavailable(logPath string) string {
 	return ""
 }
 
-// apiKeyProbe is the pluggable key-availability check; tests override it.
-var apiKeyProbe = defaultAPIKeyProbe
+// apiKeyProbe is the pluggable key-availability check; tests override it via
+// apiKeyProbe.Store. Atomic so concurrent task goroutines (async dispatch)
+// can read it while a test replaces it — a plain variable races when a
+// runTask goroutine outlives its test and the next test swaps the probe.
+var apiKeyProbe atomic.Value // func() bool
+
+func init() {
+	apiKeyProbe.Store(func() bool { return defaultAPIKeyProbe() })
+}
 
 // apiKeyAvailable probes whether any provider API key is reachable: either an
 // env var override (DEEPSEEK_API_KEY / CODEX_API_KEY as used by
@@ -1875,7 +1882,11 @@ var apiKeyProbe = defaultAPIKeyProbe
 // service. The probe is cheap (sub-second) and runs before dispatching OMP so
 // key-less runs never start a headless session.
 func apiKeyAvailable() bool {
-	return apiKeyProbe()
+	probe, ok := apiKeyProbe.Load().(func() bool)
+	if !ok {
+		return false
+	}
+	return probe()
 }
 
 func defaultAPIKeyProbe() bool {

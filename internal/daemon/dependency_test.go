@@ -1064,6 +1064,10 @@ assignee: default
 	}
 
 	releaseBarrier(t, releaseFile)
+	// Async dispatch: scanAndProcess returned long ago; wait for the OMP
+	// task AND its follow-up scan to unwind, or the leaked goroutines race
+	// the next test's global state (apiKeyProbe).
+	waitForScanIdle(t, runner)
 }
 
 func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
@@ -1148,9 +1152,9 @@ req_doc: Projects/001-test/Requirements/REQ-082.md
 		t.Fatal(err)
 	}
 
-	oldProbe := apiKeyProbe
-	apiKeyProbe = func() bool { return true }
-	t.Cleanup(func() { apiKeyProbe = oldProbe })
+	oldProbe, _ := apiKeyProbe.Load().(func() bool)
+	apiKeyProbe.Store(func() bool { return true })
+	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault
@@ -1179,6 +1183,9 @@ req_doc: Projects/001-test/Requirements/REQ-082.md
 	if err := <-done; err != nil {
 		t.Fatalf("scanAndProcess: %v", err)
 	}
+	// Async dispatch: scanAndProcess returned before the OMP task finished;
+	// wait for the task and its follow-up scan to unwind before ending.
+	waitForScanIdle(t, runner)
 }
 
 // TestScanAndProcessKeepsKeyBlockedWhenUnavailable verifies that a key-blocked
@@ -1219,9 +1226,9 @@ req_doc: Projects/001-test/Requirements/REQ-083.md
 		t.Fatal(err)
 	}
 
-	oldProbe := apiKeyProbe
-	apiKeyProbe = func() bool { return false }
-	t.Cleanup(func() { apiKeyProbe = oldProbe })
+	oldProbe, _ := apiKeyProbe.Load().(func() bool)
+	apiKeyProbe.Store(func() bool { return false })
+	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault

@@ -265,6 +265,12 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	switch fm.Status {
 	case "ready", "needs-grilling", "refining", "planning":
 		return true
+	case "needs-refining":
+		// Legacy status from an earlier daemon version. Ready so the scan
+		// picks the task up and nextLocalTransition migrates it to
+		// needs-grilling (the current name), which then creates the Grilling
+		// tab and starts requirement alignment.
+		return true
 	case "implementing":
 		return !fm.OffPeakOnly || IsOffPeak()
 	case "plan-review":

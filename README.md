@@ -297,6 +297,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `blocked` | 缺少项目、执行者或依赖未完成 | 补齐 `project`、`assignee`，检查 `blocked_by` |
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；成熟后自动进入 planning 或 needs-grilling |
+| `needs-refining` | 旧版状态（已废弃） | daemon 自动迁移为 needs-grilling 后正常处理 |
 | `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | 审阅计划 + ADR 提议，确认后设 `plan_approved: true` |
