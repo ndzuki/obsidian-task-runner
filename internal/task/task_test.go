@@ -609,6 +609,7 @@ func TestIsReadyCompleteStateMachine(t *testing.T) {
 		{name: "close gate waits for approval", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close"}, want: false},
 		{name: "close gate approved", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close", CloseApproved: true}, want: true},
 		{name: "done remains terminal without change", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt"}, want: false},
+		{name: "legacy needs-refining is schedulable", fm: yamlfrontmatter.Frontmatter{Status: "needs-refining", Assignee: "gpt"}, want: true},
 	}
 
 	for _, tt := range tests {

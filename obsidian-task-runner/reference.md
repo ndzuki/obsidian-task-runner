@@ -11,6 +11,8 @@ blocked → ready → refining ─┬─ fully_mature → planning → plan-revi
                             ├─ needs input → needs-grilling → refining
                             └─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
 
+needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
+
 refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
 implementing -- prototype FAIL → needs-grilling（带原型证据）

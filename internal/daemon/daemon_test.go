@@ -909,6 +909,28 @@ func waitForTasksIdle(t *testing.T, runner *Runner) {
 	t.Fatalf("tasks did not finish within 5s (active=%d)", runner.activeTasks.Load())
 }
 
+// waitForScanIdle blocks until dispatched tasks AND the follow-up scan they
+// trigger (runTask → requestScan) have fully unwound. Async dispatch means
+// scanAndProcess returns while work is still running; tests must wait for
+// both before ending, or leaked goroutines race the next test's global state
+// (e.g. apiKeyProbe).
+func waitForScanIdle(t *testing.T, runner *Runner) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runner.activeTasks.Load() == 0 {
+			runner.scanGateMu.Lock()
+			active := runner.scanActive
+			runner.scanGateMu.Unlock()
+			if !active {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("scan/tasks did not unwind within 5s (active=%d)", runner.activeTasks.Load())
+}
+
 func createRepository(t *testing.T, dir string) string {
 	t.Helper()
 	repo := filepath.Join(dir, "repo")

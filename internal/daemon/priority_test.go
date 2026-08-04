@@ -31,9 +31,9 @@ func TestRunPriorityAssessmentWritesNormalizedResult(t *testing.T) {
 	}
 
 	runner := &Runner{cfg: &config.Config{OMPCmd: omp, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
-	oldProbe := apiKeyProbe
-	apiKeyProbe = func() bool { return true }
-	t.Cleanup(func() { apiKeyProbe = oldProbe })
+	oldProbe, _ := apiKeyProbe.Load().(func() bool)
+	apiKeyProbe.Store(func() bool { return true })
+	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 	if err := runner.runPriorityAssessment(task.PriorityTask{ID: "001", FilePath: taskPath, ReqDoc: reqPath}); err != nil {
 		t.Fatalf("runPriorityAssessment: %v", err)
 	}
@@ -97,9 +97,9 @@ req_doc: %s
 		Models:        config.DefaultModels(),
 	})
 	runner.logger = log.New(os.Stderr, "", 0)
-	oldProbe := apiKeyProbe
-	apiKeyProbe = func() bool { return true }
-	t.Cleanup(func() { apiKeyProbe = oldProbe })
+	oldProbe, _ := apiKeyProbe.Load().(func() bool)
+	apiKeyProbe.Store(func() bool { return true })
+	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 
 	if processed := runner.processPriorityAssessments(context.Background()); processed != priorityAssessmentBatchLimit {
 		t.Fatalf("processed = %d, want %d", processed, priorityAssessmentBatchLimit)

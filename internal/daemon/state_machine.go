@@ -75,6 +75,17 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 			Reason:   "ready task enters maturity gate",
 			Updates:  map[string]interface{}{"status": "refining"},
 		}, true
+	case "needs-refining":
+		// Legacy status from an earlier daemon version; the current name for
+		// "requirement needs refinement via Grilling" is needs-grilling.
+		// Migrating lets the normal needs-grilling path (Kitty tab creation,
+		// reminders, lease handling) pick the task up.
+		return localTransition{
+			Status:   "needs-grilling",
+			Dispatch: true,
+			Reason:   "legacy needs-refining migrated to needs-grilling",
+			Updates:  map[string]interface{}{"status": "needs-grilling"},
+		}, true
 	case "plan-review":
 		if fm.PlanApproved {
 			return localTransition{
