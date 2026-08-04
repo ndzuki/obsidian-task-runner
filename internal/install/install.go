@@ -41,6 +41,13 @@ func Run(opts Options) error {
 		}
 	}
 
+	// 1.5 Build the otg binary itself (versioned via ldflags) so `otg
+	// version` reports the release instead of dev/unknown. Daemon is already
+	// stopped, so the target can be atomically replaced.
+	if err := buildOTGBinary(opts); err != nil && !d {
+		return err
+	}
+
 	// 2. Install skill files
 	if err := installSkill(opts); err != nil && !d {
 		return err
@@ -145,6 +152,55 @@ SORT project_id ASC
 	return nil
 }
 
+// buildOTGBinary compiles the otg binary with version ldflags into the
+// daemon's expected path (~/.local/bin/otg, matching the systemd ExecStart).
+// It runs from the source checkout (install is invoked there, consistent
+// with installSkill's relative paths), so git describe/rev-parse provide the
+// release identity. The build writes a temp file and renames over the target
+// so a running binary can be replaced atomically. A failed build warns and
+// keeps the previous binary — skill/systemd installation must not be blocked
+// by an unavailable toolchain.
+func buildOTGBinary(opts Options) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(home, ".local", "bin", "otg")
+	if opts.DryRun {
+		fmt.Printf("[DRY RUN] Would build otg to %s (version ldflags from git)\n", dest)
+		return nil
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: go not found, keeping existing otg binary at %s\n", dest)
+		return nil
+	}
+	version := "dev"
+	commit := "unknown"
+	if out, err := exec.Command("git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
+		version = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output(); err == nil {
+		commit = strings.TrimSpace(string(out))
+	}
+	ldflags := fmt.Sprintf("-X main.Version=%s -X main.Commit=%s", version, commit)
+	tmp := dest + ".tmp"
+	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", tmp, "./cmd/otg/")
+	output, buildErr := cmd.CombinedOutput()
+	if buildErr != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "warning: otg build failed (%v), keeping existing binary: %s\n", buildErr, strings.TrimSpace(string(output)))
+		return nil
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "warning: cannot replace otg binary: %v\n", err)
+		return nil
+	}
+	fmt.Printf("otg binary installed: %s (%s)\n", dest, version)
+	return nil
+}
+
+// installSkill copies the obsidian-task-runner skill tree into the install dir.
 func installSkill(opts Options) error {
 	dest := opts.SkillInstallDir
 	src := opts.SrcDir

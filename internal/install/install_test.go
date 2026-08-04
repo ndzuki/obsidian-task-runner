@@ -37,3 +37,21 @@ func TestGenerateVaultMapUsesDefaultModelKey(t *testing.T) {
 		t.Fatal("legacy flash model must not be generated")
 	}
 }
+
+func TestBuildOTGBinaryDryRun(t *testing.T) {
+	// DryRun must not execute go/git — it only prints the intended build.
+	opts := Options{DryRun: true}
+	if err := buildOTGBinary(opts); err != nil {
+		t.Fatalf("buildOTGBinary dry run: %v", err)
+	}
+}
+
+func TestBuildOTGBinarySkipsWithoutGo(t *testing.T) {
+	// No go in PATH: the build warns and keeps the existing binary instead
+	// of failing the whole install.
+	t.Setenv("PATH", t.TempDir())
+	opts := Options{}
+	if err := buildOTGBinary(opts); err != nil {
+		t.Fatalf("buildOTGBinary without go: %v", err)
+	}
+}
