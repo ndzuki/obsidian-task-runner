@@ -224,6 +224,35 @@ func kittyDebounceFile(taskID string) string {
 
 const kittyDebounceInterval = 5 * time.Minute
 
+// kittyAvailable reports whether the kitty binary is reachable.
+func kittyAvailable() bool {
+	_, err := exec.LookPath("kitty")
+	return err == nil
+}
+
+// kittyLaunchEnv returns the environment for kitty control commands,
+// auto-detecting the socket when KITTY_LISTEN_ON is unset (systemd services
+// lack it).
+func kittyLaunchEnv() []string {
+	kittyEnv := os.Environ()
+	if os.Getenv("KITTY_LISTEN_ON") == "" {
+		if entries, err := os.ReadDir("/tmp"); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "kitty-") {
+					kittyEnv = append(kittyEnv, "KITTY_LISTEN_ON=unix:/tmp/"+e.Name())
+					log.Printf("grilling tab: auto-detected kitty socket %s", e.Name())
+					break
+				}
+			}
+		} else {
+			log.Printf("grilling tab: cannot read /tmp: %v", err)
+		}
+	} else {
+		log.Printf("grilling tab: KITTY_LISTEN_ON already set")
+	}
+	return kittyEnv
+}
+
 func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	// Acquire file lock to prevent concurrent tab creation
 	lockFile, err := os.OpenFile(kittyDebounceFile(taskID), os.O_CREATE|os.O_RDWR, 0644)
@@ -259,27 +288,11 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		log.Printf("grilling tab: write debounce timestamp: %v", err)
 	}
 
-	if _, err := exec.LookPath("kitty"); err != nil {
-		log.Printf("grilling tab: kitty not in PATH: %v", err)
+	if !kittyAvailable() {
+		log.Printf("grilling tab: kitty not in PATH: %v", exec.ErrNotFound)
 		return false
 	}
-	// Detect Kitty socket — systemd services lack KITTY_LISTEN_ON env var.
-	kittyEnv := os.Environ()
-	if os.Getenv("KITTY_LISTEN_ON") == "" {
-		if entries, err := os.ReadDir("/tmp"); err == nil {
-			for _, e := range entries {
-				if strings.HasPrefix(e.Name(), "kitty-") {
-					kittyEnv = append(kittyEnv, "KITTY_LISTEN_ON=unix:/tmp/"+e.Name())
-					log.Printf("grilling tab: auto-detected kitty socket %s", e.Name())
-					break
-				}
-			}
-		} else {
-			log.Printf("grilling tab: cannot read /tmp: %v", err)
-		}
-	} else {
-		log.Printf("grilling tab: KITTY_LISTEN_ON already set")
-	}
+	kittyEnv := kittyLaunchEnv()
 
 	tabTitle := fmt.Sprintf("Grilling %s", taskID)
 	if taskTitle != "" {
@@ -347,6 +360,83 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 
 GRILLING_EOF
 exec omp %s`, tid, ttl, rd, fmt.Sprintf("%q", prompt))
+	cmd := exec.Command("kitty", "@", "launch",
+		"--type=tab",
+		"--title", tabTitle,
+		"bash", "-c", script,
+	)
+	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
+	return cmd.Run() == nil
+}
+
+// TryKittyDecisionTab opens a Kitty tab with an interactive OMP session that
+// walks the user through the pending decision points of the project-level
+// Grilling-Decisions.md — answers are written back to the list file directly,
+// and the daemon's answer-hash change detection picks them up for automatic
+// distribution. One tab per project (debounce key = decisions-<project>), so
+// parked tasks share a single interaction surface instead of one per task.
+func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
+	if !kittyAvailable() {
+		return false
+	}
+	debounceKey := "decisions-" + project
+	lockFile, err := os.OpenFile(kittyDebounceFile(debounceKey), os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		log.Printf("decision tab: cannot open lock: %v", err)
+		return false
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		log.Printf("decision tab: cannot acquire lock: %v", err)
+		return false
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	if data, err := os.ReadFile(kittyDebounceFile(debounceKey)); err == nil {
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil && time.Since(t) < kittyDebounceInterval {
+			log.Printf("decision tab: debounced for %s (tab likely open)", project)
+			return true
+		}
+	}
+	if err := os.WriteFile(kittyDebounceFile(debounceKey), []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+		log.Printf("decision tab: write debounce timestamp: %v", err)
+	}
+
+	kittyEnv := kittyLaunchEnv()
+	tabTitle := "决策清单 — " + project
+	if runes := []rune(tabTitle); len(runes) > 60 {
+		tabTitle = string(runes[:57]) + "..."
+	}
+
+	lsCmd := exec.Command("kitty", "@", "ls")
+	lsCmd.Env = kittyEnv
+	lsOutput, lsErr := lsCmd.Output()
+	if lsErr == nil {
+		if exists, _ := kittyTabExists(lsOutput, "decisions", tabTitle); exists {
+			log.Printf("decision tab: existing tab for %s, skipping", project)
+			return true
+		}
+	}
+
+	prompt := fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点。
+
+逐项向用户提问并填写答案：
+1. 读取清单中「决策:」为空或占位符（{用户填写}）的决策点（D-n），以及「拆分:」「评审决策:」未填项；
+2. 逐一向用户展示问题（含冲突背景与建议方向），用户回答后把答案写入清单对应「- 决策: {答案}」行（直接编辑文件正文，保持格式与顺序）；
+3. 全部问完后总结已填项；不要设置 grill_continue、不要修改 frontmatter —— daemon 检测到答案变化后会自动分发；
+4. 用户中途关闭 tab 无妨：已填答案保留，全部填完后 daemon 自动完成分发与文档更新。`, listPath)
+	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
+
+╔══════════════════════════════════════════════════════════════╗
+║  📋 项目级决策清单 — %s
+║
+║  %s
+║
+║  OMP 正在逐项向你提问待答决策点…
+╚══════════════════════════════════════════════════════════════╝
+
+GRILLING_EOF
+exec omp %s`, project, listPath, fmt.Sprintf("%q", prompt))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,

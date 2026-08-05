@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -109,7 +110,56 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 				},
 			}, true
 		}
+		if fm.AutoApprove {
+			// User opted in to skip the plan-review gate (symmetry with
+			// auto_merge): a freshly produced plan counts as approved and
+			// the task moves straight to implementing. Plan quality is the
+			// user's trade-off — the flag is explicit per task. The caller
+			// (prepareBatch) notifies on the "auto_approve" reason marker so
+			// this function stays side-effect free.
+			return localTransition{
+				Status:   "implementing",
+				Dispatch: true,
+				Reason:   "auto_approve plan gate (no manual review)",
+				Updates: map[string]interface{}{
+					"status":        "implementing",
+					"plan_approved": true,
+					"adr_approved":  hasADRProposal(fm.AdrProposed),
+				},
+			}, true
+		}
+	case "done":
+		// Done but never merged (PR or branch exists, merge_status != merged):
+		// the merge flow was interrupted or the PR went stale after the task
+		// was marked done — reopen it so the PR lifecycle closes on its own
+		// (TASK-067/019 PRs sat CONFLICTING for weeks because done is not a
+		// mergeable status). auto_merge tasks re-authorize automatically;
+		// manual-gate tasks wait for merge_approved.
+		if task.DoneReopensMerge(fm) {
+			return localTransition{
+				Status:   "review",
+				Dispatch: true,
+				Reason:   "done task has unmerged PR, reopening merge flow",
+				Updates: map[string]interface{}{
+					"status":           "review",
+					"merge_approved":   fm.AutoMerge,
+					"merge_status":     "",
+					"phase_error_code": "",
+					"phase_error":      "",
+					"phase_log":        "",
+					"completed":        "",
+				},
+			}, true
+		}
 	case "needs-grilling":
+		if fm.GrillParked {
+			// Parked disputes live in the project-level Grilling-Decisions.md
+			// list. NEVER auto-transition (resume/replan) while parked — a
+			// stale grill_resolution would re-open the no-op replan loop
+			// (TASK-066: 17 rounds zero convergence on an unchanged REQ).
+			// Only PM distribute explicitly resets parked tasks to refining.
+			return localTransition{}, false
+		}
 		if !fm.GrillDone {
 			return localTransition{}, false
 		}

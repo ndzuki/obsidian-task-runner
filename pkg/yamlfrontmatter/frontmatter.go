@@ -125,6 +125,7 @@ type Frontmatter struct {
 	RepositoryURL         string `yaml:"repository_url"`
 	MergeStatus           string `yaml:"merge_status"`
 	ApprovedHead          string `yaml:"approved_head"`
+	MergeRetryCount       int    `yaml:"merge_retry_count"`
 
 	// General task metadata retained by templates and dashboards.
 	Created        string   `yaml:"created"`
@@ -139,6 +140,7 @@ type Frontmatter struct {
 	Parent         string   `yaml:"parent"`
 	Blocks         []string `yaml:"blocks"`
 	TargetEnv      string   `yaml:"target_env"`
+	Stage          string   `yaml:"stage"`
 
 	// Deprecated migration-only field. New code must use Assignee.
 	SwitchSettings bool `yaml:"switch_settings"`
@@ -268,7 +270,7 @@ var taskFieldOrder = []string{
 	"plan_approved", "auto_merge", "merge_approved", "adr_approved",
 	"resume_approved", "close_approved", "pending_req",
 	// Metadata (template 🟡/🟢 sections).
-	"tags", "epic", "blocked_by", "blocks", "target_env", "new_project",
+	"tags", "epic", "blocked_by", "blocks", "target_env", "stage", "new_project",
 	"due_date", "estimated_hours", "actual_hours", "component", "parent",
 	"reviewer", "author", "template", "off_peak_only", "auto_approve",
 	// Timestamps.
@@ -383,7 +385,6 @@ var taskFieldDefaults = map[string]interface{}{
 	"knowledge_extracted":            false,
 	"knowledge_refs":                 []interface{}{},
 	"knowledge_applied":              "",
-	"switch_settings":                false,
 }
 
 // fieldOrderIndex maps canonical key → position in taskFieldOrder.

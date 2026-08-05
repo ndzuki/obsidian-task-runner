@@ -14,10 +14,10 @@ description: "需求分解器：把新项目首 REQ（用户通常把需求揉�
 
 ## 输出
 
-拆分建议写入 `Notes/<req-file-name>-split-proposal.md`：
+拆分建议写入 `Notes/{req-file-name}-split-proposal.md`：
 
 ```markdown
-# <REQ 标题> 拆分建议
+# {REQ 标题} 拆分建议
 
 > 由 daemon/PM 统筹自动生成，需用户确认或修改后生效。
 
@@ -37,6 +37,24 @@ description: "需求分解器：把新项目首 REQ（用户通常把需求揉�
 4. **依赖拓扑**：子需求间显式标注依赖（如"2 依赖 1"），distribute 后写入 `blocked_by`。
 5. **保留原 REQ**：拆分建议不修改原 REQ 文档；原 REQ 作为总纲保留（或确认后归档）。
 
+## 贯穿型需求（e2e / 测试 / 环境 / CI）——阶段化增量，禁止一次性全量
+
+**识别特征**（任一命中即判贯穿型）：
+- 标题或范围含 e2e、端到端、全链路、验收测试、dev-env、开发环境、CI、持续集成、观测基线；
+- 验收标准（AC）大量引用**其他 REQ 的功能交付**（>3 个依赖项，或依赖链含未交付任务）；
+- 需求自身描述"分阶段""随功能交付"。
+
+**处置（核心规则）**：
+1. **不拆成一次性全量子需求**。把 AC 按功能阶段切成**阶段场景包**：每个场景包只覆盖**该阶段已交付功能**的可验证场景（TASK-066 教训：全量 e2e 需求依赖 8 个上游任务，17 轮 replan 零收敛——场景包绝不允许依赖未来阶段任务）。
+2. 拆分建议表增加「挂载阶段」列：每个场景包标注建议挂载的阶段（如 `Phase 1` / `Phase 2` / `Phase 3`），依赖列只允许引用**同阶段或更早阶段**的子需求。
+3. 输出顶部加贯穿型标注：`> 贯穿型需求：按阶段增量交付，每个阶段挂载对应场景包（详见 Stage-Plan）。`
+4. 框架/脚手架类场景包（如"Stage 框架""runner 骨架"）挂 **Phase 1**，随核心链路先行；端到端场景随对应功能阶段。
+5. 用户确认后：distribute 按挂载阶段创建子 REQ 并写入 Stage-Plan 对应阶段。
+
+## 阶段建议（与 PM 衔接）
+
+拆分建议附「阶段分组」小节：按依赖拓扑把子需求分为 2-4 个阶段，每阶段 3-8 个子需求、有可演示交付物；**任一阶段子需求 > 8 或跨 >2 个功能域 → 标注建议拆出更多阶段**（防单阶段开发周期过长）。用户确认后写入 `Notes/Stage-Plan.md`（PM 执行）。
+
 ## 技术栈建议（REQ 未声明技术栈/框架时）
 
 **触发**：REQ 全文未提及技术栈、框架、语言、部署形态（或仅模糊提及）。
@@ -54,8 +72,8 @@ description: "需求分解器：把新项目首 REQ（用户通常把需求揉�
 | 方案 | 来源（项目/社区） | 成熟度 | 适配度 | 备注 |
 |------|------------------|--------|--------|------|
 | Go + Connect RPC + PostgreSQL | release-manager（verified） | stable | 高 | 与既有 ADR 生态一致 |
-| ... | web_search: <URL> | mainstream | 中 | 需新引入 |
-| 技术栈: <用户填写> |
+| ... | web_search: {URL} | mainstream | 中 | 需新引入 |
+| 技术栈: {用户填写} |
 ```
 
 **规则**：
@@ -66,7 +84,7 @@ description: "需求分解器：把新项目首 REQ（用户通常把需求揉�
 ## 与 PM 统筹的衔接
 
 - **consolidate**：拆分建议作为 `Notes/Grilling-Decisions.md` 清单的**第一部分**（`## 拆分确认`），与争议问题一起交用户一次性回答。
-- **distribute**：用户确认/修改拆分后，按确认结果创建子 REQ 文档（`REQ-<id>-<slug>-<n>.md` 或独立编号，遵循项目 REQ 命名规范）；`OnReqChanged` 自动为每个子 REQ 生成 canonical TASK。子需求细化由各自的 refining/requirement-elaborator 流程处理，不再重复大需求级别的 grilling。
+- **distribute**：用户确认/修改拆分后，按确认结果创建子 REQ 文档（`REQ-{id}-{slug}-{n}.md` 或独立编号，遵循项目 REQ 命名规范）；`OnReqChanged` 自动为每个子 REQ 生成 canonical TASK。子需求细化由各自的 refining/requirement-elaborator 流程处理，不再重复大需求级别的 grilling。
 
 ## 禁止事项
 

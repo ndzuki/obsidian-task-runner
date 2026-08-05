@@ -28,6 +28,7 @@ const (
 	ErrBaseCommitMismatch       ErrorCode = "BASE_COMMIT_MISMATCH"
 	ErrBranchOwnershipConflict  ErrorCode = "BRANCH_OWNERSHIP_CONFLICT"
 	ErrDependencyCycle          ErrorCode = "DEPENDENCY_CYCLE"
+	ErrPrerequisiteSmokeFailed  ErrorCode = "PREREQUISITE_SMOKE_FAILED"
 	ErrInternal                 ErrorCode = "INTERNAL"
 )
 
@@ -55,6 +56,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrBaseCommitMismatch,
 	ErrBranchOwnershipConflict,
 	ErrDependencyCycle,
+	ErrPrerequisiteSmokeFailed,
 	ErrInternal,
 }
 

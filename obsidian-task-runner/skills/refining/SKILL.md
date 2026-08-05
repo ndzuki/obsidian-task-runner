@@ -49,9 +49,9 @@ REQ 细化后（相对上次 refine 的 `refine_req_hash` 变化），对比新�
 原子更新 frontmatter：
 
 ```yaml
-maturity: \<result\>
-refine_version: \<old+1\>
-refine_req_hash: "sha256:\<hash\>"
+maturity: \{result\}
+refine_version: \{old+1\}
+refine_req_hash: "sha256:\{hash\}"
 refine_error: ""
 ```
 
@@ -60,7 +60,7 @@ refine_error: ""
 ```markdown
 ## 需求成熟度评估
 
-> 版本: <refine_version> | REQ hash: \<hash\> | 时间: <local ISO8601>
+> 版本: {refine_version} | REQ hash: \{hash\} | 时间: {local ISO8601}
 
 | 检查项 | 状态 | 证据 |
 |--------|------|------|
@@ -83,6 +83,22 @@ refine_error: ""
 
 wayfinder 将模糊大需求拆成决策票，每张票独立可解决。输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
 
+### 4b0: 无增量 replan 拦截（防 replan 空转）
+
+**触发条件**（全部满足）：
+- 本次 refine 由 replan 触发：`pending_req=true`；
+- `plan_req_hash` 非空 且 `refine_req_hash == plan_req_hash`（REQ 相对上次 plan **无实质内容变化**）；
+- maturity 为 `fully_mature`（成熟度门禁本身已通过）。
+
+**判定**：无增量 replan。REQ 未变而 replan 已无新信息——继续 planning 只会重新产出相同计划（TASK-066 教训：17 轮 replan 全部在同一 REQ hash 上零收敛，每轮烧一次 planning + round2 的 token）。
+
+**处置**：不路由 planning，直接走 **Step 4c park 升级**，决策点标题：「需求无增量变更，{plan_version} 轮 replan 空转」，建议三选一：
+- (A) 解除/收窄前置门禁（若门禁由上游事实阻塞，改为 blocked + PREREQUISITE_SMOKE_FAILED，由 daemon 事实恢复）；
+- (B) 拆分 REQ 收窄范围（走 `skill://obsidian-task-runner-split`）；
+- (C) 结束任务（close）。
+
+> 该拦截只拦「REQ 内容未变」的 replan；REQ 有实质变化（hash 不同）时正常走 4b 流程。
+
 ### 4b: fully_mature
 
 Pass through unchanged: `status=refining` → daemon early-out routes to planning.
@@ -93,19 +109,19 @@ Do NOT dump every failed item on the user. Classify each failed check first:
 
 | 分类 | 判定 | 处置 |
 |------|------|------|
-| **fact** 事实类 | 答案可由环境事实确定（代码行为、ADR 编号是否存在、文件/字段现状） | 自行查证并修正 REQ（标注 `[事实修正: <证据>]`），从 failed 移除 |
+| **fact** 事实类 | 答案可由环境事实确定（代码行为、ADR 编号是否存在、文件/字段现状） | 自行查证并修正 REQ（标注 `[事实修正: {证据}]`），从 failed 移除 |
 | **auto** 建议可采纳类 | 有明确建议方向 + 低风险 + 可逆（不涉及安全边界、跨需求契约、不可逆操作） | 采纳建议写回 REQ（标注 `[采纳建议 auto]`），从 failed 移除 |
 | **dispute** 真争议类 | 跨需求/ADR 边界冲突、安全边界、不可逆、建议方向冲突或无共识 | 保留，进入重复检测 |
 
 **fact/auto 处置要求**：
 - 修改 REQ 必须追加标注（不覆盖用户原文）：
   ```markdown
-  > [事实修正]: <证据来源> — 由 refining 自动修正，<ISO8601>
-  > [采纳建议 auto]: <采纳的建议 + 理由> — refining 自动采纳，用户可推翻后重跑，<ISO8601>
+  > [事实修正]: {证据来源} — 由 refining 自动修正，{ISO8601}
+  > [采纳建议 auto]: {采纳的建议 + 理由} — refining 自动采纳，用户可推翻后重跑，{ISO8601}
   ```
 - 每条处置记录追加到 TASK frontmatter `auto_accepted`（用 `otg update-status`，以 `; ` 分隔追加）：
   ```
-  auto_accepted="<现有内容>; <refine_version> <ISO8601>: [事实修正|采纳建议 auto] <一句话摘要>"
+  auto_accepted="{现有内容}; {refine_version} {ISO8601}: [事实修正|采纳建议 auto] {一句话摘要}"
   ```
 - **归档防膨胀**：`auto_accepted` 超过 2KB 时，保留最近 3 条在 frontmatter，其余移动到 TASK body `## 自动采纳历史` section（追加，不覆盖已有历史）。frontmatter 只留近期审计指针，完整历史在 body 可查。
 - 处置后重新评估：若 failed 全部清除 → maturity 更新为 `fully_mature`，路由到 planning（不进入 grilling）。
@@ -121,14 +137,14 @@ Do NOT dump every failed item on the user. Classify each failed check first:
 
 Dispute 已重复 ≥2 轮且 REQ hash 未变时：
 
-1. 将 dispute 写入项目级决策清单 `Projects/<project>/Notes/Grilling-Decisions.md`（不存在则创建，格式见 `skill://obsidian-task-runner-pm`）。同 REQ 的重复问题只写一条，来源任务列表标注所有相关 TASK。
+1. 将 dispute 写入项目级决策清单 `Projects/{project}/Notes/Grilling-Decisions.md`（不存在则创建，格式见 `skill://obsidian-task-runner-pm`）。同 REQ 的重复问题只写一条，来源任务列表标注所有相关 TASK。
 2. 更新 TASK：
    ```bash
-   otg update-status <task> \
+   otg update-status {task} \
      status=needs-grilling \
      grill_done=false \
      grill_parked=true \
-     grill_context="maturity=parked; refine_version=<N>; 争议已并入 Notes/Grilling-Decisions.md，等待项目级一次性回答（见 skill://obsidian-task-runner-pm）"
+     grill_context="maturity=parked; refine_version={N}; 争议已并入 Notes/Grilling-Decisions.md，等待项目级一次性回答（见 skill://obsidian-task-runner-pm）"
    ```
 3. 替换 TASK body `## Grilling 待回答` 为简短指引：指向项目级清单，说明用户回答清单后 daemon 自动分发。
 4. 不再创建 Kitty tab、不再发送逐任务提醒（daemon 对 `grill_parked=true` 的任务静默等待）。
@@ -144,25 +160,25 @@ Dispute 已重复 ≥2 轮且 REQ hash 未变时：
 **For all failures**: extract the relevant CONTEXT.md terminology the elaborator should reference.
 
 ```bash
-otg update-status <task> \
+otg update-status {task} \
   status=needs-grilling \
   grill_done=false \
   grill_repeat=0 \
   grill_parked=false \
-  grill_context="<structured context>"
+  grill_context="{structured context}"
 ```
 
 `grill_context` format:
 ```
-maturity=<result>; refine_version=<N>
+maturity={result}; refine_version={N}
 Failed checks:
-- <check name>: <specific finding with evidence>
+- {check name}: {specific finding with evidence}
 ADR context (if applicable):
-- ADR-<id> (accepted): <decision summary> → REQ conflicts at <point>
+- ADR-{id} (accepted): {decision summary} → REQ conflicts at {point}
 CONTEXT.md terminology:
-- <term>: <definition> (relevant because <reason>)
+- {term}: {definition} (relevant because {reason})
 Follow-up dimensions:
-- <question the elaborator should ask the user>
+- {question the elaborator should ask the user}
 ```
 
 > **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a Kitty tab on the next scan.
@@ -181,13 +197,13 @@ TASK file so the user can answer offline without blocking the pipeline.
 ```markdown
 ## Grilling 待回答
 
-> 成熟度: <maturity> | refine 版本: <refine_version> | 时间: <ISO8601>
+> 成熟度: {maturity} | refine 版本: {refine_version} | 时间: {ISO8601}
 
 待确认问题：
 
-- **<问题标题>**：<具体发现 + 证据>
-  - 上下文：<引用 ADR 或 CONTEXT.md 的相关段落>
-  - 建议方向：<elaborator 应追问的方向>
+- **{问题标题}**：{具体发现 + 证据}
+  - 上下文：{引用 ADR 或 CONTEXT.md 的相关段落}
+  - 建议方向：{elaborator 应追问的方向}
 ```
 
 3. Include every failed maturity check with its specific finding and evidence.
@@ -199,7 +215,7 @@ TASK file so the user can answer offline without blocking the pipeline.
 2. User fills answers directly in this section (free-form markdown).
 3. After answering all questions, user sets `grill_continue: true` in frontmatter:
    ```bash
-   otg update-status <task> grill_continue=true
+   otg update-status {task} grill_continue=true
    ```
 
 > **grill_parked=true 的任务不适用本流程**：问题已并入项目级清单
@@ -244,6 +260,6 @@ as before. If not, the offline workflow above handles it gracefully.
 - 不清 pending_req。
 - 不修改 plan_version。
 - **MUST NOT** 直接编辑 YAML frontmatter — 所有变更必须通过 `otg update-status`。
-- 不退出前不运行 `otg validate-doc <task_path>` 校验文件完整性。
+- 不退出前不运行 `otg validate-doc {task_path}` 校验文件完整性。
 - fact/auto 处置禁止替用户做安全边界或跨需求契约决策 — 这类问题必须归入 dispute。
 - 禁止在 dispute 重复（grill_repeat≥2）时重复写相同 `## Grilling 待回答` — 必须走 Step 4c park 升级。

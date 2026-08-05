@@ -29,6 +29,15 @@ type Config struct {
 	OMPCmd                string            `json:"omp_cmd"`
 	LogDir                string            `json:"log_dir,omitempty"`
 
+	// Automation tuning (configurable, no hardcoded magic numbers).
+	ScanMinIntervalSeconds   int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
+	MaxAutoMergeFixes        int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
+	CompactOversizeThresholdKB int `json:"compact_oversize_threshold_kb"` // TASK docs above this size get history folding
+	GrillingConsolidationBatch int `json:"grilling_consolidation_batch"`  // PM sessions per scan
+	MergePollWaitTicks       int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
+	StageMinPerPhase         int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
+	StageMaxPhases           int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
+
 	// Registries
 	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
 	TemplateRegistry map[string]interface{}        `json:"template_registry,omitempty"`
@@ -125,7 +134,14 @@ func Defaults() *Config {
 		OffPeakTimezone:       "Asia/Shanghai",
 		OffPeakWindows:        []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
 		StarvationWarningDays: map[string]int{"P3": 14, "P4": 30},
-		SkillInstallDir:       filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		ScanMinIntervalSeconds:   10,
+		MaxAutoMergeFixes:        3,
+		CompactOversizeThresholdKB: 60,
+		GrillingConsolidationBatch: 3,
+		MergePollWaitTicks:       20,
+		StageMinPerPhase:         3,
+		StageMaxPhases:           4,
+		SkillInstallDir:          filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
 		Models:                DefaultModels(),
 		FallbackModels:        DefaultFallbackModels(),
 		OMPCmd:                "omp",
@@ -201,6 +217,27 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.SkillInstallDir == "" {
 		cfg.SkillInstallDir = defaults.SkillInstallDir
+	}
+	if cfg.ScanMinIntervalSeconds <= 0 {
+		cfg.ScanMinIntervalSeconds = defaults.ScanMinIntervalSeconds
+	}
+	if cfg.MaxAutoMergeFixes <= 0 {
+		cfg.MaxAutoMergeFixes = defaults.MaxAutoMergeFixes
+	}
+	if cfg.CompactOversizeThresholdKB <= 0 {
+		cfg.CompactOversizeThresholdKB = defaults.CompactOversizeThresholdKB
+	}
+	if cfg.GrillingConsolidationBatch <= 0 {
+		cfg.GrillingConsolidationBatch = defaults.GrillingConsolidationBatch
+	}
+	if cfg.MergePollWaitTicks <= 0 {
+		cfg.MergePollWaitTicks = defaults.MergePollWaitTicks
+	}
+	if cfg.StageMinPerPhase <= 0 {
+		cfg.StageMinPerPhase = defaults.StageMinPerPhase
+	}
+	if cfg.StageMaxPhases <= 0 {
+		cfg.StageMaxPhases = defaults.StageMaxPhases
 	}
 }
 

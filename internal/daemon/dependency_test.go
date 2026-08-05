@@ -70,6 +70,243 @@ assignee: default
 	}
 }
 
+// TestParkedFactRecoveryUnparksOnConvergedUpstream guards the D-19 style
+// "park until upstream changes" exit: a needs-grilling+parked task whose
+// blocked_by upstreams all landed (done + no phase error) is automatically
+// un-parked into refining — no distribute round-trip needed.
+func TestParkedFactRecoveryUnparksOnConvergedUpstream(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Upstream done + merged (phase error cleared).
+	upstream := filepath.Join(tasksDir, "TASK-001-up.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "001"
+project: test
+status: done
+phase_error_code: ""
+assignee: default
+---
+# Up
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Parked task waiting on upstream facts.
+	parked := filepath.Join(tasksDir, "TASK-002-e2e.md")
+	if err := os.WriteFile(parked, []byte(`---
+id: "002"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_done: true
+grill_resolution: replan
+blocked_by: ["TASK-001"]
+assignee: default
+---
+# E2E
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.parkedFactRecovery()
+
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "refining" || fm.GrillParked {
+		t.Fatalf("parked task should be un-parked to refining, got status=%s parked=%v", fm.Status, fm.GrillParked)
+	}
+	if fm.GrillResolution != "" {
+		t.Fatalf("stale grill_resolution must be cleared, got %q", fm.GrillResolution)
+	}
+
+	// Upstream with unresolved error keeps the gate shut.
+	_ = os.WriteFile(upstream, []byte(`---
+id: "001"
+project: test
+status: done
+phase_error_code: BASE_COMMIT_MISMATCH
+assignee: default
+---
+# Up
+`), 0o644)
+	parked2 := filepath.Join(tasksDir, "TASK-003-e2e2.md")
+	if err := os.WriteFile(parked2, []byte(`---
+id: "003"
+project: test
+status: needs-grilling
+grill_parked: true
+blocked_by: ["TASK-001"]
+assignee: default
+---
+# E2E2
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.parkedFactRecovery()
+	data, _ = os.ReadFile(parked2)
+	fm, _ = yamlfrontmatter.Parse(data)
+	if fm.Status != "needs-grilling" || !fm.GrillParked {
+		t.Fatal("parked task must stay parked while upstream carries an unresolved merge error")
+	}
+}
+
+// TestPrerequisiteGateResumesOnFactChange guards the fact-based gate
+// recovery: a blocked task with PREREQUISITE_SMOKE_FAILED resumes ONLY when
+// every blocked_by upstream is done with a cleared phase error (PR merged).
+// A stale done with an unresolved error (PR never merged) keeps the gate
+// shut — this is what ends the 17-round replan loop (TASK-066).
+func TestPrerequisiteGateResumesOnFactChange(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upstream done but with an unresolved merge error — gate must stay shut.
+	unmerged := filepath.Join(tasksDir, "TASK-001-unmerged.md")
+	if err := os.WriteFile(unmerged, []byte(`---
+id: "001"
+title: Upstream Unmerged
+project: test
+status: done
+phase_error_code: BASE_COMMIT_MISMATCH
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Upstream done with cleared errors — PR merged, gate may open.
+	merged := filepath.Join(tasksDir, "TASK-002-merged.md")
+	if err := os.WriteFile(merged, []byte(`---
+id: "002"
+title: Upstream Merged
+project: test
+status: done
+phase_error_code: ""
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Gated task: blocked on both.
+	gated := filepath.Join(tasksDir, "TASK-003-gated.md")
+	if err := os.WriteFile(gated, []byte(`---
+id: "003"
+title: Gated E2E
+project: test
+status: blocked
+blocked_phase: implementing
+blocked_by: ["TASK-001", "TASK-002"]
+phase_error_code: PREREQUISITE_SMOKE_FAILED
+resume_approved: false
+assignee: default
+---
+# Gated
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	data, err := os.ReadFile(gated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.ResumeApproved {
+		t.Fatal("gate resumed while upstream TASK-001 still carries an unresolved merge error")
+	}
+
+	// Upstream 001 finally merges: daemon clears its error on the next
+	// completeMerge path; simulate the fact change and re-run.
+	if err := os.WriteFile(unmerged, []byte(`---
+id: "001"
+title: Upstream Unmerged
+project: test
+status: done
+phase_error_code: ""
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.resolveBlockedDependencies()
+
+	data, err = os.ReadFile(gated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err = yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fm.ResumeApproved {
+		t.Fatal("gate should auto-resume once all upstream facts converged (done + no phase error)")
+	}
+}
+
+// TestPrerequisiteGateMissingUpstreamStaysBlocked guards the unknown-upstream
+// case: a blocked_by reference that resolves to nothing must keep the gate
+// shut rather than optimistically resuming.
+func TestPrerequisiteGateMissingUpstreamStaysBlocked(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gated := filepath.Join(tasksDir, "TASK-001-gated.md")
+	if err := os.WriteFile(gated, []byte(`---
+id: "001"
+title: Gated
+project: test
+status: blocked
+blocked_phase: implementing
+blocked_by: ["TASK-099"]
+phase_error_code: PREREQUISITE_SMOKE_FAILED
+resume_approved: false
+assignee: default
+---
+# Gated
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+	data, err := os.ReadFile(gated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.ResumeApproved {
+		t.Fatal("gate resumed despite missing upstream task")
+	}
+}
+
 func TestResolveBlockedDependenciesSkipsUserDecisionBlocked(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -1146,6 +1383,7 @@ resume_approved: false
 priority: P2
 assignee: default
 req_doc: Projects/001-test/Requirements/REQ-082.md
+stage: "P1"
 ---
 # Key Blocked
 `), 0o644); err != nil {

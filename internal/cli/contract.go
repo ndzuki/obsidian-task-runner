@@ -340,8 +340,9 @@ var (
 	statusCmd       = newStatusCommand()
 	reviewCmd       = newReviewCommand()
 	migrateTasksCmd = newMigrateTasksCommand()
+	stagePlanCmd    = newStagePlanCommand()
 )
 
 func init() {
-	rootCmd.AddCommand(configCmd, statusCmd, reviewCmd, migrateTasksCmd)
+	rootCmd.AddCommand(configCmd, statusCmd, reviewCmd, migrateTasksCmd, stagePlanCmd)
 }

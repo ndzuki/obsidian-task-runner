@@ -1,0 +1,177 @@
+package daemon
+
+import (
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
+)
+
+func writeStagePlan(t *testing.T, notesDir, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(notesDir, "Stage-Plan.md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestParseStagePlan(t *testing.T) {
+	dir := t.TempDir()
+	plan := writeStagePlan(t, filepath.Join(dir, "Notes"), `---
+id: "stage-plan"
+project: test
+---
+
+## 阶段列表
+
+### Phase 1: 核心链路
+- 目标: 可演示的发布流程
+- tasks: TASK-003, TASK-005,TASK-006
+- status: in-progress
+
+### Phase 2: 扩展能力
+- 目标: 审计与通知
+- tasks: 029, 031
+- status: planned
+`)
+	phases := parseStagePlan(plan)
+	if len(phases) != 2 {
+		t.Fatalf("parsed %d phases, want 2", len(phases))
+	}
+	if phases[0].Status != "in-progress" || phases[1].Status != "planned" {
+		t.Fatalf("phase statuses = %q/%q", phases[0].Status, phases[1].Status)
+	}
+	wantTasks := []string{"003", "005", "006"}
+	if len(phases[0].Tasks) != len(wantTasks) {
+		t.Fatalf("phase 1 tasks = %v, want %v", phases[0].Tasks, wantTasks)
+	}
+	for i := range wantTasks {
+		if phases[0].Tasks[i] != wantTasks[i] {
+			t.Fatalf("phase 1 tasks = %v, want %v", phases[0].Tasks, wantTasks)
+		}
+	}
+	if phases[1].Tasks[0] != "029" || phases[1].Tasks[1] != "031" {
+		t.Fatalf("phase 2 tasks = %v", phases[1].Tasks)
+	}
+}
+
+func TestParseStagePlanMalformedBlockSkipped(t *testing.T) {
+	dir := t.TempDir()
+	plan := writeStagePlan(t, filepath.Join(dir, "Notes"), `---
+id: "stage-plan"
+---
+
+### Phase 1: 缺 tasks 行
+- status: in-progress
+
+### Phase 2: 完整
+- tasks: 001
+- status: planned
+`)
+	phases := parseStagePlan(plan)
+	if len(phases) != 1 || !strings.HasPrefix(phases[0].Name, "Phase 2") {
+		t.Fatalf("malformed block must be skipped, got %+v", phases)
+	}
+}
+
+func TestStageTasksLanded(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTaskFM := func(name, id, status, mergeStatus, stage string) {
+		t.Helper()
+		content := "---\nid: \"" + id + "\"\nstatus: " + status + "\nmerge_status: " + mergeStatus + "\nstage: \"" + stage + "\"\n---\n# " + id + "\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTaskFM("TASK-001-a.md", "001", "done", "merged", "P1")
+	writeTaskFM("TASK-002-b.md", "002", "done", "conflict-resolve-attempted", "P1")
+	writeTaskFM("TASK-003-c.md", "003", "implementing", "", "P1")
+	writeTaskFM("TASK-004-d.md", "004", "done", "merged", "P2") // other stage: ignored
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+
+	if !runner.stageTasksLanded(dir, "P2") {
+		t.Fatal("P2 (single done+merged task) should land")
+	}
+	if runner.stageTasksLanded(dir, "P1") {
+		t.Fatal("P1 has an unmerged task, must not land")
+	}
+	if runner.stageTasksLanded(dir, "P9") {
+		t.Fatal("stage with no tasks must not land")
+	}
+}
+
+// TestProcessStageReviewsDispatchesOnCompletion guards the stage gate: a
+// stage whose tasks all landed triggers exactly one stage-review dispatch;
+// a stage with a task still in flight does not.
+func TestProcessStageReviewsDispatchesOnCompletion(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStagePlan(t, filepath.Join(projDir, "Notes"), `---
+id: "stage-plan"
+---
+
+### Phase 1: 核心链路
+- tasks: 001
+- status: in-progress
+`)
+	// Task done but NOT merged: no dispatch yet.
+	content := "---\nid: \"001\"\nstatus: done\nmerge_status: checks-pending\nstage: \"P1\"\n---\n# 001\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-001-a.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ompLog := filepath.Join(dir, "omp.log")
+	fakeOMP := filepath.Join(dir, "fake-omp")
+	script := "#!/bin/bash\necho \"ARGS=$@\" >> " + ompLog + "\nexit 0\n"
+	if err := os.WriteFile(fakeOMP, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(&config.Config{
+		ObsidianVault: vault,
+		OMPCmd:        fakeOMP,
+		LogDir:        filepath.Join(dir, "logs"),
+		Models:        config.DefaultModels(),
+	})
+	runner.logger = log.New(io.Discard, "", 0)
+
+	if n := runner.processStageReviews(runner.daemonCtx); n != 0 {
+		t.Fatal("stage-review must not dispatch while a task is unmerged")
+	}
+	if _, err := os.Stat(ompLog); !os.IsNotExist(err) {
+		t.Fatal("OMP must not run before stage completion")
+	}
+
+	// Task merges: dispatch fires with the stage-plan path argument.
+	content = "---\nid: \"001\"\nstatus: done\nmerge_status: merged\nstage: \"P1\"\n---\n# 001\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-001-a.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := runner.processStageReviews(runner.daemonCtx); n != 1 {
+		t.Fatalf("stage-review dispatch count = %d, want 1", n)
+	}
+	data := waitForPmArgs(t, ompLog)
+	if !strings.Contains(data, "stage-review") {
+		t.Fatalf("OMP args = %q, want stage-review mode", data)
+	}
+	if !strings.Contains(data, "Stage-Plan.md") {
+		t.Fatalf("OMP args = %q, want Stage-Plan.md path", data)
+	}
+}

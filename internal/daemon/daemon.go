@@ -44,11 +44,15 @@ type Runner struct {
 	scanGateMu         sync.Mutex // serializes scan cycles; see requestScan
 	scanActive         bool
 	scanPending        bool
+	lastScanAt         time.Time // last scan cycle start; throttles watcher bursts
+	scanTimer          *time.Timer // deferred scan after minScanInterval (nil = none pending)
+	scanMinInterval    time.Duration // watcher scan throttle; 0 disables (tests)
 	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
 	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
+	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
 	gatedLogged        map[string]bool // task paths whose dependency-gate log was emitted
@@ -91,6 +95,7 @@ func New(cfg *config.Config) *Runner {
 		daemonCtx:          context.Background(),
 		taskIdx:            task.NewIndex(),
 		gatedLogged:        map[string]bool{},
+		scanMinInterval:    time.Duration(cfg.ScanMinIntervalSeconds) * time.Second,
 	}
 }
 
@@ -246,19 +251,50 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
+// minScanInterval throttles watcher-driven scans. Round 2 sessions write the
+// TASK file on every progress step; without a floor each write triggers a
+// full scan (observed: 2-3 scans/second, 066 的 14:43-14:47 连续 5 次 round2
+// 互相 SIGTERM). 10s is short enough for responsive state pickup and long
+// enough to absorb write bursts.
+const minScanInterval = 10 * time.Second
+
 // requestScan schedules one scan cycle on a dedicated goroutine. If a scan
 // is already running the request is coalesced into exactly one follow-up
-// scan, so bursts of watcher events cannot pile up scan goroutines.
+// scan, so bursts of watcher events cannot pile up scan goroutines. Scans
+// started less than minScanInterval after the previous one are deferred to
+// the interval boundary — write bursts (TASK frontmatter updates during
+// Round 2) coalesce into a single scan instead of a per-write storm.
 func (r *Runner) requestScan() {
 	r.scanGateMu.Lock()
+	defer r.scanGateMu.Unlock()
 	if r.scanActive {
 		r.scanPending = true
-		r.scanGateMu.Unlock()
 		return
 	}
+	if wait := r.scanMinInterval - time.Since(r.lastScanAt); wait > 0 {
+		r.scanPending = true
+		if r.scanTimer == nil {
+			r.scanTimer = time.AfterFunc(wait, r.fireDeferredScan)
+		}
+		return
+	}
+	r.lastScanAt = time.Now()
 	r.scanActive = true
-	r.scanGateMu.Unlock()
 	go r.runScanCycle()
+}
+
+// fireDeferredScan runs a scan that was deferred by the min-scan-interval
+// throttle. The pending flag is consumed here so a burst of events produces
+// exactly one scan after the floor elapses.
+func (r *Runner) fireDeferredScan() {
+	r.scanGateMu.Lock()
+	r.scanTimer = nil
+	pending := r.scanPending
+	r.scanPending = false
+	r.scanGateMu.Unlock()
+	if pending && r.daemonCtx.Err() == nil {
+		r.requestScan()
+	}
 }
 
 func (r *Runner) runScanCycle() {
@@ -367,10 +403,111 @@ func (r *Runner) initLogging() error {
 	return nil
 }
 
+// syncStageInheritance backfills the `stage` field on tasks whose REQ
+// declares a stage (REQ → TASK one-way inheritance; an existing task-level
+// stage is never overwritten). This keeps Stage-Plan, REQ and TASK documents
+// aligned as the PM assigns stages — a REQ staged after its canonical tasks
+// were created must not leave its tasks drifting outside the stage plan.
+func (r *Runner) syncStageInheritance() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Stage != "" || fm.ReqDoc == "" {
+				continue
+			}
+			reqPath := fm.ReqDoc
+			if !filepath.IsAbs(reqPath) {
+				reqPath = filepath.Join(r.cfg.ObsidianVault, reqPath)
+			}
+			reqData, err := os.ReadFile(reqPath)
+			if err != nil {
+				continue
+			}
+			reqFM, err := yamlfrontmatter.Parse(reqData)
+			if err != nil || reqFM == nil || reqFM.Stage == "" {
+				continue
+			}
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{"stage": reqFM.Stage}); err != nil {
+				r.logger.Printf("task %s: inherit stage from REQ failed: %v", fm.ID, err)
+				continue
+			}
+			r.logger.Printf("task %s: inherited stage=%s from REQ %s", fm.ID, reqFM.Stage, filepath.Base(fm.ReqDoc))
+		}
+	}
+}
+
+// compactOversizedTasks folds plan/prototype history for TASK docs above
+// the oversize threshold (config compact_oversize_threshold_kb). Runs on
+// every scan so bloated documents converge regardless of which path appended
+// the history (including manual Round 1 sessions that bypass the
+// planning-completion compact). Replan cycles append full plan/prototype
+// copies per round; without the guard a gated task can grow past 400KB
+// (TASK-066: 17 replans), and every later refining/planning/round2 session
+// re-reads the whole file into context.
+func (r *Runner) compactOversizedTasks() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range entries {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		taskEntries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, te := range taskEntries {
+			if te.IsDir() || !strings.HasPrefix(te.Name(), "TASK-") || !strings.HasSuffix(te.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, te.Name())
+			info, err := te.Info()
+			if err != nil || info.Size() <= int64(r.cfg.CompactOversizeThresholdKB)*1024 {
+				continue
+			}
+			compacted, cerr := task.CompactTaskHistory(path)
+			if cerr != nil {
+				r.logger.Printf("compact oversize task %s: %v", te.Name(), cerr)
+				continue
+			}
+			if compacted {
+				r.logger.Printf("task %s: oversized doc compacted (was %d bytes)", te.Name(), info.Size())
+			}
+		}
+	}
+}
+
 func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
 	r.syncTaskSchemaDefaults()
+	r.syncStageInheritance()
 	r.resolveBlockedDependencies()
+	r.parkedFactRecovery()
+	r.compactOversizedTasks()
 	tasks, err := r.taskIdx.Scan(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
@@ -405,6 +542,10 @@ func (r *Runner) scanAndProcess() error {
 	if r.daemonCtx.Err() == nil {
 		// Skip on shutdown: a cancelled OMP would overwrite the
 		// PHASE_INTERRUPTED write-back of an interrupted task phase.
+		// Deterministic staging runs before PM consolidation so unstaged
+		// tasks are phased in milliseconds instead of an LLM session, and
+		// the PM input shrinks to genuine disputes only.
+		r.processAutoStaging()
 		// PM consolidation runs before priority assessments so answered
 		// decision lists un-park tasks as early as possible in the cycle.
 		r.processGrillingConsolidation(r.daemonCtx)
@@ -533,6 +674,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: apply local transition: %v", t.ID, err)
 				continue
 			}
+			if strings.Contains(transition.Reason, "auto_approve") {
+				// Opt-in plan automation: tell the user the plan gate was
+				// skipped (they may want to review the plan anyway).
+				notify.SendTaskAction(t.ID, t.Title, "⚡", "计划已自动批准",
+					fmt.Sprintf("auto_approve 任务：v%d 计划直接进入实现（如需审阅请设 auto_approve: false）", fm.PlanVersion), r.cfg.Notifications.Desktop)
+			}
 			t.Status = transition.Status
 			t.PlanApproved = false
 			t.MergeApproved = false
@@ -564,8 +711,15 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// Fall through: dispatch re-enters refining (maturity gate).
 			} else if t.GrillParked {
 				// Parked: disputes consolidated into the project-level
-				// Grilling-Decisions.md list. No per-task reminders — the PM
-				// coordinator distributes answers when the list is answered.
+				// Grilling-Decisions.md list. No per-task reminders — but the
+				// user must be able to ANSWER the list without switching to
+				// Obsidian: open one interactive decision tab per project
+				// (5-min debounce) that walks the pending decisions; answers
+				// are written back to the list and the daemon's answer-hash
+				// change detection auto-distributes.
+				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 {
+					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault)
+				}
 				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
 				continue
 			} else {
@@ -847,7 +1001,28 @@ func (r *Runner) resolveBlockedDependencies() {
 				continue
 			}
 			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil || fm.Status != "blocked" || len(fm.BlockedBy) == 0 {
+			if err != nil || fm == nil || fm.Status != "blocked" {
+				continue
+			}
+			projDir := filepath.Join(projectsDir, projectEntry.Name())
+			// Prerequisite-gated tasks (AC-066-17 style entry gates) resume
+			// ONLY when their blocked_by facts changed: every upstream task
+			// is done AND carries no unresolved phase error (a stale
+			// BASE_COMMIT_MISMATCH means the upstream PR never merged, so the
+			// gate stays shut until the PR-closure loop fixes it).
+			if fm.PhaseErrorCode == string(ErrPrerequisiteSmokeFailed) && !fm.ResumeApproved && len(fm.BlockedBy) > 0 {
+				if r.prereqDepsSatisfied(projectsDir, projDir, fm) {
+					r.logger.Printf("dependency: prerequisite facts changed, resuming TASK-%s (blocked_phase=%s)", fm.ID, fm.BlockedPhase)
+					if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+						"resume_approved":   true,
+						"auto_resume_pending": true,
+					}); err != nil {
+						r.logger.Printf("dependency: FAILED to resume gated TASK-%s: %v", fm.ID, err)
+					}
+				}
+				continue // gated tasks do not auto-resume upstreams
+			}
+			if len(fm.BlockedBy) == 0 {
 				continue
 			}
 			for _, ref := range fm.BlockedBy {
@@ -857,12 +1032,135 @@ func (r *Runner) resolveBlockedDependencies() {
 	}
 }
 
+// parkedFactRecovery unparks needs-grilling+parked tasks whose blocked_by
+// facts have all converged (every upstream done with no phase error) — the
+// D-19 style "park until upstream changes" decision needs an exit without a
+// distribute round-trip. Without it TASK-066 would stay parked forever after
+// its upstream PRs merge. Recovery re-enters refining (maturity gate re-runs
+// with the converged facts available).
+func (r *Runner) parkedFactRecovery() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		projDir := filepath.Join(projectsDir, projectEntry.Name())
+		tasksDir := filepath.Join(projDir, "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Status != "needs-grilling" || !fm.GrillParked || len(fm.BlockedBy) == 0 {
+				continue
+			}
+			if !r.prereqDepsSatisfied(projectsDir, projDir, fm) {
+				continue
+			}
+			r.logger.Printf("dependency: parked facts converged, un-parking TASK-%s (upstream all done+merged)", fm.ID)
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{
+				"status":           "refining",
+				"grill_parked":     false,
+				"grill_done":       false,
+				"grill_resolution": "",
+				"grill_context":    "",
+				"grill_prev_status": "",
+			}); err != nil {
+				r.logger.Printf("dependency: FAILED to un-park TASK-%s: %v", fm.ID, err)
+			}
+		}
+	}
+}
+
+// prereqDepsSatisfied reports whether every blocked_by dependency of a
+// prerequisite-gated task has actually converged: upstream status=done with
+// no unresolved phase error (phase_error_code cleared means its PR merged —
+// completeMerge clears it; a lingering BASE_COMMIT_MISMATCH/GIT_CONFLICT
+// keeps the gate closed). The gate re-opens only on fact change, not on
+// state, which is what makes the prereq gate loop-free.
+func (r *Runner) prereqDepsSatisfied(projectsDir, projDir string, fm *yamlfrontmatter.Frontmatter) bool {
+	for _, ref := range fm.BlockedBy {
+		upstream, _, err := r.findTaskByRef(projectsDir, projDir, ref)
+		if err != nil || upstream == nil {
+			return false
+		}
+		if upstream.Status != "done" || upstream.PhaseErrorCode != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// findTaskByRef resolves a blocked_by reference ("TASK-010" or
+// "project-key:TASK-010") to the upstream task frontmatter and its absolute
+// path. Unqualified references resolve within projDir; qualified ones use
+// the project directory map. Returns nil when the task does not exist or
+// the frontmatter id does not match the reference.
+func (r *Runner) findTaskByRef(projectsDir, projDir, ref string) (*yamlfrontmatter.Frontmatter, string, error) {
+	projName := ""
+	id := strings.TrimPrefix(ref, "TASK-")
+	if idx := strings.Index(ref, ":"); idx > 0 {
+		projName = ref[:idx]
+		id = strings.TrimPrefix(ref[idx+1:], "TASK-")
+	}
+	targetDir := projDir
+	if projName != "" {
+		if resolved := r.findProjectDirByKey(projName); resolved != "" {
+			targetDir = resolved
+		} else {
+			return nil, "", fmt.Errorf("resolve project %q", projName)
+		}
+	}
+	tasksDir := filepath.Join(targetDir, "Tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-"+id+"-") && entry.Name() != "TASK-"+id+".md" {
+			continue
+		}
+		path := filepath.Join(tasksDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		upstream, err := yamlfrontmatter.Parse(data)
+		if err != nil || upstream == nil || upstream.ID != id {
+			continue
+		}
+		if projName != "" && upstream.Project != projName {
+			continue
+		}
+		return upstream, path, nil
+	}
+	return nil, "", nil
+}
+
 // isAutoResumableError reports whether a phase_error_code represents a genuine
 // transient phase failure that is safe to auto-resume. REQ_MISSING and other
 // content/validation errors require human intervention.
 func isAutoResumableError(code string) bool {
 	switch code {
-	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted):
+	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted),
+		string(ErrPrerequisiteSmokeFailed):
+		// Prerequisite smoke failures are resume-safe: the blocker is an
+		// upstream fact (dependency PR merged / dependency task done), which
+		// resolveBlockedDependencies verifies before approving the resume —
+		// no user decision is being bypassed.
 		return true
 	default:
 		// Empty code (legacy phase-failure blocks) is treated as resumable.

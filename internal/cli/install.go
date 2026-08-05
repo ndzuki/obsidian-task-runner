@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -35,9 +36,29 @@ Environment variables can also be used to configure installation:
 func runInstall(cmd *cobra.Command, args []string) error {
 	home, _ := os.UserHomeDir()
 
+	skillDir := os.Getenv("SKILL_INSTALL_DIR")
+	if skillDir == "" {
+		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
+	}
+
 	vault := installVault
 	if v := os.Getenv("OBSIDIAN_VAULT"); v != "" && vault == "" {
 		vault = v
+	}
+	if vault == "" {
+		// Prefer the existing vault-map.json config over the generic default:
+		// a reinstall must never silently redirect the daemon to a different
+		// vault (regression: `otg install` rewrote the systemd unit's
+		// OBSIDIAN_VAULT to ~/Documents/Obsidian/MainVault while the real
+		// vault is configured elsewhere).
+		if data, err := os.ReadFile(filepath.Join(skillDir, "config", "vault-map.json")); err == nil {
+			var existing struct {
+				ObsidianVault string `json:"obsidian_vault"`
+			}
+			if json.Unmarshal(data, &existing) == nil && existing.ObsidianVault != "" {
+				vault = existing.ObsidianVault
+			}
+		}
 	}
 	if vault == "" {
 		vault = filepath.Join(home, "Documents", "Obsidian", "MainVault")
@@ -49,11 +70,6 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	if newRoot == "" {
 		newRoot = filepath.Join(home, "src")
-	}
-
-	skillDir := os.Getenv("SKILL_INSTALL_DIR")
-	if skillDir == "" {
-		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
 	}
 
 	if v := os.Getenv("NOTIFY_ENABLED"); v != "" {

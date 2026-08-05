@@ -638,6 +638,9 @@ func TestIsReadyCompleteStateMachine(t *testing.T) {
 		{name: "close gate waits for approval", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close"}, want: false},
 		{name: "close gate approved", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close", CloseApproved: true}, want: true},
 		{name: "done remains terminal without change", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt"}, want: false},
+		{name: "done merged stays terminal", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt", MergeStatus: "merged", PRURL: "https://x/pull/1"}, want: false},
+		{name: "done with unmerged PR reopens merge", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt", MergeStatus: "conflict-resolve-attempted", PRURL: "https://x/pull/1", TargetBranch: "task/001"}, want: true},
+		{name: "done with bare branch stays terminal", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt", TargetBranch: "task/002"}, want: false},
 		{name: "legacy needs-refining is schedulable", fm: yamlfrontmatter.Frontmatter{Status: "needs-refining", Assignee: "gpt"}, want: true},
 	}
 
@@ -647,6 +650,81 @@ func TestIsReadyCompleteStateMachine(t *testing.T) {
 				t.Fatalf("IsReady() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFindUnstagedTasks(t *testing.T) {
+	vault := t.TempDir()
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Active stage plan.
+	plan := "---\nid: \"stage-plan\"\nproject: test\nstatus: active\n---\n# Plan\n"
+	if err := os.WriteFile(filepath.Join(notesDir, "Stage-Plan.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTask := func(name, id, status, stage string) {
+		t.Helper()
+		content := "---\nid: \"" + id + "\"\nproject: test\nstatus: " + status + "\nstage: \"" + stage + "\"\n---\n# " + id + "\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTask("TASK-001-inflight.md", "001", "implementing", "") // unstaged → included
+	writeTask("TASK-002-staged.md", "002", "implementing", "P1") // staged → excluded
+	writeTask("TASK-003-done.md", "003", "done", "")             // done → excluded
+	writeTask("TASK-004-blocked.md", "004", "blocked", "")       // blocked in-flight → included
+
+	got, err := FindUnstagedTasks(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("unstaged count = %d, want 2 (got %+v)", len(got), got)
+	}
+	if !got[0].Unstaged || !got[1].Unstaged {
+		t.Fatal("all returned tasks must carry Unstaged=true")
+	}
+	ids := map[string]bool{}
+	for _, g := range got {
+		ids[g.ID] = true
+	}
+	if !ids["001"] || !ids["004"] {
+		t.Fatalf("unstaged ids = %v, want 001 and 004", ids)
+	}
+}
+
+func TestFindUnstagedTasksSkipsCompletedPlan(t *testing.T) {
+	vault := t.TempDir()
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := "---\nid: \"stage-plan\"\nproject: test\nstatus: completed\n---\n# Plan\n"
+	if err := os.WriteFile(filepath.Join(notesDir, "Stage-Plan.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nid: \"001\"\nproject: test\nstatus: implementing\nstage: \"\"\n---\n# 001\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-001-a.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindUnstagedTasks(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("completed stage plan must not auto-attach, got %d tasks", len(got))
 	}
 }
 

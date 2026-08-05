@@ -261,6 +261,20 @@ func isAutoUnblockableWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lo
 // without manual resume_approved. Single source shared with internal/daemon.
 const PhaseErrorCodeAPIKeyUnavailable = "API_KEY_UNAVAILABLE"
 
+// DoneReopensMerge reports whether a done task still owes its PR merge:
+// merge_status is set but not "merged" (merge interrupted/conflicted), or a
+// PR URL is recorded but the merge never completed. A cleanly merged task
+// (merge_status=merged), a done task with no PR at all (legacy tasks that
+// never ran the PR flow), and a bare target_branch without a PR record stay
+// terminal — reopening the latter would spin legacy done tasks through the
+// merge flow every scan (observed: 003/004/005/010 re-entering planning).
+func DoneReopensMerge(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || fm.MergeStatus == "merged" {
+		return false
+	}
+	return fm.MergeStatus != "" || fm.PRURL != ""
+}
+
 // vaultPath is used to resolve blocked_by dependencies.
 func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	return isReadyWith(fm, vaultPath, nil)
@@ -318,7 +332,11 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 	case "conflict":
 		return fm.PendingReq || fm.MergeApproved
 	case "done":
-		return fm.PendingReq
+		// Done with an unmerged PR (merge_status != merged + PR/branch
+		// exists) reopens the merge flow: the task previously stalled in
+		// done while its PR sat CONFLICTING for weeks. nextLocalTransition
+		// converts it to review; here it just becomes schedulable.
+		return fm.PendingReq || DoneReopensMerge(fm)
 	case "closed", "wayfinder":
 		return false
 	default:
