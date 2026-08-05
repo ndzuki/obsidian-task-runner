@@ -53,6 +53,7 @@ type Runner struct {
 	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
+	keyNotifyAt        sync.Map   // "key" → time.Time (API-key-unavailable toast debounce)
 	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
@@ -1829,6 +1830,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
+		// API key preflight: never launch an OMP session that will fail on a
+		// missing key. The task keeps its status and retries on the next
+		// scan — no failure write-back, no retry budget spent. The toast is
+		// debounced to one per 5 minutes instead of one per failing task
+		// (observed: 40+ simultaneous "API Key 不可用" notifications when a
+		// key outage hit a large batch).
+		if !apiKeyAvailable() {
+			r.logger.Printf("task %s: API key unavailable, deferring %s to next scan", t.ID, phase)
+			r.notifyKeyUnavailable()
+			continue
+		}
+
 		// Precompute the requirement hash into frontmatter so the
 		// refining/planning skills do not read the full REQ document just to
 		// hash it — the dominant token cost for large requirement docs.
@@ -1980,8 +1993,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 			if keyErr := checkAPIKeyUnavailable(logPath); keyErr != "" {
 				failureCode = ErrAPIKeyUnavailable
-				notify.SendTaskAction(t.ID, t.Title, "🔐", "API Key 不可用",
-					fmt.Sprintf("%s：%s", keyErr, "请解锁 KeePassXC，daemon 检测到 key 后会自动恢复"), r.cfg.Notifications.Desktop)
+				// Debounced: one toast per 5 minutes, not one per failing task.
+				r.notifyKeyUnavailable()
 			} else if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
 				failureCode = ErrModelQuotaExhausted
 				notify.SendTaskAction(t.ID, t.Title, "💰", "Token 不足",
@@ -2138,8 +2151,8 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 			r.logger.Printf("task %s: record phase block: %v", taskID, err)
 		}
 		if code == ErrAPIKeyUnavailable {
-			notify.SendTaskAction(taskID, taskTitle, "🔐", "等待 API Key",
-				"KeePassXC 未解锁，任务等待中。解锁后 daemon 自动恢复，无需手动操作。", r.cfg.Notifications.Desktop)
+			// Debounced: one toast per 5 minutes, not one per failing task.
+			r.notifyKeyUnavailable()
 		}
 		return
 	}
@@ -2414,10 +2427,22 @@ var keyUnavailablePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)missing.*api[_-]?key`),
 }
 
+// notifyKeyUnavailable sends one debounced desktop toast for an API-key
+// outage (5-minute window, daemon-global). Without this, a key outage
+// hitting a large batch produced one notification per failing task
+// (observed: 40+ simultaneous toasts).
+func (r *Runner) notifyKeyUnavailable() {
+	if last, ok := r.keyNotifyAt.Load("key"); ok && time.Since(last.(time.Time)) < 5*time.Minute {
+		return
+	}
+	r.keyNotifyAt.Store("key", time.Now())
+	notify.SendTaskAction("", "API Key 不可用", "🔐", "等待 API Key",
+		"KeePassXC 未解锁或 key 不可达，任务已暂停等待。解锁后 daemon 自动恢复，无需手动操作。", r.cfg.Notifications.Desktop)
+}
+
 // checkAPIKeyUnavailable scans the OMP log for missing API key errors.
 // Returns a human-readable message if found, empty string otherwise.
-func checkAPIKeyUnavailable(logPath string) string {
-	f, err := os.Open(logPath)
+func checkAPIKeyUnavailable(logPath string) string {	f, err := os.Open(logPath)
 	if err != nil {
 		return ""
 	}
