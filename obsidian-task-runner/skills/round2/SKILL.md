@@ -11,7 +11,7 @@ disableModelInvocation: true
 
 读取 TASK frontmatter `knowledge_refs`（Round 1 写入的引用的知识文档清单）：
 
-1. 逐条 `read` 对应 References 文档（`<vault>/References/<ref>`），提取与当前 Step 相关的约束/已验证实践。
+1. 逐条 `read` 对应 References 文档（`{vault}/References/{ref}`），提取与当前 Step 相关的约束/已验证实践。
 2. 实现过程中**显式应用**：在实现记录或代码注释中标注来源（如 `// per core/go/connect-rpc.md: ...`）。
 3. 引用清单中的文档与计划 Step 冲突时，以 ADR 为准并记录冲突（走 `Implementation Blockers`）。
 4. 发现清单文档过时/错误 → 按 `skill://knowledge-base` 自动纠正流程追加纠错标注。
@@ -21,7 +21,7 @@ disableModelInvocation: true
 1. TASK `status: implementing`，`plan_approved=true`。
 2. `pending_req=false` 才能开始新的 AC。
 3. blocked_by 全部满足。
-4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/\<id\>-\<slug\>`。
+4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/\{id\}-\{slug\}`。
 5. 读取已批准计划和 checkpoint 复用策略。
 6. **加载 `skill://knowledge-base`**：按计划中的技术栈检索知识库 core/ 文档，引用已验证的最佳实践和版本约束。实现过程中发现的踩坑经验，在 Commit 或 ADR 写回后追加到对应的 References 文件。
 
@@ -64,6 +64,23 @@ disableModelInvocation: true
 - 没有这个功能，用户能否完成核心任务？（能 → nice-to-have）
 - 这是新问题还是已有 workaround 的老问题？（老问题 → nice-to-have）
 - 这个情况发生的概率？（<5% → nice-to-have）
+## Prerequisite Gate（前置门禁，AC-066-17 式入口门禁）
+
+计划中声明「入口门禁」（如 AC-066-17：上游 PR 合入、依赖任务 done、环境可运行）且门禁未通过时：
+
+1. **禁止 replan 循环**：不写 `grill_resolution=replan`。门禁失败是**上游事实问题**，不是需求/计划问题——replan 不改变任何上游事实（TASK-066 教训：17 轮 replan 在同一 REQ hash 上零收敛，每轮烧一次 xhigh round2 的 token）。
+2. 写 `## Round 2 阻塞`（证据：上游 PR 状态实测、依赖任务状态、环境复测结论），然后转 **blocked**：
+   ```bash
+   otg update-status {task} \
+     status=blocked \
+     blocked_phase=implementing \
+     phase_error_code=PREREQUISITE_SMOKE_FAILED \
+     phase_error="{上游事实证据摘要，一句话}" \
+     resume_approved=false
+   ```
+3. 恢复由 daemon 自动完成：每轮 scan 检查 `blocked_by` 依赖**事实**（上游 `status=done` 且 `phase_error_code` 为空 = 上游 PR 已合入），事实变化后自动 `resume_approved=true`，无需用户干预、无需重新 grilling。
+4. 恢复后重新执行门禁；通过才进入 Step 2–9。未通过则再次 blocked（不消耗 grilling/refining 预算）。
+
 ## Pending Requirement Handoff（pending_req安全交接）
 
 AC 完成后若 `pending_req=true`：
@@ -78,8 +95,8 @@ chore(task): checkpoint before requirement replan
 3. 写入 commit SHA：
 
 ```bash
-otg update-status \<task\> \
-  checkpoint_commit=\<sha\> \
+otg update-status \{task\} \
+  checkpoint_commit=\{sha\} \
   status=refining \
   merge_approved=false
 ```
@@ -123,27 +140,27 @@ If `adr_approved=true` AND `adr_proposed` is non-empty:
 2. For each ADR title, generate the body using the standard ADR format:
 
 ```markdown
-# ADR-<id>: <title>
+# ADR-{id}: {title}
 
 ## Status
 accepted
 
 ## Context
-<Why is this decision needed? What constraints and forces are at play?>
+{Why is this decision needed? What constraints and forces are at play?}
 
 ## Decision
-<What specific approach was chosen?>
+{What specific approach was chosen?}
 
 ## Alternatives Considered
-<What other options were evaluated and why were they rejected?>
+{What other options were evaluated and why were they rejected?}
 
 ## Consequences
-<What becomes easier? What becomes harder? What are the risks?>
+{What becomes easier? What becomes harder? What are the risks?}
 ```
 
-3. Call `otg write-adr <project_dir> <task_id> "<title>" "<body>"`
-4. Call `otg validate-adr <file_path>` to verify structural integrity.
-5. Reference the ADR during implementation: in commit messages or code comments, note `See ADR-<id>`.
+3. Call `otg write-adr {project_dir} {task_id} "{title}" "{body}"`
+4. Call `otg validate-adr {file_path}` to verify structural integrity.
+5. Reference the ADR during implementation: in commit messages or code comments, note `See ADR-{id}`.
 
 **After all ACs are complete:**
 6. Run `otg update-status` once:
@@ -159,7 +176,7 @@ accepted
 
 全部 AC 完成且测试通过后，生成 Review Bundle 摘要，写入 TASK：
 
-1. **diffstat**：`git diff --stat \<target_branch\>...HEAD`
+1. **diffstat**：`git diff --stat \{target_branch\}...HEAD`
 2. **测试结果**：`go test` 输出中的 PASS/FAIL 统计
 3. **test-quality 摘要**：🔴/🟡/🟢 计数
 4. **code-review 摘要**：Standards 轴发现数 + Spec 轴发现数
@@ -169,11 +186,11 @@ accepted
 8. **通知摘要**：
 
 ```text
-TASK-<id>: <N> files +<added>/-<deleted>, <M> tests PASS
-test-quality: 🔴0/🟡0/🟢<N> | code-review: St<N> Sp<N>
-appetite: <small|medium|large> | deferred: <N> AC (~nice-to-have)
-baseline: <一句话改善对比>
-risk: <level> → auto_merge 默认自动合并，无需人工 review（可设 auto_merge: false 恢复人工 gate）
+TASK-{id}: {N} files +{added}/-{deleted}, {M} tests PASS
+test-quality: 🔴0/🟡0/🟢{N} | code-review: St{N} Sp{N}
+appetite: {small|medium|large} | deferred: {N} AC (~nice-to-have)
+baseline: {一句话改善对比}
+risk: {level} → auto_merge 默认自动合并，无需人工 review（可设 auto_merge: false 恢复人工 gate）
 ```
 
 成功写回：
@@ -181,7 +198,7 @@ risk: <level> → auto_merge 默认自动合并，无需人工 review（可设 a
 全部 AC 完成、测试与检查通过后：
 
 ```bash
-otg update-status <task> status=review
+otg update-status {task} status=review
 ```
 
 - `auto_merge: true`（默认）时 daemon 自动授权合并并执行 Merge Phase（push → PR → CI checks → merge），无需人工。
@@ -194,4 +211,4 @@ otg update-status <task> status=review
 ## Frontmatter Safety（安全规范）
 
 - **NEVER edit YAML frontmatter directly.** Use `otg update-status` for checkpoint commits, grill_context, and status transitions.
-- Run `otg validate-doc <task_path>` after every TASK file write to verify structural integrity.
+- Run `otg validate-doc {task_path}` after every TASK file write to verify structural integrity.

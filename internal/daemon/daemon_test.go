@@ -1171,12 +1171,17 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 		t.Fatalf("create vault tasks dir: %v", err)
 	}
 	taskPath := filepath.Join(tasksDir, "TASK-000.md")
-	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\n---\n# Task\n"
+	// stage set so the unstaged-task scan does not dispatch a PM
+	// consolidate session through the fake OMP (corrupts start counts).
+	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
 	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
+	// The coalescing contract is about overlapping scans, not the watcher
+	// throttle; disable the min-interval so the follow-up schedules at once.
+	runner.scanMinInterval = 0
 	ctx, cancel := context.WithCancel(context.Background())
 	runner.daemonCtx = ctx
 	defer cancel()
@@ -1251,7 +1256,9 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 		t.Fatalf("create vault tasks dir: %v", err)
 	}
 	taskPath := filepath.Join(tasksDir, "TASK-000.md")
-	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\n---\n# Task\n"
+	// stage set so the unstaged-task scan does not dispatch a PM
+	// consolidate session through the fake OMP (corrupts start counts).
+	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
 	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}

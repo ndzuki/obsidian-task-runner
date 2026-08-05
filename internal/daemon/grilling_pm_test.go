@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
@@ -27,8 +28,17 @@ func writeArgsOMP(t *testing.T, argsPath string) string {
 
 func withAPIKey(t *testing.T) {
 	t.Helper()
+	withAPIKeyValue(t, true)
+}
+
+// withAPIKeyValue pins the apiKeyProbe for the test. Tests that must NOT
+// dispatch PM sessions (consolidate/stage-review fire on unstaged tasks
+// even without a Stage-Plan now) pin false so the scan loop short-circuits
+// instead of invoking the fake OMP as a PM session.
+func withAPIKeyValue(t *testing.T, value bool) {
+	t.Helper()
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)
-	apiKeyProbe.Store(func() bool { return true })
+	apiKeyProbe.Store(func() bool { return value })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 }
 
@@ -70,7 +80,8 @@ func writeDecisionList(t *testing.T, path string, answered bool) {
 		"project: test\n" +
 		"status: open\n" +
 		"grill_continue: " + boolStr(answered) + "\n" +
-		"---\n# Grilling Decisions\n"
+		"---\n# Grilling Decisions\n" +
+		"\n## 决策点\n\n### D-1: test\n- 决策: <用户填写>\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write decision list: %v", err)
 	}
@@ -138,6 +149,227 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 	}
 }
 
+// TestGrillingDecisionCounts guards the pending-decision parser: unfilled
+// "决策:" lines and an unfilled split-confirmation line count as pending;
+// answered ones do not. The daemon uses this to skip empty distribute
+// round-trips when the user re-sets grill_continue=true on a fully answered
+// list.
+func TestGrillingDecisionCounts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Grilling-Decisions.md")
+	content := `---
+id: grilling-decisions
+status: open
+grill_continue: true
+---
+
+## 拆分确认
+
+- 拆分: 确认
+
+## 决策点
+
+### D-1: REQ-001 — 问题
+- 决策: 采纳方案 A
+
+### D-2: REQ-002 — 问题
+- 决策: <用户填写>
+
+### D-3: REQ-003 — 问题
+- 决策: 
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	total, pending := grillingDecisionCounts(path)
+	if total != 4 { // 3 decision points + split confirmation
+		t.Fatalf("total = %d, want 4", total)
+	}
+	if pending != 2 { // D-2 placeholder + D-3 empty
+		t.Fatalf("pending = %d, want 2", pending)
+	}
+
+	// Fully answered: pending must be 0.
+	content = `---
+id: grilling-decisions
+status: open
+grill_continue: true
+---
+
+## 拆分确认
+
+- 拆分: 不拆分
+
+## 决策点
+
+### D-1: REQ-001 — 问题
+- 决策: 采纳方案 A
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	total, pending = grillingDecisionCounts(path)
+	if total != 2 || pending != 0 {
+		t.Fatalf("fully answered: total=%d pending=%d, want 2/0", total, pending)
+	}
+}
+
+// TestFullyAnsweredButUndistributedStillDispatches guards the write-back
+// path: a list whose decisions are all filled but whose frontmatter status
+// is still open (never distributed) must dispatch once — otherwise the
+// user's answers silently never reach the REQs.
+func TestFullyAnsweredButUndistributedStillDispatches(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-025.md"), "025", "Projects/001-test/Requirements/REQ-025.md", "test", true, 3)
+	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
+	content := `---
+id: "grilling-decisions"
+project: test
+status: open
+grill_continue: true
+---
+
+## 决策点
+
+### D-1: REQ-025 — 问题
+- 决策: 采纳方案 A
+`
+	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(listPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argsPath := filepath.Join(dir, "pm-args")
+	omp := writeArgsOMP(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			OMPCmd:              omp,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              config.DefaultModels(),
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+	if n := runner.processGrillingConsolidation(context.Background()); n != 1 {
+		t.Fatalf("processed = %d, want 1 (fully answered but undistributed must dispatch)", n)
+	}
+	if args := waitForPmArgs(t, argsPath); !strings.Contains(args, "distribute") {
+		t.Fatalf("pm args = %q, want distribute prompt", args)
+	}
+}
+
+// TestPartialBatchTailAutoDispatches guards the changed-since-distribute
+// signal: after a first distribute (status=answered), the user fills the
+// remaining decisions — the daemon must auto-dispatch again even though the
+// manual flag was never re-set.
+func TestPartialBatchTailAutoDispatches(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-025.md"), "025", "Projects/001-test/Requirements/REQ-025.md", "test", true, 3)
+	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
+	// answered (already distributed) + remaining pending decision.
+	content := `---
+id: "grilling-decisions"
+project: test
+status: answered
+grill_continue: false
+last_distributed_at: 2026-08-05T10:00:00+08:00
+---
+
+## 决策点
+
+### D-1: REQ-025 — 问题
+- 决策: 采纳方案 A
+
+### D-2: REQ-025 — 问题2
+- 决策: <用户填写>
+`
+	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(listPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argsPath := filepath.Join(dir, "pm-args")
+	omp := writeArgsOMP(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			OMPCmd:              omp,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              config.DefaultModels(),
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+	// Before the user edits: pending>0, no auto dispatch.
+	if n := runner.processGrillingConsolidation(context.Background()); n != 0 {
+		t.Fatalf("pre-edit processed = %d, want 0 (pending answers, no manual flag)", n)
+	}
+	// User fills D-2 → file mtime now after last_distributed_at.
+	content = strings.Replace(content, "决策: <用户填写>", "决策: 采纳方案 B", 1)
+	if err := os.WriteFile(listPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := runner.processGrillingConsolidation(context.Background()); n != 1 {
+		t.Fatalf("post-edit processed = %d, want 1 (auto dispatch on fully answered + changed)", n)
+	}
+	if args := waitForPmArgs(t, argsPath); !strings.Contains(args, "distribute") {
+		t.Fatalf("pm args = %q, want distribute prompt", args)
+	}
+}
+
+// TestGrillingAnswersHashIgnoresNonAnswerEdits guards the precision of the
+// change signal: comment/log-line edits and timestamp refreshes must NOT
+// change the answer hash (mtime-based detection would re-dispatch); only
+// actual answer changes move it.
+func TestGrillingAnswersHashIgnoresNonAnswerEdits(t *testing.T) {
+	base := `---
+id: grilling-decisions
+status: open
+---
+
+## 决策点
+
+### D-1: REQ-001 — 问题
+- 决策: 采纳方案 A
+
+### D-2: REQ-002 — 问题
+- 决策: <用户填写>
+`
+	h1 := grillingAnswersHash(base)
+
+	// Non-answer edits: log line above the decision region, frontmatter
+	// timestamp, trailing whitespace on a non-answer line.
+	edited := strings.Replace(base, "---\n", "---\nlast_distributed_at: 2026-08-05T10:00:00+08:00\n", 1)
+	edited = strings.Replace(edited, "\n## 决策点", "\n> 2026-08-05T10:00:00 追加日志行\n\n## 决策点", 1)
+	if grillingAnswersHash(edited) != h1 {
+		t.Fatal("non-answer edits must not change the answer hash")
+	}
+
+	// Real answer change: D-2 filled.
+	answered := strings.Replace(base, "决策: <用户填写>", "决策: 采纳方案 B", 1)
+	if grillingAnswersHash(answered) == h1 {
+		t.Fatal("filling an answer must change the answer hash")
+	}
+
+	// Split-confirmation answer is part of the hash (bounded to the
+	// "## 拆分确认" section).
+	withSplit := strings.Replace(base, "## 决策点", "## 拆分确认\n\n- 拆分: 确认\n\n## 决策点", 1)
+	if grillingAnswersHash(withSplit) == h1 {
+		t.Fatal("split-confirmation answer must change the answer hash")
+	}
+	// A "- 拆分:" line OUTSIDE the 拆分确认 section must NOT leak into the
+	// hash (decision-body text stays inert).
+	bodyLeak := strings.Replace(base, "- 决策: 采纳方案 A", "- 拆分: 误入正文\n- 决策: 采纳方案 A", 1)
+	if grillingAnswersHash(bodyLeak) != h1 {
+		t.Fatal("decision-body 拆分 line must not change the answer hash")
+	}
+}
+
 func TestGrillingListAnsweredDetection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Grilling-Decisions.md")
@@ -184,17 +416,28 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
-	data, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read pm args: %v", err)
-	}
-	args := string(data)
+	args := waitForPmArgs(t, argsPath)
 	if !strings.Contains(args, "/obsidian-task-runner-pm consolidate") {
 		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 	if !strings.Contains(args, "TASK-012") || !strings.Contains(args, "TASK-074") {
 		t.Fatalf("pm args = %q, want both task paths", args)
 	}
+}
+
+// waitForPmArgs polls for the async PM session to write its argv capture.
+func waitForPmArgs(t *testing.T, argsPath string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(argsPath); err == nil {
+			return string(data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(argsPath)
+	t.Fatalf("pm args never appeared at %s", argsPath)
+	return string(data)
 }
 
 func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
@@ -221,11 +464,7 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
-	data, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read pm args: %v", err)
-	}
-	args := string(data)
+	args := waitForPmArgs(t, argsPath)
 	if !strings.Contains(args, "/obsidian-task-runner-pm distribute") {
 		t.Fatalf("pm args = %q, want distribute prompt", args)
 	}

@@ -134,6 +134,12 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 		dir = "Tasks"
 	case "Requirements":
 		dir = "Requirements"
+	case "Notes":
+		// Grilling-Decisions.md / Stage-Plan.md / Stage-Review.md live here.
+		// The user edits decision answers directly in the vault; without
+		// watching Notes the daemon never learns the list changed and the
+		// user has to manually set grill_continue=true as a workaround.
+		dir = "Notes"
 	default:
 		return
 	}

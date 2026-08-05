@@ -328,6 +328,7 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	reviewer := ""
 	author := ""
 	tagsList := []string{}
+	stage := ""
 	if reqFM != nil {
 		projName = reqFM.Project
 		if reqFM.ProjectID != "" {
@@ -341,6 +342,7 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 		reviewer = reqFM.Reviewer
 		author = reqFM.Author
 		tagsList = reqFM.Tags
+		stage = reqFM.Stage // stage 从 REQ 继承；拆分落地时 PM 写入子 REQ
 	}
 
 	// Resolve project field for vault-map matching.
@@ -436,6 +438,7 @@ blocked_by: []
 target_branch: ""
 pr_url: ""
 target_env: staging
+stage: "%s"
 review_feedback: ""
 rework_resolution: ""
 closure_reason: ""
@@ -501,7 +504,7 @@ repository_description: ""
 ## 变更记录
 1. %s — 任务创建，status=blocked
 `, id, title, projName, projectID, now, now, priority, priorityAssessmentStatus,
-		reviewer, reqRelPath, author, tags, epic, id, title, summary, ac, reqRelPath,
+		reviewer, reqRelPath, author, tags, epic, stage, id, title, summary, ac, reqRelPath,
 		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""], "`"+now+"`")
 
 	targetPath := filepath.Join(tasksDir, targetName)
