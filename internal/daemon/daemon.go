@@ -749,7 +749,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// (5-min debounce) that walks the pending decisions; answers
 				// are written back to the list and the daemon's answer-hash
 				// change detection auto-distributes.
-				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 {
+				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 && !grillingListPaused(listPath) {
 					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault)
 				}
 				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
