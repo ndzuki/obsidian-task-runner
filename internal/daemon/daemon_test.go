@@ -1236,10 +1236,12 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	defer cancel()
 	runner.daemonCtx = ctx
 
-	// First round: only 2 of 3 tasks fit the refining gate.
+	// First round: all 3 tasks dispatch (gate lives at the OMP launch
+	// point), but only 2 OMP sessions actually start — the third hits the
+	// full refining gate inside processBatchSequential and defers.
 	done := runBatch(runner, tasks)
-	if got := waitForBatch(t, done); got != 2 {
-		t.Fatalf("first round dispatched = %d, want 2 (refining gate limit)", got)
+	if got := waitForBatch(t, done); got != 3 {
+		t.Fatalf("first round dispatched = %d, want 3 (all dispatched, gate at launch)", got)
 	}
 	waitForStartCount(t, startDir, 2)
 
@@ -1247,7 +1249,7 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	releaseBarrier(t, releaseFile)
 	waitForTasksIdle(t, runner)
 
-	// Second round: the remaining task dispatches.
+	// Second round: the deferred task's runTask re-dispatches and starts.
 	done = runBatch(runner, []task.ReadyTask{tasks[2]})
 	if got := waitForBatch(t, done); got != 1 {
 		t.Fatalf("second round dispatched = %d, want 1", got)

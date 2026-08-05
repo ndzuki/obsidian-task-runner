@@ -82,7 +82,6 @@ type preparedTask struct {
 	workDir                string
 	lockMode               repoLockMode
 	implementationReserved bool
-	phaseGate              *phaseGate // reserved phase slot; released by runTask
 }
 
 func New(cfg *config.Config) *Runner {
@@ -589,7 +588,6 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		}
 		index := -1
 		implementationBlocked := false
-		phaseBlocked := make(map[string]int) // phase gate key → waiting count
 		for i := range pending {
 			candidate := &pending[i]
 			reservedImplementation := false
@@ -600,23 +598,10 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 					continue
 				}
 				reservedImplementation = true
-			} else if gk := phaseGateKey(candidate.task); gk != "" {
-				if gate := r.phaseGates[gk]; gate != nil {
-					ok, _ := gate.tryAcquire()
-					if !ok {
-						phaseBlocked[gk]++
-						continue
-					}
-					candidate.phaseGate = gate
-				}
 			}
 			if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
 				if reservedImplementation {
 					r.implementationGate.releaseLocal()
-				}
-				if candidate.phaseGate != nil {
-					candidate.phaseGate.release()
-					candidate.phaseGate = nil
 				}
 				continue
 			}
@@ -630,9 +615,6 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			// on release channels here.
 			if implementationBlocked {
 				r.logger.Printf("scheduler: %d tasks waiting for implementation capacity — will retry on next scan", len(pending))
-			} else if len(phaseBlocked) > 0 {
-				r.logger.Printf("scheduler: %d tasks waiting for phase capacity (refining=%d planning=%d merge=%d priority=%d pm=%d) — will retry on next scan",
-					len(pending), phaseBlocked["refining"], phaseBlocked["planning"], phaseBlocked["merge"], phaseBlocked["priority"], phaseBlocked["pm"])
 			} else {
 				r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
 			}
@@ -675,9 +657,6 @@ func (r *Runner) runTask(p preparedTask) {
 	r.activeTasks.Add(1)
 	defer r.activeTasks.Add(-1)
 	defer r.unlockRepo(p.repoDir, p.lockMode)
-	if p.phaseGate != nil {
-		defer p.phaseGate.release()
-	}
 	// New-project tasks opting into remote creation get their GitHub remote
 	// (name/description/README) before the OMP session starts; failure blocks
 	// the task with an actionable error instead of failing the session.
@@ -1833,6 +1812,21 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
 			continue
+		}
+
+		// Phase concurrency gate: bounds simultaneous OMP sessions per phase
+		// (refining/planning/merge/priority/pm). Acquired here — not in the
+		// scheduler loop — so every dispatch path is covered, including the
+		// in-place restores (API-key recovery, resume, grill_continue) that
+		// fall through to normal dispatch inside this function.
+		if gk := phaseGateKey(t); gk != "" {
+			if gate := r.phaseGates[gk]; gate != nil {
+				if ok, _ := gate.tryAcquire(); !ok {
+					r.logger.Printf("task %s: phase gate %s full (%d running), deferring to next scan", t.ID, gk, r.cfg.ConcurrencyFor(gk))
+					continue
+				}
+				defer gate.release()
+			}
 		}
 
 		// Precompute the requirement hash into frontmatter so the
