@@ -183,3 +183,71 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		t.Fatal("expected invalid configuration error")
 	}
 }
+
+func TestDefaultsSetPhaseConcurrency(t *testing.T) {
+	cfg := Defaults()
+	if got := cfg.ConcurrencyFor("refining"); got != 3 {
+		t.Fatalf("ConcurrencyFor(refining) = %d, want 3", got)
+	}
+	if got := cfg.ConcurrencyFor("planning"); got != 2 {
+		t.Fatalf("ConcurrencyFor(planning) = %d, want 2", got)
+	}
+	if got := cfg.ConcurrencyFor("merge"); got != 1 {
+		t.Fatalf("ConcurrencyFor(merge) = %d, want 1", got)
+	}
+	// Unknown phase: unlimited.
+	if got := cfg.ConcurrencyFor("grilling"); got != 0 {
+		t.Fatalf("ConcurrencyFor(grilling) = %d, want 0 (unlimited)", got)
+	}
+}
+
+func TestLoadReadsPhaseConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	data := []byte(`{"phase_concurrency": {"refining": 1, "planning": 4}}`)
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.ConcurrencyFor("refining"); got != 1 {
+		t.Errorf("ConcurrencyFor(refining) = %d, want 1", got)
+	}
+	if got := cfg.ConcurrencyFor("planning"); got != 4 {
+		t.Errorf("ConcurrencyFor(planning) = %d, want 4", got)
+	}
+	// Unlisted default phases keep their defaults (merge), listed-unset stay.
+	if got := cfg.ConcurrencyFor("merge"); got != 1 {
+		t.Errorf("ConcurrencyFor(merge) = %d, want default 1", got)
+	}
+}
+
+func TestPhaseConcurrencyZeroDisablesGate(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	data := []byte(`{"phase_concurrency": {"refining": 0}}`)
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.ConcurrencyFor("refining"); got != 0 {
+		t.Errorf("ConcurrencyFor(refining) = %d, want 0 (explicitly unlimited)", got)
+	}
+}
+
+func TestLoadRejectsNegativePhaseConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	data := []byte(`{"phase_concurrency": {"refining": -2}}`)
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	if _, err := Load(mapFile); err == nil {
+		t.Fatal("expected invalid configuration error for negative phase_concurrency")
+	}
+}
