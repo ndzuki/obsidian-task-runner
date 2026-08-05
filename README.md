@@ -79,6 +79,19 @@ flowchart TD
 ```
 
 > 📖 想了解每一步系统具体做什么、调用哪个 Skill、写回哪些字段（含失败恢复与知识库回流）：见 [docs/workflow.md §0 自动化任务完整链路](docs/workflow.md)。
+
+## 阶段化交付（大型项目按阶段走）
+
+新项目与大型需求按**阶段**交付——每阶段有可演示成果，阶段收尾由 PM 评审评分，你决定继续 / 补充 / 结束，避免"任务永无止境"（release-manager 教训：76 个任务跑一个月无原型体验）。
+
+- **自动分组**：daemon 每轮 scan 把未分阶段（`stage` 空）的进行中任务按依赖拓扑**确定性分组**为阶段（秒级、幂等），写入 `Notes/Stage-Plan.md` 并回填 TASK/REQ 的 `stage: "P{N}"` 字段——无需人工规划；也可手动 `otg stage-plan init <project>`（`--force` 重建 / `--dry-run` 预览）。
+- **阶段归属**：`stage` 字段是权威判定（TASK 创建时从 REQ 继承，PM 拆分落地时写入）。
+- **阶段完成**：某阶段任务全部 done+merged 后，daemon 自动触发 PM 阶段评审（四维评分写 `Notes/Stage-Review.md`）。你只需回答「评审决策:」：
+  - `continue` — 进入下一阶段；
+  - `supplement:{建议}` — 建议并入下一阶段；
+  - `end` — 功能满足即结束，后续阶段任务自动关闭（不维护积压）。
+- **贯穿型需求**（e2e/测试/环境/CI）：按阶段拆成**场景包**，只依赖同阶段或更早阶段——禁止一次性全量（TASK-066 17 轮 replan 死锁的教训）。
+
 ## 5 分钟安装
 
 ### 1. 准备依赖
@@ -330,6 +343,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg on-req-changed <vault> <req>` | 手动处理需求变化 |
 | `otg update-status <task> [key=value ...]` | 原子更新任务 frontmatter |
 | `otg review <task>` | 显示任务的 review bundle |
+| `otg stage-plan init <project>` | 按依赖拓扑生成/追加阶段计划（`--force` 重建，`--dry-run` 预览） |
 | `otg validate-doc <path>` | 校验任意文档（自动识别 TASK/REQ/ADR）+ body tag 扫描 |
 | `otg repair-doc <task>` | 修复损坏的 frontmatter + body tag 自动转义 |
 | `otg version` | 查看版本（tag + commit hash） |

@@ -68,6 +68,7 @@ closed -- [终态，不可恢复]
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 完全自主任务声明：首次既有项目计划 + 非 pending_req + 无 ADR 提议时跳过 Plan Review（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
+| `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
 
 ### 4.2 Maturity Gate
 
@@ -203,13 +204,13 @@ append-only，不覆盖已有条目。`pipeline.EnsureContextMD` 在项目初始
 | `priority_assessment_attempts` | int | `0` | 评定重试次数 |
 | `priority_assessment_started_at` | ISO8601 | `""` | 评定开始时间 |
 
-Priority Assessment 由 daemon 在 refining 阶段触发，评定完成后写入结果字段。`priority_score` 用于调度排序。
+Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining 并行，每轮 ≤2 个，不阻塞 ready→refining；API key 不可用时跳过），评定完成后写入结果字段。`priority_score` 用于调度排序。疑似 P0 只写 `priority_recommendation`，P0 必须由用户手工确认。
 
 #### 4.6.6 Closed 终态字段
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `closure_reason` | string | `""` | 关闭原因：`completed` / `rejected` / `duplicate` / `wont_fix` |
+| `closure_reason` | string | `""` | 关闭原因：`not-bet`（评估后不下注）/ `already-implemented`（已实现）/ `duplicate`（重复）/ `cancelled`（取消）/ `wont-fix`（不予处理）。`already-implemented` 与 `duplicate` 满足 `blocked_by` 依赖，`cancelled` 不满足 |
 | `closure_note` | string | `""` | 关闭备注 |
 | `replacement_task` | string | `""` | 替代任务 ID（`project:TASK-NNN` 格式） |
 
@@ -273,6 +274,27 @@ Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-rev
 - **ADR**（可选）：`Notes/adr/*.md` 中按 REQ 关键词匹配 Top-2，含 title + 一句 decision
 
 术语数量由 `dynamicTermCount` 按剩余 token 预算动态分配。同一项目多次调度缓存 CONTEXT.md 内容（`sync.Map`），避免重复 IO。
+
+### 4.8 阶段化交付（Stage-based Delivery）
+
+新项目与大型需求按**阶段**交付：每阶段有可演示成果，阶段收尾由 PM 评审评分、用户决定继续/补充/结束——避免"任务永无止境、用户无体验"（release-manager 教训：76 个任务跑一个月无原型体验）。
+
+**核心文件与字段**：
+
+| 对象 | 说明 |
+|------|------|
+| `Notes/Stage-Plan.md` | 阶段权威定义。固定格式：`### Phase N: {名称}` 块 + `- 目标:` / `- tasks:` / `- status:` 行（daemon 解析契约；只由 `stageplan` 包写入，PM/agent 不得自行追加阶段块） |
+| `Notes/Stage-Review.md` | PM 阶段评审产出：四维评分（完成度/质量/一致性/用户可体验性）+ 建议 + 「评审决策: continue / supplement:{建议} / end」 |
+| `stage` 字段（TASK/REQ frontmatter） | 阶段归属**权威判定**（`P{N}`）。创建 TASK 时从 REQ 继承；PM 拆分落地时写入；daemon 阶段完成检测按字段聚合，不依赖 Stage-Plan 的 tasks 列表（字段跟随任务移动，永不过期） |
+| `Notes/Roadmap.md` | 项目发展历史总览（回顾性，与 Stage-Plan 前瞻性互补），PM 在阶段化/阶段评审时自动维护 |
+
+**确定性自动分组（`processAutoStaging`）**：daemon 每轮 scan 对未分阶段（stage 空）的进行中任务执行确定性拓扑分层 → 合并为阶段（`stage_min_per_phase`/`stage_max_phases` 配置控制）→ 写 Stage-Plan 骨架 + 批量写入 stage 字段。秒级、幂等、增量追加（编号接续），无需 LLM 会话。手动触发：`otg stage-plan init <project>`（`--force` 重建 / `--dry-run` 预览）。
+
+**贯穿型需求**（e2e/测试/环境/CI）：按阶段拆成**场景包**，只依赖同阶段或更早阶段交付——禁止一次性全量（TASK-066 17 轮 replan 死锁的教训）。
+
+**阶段完成与评审**：daemon 检测某 in-progress 阶段全部任务 done+merged（`merge_status=merged`，stale PR 不算）→ 调 PM `stage-review` 评分写 Stage-Review.md → 用户填「评审决策:」→ daemon 检测到后调 PM `distribute`：`continue`（下一阶段 in-progress）/ `supplement:{建议}`（追加到下一阶段）/ `end`（后续阶段任务 close，功能满足即结束，不维护积压）。
+
+**PM 语义层职责**（机械分组已由 daemon 承担）：补充阶段目标描述、按用户意图调整阶段边界（`stage-plan init --force` 或改 stage 字段）、新需求到达时评估归入现有阶段或建议追加新阶段（写清单「阶段规划确认」区，用户拍板）。
 
 ## 5. 需求变更行为
 
@@ -361,7 +383,7 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 
 ## 9. Skill 安装
 
-Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
+Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 

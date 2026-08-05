@@ -18,6 +18,7 @@ flowchart TD
     TIMER[systemd timer 兜底] --> SCAN
     TASK -->|补齐字段 + 依赖满足| READY[ready]
     READY --> SCAN[scanAndProcess 每轮]
+    SCAN --> STAGE[processAutoStaging<br/>未分阶段任务确定性分组<br/>Stage-Plan 追加 + stage 字段]
     SCAN --> DEP[resolveBlockedDependencies<br/>blocked_by 链自动恢复]
     SCAN --> FR[FindReadyTasks → processBatch]
     FR --> SM[nextLocalTransition 本地状态机]
@@ -31,6 +32,8 @@ flowchart TD
     GRILL -.->|grill_continue=true 离线填答| REFINE
     PARK -.->|用户回答清单 grill_continue=true| PM[PM 分发<br/>/obsidian-task-runner-pm distribute]
     PM --> REFINE
+    SCAN -.->|scan 末尾每轮 ≤1| PMC[PM consolidate<br/>共享 REQ 去重 + 争议入清单]
+    PMC -->|dispute 汇总| PARK
     PLAN --> PR[plan-review]
     PR -->|plan_approved=true| R2[implementing<br/>/obsidian-task-runner-round2 + worktree]
     R2 -->|全部 AC 完成| RV[review]
@@ -46,8 +49,17 @@ flowchart TD
     RV -->|gh 缺失 / REQ 变更| REFINE
     DONE -->|pending_req=true| REFINE
     DONE -->|最终验收产品| ACCEPT[验收通过 / 改 REQ 重新规划]
+    DONE -->|阶段任务全部 done+merged<br/>daemon 检测| STAGER[PM stage-review<br/>四维评分 → Stage-Review.md]
+    STAGER -->|用户填评审决策| SDEC[continue / supplement / end]
+    SDEC -->|continue| NEXT[下一阶段 in-progress]
+    SDEC -->|end| CLOSESTAGE[后续阶段任务 close<br/>功能满足即结束]
     SCAN -.->|并行：scan 末尾每轮 ≤2| PA[priority assessment<br/>/obsidian-task-runner-priority]
     PA -->|completed| FR
+    REFINE -.->|进程级失败| FB[fallback_models 兜底重启<br/>或 handlePhaseFailure]
+    PLAN -.->|进程级失败| FB
+    R2 -.->|进程级失败| FB
+    FB -->|可恢复| REFINE
+    FB -->|不可恢复| BLK[blocked + resume 门禁]
 ```
 
 ### 0.2 逐环节动作明细
@@ -61,6 +73,7 @@ flowchart TD
 | 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
 | 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | Kitty 内 requirement-elaborator / grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
 | 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 OMP 子进程（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；**单任务触发扩展：`grill_repeat≥2` 或 `plan_version≥3`（反复 replan）也进统筹**；**新项目/大 REQ 附加拆分建议（split skill）与技术栈建议**；distribute：清单答案写回 REQ + 拆分落地（子 REQ 创建）+ 任务重置 refining | `grill_parked/grill_repeat/plan_version`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
+| 6.6 | 自动阶段化 | scan 开始（每轮，PM 统筹前） | `processAutoStaging`：未分阶段（stage 空）的进行中任务按 `blocked_by` 拓扑确定性分层 → 合并为阶段（`stage_min_per_phase`/`stage_max_phases`）→ Stage-Plan.md 追加 + 批量写 `stage` 字段。秒级幂等，编号接续，零 LLM 会话 | 无（纯 Go） | `stage: "P{N}"`、`Notes/Stage-Plan.md` | 已分阶段任务从 PM 输入中消失，PM 只剩真争议 |
 | 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high）；**REQ hash 由 daemon 预写（`refine_req_hash`）** | `/obsidian-task-runner-round1 <task>`：Step -1 知识图谱 → 版本化计划 + Prototype 建议；**命中的知识文档写入 `knowledge_refs`（引用链）**；**成功完成后 daemon 自动折叠 `## 实现计划` 历史（keep=3，防文档膨胀）** | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed`、`knowledge_refs` | plan-review；autoApproveEligible=true 时 daemon 同轮直接转 implementing |
 
 > **auto_approve（完全自主任务）**：`auto_approve=true` AND 首次规划（plan_version==0）AND 非新项目 AND 非 pending_req AND `adr_proposed` 为空 → Round 1 写 `plan_approved=true`，daemon 自动跳过人工审计划进入 implementing。**ADR 护栏**：有 ADR 提议时即使 auto_approve 也强制 `plan_approved=false`——架构决策随计划人工审阅。已进入 plan-review 的任务（plan_version>0）改 auto_approve 不生效，需手动批准或 replan。
@@ -69,6 +82,7 @@ flowchart TD
 | 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
 | 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（pending_req 则回 refining） |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
+| 13 | 阶段评审 | 某阶段全部任务 done+merged（`merge_status=merged`） | `processStageReviews` 检测（每轮 ≤1）→ PM stage-review 四维评分写 `Notes/Stage-Review.md`；用户填「评审决策:」后 daemon 检测 → PM distribute 分发 | `/obsidian-task-runner-pm stage-review` / distribute | `Notes/Stage-Review.md`、Stage-Plan 阶段状态（review-pending/delivered/ended/completed） | continue → 下一阶段 in-progress；supplement:{建议} → 追加下一阶段；end → 后续阶段任务 close（不维护积压） |
 
 ### 0.3 时序事实（与历史文档的差异说明）
 
@@ -78,6 +92,8 @@ flowchart TD
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 解决仅一次**：`merge_status=conflict-resolve-attempted` 标记已尝试；用户重授权后不再重复 AI 尝试。
 - **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退携带 `phase_error_code`，不会被自动重新授权（防循环）。
+- **阶段化确定性分组取代 PM 手工分阶段**：早期阶段规划由 PM 会话完成（release-manager 首轮分阶段耗数小时 LLM 轮次且不可靠）；现由 daemon `processAutoStaging` 秒级确定性拓扑分组（幂等、增量追加），PM 只保留语义层（目标描述、边界调整、新需求归入/建议增阶段）与阶段评审。阶段归属以 `stage` 字段为权威（TASK 从 REQ 继承），不依赖 Stage-Plan 的 tasks 列表。
+- **阶段完成=任务全部 done+merged**：done 但 `merge_status != merged`（stale PR）不计入；由 PR 闭环先收敛再评审。阶段评审产出 `Notes/Stage-Review.md`，用户填「评审决策:」后 PM distribute 分发（continue/supplement/end），end 路径后续阶段任务 close——功能满足即结束，不维护积压。
 
 ## 1. 架构边界
 
@@ -117,6 +133,9 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 | `planning` | `/obsidian-task-runner-round1 <task>` | TASK `assignee` | `--auto-approve` |
 | `implementing` | `/obsidian-task-runner-round2 <task>` | TASK `assignee` | `--auto-approve` |
 | Merge（含冲突自动解决） | `/obsidian-task-runner-merge <task>` | TASK `assignee` | `--auto-approve` |
+| priority 评估 | `/obsidian-task-runner-priority <req_doc>`（scan 末尾并行，每轮 ≤2） | `models.default` | `--auto-approve` |
+| PM 统筹 / 分发 / 阶段评审 | `/obsidian-task-runner-pm <consolidate|distribute|stage-review>`（scan 末尾，每轮 ≤1） | `models.default` | `--auto-approve` |
+| 新项目/大 REQ 拆分建议 | `/obsidian-task-runner-split <req>`（并入 PM consolidate） | `models.default` | `--auto-approve` |
 
 `obsidian-task-runner` 核心 Skill 是人工入口和流程参考，不是 daemon 的阶段执行入口。
 
@@ -853,6 +872,16 @@ flowchart LR
 - [ ] auto_approve 允许与禁止场景。
 - [ ] phase retry/resume。
 - [ ] 跨项目同 ID 和同 basename REQ 不串线。
+
+### AC-15 阶段化交付
+
+- [ ] 未分阶段（stage 空）的进行中任务被 `processAutoStaging` 确定性分组：拓扑分层 → 阶段合并（`stage_min_per_phase`/`stage_max_phases`）→ Stage-Plan.md 追加 + `stage` 字段批量写入；幂等（重跑无变化）、增量（编号接续、已分阶段不动）。
+- [ ] TASK `stage` 从 REQ frontmatter 继承；PM 拆分落地时写子 REQ/TASK 的 `stage`。
+- [ ] 阶段完成检测按 `stage` 字段聚合：全部任务 done 且 `merge_status=merged`（stale PR 不计）才触发 stage-review，每轮 ≤1。
+- [ ] 阶段评审产出 `Notes/Stage-Review.md`（四维评分 + 评审决策行），daemon 检测后 PM distribute 分发：continue / supplement:{建议} / end。
+- [ ] end 路径：后续阶段任务 close（closure_reason=cancelled），不维护积压；贯穿型需求未挂载场景包同样 close。
+- [ ] 贯穿型需求（e2e/测试/环境/CI）按阶段拆场景包，只依赖同阶段或更早阶段（TASK-066 死锁回归）。
+- [ ] Stage-Plan.md 只由 `stageplan` 包写入（daemon/命令），agent 手工追加阶段块会产生双阶段归属冲突（回归项）。
 
 ## 14. 实施任务分解
 

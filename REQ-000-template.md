@@ -8,6 +8,7 @@ updated: ""
 author: ""
 tags: []
 # priority: ""                  # 留空由系统自动评定 P1-P4（P0 仅人工）；亦可手工填写
+# stage: ""                    # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；创建 TASK 时继承，PM 拆分时写入
 # appetite: ""                 # 时间预算: small(30m) / medium(2h) / large(6h)。约束 Round 2 实现范围
 # type: ""                    # 需求类型：空=原子需求, requirement-roadmap, requirement-index
 # depends_on: []              # 依赖的前序需求 ID 列表
@@ -121,7 +122,7 @@ OMP 会自动识别你写到了哪个层次，缺失的部分它会根据上下�
 - 存储: [ ] PostgreSQL / [ ] SQLite / [ ] 无持久化
 - 部署: [ ] K8s / [ ] systemd / [ ] 仅本地
 - 协议: [ ] Connect/gRPC / [ ] HTTP REST / [ ] 双协议
-- 是否需要新项目: [ ] 是(template: ___) / [ ] 否
+- 是否需要新项目: [ ] 是(scaffold.kind: ___) / [ ] 否
 
 
 
