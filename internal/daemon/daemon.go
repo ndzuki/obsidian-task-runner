@@ -169,6 +169,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer unlock()
 
 	r.logger.Printf("daemon started, vault=%s", r.cfg.ObsidianVault)
+	r.logger.Printf("concurrency gates: implementing=%d refining=%d planning=%d merge=%d priority=%d pm=%d",
+		r.cfg.MaxConcurrentTasks,
+		r.cfg.ConcurrencyFor("refining"), r.cfg.ConcurrencyFor("planning"),
+		r.cfg.ConcurrencyFor("merge"), r.cfg.ConcurrencyFor("priority"), r.cfg.ConcurrencyFor("pm"))
 	r.cleanupOldLogs()
 
 	// Run an initial scan to catch any tasks that became ready while daemon was down.
@@ -822,7 +826,14 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		prepared := preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode}
 		if isRound2(t) {
 			lock := r.repoLock(repoDir)
-			lock.Lock()
+			// Non-blocking: a runTask holding the repo read lock (refining/
+			// planning OMP, up to 30-60min) must not freeze the whole scan
+			// behind this write lock — skip and retry on the next scan,
+			// matching the tryRepoLock semantics of the dispatch loop.
+			if !lock.TryLock() {
+				r.logger.Printf("task %s: repo busy, deferring worktree prepare to next scan", t.ID)
+				continue
+			}
 			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch)
 			lock.Unlock()
 			if worktreeErr != nil {
@@ -842,7 +853,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				warmBranch := t.TargetBranch
 				go func() {
 					lock := r.repoLock(warmRepo)
-					lock.Lock()
+					// Non-blocking like the prepare path: never freeze scans
+					// behind a busy repo (refining/planning read locks).
+					if !lock.TryLock() {
+						r.worktreeCache.Delete(warmKey)
+						return
+					}
 					wtPath, wtErr := ensureTaskWorktree(warmRepo, warmKey, warmBranch)
 					lock.Unlock()
 					if wtErr != nil {
