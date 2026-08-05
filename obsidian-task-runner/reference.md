@@ -12,6 +12,10 @@ blocked → ready → refining ─┬─ fully_mature → planning → plan-revi
                             ├─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
                             └─ 重复争议（grill_repeat≥2 或单任务 plan_version≥3 反复 replan）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
 
+决策清单（Notes/Grilling-Decisions.md）状态机：open ⇄ paused（手动或 REQ 更新自动激活）→ answered
+- paused：不提醒、任务静默 parked；分发不受影响（填答案 + grill_continue=true 照常）
+- REQ 更新 → daemon 自动激活为 open（提醒恢复 + 拆分/规划流程衔接）
+
 needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 
 refining/planning -- retry once, fail again --> blocked
@@ -126,7 +130,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
 | `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
-| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案 |
+| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时提醒整体抑制（需求未想好），REQ 更新自动激活回 `open` |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
 | `knowledge_extracted` | bool | `false` | 该任务 ADR 已提取到知识库（`ExtractTaskKnowledge` 幂等标记，merge 后写） |

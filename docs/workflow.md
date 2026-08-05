@@ -414,6 +414,26 @@ Daemon 消费完成结果时，优先级为：
 
 **审计与推翻**：`auto_accepted` 保留每次自动采纳记录（版本、时间、摘要）；用户可推翻自动采纳后重跑 refining，REQ 中的 `[采纳建议 auto]` 标注会被后续决策标注覆盖。
 
+### 5.8 决策清单生命周期与提醒抑制
+
+决策清单（`Notes/Grilling-Decisions.md`）的 frontmatter `status` 驱动提醒与分发：
+
+```mermaid
+stateDiagram-v2
+    [*] --> open: PM consolidate 创建/追加决策点
+    open --> answered: 全部决策点已填 + 已分发（daemon 自动）
+    open --> paused: 用户手动设置（需求未想好，暂停提醒）
+    paused --> open: 用户手动改回，或关联 REQ 更新（daemon 自动激活）
+    paused --> answered: 用户直接填答案 + grill_continue=true（分发不受 paused 影响）
+    answered --> open: consolidate 追加新决策点（PM 必须重置）
+    answered --> [*]
+```
+
+- **`open`**：有待答决策点 → 每个 parked 任务创建/聚焦一个 Kitty 决策 tab（每项目一个、5 分钟 debounce）；`grill_continue=true` 或全部填完 → distribute 分发 → `status=answered`。
+- **`paused`**（需求未想好）：**不创建 Kitty tab、不提醒**；任务保持 parked 静默等待。consolidate 向 paused 清单追加新决策点后**保持 paused**（用户仍未决定，不因新决策点恢复提醒）。
+- **自动激活**：用户更新关联 REQ（`OnReqChanged` 路径）→ daemon 把该项目的 paused 清单翻回 `open` 并通知——重新思考需求 = 恢复信号，提醒回归且后续链路（pending_req → refining → maturity gate → consolidate/split 重新评估 → planning）自动衔接。按项目去重，一次 REQ 事件每项目激活一次。
+- **通知风暴抑制**：API key 故障等批量失败场景，桌面提醒按 5 分钟窗口全局去重（`notifyKeyUnavailable`），不再每任务一条；调度前 `apiKeyAvailable()` 预检让任务保持状态等待（不启动 OMP、不消耗重试预算、无逐任务通知）。
+
 ## 6. Planning / Round 1
 
 `planning` 使用 TASK `assignee`，daemon 直接调用 `/obsidian-task-runner-round1`。
