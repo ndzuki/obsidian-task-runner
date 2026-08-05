@@ -41,6 +41,9 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	}})
 
 	waitForStartCount(t, startDir, 1)
+	// The fake OMP writes START_DIR before ARGS_DIR; wait for the args file
+	// so the read below cannot race the script (flaky under -count>1).
+	waitForArgsFile(t, argsDir)
 	releaseBarrier(t, releaseFile)
 	if processed := waitForBatch(t, done); processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
@@ -72,6 +75,102 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	wantPrompt := "/obsidian-task-runner-refining " + taskPath
 	if !strings.Contains(string(args), wantPrompt) {
 		t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
+	}
+}
+
+// TestRefiningDispatchWritesPhaseSpecificLogFile pins the phase passed to
+// runTask for a maturity-gate dispatch. Regression: phase was "" so the log
+// file, timeout (30m fallback), PID anti-duplication, and failure-recovery
+// semantics all silently fell back to defaults instead of the refining
+// configuration (15m, refine_retry_count, retry-then-block).
+func TestRefiningDispatchWritesPhaseSpecificLogFile(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, map[string]string{})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	logDir := filepath.Join(dir, "logs")
+	taskPath := writeTaskFile(t, dir, "TASK-075-refining.md", "ready")
+	runner := newTestRunner(skillDir, omp, logDir, 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "075", Title: "Refining", FilePath: taskPath, Status: "ready", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+
+	taskLogDir := filepath.Join(logDir, "tasks")
+	entries, err := os.ReadDir(taskLogDir)
+	if err != nil {
+		t.Fatalf("read task log dir: %v", err)
+	}
+	var found bool
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "TASK-075-") && strings.HasSuffix(e.Name(), "-refining.log") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("no -refining.log for TASK-075, got: %v", names)
+	}
+
+	releaseBarrier(t, releaseFile)
+	waitForBatch(t, done)
+}
+
+// TestGrillContinueResetReleasesParkedState guards the grill_continue reset
+// path in prepareBatch: answering a parked task offline must release the
+// parked flag (so the maturity gate re-runs normally) while keeping
+// grill_repeat across refine rounds.
+func TestGrillContinueResetReleasesParkedState(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, map[string]string{})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPath := filepath.Join(dir, "TASK-076.md")
+	content := "---\n" +
+		"id: \"076\"\n" +
+		"status: needs-grilling\n" +
+		"grill_continue: true\n" +
+		"grill_done: false\n" +
+		"grill_parked: true\n" +
+		"grill_repeat: 3\n" +
+		"---\n# T076\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "076", Title: "T076", FilePath: taskPath, Status: "needs-grilling",
+		GrillContinue: true, GrillParked: true, Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+	releaseBarrier(t, releaseFile)
+	waitForBatch(t, done)
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "refining" {
+		t.Fatalf("status = %q, want refining after grill_continue reset", fm.Status)
+	}
+	if fm.GrillParked {
+		t.Fatal("grill_continue reset must release parked state")
+	}
+	if fm.GrillRepeat != 3 {
+		t.Fatalf("grill_repeat = %d, want 3 (repeat counter must survive reset)", fm.GrillRepeat)
 	}
 }
 
@@ -826,6 +925,22 @@ func runBatch(runner *Runner, tasks []task.ReadyTask) <-chan int {
 		done <- runner.processBatch(tasks)
 	}()
 	return done
+}
+
+// waitForArgsFile polls until the fake OMP has written its argv capture.
+// The barrier script writes START_DIR before ARGS_DIR, so start-count alone
+// does not guarantee the args file exists.
+func waitForArgsFile(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(dir)
+		if err == nil && len(entries) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no OMP args file appeared in %s", dir)
 }
 
 func waitForStartCount(t *testing.T, dir string, want int) {

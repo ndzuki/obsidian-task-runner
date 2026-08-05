@@ -328,8 +328,11 @@ func (r *Runner) scanAndProcess() error {
 	// the batch-synchronous wait.
 	r.processBatch(tasks)
 	if r.daemonCtx.Err() == nil {
-		// Skip on shutdown: a cancelled priority OMP would overwrite the
+		// Skip on shutdown: a cancelled OMP would overwrite the
 		// PHASE_INTERRUPTED write-back of an interrupted task phase.
+		// PM consolidation runs before priority assessments so answered
+		// decision lists un-park tasks as early as possible in the cycle.
+		r.processGrillingConsolidation(r.daemonCtx)
 		r.processPriorityAssessments(r.daemonCtx)
 	}
 	return nil
@@ -458,7 +461,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if t.GrillContinue {
 				r.logger.Printf("task %s: grill_continue=true, re-running maturity gate", t.ID)
 				if err := yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
-					"status": "refining", "grill_continue": false, "grill_done": false,
+					"status": "refining", "grill_continue": false, "grill_done": false, "grill_parked": false,
 				}); err != nil {
 					r.logger.Printf("task %s: apply grill_continue reset: %v", t.ID, err)
 					continue
@@ -466,6 +469,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				t.Status = "refining"
 				t.GrillContinue = false
 				// Fall through: dispatch re-enters refining (maturity gate).
+			} else if t.GrillParked {
+				// Parked: disputes consolidated into the project-level
+				// Grilling-Decisions.md list. No per-task reminders — the PM
+				// coordinator distributes answers when the list is answered.
+				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
+				continue
 			} else {
 				r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
 				// Debounce: suppress repeated reminders during active grilling sessions.
@@ -1301,6 +1310,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				phase = "planning"
 				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 			} else {
+				phase = "refining"
 				skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
 				r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
 			}
@@ -1483,7 +1493,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// OMP would be killed right after. Phase timeout still falls back:
 			// the fallback command gets its own fresh timeout budget.
 			if !signalKilled && failureCode != ErrAPIKeyUnavailable && !errors.Is(ctx.Err(), context.Canceled) {
-				if fallbackModel := r.cfg.FallbackModel(t.Assignee); fallbackModel != "" && fallbackModel != model {
+				if fallbackModel := r.cfg.FallbackModelFor(t.Assignee); fallbackModel != "" && fallbackModel != model {
 					r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
 						fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
@@ -1558,7 +1568,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				}
 				}
 			}
-			noFallback := r.cfg.FallbackModel(t.Assignee) == "" || r.cfg.FallbackModel(t.Assignee) == model
+			noFallback := r.cfg.FallbackModelFor(t.Assignee) == "" || r.cfg.FallbackModelFor(t.Assignee) == model
 			if fellback || noFallback {
 				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
 			}

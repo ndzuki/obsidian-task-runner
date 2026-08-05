@@ -25,6 +25,7 @@ type Config struct {
 	OffPeakWindows        []TimeWindow      `json:"off_peak_windows"`
 	StarvationWarningDays map[string]int    `json:"starvation_warning_days"`
 	Models                map[string]string `json:"models"`
+	FallbackModels        map[string]string `json:"fallback_models"`
 	OMPCmd                string            `json:"omp_cmd"`
 	LogDir                string            `json:"log_dir,omitempty"`
 
@@ -72,7 +73,7 @@ type NotifConfig struct {
 // DefaultModels returns the built-in model mappings.
 func DefaultModels() map[string]string {
 	return map[string]string{
-		"deepseek": "deepseek/deepseek-v4-pro",
+		"deepseek": "deepseek/deepseek-v4-flash",
 		"gpt":      "gateway/gpt-5.6-sol:xhigh",
 		"default":  "deepseek/deepseek-v4-flash",
 		"gemini":   "google/gemini-2.5-pro",
@@ -81,17 +82,34 @@ func DefaultModels() map[string]string {
 	}
 }
 
+// DefaultFallbackModels returns the built-in assignee → fallback model map.
+// Keys are assignee names (matching `models` / TASK frontmatter); values are
+// OMP model identifiers. Users may add/remove/override any key in
+// vault-map.json; an empty value disables the fallback for that assignee.
+func DefaultFallbackModels() map[string]string {
+	return map[string]string{
+		"gpt":      "deepseek/deepseek-v4-flash",
+		"default":  "deepseek/deepseek-v4-flash",
+		"deepseek": "deepseek/deepseek-v4-flash",
+	}
+}
+
 // ModelReference returns a human-readable model reference table.
+// Model identifiers are sourced from DefaultModels/DefaultFallbackModels so
+// the table never drifts from the shipped defaults.
 func ModelReference() string {
-	return `| assignee | 模型标识 | 用途 |
+	d := DefaultModels()
+	fb := DefaultFallbackModels()
+	return fmt.Sprintf(`| key | 模型标识 | 用途 |
 |----------|---------|------|
-| default  | deepseek/deepseek-v4-flash | refining、planning、round2 日常任务（0731 更新，Agent 能力大幅增强） |
-| deepseek | deepseek/deepseek-v4-pro | 复杂 AC fallback（即将发布正式版） |
-| gpt      | gateway/gpt-5.6-sol:xhigh | 高推理任务，default 不可用时 fallback |
-| gemini   | google/gemini-2.5-pro | 可选 |
-| claude   | anthropic/claude-sonnet-4-20250514 | 可选 |
-| minimax  | minimax/minimax-m1 | 可选 |
-`
+| default  | %s | refining、planning、round2 日常任务（0731 更新，Agent 能力大幅增强） |
+| deepseek | %s | deepseek assignee 主模型 |
+| gpt      | %s | 高推理任务主力 |
+| gemini   | %s | 可选 |
+| claude   | %s | 可选 |
+| minimax  | %s | 可选 |
+| fallback_models | 映射（默认 gpt/default/deepseek → %s） | 各 assignee 失败兜底；可增删任意 key、改任意模型标识，置 "" 禁用 |
+`, d["default"], d["deepseek"], d["gpt"], d["gemini"], d["claude"], d["minimax"], fb["gpt"])
 }
 
 // Defaults returns a Config with default values.
@@ -109,6 +127,7 @@ func Defaults() *Config {
 		StarvationWarningDays: map[string]int{"P3": 14, "P4": 30},
 		SkillInstallDir:       filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
 		Models:                DefaultModels(),
+		FallbackModels:        DefaultFallbackModels(),
 		OMPCmd:                "omp",
 		Notifications:         NotifConfig{Desktop: true},
 	}
@@ -174,6 +193,9 @@ func mergeDefaults(cfg *Config) {
 	if cfg.Models == nil {
 		cfg.Models = DefaultModels()
 	}
+	if cfg.FallbackModels == nil {
+		cfg.FallbackModels = defaults.FallbackModels
+	}
 	if cfg.OMPCmd == "" {
 		cfg.OMPCmd = defaults.OMPCmd
 	}
@@ -237,27 +259,18 @@ func (c *Config) Model(assignee string) string {
 		return m
 	}
 	// Fallback to default
-	if defaultModel, ok := c.Models["default"]; ok {
+	if defaultModel, ok := c.Models["default"]; ok && defaultModel != "" {
 		return defaultModel
 	}
-	return "deepseek/deepseek-v4-flash"
+	return DefaultModels()["default"]
 }
 
-// FallbackModel returns the fallback model for an assignee.
-// "gpt" → "deepseek" (v4-pro); "default"/"deepseek" → "deepseek-v4-pro".
-// Returns empty string if no fallback is configured.
-func (c *Config) FallbackModel(assignee string) string {
-	preferPro := func() string {
-		if m, ok := c.Models["deepseek"]; ok && m != "" {
-			return m
-		}
-		return "deepseek/deepseek-v4-pro"
-	}
-	switch assignee {
-	case "gpt", "default", "deepseek":
-		return preferPro()
-	}
-	return ""
+// FallbackModelFor returns the configured fallback model for an assignee.
+// Lookup is pure configuration: `fallback_models` maps assignee keys to OMP
+// model identifiers. Neither the assignee set nor the model is hardcoded —
+// users configure both via vault-map.json. Empty string means no fallback.
+func (c *Config) FallbackModelFor(assignee string) string {
+	return c.FallbackModels[assignee]
 }
 
 // ResolveProject returns the local path for a project name.

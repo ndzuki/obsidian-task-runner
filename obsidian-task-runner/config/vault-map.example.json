@@ -11,12 +11,17 @@
   "new_project_root": "/home/you/src",
   "models": {
     "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
-    "deepseek": "deepseek/deepseek-v4-pro",
+    "deepseek": "deepseek/deepseek-v4-flash",
     "gpt":      "gateway/gpt-5.6-sol:xhigh",
     "default":  "deepseek/deepseek-v4-flash",
     "gemini":   "google/gemini-2.5-pro",
     "claude":   "anthropic/claude-sonnet-4-20250514",
     "minimax":  "minimax/minimax-m1"
+  },
+  "fallback_models": {
+    "gpt": "deepseek/deepseek-v4-flash",
+    "default": "deepseek/deepseek-v4-flash",
+    "deepseek": "deepseek/deepseek-v4-flash"
   },
   "notifications": {
     "desktop": true,

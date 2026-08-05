@@ -170,7 +170,13 @@ auto_approve=true
 AND plan_version before this run == 0
 AND new_project=false
 AND pending_req=false
+AND adr_proposed 为空（无架构决策）
 ```
+
+> **ADR 护栏**：有 ADR 提议的任务即使 `auto_approve=true` 也必须 `plan_approved=false`——
+> 架构决策（ADR 提议列表）随计划一起人工审阅，审过计划才算看过决策。
+> "完全自主任务" = 无 ADR 提议 + 上述条件全部满足。
+> `adr_proposed` 的空值形态以 `""` 或 `[]` 为准——两者均视为空（无架构决策）。
 
 原子更新：
 
@@ -185,6 +191,13 @@ phase_error: ""
 phase_log: ""
 blocked_phase: ""
 resume_approved: false
+```
+
+若 `autoApproveEligible=true`（自动批准），在 TASK 变更记录追加一行，标注来源以便事后区分自动/人工批准：
+
+```
+<N+1>. {ISO8601} — plan_approved 自动批准（auto_approve，首规划且无 ADR 提议）
+```
 
 ## Step 7: Frontmatter Safety（安全规范）
 

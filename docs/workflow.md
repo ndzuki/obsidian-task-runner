@@ -23,10 +23,14 @@ flowchart TD
     FR --> SM[nextLocalTransition 本地状态机]
     SM -->|ready| REFINE[refining<br/>/obsidian-task-runner-refining]
     REFINE -->|maturity=fully_mature 且 REQ hash 未变| PLAN[planning<br/>/obsidian-task-runner-round1]
-    REFINE -->|不成熟| GRILL[needs-grilling<br/>Kitty + requirement-elaborator]
+    REFINE -->|fact/auto 采纳后成熟| PLAN
+    REFINE -->|仅剩 dispute| GRILL[needs-grilling<br/>Kitty + requirement-elaborator]
+    REFINE -->|dispute 重复 grill_repeat≥2| PARK[park 升级<br/>→ 项目级 Grilling-Decisions.md]
     GRILL -->|grill_resolution=resume| REFINE
     GRILL -->|replan| REFINE
     GRILL -.->|grill_continue=true 离线填答| REFINE
+    PARK -.->|用户回答清单 grill_continue=true| PM[PM 分发<br/>/obsidian-task-runner-pm distribute]
+    PM --> REFINE
     PLAN --> PR[plan-review]
     PR -->|plan_approved=true| R2[implementing<br/>/obsidian-task-runner-round2 + worktree]
     R2 -->|全部 AC 完成| RV[review]
@@ -54,9 +58,12 @@ flowchart TD
 | 2 | 任务解锁 | 用户补齐 `project`+`assignee`、依赖满足 | `IsAutoUnblockable` 判定 → unblock | 无 | `status=ready`，清 phase_error | scan 拾取 |
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
-| 5 | refining | `status=ready` 被拾取 | `nextLocalTransition` 转 refining；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性 | `maturity`、`refine_req_hash`、`refine_version` | fully_mature 且 hash 未变 → 直接 planning（early-out）；不成熟或大型需求 → needs-grilling（大型需求先出 Wayfinder Map 决策地图作为 Grilling 焦点） |
-| 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复 | Kitty 内 requirement-elaborator / grilling | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验 |
-| 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high） | `/obsidian-task-runner-round1 <task>`：读 ADR 知识 → 版本化计划 + Prototype 建议 | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed` | plan-review |
+| 5 | refining | `status=ready` 被拾取 | `nextLocalTransition` 转 refining；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
+| 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | Kitty 内 requirement-elaborator / grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
+| 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 OMP 子进程（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；distribute：清单答案写回 REQ + 任务重置 refining | `grill_parked/grill_repeat`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
+| 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high） | `/obsidian-task-runner-round1 <task>`：读 ADR 知识 → 版本化计划 + Prototype 建议 | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed` | plan-review；autoApproveEligible=true 时 daemon 同轮直接转 implementing |
+
+> **auto_approve（完全自主任务）**：`auto_approve=true` AND 首次规划（plan_version==0）AND 非新项目 AND 非 pending_req AND `adr_proposed` 为空 → Round 1 写 `plan_approved=true`，daemon 自动跳过人工审计划进入 implementing。**ADR 护栏**：有 ADR 提议时即使 auto_approve 也强制 `plan_approved=false`——架构决策随计划人工审阅。已进入 plan-review 的任务（plan_version>0）改 auto_approve 不生效，需手动批准或 replan。
 | 8 | plan-review | `plan_approved=true` | `nextLocalTransition` → implementing，自动 `adr_approved=true`；预热 worktree | 无 | `status=implementing` | Round 2 |
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时） | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining |
 | 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
@@ -149,13 +156,15 @@ stateDiagram-v2
 
     ready --> refining: daemon 拾取（立即；priority 评估并行于 refining，scan 末尾每轮≤2）
 
-    refining --> planning: maturity=fully_mature
-    refining --> needs_grilling: 不成熟，或大型需求 (AC>10 / 3+服务) → Wayfinder Map 决策地图作为焦点
+    refining --> planning: maturity=fully_mature（含 fact/auto 处置后成熟）
+    refining --> needs_grilling: 仅剩 dispute，或大型需求 (AC>10 / 3+服务) → Wayfinder Map 决策地图作为焦点
+    refining --> needs_grilling: dispute 重复 grill_repeat≥2 → grill_parked=true（并入项目级 Grilling-Decisions.md）
     refining --> blocked: 自动恢复一次后再次失败
 
-    needs_grilling --> needs_grilling: owner 有效 / Kitty 不可用 / resolution 为空
+    needs_grilling --> needs_grilling: owner 有效 / Kitty 不可用 / resolution 为空 / grill_parked=true 等清单回答
     needs_grilling --> implementing: grill_done=true and grill_resolution=resume
     needs_grilling --> refining: grill_done=true and grill_resolution=replan
+    needs_grilling --> refining: PM distribute 分发清单答案（grill_parked=false, grill_repeat=0）
 
     planning --> refining: REQ hash 在 planning 期间变化
     planning --> plan_review: 新计划成功写入
@@ -372,6 +381,20 @@ Daemon 消费完成结果时，优先级为：
 
 只设置 `pending_req=true`，不修改 status、不取消 live phase。Refining 使用最新 REQ；planning 由提交前 hash 复核决定是否返回 refining。
 
+### 5.7 项目级 PM 统筹（重复争议收敛）
+
+**问题**：多个任务共享同一 REQ 时各自 grilling，同一歧义被重复追问；单个任务的 dispute 无人回答时反复 refining→needs-grilling 空转。
+
+**收敛机制**：
+
+1. **refining 三分类**（`/obsidian-task-runner-refining`）：failed 项按 fact（环境事实可证，自修正 REQ）/ auto（有明确建议且低风险可逆，采纳写 REQ + `auto_accepted` 审计）/ dispute（真争议）分类。fact/auto 处置后成熟 → 直接 planning，不再问用户。
+2. **重复检测**：dispute 与上一版 `## Grilling 待回答` 相同 → `grill_repeat+1`；`grill_repeat≥2` 且 REQ hash 未变 → **park 升级**（`grill_parked=true`），不再逐任务重复追问。
+3. **PM consolidate**（`processGrillingConsolidation`，scan 末尾每轮 ≤1）：按 req_doc 分组去重 → fact/auto 处置同步到所有相关任务 → dispute 写入 `Notes/Grilling-Decisions.md` 决策点（含来源任务、冲突引用、建议方向、决策空位）→ 任务 `grill_parked=true`。
+4. **一次性回答**：用户在清单中填「决策:」，置 frontmatter `grill_continue=true`。parked 任务不创建 Kitty、不提醒。
+5. **PM distribute**：检测到清单 answered → 读答案写回各 REQ（标注 `[决策: <清单 D-n>]`）→ 任务重置 `grill_parked=false / grill_repeat=0 / status=refining` → 各自重跑 maturity gate。
+
+**审计与推翻**：`auto_accepted` 保留每次自动采纳记录（版本、时间、摘要）；用户可推翻自动采纳后重跑 refining，REQ 中的 `[采纳建议 auto]` 标注会被后续决策标注覆盖。
+
 ## 6. Planning / Round 1
 
 `planning` 使用 TASK `assignee`，daemon 直接调用 `/obsidian-task-runner-round1`。
@@ -393,7 +416,7 @@ Planning 成功时原子更新：
 status: plan-review
 pending_req: false
 merge_approved: false
-plan_approved: false # 仅 auto_approve 合格时为 true
+plan_approved: false # 仅 autoApproveEligible（auto_approve + 首规划 + 非新项目 + 非 pending_req + 无 ADR 提议）时为 true
 plan_version: <old + 1>
 ```
 
@@ -401,13 +424,16 @@ plan_version: <old + 1>
 
 ### 6.3 auto_approve
 
-`auto_approve=true` 只跳过 Plan Review，且必须同时满足：
+`auto_approve=true` 只跳过 Plan Review，且必须同时满足（autoApproveEligible）：
 
-1. 首次计划。
+1. 首次计划（`plan_version==0`）。
 2. 既有项目，`new_project=false`。
 3. 非 pending_req/replan。
+4. **无 ADR 提议**（`adr_proposed` 为空，`""`/`[]` 均视为空）——有架构决策时强制人工审计划，ADR 护栏。
 
 它不跳过 maturity gate、Grilling 或 Merge Gate。
+
+已进入 plan-review 的任务（`plan_version>0`）改 `auto_approve` 不生效——需手动批准或 replan 后再走首规划路径。
 
 新项目和任何重规划必须停在 `plan-review`，`plan_approved=false`。
 
@@ -656,6 +682,9 @@ grill_timeout_minutes: 30
 grill_done: false
 grill_resolution: "" # resume | replan | ""
 grill_prev_status: ""
+grill_parked: false # 争议已并入项目级 Grilling-Decisions.md
+grill_repeat: 0 # 同一争议集连续未答轮次；≥2 → park 升级
+auto_accepted: "" # refining 自动采纳建议审计记录
 ```
 
 ## 12. 知识库知识流（KB v2）
@@ -734,7 +763,9 @@ flowchart LR
 ### AC-06 auto_approve
 
 - [ ] 只跳过 Plan Review。
-- [ ] 仅首次计划、既有项目、非 replan 生效。
+- [ ] 仅首次计划（plan_version==0）、既有项目（new_project=false）、非 pending_req/replan 生效。
+- [ ] **有 ADR 提议（adr_proposed 非空）时即使 auto_approve 也强制 `plan_approved=false`**（ADR 护栏：架构决策随计划人工审阅）。
+- [ ] 自动批准在 TASK 变更记录标注来源（区分自动/人工）。
 - [ ] 新项目和 replan 强制 `plan_approved=false`。
 - [ ] 不绕过 Grilling、refining 或 Merge Gate。
 
@@ -784,7 +815,7 @@ flowchart LR
 - [ ] Kitty 不可用时保持 needs-grilling 并周期重试。
 
 ### AC-12 安装
-- [ ] installer 安装 task-runner 全部顶层 Skill（共 6 个：core、refining、round1、round2、merge、priority）。
+- [ ] installer 安装 task-runner 全部顶层 Skill（共 7 个：core、refining、round1、round2、merge、priority、pm）。
 - [ ] 所有 `skill://obsidian-task-runner-*` 在隔离 HOME 可解析。
 - [ ] 外部依赖缺失时 fail-fast。
 - [ ] `skill-doctor check` 在完整安装后返回 0。

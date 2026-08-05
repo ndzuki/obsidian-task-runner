@@ -9,7 +9,8 @@
 ```text
 blocked → ready → refining ─┬─ fully_mature → planning → plan-review → implementing → review → done
                             ├─ needs input → needs-grilling → refining
-                            └─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
+                            ├─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
+                            └─ 重复争议（grill_repeat≥2）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
 
 needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 
@@ -28,7 +29,7 @@ closed -- [终态，不可恢复]
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
 | `ready` | 可开始 priority assessment + maturity gate | daemon | `refining` |
 | `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `blocked` |
-| `needs-grilling` | 需要用户交互补充规格 | Kitty + requirement-elaborator | `refining` |
+| `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
@@ -44,6 +45,7 @@ closed -- [终态，不可恢复]
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
 | `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；硬失败回退（CI 拒绝/head 变更/gh 缺失）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
+| `auto_approve` | 默认 false；完全自主任务声明 | true + 首次规划（plan_version==0）+ 非新项目 + 非 pending_req + **无 ADR 提议** → Round 1 直接写 `plan_approved=true`，跳过人工审计划；有 ADR 提议时强制人工 |
 | `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
 | `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
 | `review_feedback` | review 阶段人工反馈摘要 | free text，`review` 状态下有效 |
@@ -64,7 +66,7 @@ closed -- [终态，不可恢复]
 | `template` | string | 新项目脚手架提示（已弃用，见 `scaffold_intent`） |
 | `scaffold_intent` | string | 新项目脚手架意图描述，结构化技术栈/框架/构建/部署 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
-| `auto_approve` | bool | 只跳过首次既有项目计划的 Plan Review |
+| `auto_approve` | bool | 完全自主任务声明：首次既有项目计划 + 非 pending_req + 无 ADR 提议时跳过 Plan Review（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
 
 ### 4.2 Maturity Gate
@@ -123,6 +125,9 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
 | `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
+| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案 |
+| `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
+| `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
 
 | `grill_resolution` | enum/string | `""` | `resume` 直接恢复实现；`replan` 转 refining；空值保持等待 |
 Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使用 `${TMPDIR}/otg-grill-<task-path-sha256>.lock` flock 强化本机原子性。
@@ -351,6 +356,8 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
+
+**模型兜底（`fallback_models`）**：顶层映射，key 为 assignee（对应 `models` 的 key），value 为任意 OMP 模型标识。gpt/default/deepseek 失败时 daemon 用对应 value 重启 OMP；可增删任意 key、置 `""` 禁用单个 assignee 的兜底。默认三者均指向 `deepseek/deepseek-v4-flash`。
 
 外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality。
 

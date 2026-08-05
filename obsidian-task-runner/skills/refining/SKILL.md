@@ -71,9 +71,60 @@ refine_error: ""
 wayfinder 将模糊大需求拆成决策票，每张票独立可解决。输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
 
 ### 4b: fully_mature
-### mostly_mature / immature
 
-**MUST** write all failed items to `grill_context`. Include specific context so the user and requirement-elaborator have full information during grilling:
+Pass through unchanged: `status=refining` → daemon early-out routes to planning.
+
+### 4b: mostly_mature / immature → 问题三分类（triage）
+
+Do NOT dump every failed item on the user. Classify each failed check first:
+
+| 分类 | 判定 | 处置 |
+|------|------|------|
+| **fact** 事实类 | 答案可由环境事实确定（代码行为、ADR 编号是否存在、文件/字段现状） | 自行查证并修正 REQ（标注 `[事实修正: <证据>]`），从 failed 移除 |
+| **auto** 建议可采纳类 | 有明确建议方向 + 低风险 + 可逆（不涉及安全边界、跨需求契约、不可逆操作） | 采纳建议写回 REQ（标注 `[采纳建议 auto]`），从 failed 移除 |
+| **dispute** 真争议类 | 跨需求/ADR 边界冲突、安全边界、不可逆、建议方向冲突或无共识 | 保留，进入重复检测 |
+
+**fact/auto 处置要求**：
+- 修改 REQ 必须追加标注（不覆盖用户原文）：
+  ```markdown
+  > [事实修正]: <证据来源> — 由 refining 自动修正，<ISO8601>
+  > [采纳建议 auto]: <采纳的建议 + 理由> — refining 自动采纳，用户可推翻后重跑，<ISO8601>
+  ```
+- 每条处置记录追加到 TASK frontmatter `auto_accepted`（用 `otg update-status`，以 `; ` 分隔追加）：
+  ```
+  auto_accepted="<现有内容>; <refine_version> <ISO8601>: [事实修正|采纳建议 auto] <一句话摘要>"
+  ```
+- **归档防膨胀**：`auto_accepted` 超过 2KB 时，保留最近 3 条在 frontmatter，其余移动到 TASK body `## 自动采纳历史` section（追加，不覆盖已有历史）。frontmatter 只留近期审计指针，完整历史在 body 可查。
+- 处置后重新评估：若 failed 全部清除 → maturity 更新为 `fully_mature`，路由到 planning（不进入 grilling）。
+
+**dispute 处置 — 重复检测**：
+1. 读取 TASK body 上一版 `## Grilling 待回答` 的问题集，与当前 dispute 集比较（按问题标题 normalize）。
+2. 问题集有变化 → `grill_repeat=0`，正常 needs-grilling（下方标准流程）。
+3. 问题集与上次完全相同 → `grill_repeat+1`：
+   - `grill_repeat < 2`（第一次重复）→ 仍正常 needs-grilling，给用户第二次机会。
+   - `grill_repeat >= 2` → **park 升级**：问题已问过两轮无人回答，不再单任务重复追问。按 Step 4c 处理。
+
+### 4c: park 升级（重复争议 → 项目级统筹）
+
+Dispute 已重复 ≥2 轮且 REQ hash 未变时：
+
+1. 将 dispute 写入项目级决策清单 `Projects/<project>/Notes/Grilling-Decisions.md`（不存在则创建，格式见 `skill://obsidian-task-runner-pm`）。同 REQ 的重复问题只写一条，来源任务列表标注所有相关 TASK。
+2. 更新 TASK：
+   ```bash
+   otg update-status <task> \
+     status=needs-grilling \
+     grill_done=false \
+     grill_parked=true \
+     grill_context="maturity=parked; refine_version=<N>; 争议已并入 Notes/Grilling-Decisions.md，等待项目级一次性回答（见 skill://obsidian-task-runner-pm）"
+   ```
+3. 替换 TASK body `## Grilling 待回答` 为简短指引：指向项目级清单，说明用户回答清单后 daemon 自动分发。
+4. 不再创建 Kitty tab、不再发送逐任务提醒（daemon 对 `grill_parked=true` 的任务静默等待）。
+
+> **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a Kitty tab on the next scan (unless `grill_parked=true`).
+
+### 4d: 标准 needs-grilling 写入
+
+**MUST** write all remaining dispute items to `grill_context`. Include specific context so the user and requirement-elaborator have full information during grilling:
 
 **For ADR consistency failures**: list the ADR file, its decision, and the conflicting REQ point.
 **For CONTEXT.md contradictions**: quote the conflicting domain term or pattern definition.
@@ -83,6 +134,8 @@ wayfinder 将模糊大需求拆成决策票，每张票独立可解决。输出�
 otg update-status <task> \
   status=needs-grilling \
   grill_done=false \
+  grill_repeat=0 \
+  grill_parked=false \
   grill_context="<structured context>"
 ```
 
@@ -136,6 +189,11 @@ TASK file so the user can answer offline without blocking the pipeline.
    otg update-status <task> grill_continue=true
    ```
 
+> **grill_parked=true 的任务不适用本流程**：问题已并入项目级清单
+> `Notes/Grilling-Decisions.md`，用户在该清单中一次性回答（见
+> `skill://obsidian-task-runner-pm`）。daemon 检测到清单已回答后自动分发，
+> 任务回到 refining，无需逐任务操作。
+
 ### Daemon Handling
 
 1. On the next poll cycle, daemon detects `grill_continue=true` in `needs-grilling`
@@ -174,3 +232,5 @@ as before. If not, the offline workflow above handles it gracefully.
 - 不修改 plan_version。
 - **MUST NOT** 直接编辑 YAML frontmatter — 所有变更必须通过 `otg update-status`。
 - 不退出前不运行 `otg validate-doc <task_path>` 校验文件完整性。
+- fact/auto 处置禁止替用户做安全边界或跨需求契约决策 — 这类问题必须归入 dispute。
+- 禁止在 dispute 重复（grill_repeat≥2）时重复写相同 `## Grilling 待回答` — 必须走 Step 4c park 升级。

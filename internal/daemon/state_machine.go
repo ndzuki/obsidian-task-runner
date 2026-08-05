@@ -21,7 +21,18 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 
 	if fm.PendingReq {
 		switch fm.Status {
-		case "needs-grilling", "review", "conflict", "done":
+		case "needs-grilling":
+			// Parked disputes wait for the project-level Grilling-Decisions.md
+			// list (PM distribute resets to refining once answered). The
+			// pending-req precedence rule must not yank a parked task back
+			// into refining — that re-opens the repeated-dispute loop
+			// (TASK-069: 35+ rounds) instead of waiting for the one-time
+			// answer.
+			if fm.GrillParked {
+				break
+			}
+			return transitionToRefining("pending requirement takes precedence"), true
+		case "review", "conflict", "done":
 			return transitionToRefining("pending requirement takes precedence"), true
 		}
 	}
@@ -148,6 +159,7 @@ func transitionToRefining(reason string) localTransition {
 			"grill_resolution":  "",
 			"grill_context":     "",
 			"grill_prev_status": "",
+			"grill_parked":      false,
 		},
 	}
 }
@@ -163,6 +175,7 @@ func grillingReleaseUpdates(status string) map[string]interface{} {
 		"grill_context":      "",
 		"grill_prev_status":  "",
 		"grill_continue":     false,
+		"grill_parked":       false,
 	}
 }
 
