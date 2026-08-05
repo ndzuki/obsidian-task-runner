@@ -283,6 +283,7 @@ func generateVaultMap(opts Options) error {
 		"new_project_root":        opts.NewProjectRoot,
 		"projects":                []interface{}{},
 		"models":                  map[string]string{"default": "deepseek/deepseek-v4-flash"},
+		"fallback_models":         map[string]string{"gpt": "deepseek/deepseek-v4-flash", "default": "deepseek/deepseek-v4-flash", "deepseek": "deepseek/deepseek-v4-flash"},
 		"notifications":           map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes":   opts.PollIntervalMin,
 		"max_concurrent_tasks":    2,
@@ -364,6 +365,7 @@ func installPhaseSkills(opts Options) error {
 		{"obsidian-task-runner-round2", "skills/round2/SKILL.md"},
 		{"obsidian-task-runner-merge", "skills/merge/SKILL.md"},
 		{"obsidian-task-runner-priority", "skills/priority/SKILL.md"},
+		{"obsidian-task-runner-pm", "skills/pm/SKILL.md"},
 	}
 	if opts.DryRun {
 		for _, phase := range phases {

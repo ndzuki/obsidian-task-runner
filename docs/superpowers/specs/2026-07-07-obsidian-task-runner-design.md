@@ -20,6 +20,8 @@ systemd timer ──┘    (遍历任务)       path.py               (两轮状
 
 `auto_approve: true` 且非新项目时，Round 1 → Round 2 同一次 `claude -p` 内完成。新项目永远停在 Round 1。
 
+> ⚠️ 本行为为 2026-07-07 设计快照，**已 superseded**（v0.23+）：改为 Round 1 写 `plan_approved=true` → daemon 下一轮转 implementing，并增加 ADR 护栏。见 `reference.md`。
+
 ## 目录结构（最终态）
 
 ```

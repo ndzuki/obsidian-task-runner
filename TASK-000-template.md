@@ -29,7 +29,7 @@ priority_reason: ""
 priority_recommendation: ""
 
 # 🟢 高级（按需取消注释）
-# auto_approve: false
+# auto_approve: true  # 完全自主任务：首规划自动 plan_approved，跳过人工审计划（有 ADR 提议时仍强制人工）
 # off_peak_only: false
 # new_project: false
 # template: ""
@@ -95,6 +95,9 @@ grill_resolution: ""
 grill_context: ""
 grill_prev_status: ""
 grill_continue: ""
+grill_parked: false
+grill_repeat: 0
+auto_accepted: ""
 req_refine_count: 0
 adr_proposed: ""
 adr_written: []

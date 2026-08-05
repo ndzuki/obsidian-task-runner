@@ -30,10 +30,12 @@ refining（headless 成熟度检查）
         │                         ▼
         │                    Round 2：实现、测试、提交
         │
-        └── needs input ──> needs-grilling
-                                  │ Kitty tab 通知，你完成对话
-                                  ▼
-                              refining（复验）→ planning → …
+        └── 仅真争议 ──> needs-grilling
+                              │ fact/auto 自动收敛（不问用户）；
+                              │ Kitty tab 通知，你完成对话
+                              ▼
+                          refining（复验）→ planning → …
+                          ↳ 重复争议（≥2 轮未答）→ 项目级清单一次性回答 → 自动分发回 refining
 
 Round 2 完成后：
         │
@@ -48,7 +50,7 @@ Round 2 完成后：
 ```
 
 - **Grilling 对话**：AI 在 Kitty tab 中逐项追问，你确认方向。完成后自动回到成熟度检查。
-- `plan_approved: true`：允许 Agent 按计划写代码（实现前唯一需要你确认的步骤）。
+- `plan_approved: true`：允许 Agent 按计划写代码（实现前唯一需要你确认的步骤）；声明 `auto_approve: true` 的完全自主任务（无 ADR 提议）首次规划自动批准，跳过此确认。
 - **自动 PR 与合并**（`auto_merge: true` 默认）：实现完成后自动创建 PR、等待 CI 检查通过并合并，无需你操作；合并遇到冲突时 AI 自动尝试解决一次，仍失败才通知你手动处理。个别任务可设 `auto_merge: false` 恢复人工确认。
 - **最终验收**：合并完成后（done）运行/试用产品；不满意直接修改 REQ，系统自动重新规划实现。
 
@@ -153,9 +155,14 @@ otg install \
   ],
   "new_project_root": "/home/you/src",
   "models": {
-    "deepseek": "deepseek/deepseek-v4-pro",
+    "deepseek": "deepseek/deepseek-v4-flash",
     "gpt": "gateway/gpt-5.6-sol:xhigh",
     "default": "deepseek/deepseek-v4-flash"
+  },
+  "fallback_models": {
+    "gpt": "deepseek/deepseek-v4-flash",
+    "default": "deepseek/deepseek-v4-flash",
+    "deepseek": "deepseek/deepseek-v4-flash"
   },
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
@@ -191,7 +198,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | planning | `high` | 深度思维链，提升计划质量 |
 | round2 | `max` | 最深推理，代码质量优先 |
 
-`deepseek/deepseek-v4-flash` 与 `deepseek/deepseek-v4-pro` 均支持 `max`；fallback 到 Pro 时保持相同 thinking 档位。模型标识不再使用 `:xhigh` 等后缀，推理强度完全由 `--thinking` 控制。
+`deepseek/deepseek-v4-flash` 与 `deepseek/deepseek-v4-pro` 均支持 `max`；fallback 时保持相同 thinking 档位。兜底由 vault-map.json 的 `fallback_models` 映射配置：key 是 assignee（对应 `models` 的 key），value 是任意 OMP 模型标识。默认 `gpt`/`default`/`deepseek` 均指向 `deepseek/deepseek-v4-flash`；可增删 key（如给 `gemini` 也配兜底）、改任意模型（如切回 `deepseek/deepseek-v4-pro` 做深度推理兜底）、置 `""` 禁用单个 assignee 的兜底——全部无需改代码。模型标识不再使用 `:xhigh` 等后缀，推理强度完全由 `--thinking` 控制。
 
 ### 阻塞依赖自动恢复
 
@@ -296,11 +303,11 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 |------|------|----------|
 | `blocked` | 缺少项目、执行者或依赖未完成 | 补齐 `project`、`assignee`，检查 `blocked_by` |
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
-| `refining` | 正在 headless 检查需求成熟度 | 无需操作；成熟后自动进入 planning 或 needs-grilling |
+| `refining` | 正在 headless 检查需求成熟度 | 无需操作；fact/auto 自动收敛，成熟后自动进入 planning，仅真争议进 needs-grilling |
 | `needs-refining` | 旧版状态（已废弃） | daemon 自动迁移为 needs-grilling 后正常处理 |
-| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复 |
+| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
-| `plan-review` | 计划已生成 | 审阅计划 + ADR 提议，确认后设 `plan_approved: true` |
+| `plan-review` | 计划已生成 | 审阅计划 + ADR 提议，确认后设 `plan_approved: true`；`auto_approve` 合格任务自动批准（有 ADR 提议除外） |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
 | `review` | 本地实现已提交，正在自动合并（`auto_merge: true`） | 无需操作；合并失败时按通知处理 |
 | `conflict` | 合并遇到冲突（AI 已自动尝试解决一次） | 手动解决并设 `merge_approved: true` 重新授权 |

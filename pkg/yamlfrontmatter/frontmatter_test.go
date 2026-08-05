@@ -1022,3 +1022,69 @@ estimated_hours: "42"
 		t.Fatalf("estimated_hours = %v, want 42 (normalized from quoted string)", fm.EstimatedHours)
 	}
 }
+
+// TestNormalizeTaskFrontmatterGrillFields pins the PM-consolidation schema:
+// grill_parked / grill_repeat / auto_accepted are backfilled on legacy docs,
+// land in canonical order after grill_prev_status, and existing values
+// survive normalization untouched.
+func TestNormalizeTaskFrontmatterGrillFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "TASK-068-grill-fields.md")
+	original := `---
+id: "068"
+title: Grill fields
+status: needs-grilling
+grill_done: false
+grill_repeat: 2
+grill_prev_status: ""
+---
+# Body
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	updated, err := NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("NormalizeTaskFrontmatter: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected normalization to backfill grill fields")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+	// Missing fields backfilled with defaults.
+	for _, want := range []string{"grill_parked: false", "auto_accepted:"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("normalized document missing %q:\n%s", want, content)
+		}
+	}
+	// Existing grill_repeat: 2 must survive.
+	if !strings.Contains(content, "grill_repeat: 2") {
+		t.Fatalf("existing grill_repeat was overwritten:\n%s", content)
+	}
+	// Canonical order: grill_prev_status < grill_parked < grill_repeat < auto_accepted.
+	prevPos := strings.Index(content, "grill_prev_status:")
+	parkedPos := strings.Index(content, "grill_parked:")
+	repeatPos := strings.Index(content, "grill_repeat:")
+	acceptedPos := strings.Index(content, "auto_accepted:")
+	if prevPos < 0 || parkedPos < 0 || repeatPos < 0 || acceptedPos < 0 {
+		t.Fatalf("grill fields missing after normalize:\n%s", content)
+	}
+	if !(prevPos < parkedPos && parkedPos < repeatPos && repeatPos < acceptedPos) {
+		t.Fatalf("grill fields not in canonical order (prev=%d parked=%d repeat=%d accepted=%d):\n%s", prevPos, parkedPos, repeatPos, acceptedPos, content)
+	}
+
+	// Second pass: no-op.
+	updated, err = NormalizeTaskFrontmatter(path)
+	if err != nil {
+		t.Fatalf("second NormalizeTaskFrontmatter: %v", err)
+	}
+	if updated {
+		t.Fatal("second pass must be a no-op")
+	}
+}

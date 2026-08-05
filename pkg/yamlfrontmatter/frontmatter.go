@@ -78,9 +78,12 @@ type Frontmatter struct {
 	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
 	GrillDone           bool   `yaml:"grill_done"`
 	GrillResolution     string `yaml:"grill_resolution"`
-	GrillContext        string `yaml:"grill_context"`
+	GrillContext        string   `yaml:"grill_context"`
 	GrillContinue       bool   `yaml:"grill_continue"`
 	GrillPrevStatus     string `yaml:"grill_prev_status"`
+	GrillParked         bool   `yaml:"grill_parked"`
+	GrillRepeat         int    `yaml:"grill_repeat"`
+	AutoAccepted        string `yaml:"auto_accepted"`
 	ReqRefineCount      int    `yaml:"req_refine_count"`
 	TaskSchemaVersion   int    `yaml:"task_schema_version"`
 
@@ -279,6 +282,7 @@ var taskFieldOrder = []string{
 	"grill_owner", "grill_started_at", "grill_heartbeat_at",
 	"grill_timeout_minutes", "grill_done", "grill_resolution",
 	"grill_context", "grill_continue", "grill_prev_status",
+	"grill_parked", "grill_repeat", "auto_accepted",
 	// Review / rework / closure.
 	"review_feedback", "rework_resolution",
 	"closure_reason", "closure_note", "replacement_task",
@@ -341,6 +345,9 @@ var taskFieldDefaults = map[string]interface{}{
 	"grill_context":         "",
 	"grill_continue":        false,
 	"grill_prev_status":     "",
+	"grill_parked":          false,
+	"grill_repeat":          0,
+	"auto_accepted":         "",
 
 	// Review / rework / closure fields.
 	"review_feedback":   "",

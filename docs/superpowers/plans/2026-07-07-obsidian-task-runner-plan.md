@@ -1154,6 +1154,8 @@ description: >
 
 ### 特殊情况：auto_approve
 
+> ⚠️ 本段为 2026-07-07 规划快照，**已 superseded**：现行语义（v0.23+）是 Round 1 计算 `autoApproveEligible` 写 `plan_approved=true`，由 daemon 下一轮转 implementing（非同一 session 连续跑）；且增加 ADR 护栏（有 ADR 提议强制人工）。完整语义见 `obsidian-task-runner/reference.md` §Gate 字段。
+
 如果 `auto_approve: true` 且 `new_project != true`：
 - Round 1 完成后不退出，直接继续 Round 2
 - 两个阶段的输出都写入任务文档

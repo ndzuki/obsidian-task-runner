@@ -42,6 +42,7 @@ type ReadyTask struct {
 	GrillResolution          string `json:"grill_resolution,omitempty"`
 	GrillContext             string `json:"grill_context,omitempty"`
 	GrillContinue            bool   `json:"grill_continue,omitempty"`
+	GrillParked              bool   `json:"grill_parked,omitempty"`
 	PriorityAssessmentStatus string `json:"priority_assessment_status,omitempty"`
 	PlanVersion              int    `json:"plan_version,omitempty"`
 	ReworkResolution         string `json:"rework_resolution,omitempty"`
@@ -349,6 +350,7 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 		GrillResolution:          fm.GrillResolution,
 		GrillContext:             fm.GrillContext,
 		GrillContinue:            fm.GrillContinue,
+		GrillParked:              fm.GrillParked,
 		PlanVersion:              fm.PlanVersion,
 		PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
 		GrillHeartbeatAt:         fm.GrillHeartbeatAt,
@@ -413,7 +415,8 @@ func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
 				PhaseErrorCode: fm.PhaseErrorCode,
 				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
 				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
-				GrillContinue: fm.GrillContinue, PlanVersion: fm.PlanVersion,
+				GrillContinue: fm.GrillContinue, GrillParked: fm.GrillParked,
+				PlanVersion: fm.PlanVersion,
 				PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
 				GrillHeartbeatAt:         fm.GrillHeartbeatAt,
 				GrillTimeoutMinutes:      fm.GrillTimeoutMinutes,
