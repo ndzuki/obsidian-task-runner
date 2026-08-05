@@ -450,6 +450,23 @@ func grillingDecisionPending(path string) int {
 	return pending
 }
 
+// grillingListPaused reports whether the decision list's frontmatter status
+// is paused/closed — the user's opt-out from reminder noise while a
+// requirement is still being thought through. Reminders (Kitty decision tab)
+// are suppressed, but distribution still works: answering the list and
+// setting grill_continue=true dispatches normally.
+func grillingListPaused(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return false
+	}
+	return fm.Status == "paused" || fm.Status == "closed"
+}
+
 // grillingDecisionTotal is the total count shorthand.
 func grillingDecisionTotal(path string) int {
 	total, _ := grillingDecisionCounts(path)

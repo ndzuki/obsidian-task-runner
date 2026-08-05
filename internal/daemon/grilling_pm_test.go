@@ -42,8 +42,56 @@ func withAPIKeyValue(t *testing.T, value bool) {
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 }
 
-func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {
-	t.Helper()
+func TestGrillingListPaused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Grilling-Decisions.md")
+	open := `---
+id: "grilling-decisions"
+project: test
+status: open
+---
+# Decisions
+- 决策: <用户填写>
+`
+	if err := os.WriteFile(path, []byte(open), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if grillingListPaused(path) {
+		t.Fatal("status=open should not be paused")
+	}
+	paused := `---
+id: "grilling-decisions"
+project: test
+status: paused
+---
+# Decisions
+- 决策: <用户填写>
+`
+	if err := os.WriteFile(path, []byte(paused), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !grillingListPaused(path) {
+		t.Fatal("status=paused should be paused")
+	}
+	closed := `---
+id: "grilling-decisions"
+project: test
+status: closed
+---
+# Decisions
+`
+	if err := os.WriteFile(path, []byte(closed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !grillingListPaused(path) {
+		t.Fatal("status=closed should be paused")
+	}
+	if grillingListPaused(filepath.Join(dir, "missing.md")) {
+		t.Fatal("missing list should not be paused")
+	}
+}
+
+func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("create task dir: %v", err)
 	}
