@@ -467,6 +467,37 @@ func grillingListPaused(path string) bool {
 	return fm.Status == "paused" || fm.Status == "closed"
 }
 
+// activatePausedDecisionList flips a project's decision list from paused
+// back to open when the requirement driving it was updated — the user
+// rethinking the requirement is the signal to resume: reminders return and
+// the downstream flow (tasks re-entering refining via pending_req, maturity
+// gate, consolidate/split re-evaluation, planning) picks up from there.
+// Returns true when the list existed and was paused.
+func activatePausedDecisionList(vaultPath, project string) (bool, error) {
+	path := filepath.Join(vaultPath, "Projects", project, "Notes", "Grilling-Decisions.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return false, nil
+	}
+	if fm.Status != "paused" {
+		return false, nil
+	}
+	if err := yamlfrontmatter.Update(path, map[string]interface{}{
+		"status":  "open",
+		"updated": time.Now().Format(time.RFC3339),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // grillingDecisionTotal is the total count shorthand.
 func grillingDecisionTotal(path string) int {
 	total, _ := grillingDecisionCounts(path)

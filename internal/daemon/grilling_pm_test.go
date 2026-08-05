@@ -91,6 +91,56 @@ status: closed
 	}
 }
 
+func TestActivatePausedDecisionList(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	notes := filepath.Join(vault, "Projects", "002-magic-models-manager", "Notes")
+	if err := os.MkdirAll(notes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listPath := filepath.Join(notes, "Grilling-Decisions.md")
+	write := func(status string) {
+		content := "---\nid: \"grilling-decisions\"\nproject: 002-magic-models-manager\nstatus: " + status + "\ngrill_continue: false\n---\n# Decisions\n- 决策: <用户填写>\n"
+		if err := os.WriteFile(listPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// No list → false, nil.
+	if ok, err := activatePausedDecisionList(vault, "no-such-project"); ok || err != nil {
+		t.Fatalf("missing project: ok=%v err=%v, want false,nil", ok, err)
+	}
+	// open list → untouched.
+	write("open")
+	if ok, err := activatePausedDecisionList(vault, "002-magic-models-manager"); ok || err != nil {
+		t.Fatalf("open list: ok=%v err=%v, want false,nil", ok, err)
+	}
+	if fm := mustParse(t, listPath); fm.Status != "open" {
+		t.Fatalf("open list status changed to %q", fm.Status)
+	}
+	// paused list → reactivated.
+	write("paused")
+	if ok, err := activatePausedDecisionList(vault, "002-magic-models-manager"); !ok || err != nil {
+		t.Fatalf("paused list: ok=%v err=%v, want true,nil", ok, err)
+	}
+	if fm := mustParse(t, listPath); fm.Status != "open" {
+		t.Fatalf("paused list status = %q after activation, want open", fm.Status)
+	}
+}
+
+func TestProjectFromReqPath(t *testing.T) {
+	cases := map[string]string{
+		"Projects/002-magic-models-manager/Requirements/REQ-001.md": "002-magic-models-manager",
+		"Requirements/REQ-001.md":                                    "",
+		"Projects/001-release-manager/Requirements/REQ-009.md":       "001-release-manager",
+	}
+	for input, want := range cases {
+		if got := projectFromReqPath(input); got != want {
+			t.Errorf("projectFromReqPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("create task dir: %v", err)

@@ -101,7 +101,7 @@ updated: {ISO8601}
 
 规则：
 - 已有清单（status=open）→ **追加**新决策点，不删除旧条目；已决策条目保留为审计历史。
-- **status=paused（需求未想好，暂停提醒）**：daemon 不再为该清单创建 Kitty 决策 tab、不提醒（任务保持 parked 静默）；用户想好后把 status 改回 `open`（或直接填答案 + `grill_continue=true` — 分发不受 paused 影响）。consolidate 向 paused 清单追加决策点后**保持 paused**（用户仍未决定，不因新决策点恢复提醒）。
+- **status=paused（需求未想好，暂停提醒）**：daemon 不再为该清单创建 Kitty 决策 tab、不提醒（任务保持 parked 静默）；用户想好后把 status 改回 `open`（或直接填答案 + `grill_continue=true` — 分发不受 paused 影响）。**关联 REQ 更新时 daemon 自动把清单激活回 `open`**（用户重新思考需求 = 恢复信号）：提醒恢复，受影响任务经 pending_req 回 refining，maturity gate/consolidate（含拆分建议）/planning 流程自动衔接。consolidate 向 paused 清单追加决策点后**保持 paused**（用户仍未决定，不因新决策点恢复提醒）。
 - **status=answered 的清单追加新决策点时，必须重置 `status: open`**（`grill_continue` 保持 false 等用户）——否则清单状态与「有新未答决策」的事实不一致（distribute 触发不受影响，但状态语义混乱）。
 - **决策点去重（防清单膨胀，强制）**：open 清单中已存在 normalize 标题相同（同 REQ + 同问题标题）的决策点 → **不追加新条目**。仅当本次「冲突/建议」内容有实质增量时，更新该条目的「来源任务」列表与 `updated` 时间戳；完全无增量（问题、冲突、建议与已有条目一致，REQ hash 未变）→ 直接跳过并在日志记录（TASK-025 的 D-11 曾被追加 6 次的教训——同一问题反复 park 不得反复膨胀清单）。
 - **清单收敛上限**：open 清单决策点 > 15 条时，不再追加新的非紧急决策点；在清单顶部「收敛提示」区提示用户优先回答存量决策点（堆积 19 条未答会使用户失去回答意愿）。

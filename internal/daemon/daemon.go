@@ -234,7 +234,23 @@ func (r *Runner) Run(ctx context.Context) error {
 				} else {
 					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
 				}
+				// A REQ detail update reactivates the project's paused
+				// decision list: the user rethinking the requirement is the
+				// signal to resume reminders and the downstream flow
+				// (pending_req → refining → maturity gate → consolidate/split
+				// re-evaluation → planning). One reactivation per project.
+				activated := make(map[string]bool)
 				for _, result := range results {
+					if proj := projectFromReqPath(reqRel); proj != "" && !activated[proj] {
+						activated[proj] = true
+						if ok, err := activatePausedDecisionList(r.cfg.ObsidianVault, proj); err != nil {
+							r.logger.Printf("project %s: reactivate decision list: %v", proj, err)
+						} else if ok {
+							r.logger.Printf("project %s: decision list reactivated (REQ updated)", proj)
+							notify.SendTaskAction("grilling", proj, "✅", "决策清单已重新激活",
+								"需求已更新，Grilling-Decisions.md 已恢复提醒；补充决策后 daemon 自动继续拆分/规划流程。", r.cfg.Notifications.Desktop)
+						}
+					}
 					switch result.Action {
 					case "reset_to_ready", "rename_req":
 						notify.SendTaskAction(result.TaskID, "", "🔄", "需求变更", "重新出计划", r.cfg.Notifications.Desktop)
@@ -628,6 +644,18 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		go r.runTask(candidate)
 	}
 	return dispatched
+}
+
+// projectFromReqPath extracts the project directory from a vault-relative
+// requirement path ("Projects/002-magic-models-manager/Requirements/REQ-001.md"
+// → "002-magic-models-manager"); legacy vault-root Requirements/ paths return
+// "" (no per-project decision list).
+func projectFromReqPath(reqRel string) string {
+	parts := strings.Split(filepath.ToSlash(reqRel), "/")
+	if len(parts) >= 3 && parts[0] == "Projects" {
+		return parts[1]
+	}
+	return ""
 }
 
 // phaseGateKey maps a task's dispatch stage to its concurrency gate key.
