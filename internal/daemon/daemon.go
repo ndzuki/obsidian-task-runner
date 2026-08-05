@@ -1884,10 +1884,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 		r.logger.Printf("task %s: executing OMP (model=%s, phase=%s, timeout=%v, log=%s)", t.ID, model, phase, timeout, logPath)
 		runErr := cmd.Wait()
+		// Capture shutdown state BEFORE cancel(): context.Canceled after
+		// cancel() is indistinguishable from a real daemon shutdown, and any
+		// non-zero OMP exit would be misrouted as "interrupted by shutdown",
+		// skipping failure recovery (fallback/blocked/retry) entirely.
+		shutdownInterrupt := r.daemonCtx.Err() != nil
 		cancel()
 		close(tailDone) // signal tail goroutine to stop
 
-		if runErr != nil && errors.Is(ctx.Err(), context.Canceled) {
+		if runErr != nil && shutdownInterrupt {
 			// Daemon-initiated shutdown (ctx canceled): the OMP was killed by
 			// our own SIGTERM, not a genuine failure. Keep the task status
 			// untouched and skip failure/fallback handling — the pid file is
@@ -1934,7 +1939,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// Do not start a fallback while the daemon is shutting down — the
 			// OMP would be killed right after. Phase timeout still falls back:
 			// the fallback command gets its own fresh timeout budget.
-			if !signalKilled && failureCode != ErrAPIKeyUnavailable && !errors.Is(ctx.Err(), context.Canceled) {
+			// (This branch is only reachable when shutdownInterrupt is false,
+			// so the old ctx.Err()==Canceled check — always true after
+			// cancel() — silently disabled fallback forever.)
+			if !signalKilled && failureCode != ErrAPIKeyUnavailable {
 				if fallbackModel := r.cfg.FallbackModelFor(t.Assignee); fallbackModel != "" && fallbackModel != model {
 					r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
@@ -1958,9 +1966,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				go tailOMPLog(ompLogPath, f, fbTailDone)
 				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
 					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
+					fbShutdown := r.daemonCtx.Err() != nil
 					fbCancel()
 					close(fbTailDone)
-					if !errors.Is(fbCtx.Err(), context.Canceled) {
+					if !fbShutdown {
 						fellback = true
 					} else {
 						// Shutdown raced the fallback start: keep status, auto-resume later.
@@ -1971,10 +1980,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
 					}
 					retryErr := retryCmd.Wait()
+					fbShutdown := r.daemonCtx.Err() != nil
 					fbCancel()
 					close(fbTailDone)
 					if retryErr != nil {
-						if errors.Is(fbCtx.Err(), context.Canceled) {
+						if fbShutdown {
 							// Shutdown interrupted the running fallback: keep status.
 							r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
 							if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
