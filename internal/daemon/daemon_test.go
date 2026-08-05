@@ -21,6 +21,17 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
+// TestMain pins the API-key probe to "available" for the whole package. The
+// OMP-launch preflight now consults apiKeyAvailable(); the default probe
+// shells out to secret-tool, which is slow/flaky under parallel test load
+// and absent in CI — every dispatch test would otherwise depend on the host
+// keyring. Tests that need a specific probe value override it explicitly
+// (withAPIKeyValue / apiKeyProbe.Store) and restore via Cleanup.
+func TestMain(m *testing.M) {
+	apiKeyProbe.Store(func() bool { return true })
+	os.Exit(m.Run())
+}
+
 func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
