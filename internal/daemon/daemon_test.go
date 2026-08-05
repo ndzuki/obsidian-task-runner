@@ -1150,6 +1150,56 @@ func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
 	releaseBarrier(t, releaseFile) // let the interrupted OMP exit cleanly
 }
 
+// TestOMPFailureNotMisroutedAsInterrupted guards the interrupted-path check:
+// a genuine OMP failure (non-zero exit) while the daemon is alive must route
+// through failure recovery (MODEL_FAILED + retry-in-place), NOT the
+// PHASE_INTERRUPTED auto-resume path. Regression: cancel() ran before the
+// ctx.Err()==Canceled check, making it always true — every OMP failure was
+// silently converted into "interrupted by daemon shutdown", skipping
+// fallback/retry/blocked entirely (tasks stuck in refining/planning with
+// PHASE_INTERRUPTED, scan deadlock via leaked repo locks).
+func TestOMPFailureNotMisroutedAsInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp := filepath.Join(dir, "failing-omp")
+	if err := os.WriteFile(omp, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing omp: %v", err)
+	}
+
+	taskPath := writeTaskFile(t, dir, "TASK-000.md", "planning")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner.daemonCtx = ctx
+
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "000", Title: "Plan", FilePath: taskPath,
+		Status: "planning", Assignee: "default",
+	}})
+	if got := waitForBatch(t, done); got != 1 {
+		t.Fatalf("dispatched = %d, want 1", got)
+	}
+	// runTask runs asynchronously; poll until the failure write-back lands.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fm := mustParse(t, taskPath); fm.PhaseErrorCode != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fm := mustParse(t, taskPath)
+	if fm.PhaseErrorCode == string(ErrPhaseInterrupted) {
+		t.Fatalf("phase_error_code = %q: OMP failure misrouted as shutdown interruption", fm.PhaseErrorCode)
+	}
+	if fm.PhaseErrorCode == "" {
+		t.Fatal("phase_error_code empty: failure recovery did not record an error")
+	}
+	if fm.Status != "planning" {
+		t.Fatalf("status = %q, want planning (first failure retries in place)", fm.Status)
+	}
+}
+
 // TestRunScanCycleCoalescesRequestsDuringScan verifies the scan gate: a
 // request arriving while a scan cycle is active is coalesced (no second scan
 // goroutine) and the gate unwinds to idle once the cycle finishes.
