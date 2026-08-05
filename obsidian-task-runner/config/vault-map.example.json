@@ -28,5 +28,13 @@
     "sound": false
   },
   "poll_interval_minutes": 30,
-  "max_concurrent_tasks": 2
+  "max_concurrent_tasks": 2,
+  "phase_concurrency": {
+    "_comment": "非 implementing 阶段的 OMP 并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks 控制。限制同时运行的 OMP 会话，保护 API 限速/token 消耗与本地资源。",
+    "refining": 3,
+    "planning": 2,
+    "merge": 1,
+    "priority": 1,
+    "pm": 1
+  }
 }

@@ -1200,6 +1200,61 @@ func TestOMPFailureNotMisroutedAsInterrupted(t *testing.T) {
 	}
 }
 
+// TestPhaseConcurrencyGateLimitsDispatch verifies the scheduler reserves
+// per-phase concurrency slots: with phase_concurrency.refining=2, a batch of
+// three refining tasks dispatches only two; after one finishes (gate
+// release), the next processBatch round dispatches the third.
+func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskPaths := make([]string, 3)
+	tasks := make([]task.ReadyTask, 3)
+	for i := range 3 {
+		name := "TASK-" + string(rune('A'+i)) + ".md"
+		taskPaths[i] = writeTaskFile(t, dir, name, "refining")
+		tasks[i] = task.ReadyTask{
+			ID: string(rune('A' + i)), Title: "Refine", FilePath: taskPaths[i],
+			Status: "refining", Assignee: "default",
+		}
+	}
+
+	cfg := &config.Config{
+		SkillInstallDir:    skillDir,
+		OMPCmd:             omp,
+		LogDir:             filepath.Join(dir, "logs"),
+		MaxConcurrentTasks: 4,
+		PhaseConcurrency:   map[string]int{"refining": 2},
+		Models:             config.DefaultModels(),
+	}
+	runner := New(cfg)
+	runner.logger = log.New(io.Discard, "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner.daemonCtx = ctx
+
+	// First round: only 2 of 3 tasks fit the refining gate.
+	done := runBatch(runner, tasks)
+	if got := waitForBatch(t, done); got != 2 {
+		t.Fatalf("first round dispatched = %d, want 2 (refining gate limit)", got)
+	}
+	waitForStartCount(t, startDir, 2)
+
+	// Release one slot: its runTask finishes and frees the gate slot.
+	releaseBarrier(t, releaseFile)
+	waitForTasksIdle(t, runner)
+
+	// Second round: the remaining task dispatches.
+	done = runBatch(runner, []task.ReadyTask{tasks[2]})
+	if got := waitForBatch(t, done); got != 1 {
+		t.Fatalf("second round dispatched = %d, want 1", got)
+	}
+	waitForStartCount(t, startDir, 3)
+}
+
 // TestRunScanCycleCoalescesRequestsDuringScan verifies the scan gate: a
 // request arriving while a scan cycle is active is coalesced (no second scan
 // goroutine) and the gate unwinds to idle once the cycle finishes.

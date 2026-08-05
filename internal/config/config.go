@@ -19,6 +19,7 @@ type Config struct {
 	Notifications         NotifConfig       `json:"notifications"`
 	PollIntervalMin       int               `json:"poll_interval_minutes"`
 	MaxConcurrentTasks    int               `json:"max_concurrent_tasks"`
+	PhaseConcurrency      map[string]int    `json:"phase_concurrency"`
 	PhaseTimeoutMinutes   map[string]int    `json:"phase_timeouts_minutes"`
 	ShutdownGraceSeconds  int               `json:"shutdown_grace_seconds"`
 	OffPeakTimezone       string            `json:"off_peak_timezone"`
@@ -91,6 +92,27 @@ func DefaultModels() map[string]string {
 	}
 }
 
+// DefaultPhaseConcurrency returns the per-phase OMP concurrency ceilings.
+// Keys are phase names (refining/planning/merge/priority/pm); a missing key
+// or 0 means unlimited. round2 is governed by max_concurrent_tasks (kept for
+// backward compatibility). These caps bound simultaneous OMP sessions to
+// protect API rate limits, token spend, and local CPU/memory.
+func DefaultPhaseConcurrency() map[string]int {
+	return map[string]int{
+		"refining": 3,
+		"planning": 2,
+		"merge":    1,
+		"priority": 1,
+		"pm":       1,
+	}
+}
+
+// ConcurrencyFor returns the configured concurrency ceiling for a phase, or
+// 0 when the phase is unlimited.
+func (c *Config) ConcurrencyFor(phase string) int {
+	return c.PhaseConcurrency[phase]
+}
+
 // DefaultFallbackModels returns the built-in assignee → fallback model map.
 // Keys are assignee names (matching `models` / TASK frontmatter); values are
 // OMP model identifiers. Users may add/remove/override any key in
@@ -129,6 +151,7 @@ func Defaults() *Config {
 		NewProjectRoot:        filepath.Join(home, "src"),
 		PollIntervalMin:       30,
 		MaxConcurrentTasks:    2,
+		PhaseConcurrency:      DefaultPhaseConcurrency(),
 		PhaseTimeoutMinutes:   map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
 		ShutdownGraceSeconds:  30,
 		OffPeakTimezone:       "Asia/Shanghai",
@@ -184,6 +207,15 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.MaxConcurrentTasks == 0 {
 		cfg.MaxConcurrentTasks = defaults.MaxConcurrentTasks
+	}
+	if cfg.PhaseConcurrency == nil {
+		cfg.PhaseConcurrency = defaults.PhaseConcurrency
+	} else {
+		for phase, value := range defaults.PhaseConcurrency {
+			if _, exists := cfg.PhaseConcurrency[phase]; !exists {
+				cfg.PhaseConcurrency[phase] = value
+			}
+		}
 	}
 	if cfg.PhaseTimeoutMinutes == nil {
 		cfg.PhaseTimeoutMinutes = defaults.PhaseTimeoutMinutes
@@ -270,6 +302,11 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxConcurrentTasks < 1 {
 		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks must be at least 1")
+	}
+	for phase, limit := range c.PhaseConcurrency {
+		if limit < 0 {
+			return fmt.Errorf("CONFIG_INVALID: phase_concurrency.%s must be >= 0 (0 = unlimited)", phase)
+		}
 	}
 	if c.PollIntervalMin < 1 || c.ShutdownGraceSeconds < 1 {
 		return fmt.Errorf("CONFIG_INVALID: polling and shutdown values must be positive")

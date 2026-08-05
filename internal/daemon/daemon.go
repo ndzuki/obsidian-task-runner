@@ -49,6 +49,7 @@ type Runner struct {
 	scanMinInterval    time.Duration // watcher scan throttle; 0 disables (tests)
 	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
+	phaseGates         map[string]*phaseGate // phase → concurrency gate (nil/absent = unlimited)
 	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
@@ -81,6 +82,7 @@ type preparedTask struct {
 	workDir                string
 	lockMode               repoLockMode
 	implementationReserved bool
+	phaseGate              *phaseGate // reserved phase slot; released by runTask
 }
 
 func New(cfg *config.Config) *Runner {
@@ -89,9 +91,16 @@ func New(cfg *config.Config) *Runner {
 	windows := cfg.OffPeakWindows
 	tz := cfg.OffPeakTimezone
 	task.OffPeakFn = func() bool { return task.IsOffPeakWith(windows, tz) }
+	gates := make(map[string]*phaseGate)
+	for phase, limit := range cfg.PhaseConcurrency {
+		if limit > 0 {
+			gates[phase] = newPhaseGate(limit)
+		}
+	}
 	return &Runner{
 		cfg:                cfg,
 		implementationGate: newImplementationGate(cfg.MaxConcurrentTasks),
+		phaseGates:         gates,
 		daemonCtx:          context.Background(),
 		taskIdx:            task.NewIndex(),
 		gatedLogged:        map[string]bool{},
@@ -576,6 +585,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		}
 		index := -1
 		implementationBlocked := false
+		phaseBlocked := make(map[string]int) // phase gate key → waiting count
 		for i := range pending {
 			candidate := &pending[i]
 			reservedImplementation := false
@@ -586,10 +596,23 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 					continue
 				}
 				reservedImplementation = true
+			} else if gk := phaseGateKey(candidate.task); gk != "" {
+				if gate := r.phaseGates[gk]; gate != nil {
+					ok, _ := gate.tryAcquire()
+					if !ok {
+						phaseBlocked[gk]++
+						continue
+					}
+					candidate.phaseGate = gate
+				}
 			}
 			if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
 				if reservedImplementation {
 					r.implementationGate.releaseLocal()
+				}
+				if candidate.phaseGate != nil {
+					candidate.phaseGate.release()
+					candidate.phaseGate = nil
 				}
 				continue
 			}
@@ -603,6 +626,9 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			// on release channels here.
 			if implementationBlocked {
 				r.logger.Printf("scheduler: %d tasks waiting for implementation capacity — will retry on next scan", len(pending))
+			} else if len(phaseBlocked) > 0 {
+				r.logger.Printf("scheduler: %d tasks waiting for phase capacity (refining=%d planning=%d merge=%d priority=%d pm=%d) — will retry on next scan",
+					len(pending), phaseBlocked["refining"], phaseBlocked["planning"], phaseBlocked["merge"], phaseBlocked["priority"], phaseBlocked["pm"])
 			} else {
 				r.logger.Printf("scheduler: %d tasks cannot be scheduled", len(pending))
 			}
@@ -617,6 +643,25 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 	return dispatched
 }
 
+// phaseGateKey maps a task's dispatch stage to its concurrency gate key.
+// round2 is governed by implementationGate (max_concurrent_tasks) and the
+// needs-grilling/plan-review interactive stages are unbounded — they do not
+// start OMP sessions (or run Kitty, which is out-of-band).
+func phaseGateKey(t task.ReadyTask) string {
+	switch {
+	case t.Status == "refining":
+		return "refining"
+	case t.Status == "planning":
+		return "planning"
+	case (t.Status == "review" || t.Status == "conflict") && t.MergeApproved:
+		return "merge"
+	case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
+		return "priority"
+	default:
+		return ""
+	}
+}
+
 // runTask executes one dispatched task to completion, then releases its
 // repository lock and schedules a follow-up scan. The follow-up scan is what
 // picks up downstream state changes (review → merge, plan-review →
@@ -626,6 +671,9 @@ func (r *Runner) runTask(p preparedTask) {
 	r.activeTasks.Add(1)
 	defer r.activeTasks.Add(-1)
 	defer r.unlockRepo(p.repoDir, p.lockMode)
+	if p.phaseGate != nil {
+		defer p.phaseGate.release()
+	}
 	// New-project tasks opting into remote creation get their GitHub remote
 	// (name/description/README) before the OMP session starts; failure blocks
 	// the task with an actionable error instead of failing the session.

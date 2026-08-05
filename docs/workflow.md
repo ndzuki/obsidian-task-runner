@@ -676,6 +676,15 @@ refining/planning 的 retry count 在以下时机清零：
 - 循环依赖（A↔B）双方都不自动恢复。
 - `REQ_MISSING`、`VALIDATION_FAILED` 等非瞬时错误永不自动恢复。
 
+### 10.5 阶段并发上限
+
+`max_concurrent_tasks` 只限制 implementing；其它启动 OMP 会话的阶段由 `phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1`）：
+
+- **动机**：一轮 scan 可能同时拉起 20+ 个 OMP（release-manager 实测），造成 token 快速消耗、API 限速、OMP 启动互相拖慢（settings:init 20s+）与 CPU/内存抢占。
+- **机制**：调度循环对每个待调度任务按阶段 tryAcquire 非阻塞槽位（`phaseGate`）；满员任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度，与 implementationGate 同语义。
+- **范围**：`refining`/`planning` 按任务状态映射；`merge` 映射到 review/conflict + merge_approved（同步执行的 merge 流程也占槽）；`priority` 映射到 ready+priority pending；`pm` 为 PM consolidate/stage-review（scan 末尾同步段，每轮 ≤1 已有预算，跨轮叠加也受限）。`needs-grilling`（Kitty 交互）不限。
+- **配置**：key 置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks` 控制；修改后重启 daemon 生效。
+
 ## 11. TASK 流程控制字段
 
 新 TASK 和模板必须显式初始化全部流程字段，不依赖 missing key 的零值语义。
