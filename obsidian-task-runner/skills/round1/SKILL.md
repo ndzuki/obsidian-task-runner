@@ -107,6 +107,17 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 2. 新计划逐项标注旧实现：`保留`、`修改`、`废弃`。
 3. 说明理由和受影响 AC。
 
+## Step 2.5: Scaffold Intent（新项目脚手架意图）
+
+新项目（`new_project=true`）时读取 TASK frontmatter `scaffold` 对象（`kind`/`capabilities`/`preferences`/`notes`）：
+
+1. 解析意图：技术栈/框架/构建/部署目标（如 `kind: go-microservice`、`capabilities: [connect-rpc, github-actions]`）。
+2. 对照 vault-map `scaffold_registry`（能力描述/别名/冲突）校验能力组合——冲突能力（如 `connect-rpc` 与 `http-api`）在计划中标注需用户确认。
+3. 对照 `template_registry`：`capabilities` 匹配的模板（`default_capabilities`）作为脚手架方案基线写入计划 Step 1（新项目首个 Step 常为脚手架搭建）。
+4. `scaffold` 为空 → 走 split 技术栈建议流程（PM 统筹）。
+
+5. **新项目且 `remote_create=true`**：从 REQ 提炼一句话仓库描述（项目定位 + 核心能力，≤200 字符），写入 frontmatter `repository_description`——daemon 创建 GitHub 仓库时用作 `--description` 与 `README.md` 内容。提炼规则：标题 + 需求摘要精华，不堆砌细节。
+
 ## Step 3: Generate Plan（生成计划）
 
 涉及新模块或接口设计的 Step，按 `skill://codebase-design` 的深度模块原则：
@@ -147,12 +158,23 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 
 **设计意图**：原型在 plan-review 阶段仍只是建议。用户 `plan_approved=true` 后，Round 2 在执行该高风险 Step **之前**先运行原型。PASS → 跳过 Grilling 直接实现；FAIL → 带原型证据进入 Grilling，用户看到的是数据而非猜想。这样可将多轮"猜测型 Grilling"压缩为一轮"证据型 Grilling"。
 
+## Step 3.5: Knowledge References Write-back（知识引用写回）
+
+Step -1 知识图谱与 core/ 检索命中的知识文档，**必须写入 TASK frontmatter `knowledge_refs`**（相对 References/ 的路径列表，如 `core/go/connect-rpc.md`）：
+
+- 只记录**计划实际引用**的文档（Step 目标/前序契约中体现的知识约束），不堆砌检索到的全部结果。
+- 写回方式：`otg update-status <task> knowledge_refs=<comma-separated>`（或等价 frontmatter 更新）。
+- 目的：形成跨会话引用链——Round 2 按清单应用、merge 时 daemon 度量 `knowledge_applied`（hit/total）、task-verifier 校验 AC 证据引用。
+
 ## Step 4: Pre-commit Hash Verification（提交前Hash复核）
 
-计划写回前重新读取 REQ 并计算 hash：
+计划写回前校验 REQ hash——**hash 由 daemon 预计算写入 `refine_req_hash`（零 token），不要读取 REQ 全文重新计算**：
 
+- 读取 TASK frontmatter 的 `refine_req_hash`；为空（异常）才回退读全文计算。
 - 与 `plan_req_hash` 不一致：丢弃本轮计划输出，不增加 plan_version，不清 pending_req，更新 `status=refining` 后退出。
 - 一致：继续写回。
+
+**REQ 读取规范**（全流程适用）：读 frontmatter + `## 详细技术规格`（章节定位/行号 selector）+ `## 验收标准`（grep AC 列表）；章节存在性用标题 grep；禁止全文加载大 REQ（>20KB）。
 
 ## Step 5: Versioned Write-back（版本化写回）
 

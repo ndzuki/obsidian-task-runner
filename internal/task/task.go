@@ -7,10 +7,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -95,6 +95,10 @@ func isEmptyList(v interface{}) bool {
 	return false
 }
 
+// fmLookup resolves a task file path to a cached frontmatter without disk IO.
+// nil means every read goes to disk (used by CLI and tests).
+type fmLookup func(path string) (*yamlfrontmatter.Frontmatter, bool)
+
 // AreBlockersDone checks whether every task referenced in blockedBy has
 // status "done" by scanning the specified project's Tasks/ directory.
 // References use format:
@@ -102,6 +106,10 @@ func isEmptyList(v interface{}) bool {
 //	"TASK-010" — within current project
 //	"project-key:TASK-010" — cross-project lookup via vault-map scan
 func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
+	return areBlockersDoneWith(vaultPath, projectName, blockedBy, nil)
+}
+
+func areBlockersDoneWith(vaultPath, projectName string, blockedBy []string, lookup fmLookup) bool {
 	if len(blockedBy) == 0 {
 		return true
 	}
@@ -118,7 +126,7 @@ func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
 		remaining[d.proj+":"+d.id] = true
 	}
 	checkDir := filepath.Join(vaultPath, "Projects", projectName, "Tasks")
-	checkDirDeps(checkDir, projectName, remaining)
+	checkDirDepsWith(checkDir, projectName, remaining, lookup)
 	if len(remaining) == 0 {
 		return true
 	}
@@ -131,12 +139,16 @@ func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
 		if !proj.IsDir() || len(remaining) == 0 {
 			continue
 		}
-		checkDirDeps(filepath.Join(projectsDir, proj.Name(), "Tasks"), proj.Name(), remaining)
+		checkDirDepsWith(filepath.Join(projectsDir, proj.Name(), "Tasks"), proj.Name(), remaining, lookup)
 	}
 	return len(remaining) == 0
 }
 
 func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
+	checkDirDepsWith(tasksDir, projName, remaining, nil)
+}
+
+func checkDirDepsWith(tasksDir, projName string, remaining map[string]bool, lookup fmLookup) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
 		return
@@ -165,22 +177,18 @@ func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
 				continue
 			}
 			filePath := filepath.Join(tasksDir, name)
-			data, err := readFileWithRetry(filePath)
-			if err != nil {
-				continue
-			}
-			fm, err := yamlfrontmatter.Parse(data)
+			fm, err := frontmatterFor(filePath, lookup)
 			if err != nil || fm == nil {
 				continue
 			}
 			if parts[0] == projName {
-				if blockerSatisfied(fm, tasksDir, projName) {
+				if blockerSatisfiedWith(fm, tasksDir, projName, lookup) {
 					delete(remaining, key)
 				}
 				break
 			}
 			if !dirMatches && fm.Project == parts[0] {
-				if blockerSatisfied(fm, tasksDir, projName) {
+				if blockerSatisfiedWith(fm, tasksDir, projName, lookup) {
 					delete(remaining, key)
 				}
 				break
@@ -190,6 +198,10 @@ func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
 }
 
 func blockerSatisfied(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName string) bool {
+	return blockerSatisfiedWith(fm, tasksDir, projectName, nil)
+}
+
+func blockerSatisfiedWith(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName string, lookup fmLookup) bool {
 	if fm.Status == "done" {
 		return true
 	}
@@ -204,7 +216,7 @@ func blockerSatisfied(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName str
 			return false
 		}
 		remaining := map[string]bool{projectName + ":" + strings.TrimPrefix(fm.ReplacementTask, "TASK-"): true}
-		checkDirDeps(tasksDir, projectName, remaining)
+		checkDirDepsWith(tasksDir, projectName, remaining, lookup)
 		return len(remaining) == 0
 	default:
 		return false
@@ -214,6 +226,10 @@ func blockerSatisfied(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName str
 // IsAutoUnblockable checks if a blocked task can be auto-promoted to ready.
 // vaultPath is required to resolve blocked_by references against actual task status.
 func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
+	return isAutoUnblockableWith(fm, vaultPath, nil)
+}
+
+func isAutoUnblockableWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLookup) bool {
 	if fm.Status != "blocked" {
 		return false
 	}
@@ -224,7 +240,7 @@ func IsAutoUnblockable(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		return false
 	}
 	if !isEmptyList(fm.BlockedBy) {
-		if !AreBlockersDone(vaultPath, fm.Project, fm.BlockedBy) {
+		if !areBlockersDoneWith(vaultPath, fm.Project, fm.BlockedBy, lookup) {
 			return false
 		}
 	}
@@ -247,10 +263,14 @@ const PhaseErrorCodeAPIKeyUnavailable = "API_KEY_UNAVAILABLE"
 
 // vaultPath is used to resolve blocked_by dependencies.
 func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
+	return isReadyWith(fm, vaultPath, nil)
+}
+
+func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLookup) bool {
 	if fm == nil || fm.Assignee == "" || fm.Status == "closed" {
 		return false
 	}
-	if IsAutoUnblockable(fm, vaultPath) {
+	if isAutoUnblockableWith(fm, vaultPath, lookup) {
 		return true
 	}
 	if fm.ReworkResolution != "" {
@@ -264,7 +284,22 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		}
 	}
 	switch fm.Status {
-	case "ready", "needs-grilling", "refining", "planning":
+	case "ready", "refining", "planning":
+		// Dependency gate applies to scheduling phases too: a task whose
+		// blocked_by upstreams are not done must not be dispatched into
+		// refining/planning — otherwise unmerged upstreams drive endless
+		// no-op replans (TASK-066 regression: 15 plan versions while
+		// upstream TASK-067/065 were unmerged).
+		if !isEmptyList(fm.BlockedBy) {
+			if !areBlockersDoneWith(vaultPath, fm.Project, fm.BlockedBy, lookup) {
+				return false
+			}
+		}
+		return true
+	case "needs-grilling":
+		// Grilling clarifies requirements and does not touch code; it is
+		// allowed while upstreams are pending so the discussion is not
+		// blocked on delivery order.
 		return true
 	case "needs-refining":
 		// Legacy status from an earlier daemon version. Ready so the scan
@@ -273,9 +308,9 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 		// tab and starts requirement alignment.
 		return true
 	case "implementing":
-		return !fm.OffPeakOnly || IsOffPeak()
+		return !fm.OffPeakOnly || OffPeakFn()
 	case "plan-review":
-		return fm.PlanApproved && (!fm.OffPeakOnly || IsOffPeak())
+		return fm.PlanApproved && (!fm.OffPeakOnly || OffPeakFn())
 	case "review":
 		// Fresh review (Round 2 completed, no failure) with auto_merge is
 		// ready so the daemon auto-approves and merges without a manual gate.
@@ -291,19 +326,61 @@ func IsReady(fm *yamlfrontmatter.Frontmatter, vaultPath string) bool {
 	}
 }
 
+// OffPeakFn is the off-peak evaluator used by readiness checks. The daemon
+// sets it from vault-map off_peak_windows/off_peak_timezone at startup;
+// defaults to the legacy fixed Beijing window so tests and standalone uses
+// keep working.
+var OffPeakFn = IsOffPeak
+
 // IsOffPeak returns true during Beijing off-peak hours (cheaper DeepSeek pricing).
 // Peak: 09:00-12:00 and 14:00-18:00 CST (UTC+8).
 func IsOffPeak() bool {
-	cst := time.FixedZone("CST", 8*3600)
-	now := time.Now().In(cst)
-	h := now.Hour()
-	if 9 <= h && h < 12 {
-		return false
+	return IsOffPeakWith(nil, "")
+}
+
+// IsOffPeakWith evaluates off-peak from configured windows in the configured
+// timezone; nil/empty falls back to the legacy fixed Beijing window
+// (00-09, 12-14, 18-24 CST).
+func IsOffPeakWith(windows []config.TimeWindow, tz string) bool {
+	if len(windows) == 0 {
+		windows = []config.TimeWindow{
+			{Start: "00:00", End: "09:00"},
+			{Start: "12:00", End: "14:00"},
+			{Start: "18:00", End: "24:00"},
+		}
 	}
-	if 14 <= h && h < 18 {
-		return false
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc = time.FixedZone("CST", 8*3600)
 	}
-	return true
+	now := time.Now().In(loc)
+	hm := now.Hour()*60 + now.Minute()
+	for _, w := range windows {
+		start, ok1 := parseHM(w.Start)
+		end, ok2 := parseHM(w.End)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if start < end && start <= hm && hm < end {
+			return true
+		}
+		if start > end && (hm >= start || hm < end) { // crosses midnight
+			return true
+		}
+	}
+	return false
+}
+
+// parseHM parses "HH:MM" into minutes since midnight.
+func parseHM(s string) (int, bool) {
+	var h, m int
+	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil {
+		return 0, false
+	}
+	if h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }
 
 // FindReadyTaskForFile reads and checks a single task file for readiness.
@@ -363,89 +440,11 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 }
 
 // FindReadyTasks scans vault's Projects/*/Tasks/ directories and returns ready tasks.
+// FindReadyTasks scans vault's Projects/*/Tasks/ directories and returns ready
+// tasks. It delegates to a fresh Index, so CLI/tests get the same behavior as
+// the daemon's persistent-index scans.
 func FindReadyTasks(vaultPath string) ([]ReadyTask, error) {
-	projectsDir := filepath.Join(vaultPath, "Projects")
-	projEntries, err := os.ReadDir(projectsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read Projects dir: %w", err)
-	}
-
-	var ready []ReadyTask
-	for _, proj := range projEntries {
-		if !proj.IsDir() {
-			continue
-		}
-		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
-		entries, err := os.ReadDir(tasksDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
-				continue
-			}
-			filePath := filepath.Join(tasksDir, entry.Name())
-			data, err := readFileWithRetry(filePath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %s: read error: %v\n", entry.Name(), err)
-				continue
-			}
-			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil {
-				fmt.Fprintf(os.Stderr, "  %s: parse error: %v\n", entry.Name(), err)
-				continue
-			}
-			if !IsReady(fm, vaultPath) {
-				continue
-			}
-			if fm.Project == "" {
-				continue
-			}
-			ready = append(ready, ReadyTask{
-				ID: fm.ID, Title: fm.Title, Project: fm.Project,
-				NewProject: fm.NewProject, Priority: fm.Priority, Created: fm.Created,
-				FilePath: filePath, FileName: entry.Name(),
-				Status: fm.Status, PlanApproved: fm.PlanApproved,
-				MergeApproved: fm.MergeApproved, CloseApproved: fm.CloseApproved,
-				ReqDoc: fm.ReqDoc, Template: fm.Template, Assignee: fm.Assignee,
-				AutoApprove: fm.AutoApprove, AutoMerge: fm.AutoMerge, PendingReq: fm.PendingReq,
-				PhaseErrorCode: fm.PhaseErrorCode,
-				GrillDone: fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,
-				GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
-				GrillContinue: fm.GrillContinue, GrillParked: fm.GrillParked,
-				PlanVersion: fm.PlanVersion,
-				PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
-				GrillHeartbeatAt:         fm.GrillHeartbeatAt,
-				GrillTimeoutMinutes:      fm.GrillTimeoutMinutes,
-				RefineReqHash:            fm.RefineReqHash,
-				PlanReqHash:              fm.PlanReqHash,
-				Maturity:                 fm.Maturity,
-				ReviewFeedback:           fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
-				ClosureReason: fm.ClosureReason,
-			})
-		}
-	}
-	sort.Slice(ready, func(i, j int) bool {
-		pi := priorityOrder(ready[i].Priority)
-		pj := priorityOrder(ready[j].Priority)
-		if pi != pj {
-			return pi < pj
-		}
-		if ready[i].Created != ready[j].Created {
-			return ready[i].Created < ready[j].Created
-		}
-		if ready[i].Project != ready[j].Project {
-			return ready[i].Project < ready[j].Project
-		}
-		if ready[i].ID != ready[j].ID {
-			return ready[i].ID < ready[j].ID
-		}
-		return ready[i].FilePath < ready[j].FilePath
-	})
-	return ready, nil
+	return NewIndex().Scan(vaultPath)
 }
 
 // PrintReadyTasks outputs tasks as NDJSON to stdout.

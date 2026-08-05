@@ -163,7 +163,11 @@ func needsConsolidation(members []task.GrillingTask) bool {
 		return false
 	}
 	if len(members) == 1 {
-		return members[0].GrillRepeat >= 2 && !members[0].GrillParked
+		// Single-task consolidation: repeated identical disputes (grill_repeat)
+		// OR a requirement that keeps churning replans (plan_version >= 3, e.g.
+		// TASK-066's 15 no-op replans) escalate to the project-level decision
+		// list so the user answers once instead of per round.
+		return !members[0].GrillParked && (members[0].GrillRepeat >= 2 || members[0].PlanVersion >= 3)
 	}
 	for _, m := range members {
 		if !m.GrillParked {

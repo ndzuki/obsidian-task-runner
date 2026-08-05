@@ -179,22 +179,70 @@ func TestRebuildINDEX_Empty(t *testing.T) {
 	}
 }
 
+// writeRefEntry creates a knowledge-base document with the given frontmatter
+// keywords; classification is driven purely by these, so each test builds its
+// own index instead of depending on the real References/.
+func writeRefEntry(t *testing.T, refs, rel, topics, aliases, tags string) {
+	t.Helper()
+	path := filepath.Join(refs, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntopics: [" + topics + "]\n"
+	if aliases != "" {
+		content += "aliases: [" + aliases + "]\n"
+	}
+	if tags != "" {
+		content += "tags: [" + tags + "]\n"
+	}
+	content += "level: reference\nupdated: \"2026-08-05\"\nsource: \"local\"\nverified: false\n---\n# Doc\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClassifyADR(t *testing.T) {
+	refs := t.TempDir()
+	writeRefEntry(t, refs, "core/go/connect-rpc.md", "connect,grpc,protobuf", "连接,协议", "")
+	writeRefEntry(t, refs, "extended/databases/database-patterns.md", "postgres,sqlite,database", "数据库", "")
+	writeRefEntry(t, refs, "core/gitops/gitops-patterns.md", "argocd,gitops", "", "gitops")
+	writeRefEntry(t, refs, "extended/tools/decisions.md", "decision", "", "")
+
 	tests := []struct {
 		adr      adrInfo
 		expected string
 	}{
 		{adrInfo{Decision: "所有正式业务接口以 protobuf 为唯一契约源，使用 Connect", Title: "Connect 单端口统一协议面"}, "core/go/connect-rpc.md"},
-		{adrInfo{Decision: "中心以数据库 Command Outbox 作为待投递命令权威", Title: "持久 Command Outbox"}, "core/go/outbox-reliable-delivery.md"},
-		{adrInfo{Decision: "使用离散主状态 blocked → ready → refining", Title: "状态机驱动 TASK 生命周期"}, "core/go/state-machine-pattern.md"},
-		{adrInfo{Decision: "运行时业务代码只使用 Go SDK", Title: "Go SDK-only 集群执行"}, "core/kubernetes/operator-development-guide.md"},
+		{adrInfo{Decision: "核心数据落地 PostgreSQL，事务边界在 handler 内", Title: "PostgreSQL 存储"}, "extended/databases/database-patterns.md"},
+		{adrInfo{Decision: "使用中文别名命中", Title: "数据库迁移方案"}, "extended/databases/database-patterns.md"},
+		{adrInfo{Decision: "GitOps 由 ArgoCD 自动同步", Title: "GitOps 部署"}, "core/gitops/gitops-patterns.md"},
 		{adrInfo{Decision: "这是一条纯业务决策，不涉及通用技术模式", Title: "业务特定决策"}, ""},
 	}
 	for _, tt := range tests {
-		got := classifyADR(tt.adr)
+		got := classifyADR(tt.adr, refs)
 		if got != tt.expected {
 			t.Errorf("classifyADR(%q) = %q, want %q", tt.adr.Title, got, tt.expected)
 		}
+	}
+}
+
+func TestClassifyADRPrefersCoreLayer(t *testing.T) {
+	refs := t.TempDir()
+	// Both layers match "connect" — the core document must win.
+	writeRefEntry(t, refs, "core/go/connect-rpc.md", "connect", "", "")
+	writeRefEntry(t, refs, "extended/tools/connect-notes.md", "connect", "", "")
+	got := classifyADR(adrInfo{Decision: "接口统一走 connect", Title: "协议选择"}, refs)
+	if got != "core/go/connect-rpc.md" {
+		t.Fatalf("core layer should win, got %q", got)
+	}
+}
+
+func TestClassifyADRTagMatch(t *testing.T) {
+	refs := t.TempDir()
+	writeRefEntry(t, refs, "extended/cicd/cicd-patterns.md", "ci", "", "pipeline")
+	got := classifyADR(adrInfo{Decision: "流水线 pipeline 自动构建", Title: "CI 配置"}, refs)
+	if got != "extended/cicd/cicd-patterns.md" {
+		t.Fatalf("tag match should classify, got %q", got)
 	}
 }
 

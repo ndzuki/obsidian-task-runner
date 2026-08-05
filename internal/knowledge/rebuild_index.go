@@ -20,6 +20,8 @@ type RefEntry struct {
 	Title    string   // first h1 in the document
 	Summary  string   // first blockquote after h1 — KB v2 mandatory abstract
 	Topics   []string // from frontmatter
+	Aliases  []string // Chinese/alternate search terms from frontmatter
+	Tags     []string // Obsidian tags from frontmatter
 	Level    string   // beginner|intermediate|advanced|reference
 	Updated  string   // ISO 8601
 	Verified bool
@@ -44,6 +46,7 @@ func RebuildINDEX(vaultDir string) (int, error) {
 	if err := os.WriteFile(indexPath, []byte(content), 0o644); err != nil {
 		return 0, fmt.Errorf("write INDEX.md: %w", err)
 	}
+	InvalidateRefIndex(refsDir)
 	return len(entries), nil
 }
 
@@ -93,6 +96,12 @@ func parseRefFile(path, rel string) (*RefEntry, error) {
 	}
 	if v, ok := fm["topics"]; ok {
 		entry.Topics = toStringSlice(v)
+	}
+	if v, ok := fm["aliases"]; ok {
+		entry.Aliases = toStringSlice(v)
+	}
+	if v, ok := fm["tags"]; ok {
+		entry.Tags = toStringSlice(v)
 	}
 	if v, ok := fm["level"]; ok {
 		entry.Level = fmt.Sprint(v)

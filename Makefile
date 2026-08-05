@@ -64,4 +64,8 @@ sync-docs:
 	@echo "=== Syncing skill docs to ~/.omp/ ==="
 	cp -r obsidian-task-runner/*.md $(HOME)/.omp/skills/obsidian-task-runner/
 	cp -r obsidian-task-runner/skills/ $(HOME)/.omp/skills/obsidian-task-runner/
+	@for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
+		mkdir -p $(HOME)/.omp/skills/obsidian-task-runner-$$s; \
+		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.omp/skills/obsidian-task-runner-$$s/SKILL.md; \
+	done
 	@echo "=== Done ==="

@@ -19,6 +19,14 @@ description: "项目级需求统筹：合并共享 REQ 任务的重复 grilling 
 
 ## Mode 1: consolidate（合并 + 去重 + 分类）
 
+### Step 0.5: 需求拆分建议（新项目 / 大 REQ）
+
+**触发条件**：输入任务中存在**新项目**（vault-map 无此项目或首次 consolidated）或 REQ 文档 >200 行（用户通常把需求揉成一团）。
+
+1. 对满足条件的 REQ 调用 `skill://obsidian-task-runner-split` 生成拆分建议（按业务边界/依赖域，3-8 个子需求，每个标注原文依据）。
+2. 拆分建议作为清单**第一部分**（`## 拆分确认`，见 Step 3 模板），与争议决策点一起交用户一次性回答——**避免新项目初期重复 grilling**。
+3. 拆分确认的答案格式：`拆分: 确认` 或 `拆分: 修改（按表格修改）` 或 `拆分: 不拆分`。
+
 ### Step 1: 分组与去重
 1. 按 `req_doc` 对任务分组。
 2. 收集每个任务的 dispute 问题（grill_context 的 Failed checks / Follow-up dimensions）。同一 REQ 组的相同问题（normalize 标题）合并为**一个决策点**，来源任务列表记录全部相关 TASK。
@@ -48,8 +56,22 @@ updated: <ISO8601>
 ---
 # Grilling Decisions — <project>
 
-> PM agent 汇总 <N> 个任务的争议点。回答「决策:」后设置 frontmatter
-> `grill_continue: true`，daemon 自动分发写回。
+> PM agent 汇总 <N> 个任务的争议点 + <M> 项拆分建议。回答「决策:」与
+> 「拆分:」后设置 frontmatter `grill_continue: true`，daemon 自动分发写回。
+
+## 拆分确认
+
+- 建议拆分为 <N> 个子需求（依据 `<req>-split-proposal.md`）
+- 拆分: <确认 / 修改（列出修改）/ 不拆分>
+
+## 技术栈确认
+
+> REQ 未声明技术栈时由 split 生成候选（过往项目推导 + 社区方案）。
+
+| 方案 | 来源 | 成熟度 | 适配度 | 备注 |
+|------|------|--------|--------|------|
+| ... | ... | ... | ... | ... |
+- 技术栈: <用户填写>
 
 ## 决策点
 
@@ -96,6 +118,25 @@ otg update-status <task> \
 > [决策: <来源清单 D-n>]: <用户答案> — 用户决策 <ISO8601>
 ```
 若决策推翻了先前 `[采纳建议 auto]` 内容 → 在新标注中显式声明「推翻 auto 采纳」。
+
+### Step 2.4: 拆分落地（若清单含「拆分确认」）
+
+若用户选择「拆分: 确认」或「拆分: 修改」：
+
+1. 按确认后的子需求表格，在 `<vault>/Projects/<project>/Requirements/` 创建子 REQ 文档：
+   - 命名遵循项目规范（如 `REQ-<id>-<slug>-<n>.md`，或独立数字编号 `REQ-<next-id>-<slug>.md`——与 `otg`/`OnReqChanged` 的 canonical 规则一致）。
+   - 每个子 REQ frontmatter：`id/title/project/project_id` 齐全，正文含「范围/边界/依赖/验收标准草案」——验收标准细化由各子 REQ 的 requirement-elaborator 完成。
+   - 依赖关系写入子 REQ frontmatter `depends_on`（或由 TASK `blocked_by` 表达）。
+2. 原 REQ 作为**总纲**保留，frontmatter 追加 `superseded_by: [<子 REQ id 列表>]` 或正文顶部标注「已拆分为 <子 REQ>，本文件为总纲」。
+3. 子 REQ 创建后 `OnReqChanged` 自动生成各自 canonical TASK；原任务的 grilling 结果（已决策点）在 distribute Step 2 中已写回原 REQ，子 REQ 继承相关内容。
+
+### Step 2.45: 技术栈决定写回
+
+若清单含「技术栈确认」且用户填写了「技术栈:」：
+
+1. 写回对应 REQ 的「技术栈/框架声明」章节（或 `## 详细技术规格` 框架声明表），追加标注 `> [技术栈决定: <来源清单>]: <用户答案> — 用户决策 <ISO8601>`。
+2. 用户选择的组合（如 `Go + Connect`）→ 在 `scaffold_registry` 中确认/补充对应能力（与 `project.RegisterScaffoldFromProject` 的自动补充一致——项目交付后自动沉淀，此处仅提示）。
+3. 技术栈决定参与后续 refining 的 ADR 一致性检查与 Round 1 计划技术栈约束。
 
 ### Step 2.5: 决策沉淀（知识库）
 每条已填决策点沉淀到知识库，供后续项目复用（格式规范见 `skill://knowledge-base`「知识库文件格式 — 强制要求」）：

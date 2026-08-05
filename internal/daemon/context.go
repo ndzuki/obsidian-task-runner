@@ -307,8 +307,35 @@ func scoreTerm(t contextTerm, kwSet map[string]bool) int {
 
 // ── ADR loading and matching ──────────────────────────────────────────────
 
+// adrCache avoids re-reading and re-parsing a project's ADR files on every
+// dispatch. Entries are invalidated by watcher events via
+// invalidateProjectContext; a lost event is repaired by the daemon restart.
+var adrCache sync.Map // adrDir → []contextADR
+
 // readADRs scans the Notes/adr/ directory and returns parsed ADR summaries.
 func readADRs(adrDir string) []contextADR {
+	if cached, ok := adrCache.Load(adrDir); ok {
+		return cached.([]contextADR)
+	}
+	adrs := readADRsFromDisk(adrDir)
+	adrCache.Store(adrDir, adrs)
+	return adrs
+}
+
+// invalidateProjectContext drops the CONTEXT.md and ADR caches for the project
+// owning the given file path (…/Projects/<proj>/Notes/…). Called from the
+// watcher event loop so context updates are visible on the next dispatch.
+func invalidateProjectContext(path string) {
+	idx := strings.Index(path, notesDirToken)
+	if idx < 0 {
+		return
+	}
+	projDir := path[:idx]
+	contextCache.Delete(projDir)
+	adrCache.Delete(filepath.Join(projDir, "Notes", "adr"))
+}
+
+func readADRsFromDisk(adrDir string) []contextADR {
 	entries, err := os.ReadDir(adrDir)
 	if err != nil {
 		return nil

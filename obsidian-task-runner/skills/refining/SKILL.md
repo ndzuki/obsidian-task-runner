@@ -14,10 +14,14 @@ description: "Headless requirement maturity gate for initial tasks and pending r
 
 ## Step 1: Pre-flight Checks（前置检查）
 
-1. 读取 TASK 和 `req_doc`。
+1. 读取 TASK frontmatter 和 `req_doc`。
 2. `req_doc` 必须是 Vault 相对规范路径；不存在或越出 Vault → 阶段失败。
-3. 读取 REQ 完整 bytes，计算 SHA-256。
-4. 将本次 hash 写入 `refine_req_hash`。
+3. **REQ hash 已由 daemon 预计算写入 `refine_req_hash`（零 token）**——信任该值，不再读取 REQ 全文计算；仅当字段为空（异常场景）才回退读取全文计算。
+4. **REQ 分段读取（禁止全文加载）**：成熟度检查只需
+   - frontmatter + `## 详细技术规格`（`read` 带行号 selector 或按章节标题定位）；
+   - 章节存在性用 `grep` 标题行（`^## `），不读正文；
+   - `## 验收标准` 的 AC 列表（grep 或前 N 行）。
+   大 REQ（>20KB）全文读取是会话 token 的最大来源，除非某章节确实需要完整内容，否则不整读。
 5. 非 `plan-review` 状态发现 `plan_approved=true` → 重置 false 并写审计 warning。
 
 ## Step 2: Maturity Gate（成熟度门禁）
@@ -30,6 +34,15 @@ description: "Headless requirement maturity gate for initial tasks and pending r
 4. AC 使用 Given/When/Then，覆盖成功、边界、错误、幂等/并发。
 5. 数据模型或类型定义具体。
 6. **ADR consistency** — read ALL files under `Notes/adr/`. For each accepted ADR, extract its core constraints and verify the REQ does not violate them. Conflict detected → mark this check as ❌ and write the conflicting ADR + constraint to `grill_context` for user resolution during grilling.
+
+## Step 2.5: Incremental Knowledge Re-link（增量知识重关联）
+
+REQ 细化后（相对上次 refine 的 `refine_req_hash` 变化），对比新增领域术语，**不等待下一轮 planning 全量 Step -1**：
+
+1. 提取 REQ 新增的领域术语（与 TASK `## 需求成熟度评估` 上次记录或 CONTEXT.md `## Language` 已有术语对比）。
+2. 新增术语 → `otg ensure-context-term` 回写 CONTEXT.md（自动对齐领域词汇）。
+3. 用 `skill://knowledge-base` 检索新增术语对应知识文档；命中 → 把文档路径与一句应用提示写入 `grill_context`（供 grilling 引用与 Round 1 计划直接采用），避免下一轮全量重扫。
+4. 无命中 → 记录「知识缺口」到成熟度评估（供后续入库）。
 
 ## Step 3: Write Audit Evidence（写入审计证据）
 

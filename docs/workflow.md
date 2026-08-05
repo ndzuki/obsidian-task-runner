@@ -58,16 +58,16 @@ flowchart TD
 | 2 | 任务解锁 | 用户补齐 `project`+`assignee`、依赖满足 | `IsAutoUnblockable` 判定 → unblock | 无 | `status=ready`，清 phase_error | scan 拾取 |
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
-| 5 | refining | `status=ready` 被拾取 | `nextLocalTransition` 转 refining；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
+| 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
 | 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | Kitty 内 requirement-elaborator / grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
-| 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 OMP 子进程（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；distribute：清单答案写回 REQ + 任务重置 refining | `grill_parked/grill_repeat`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
-| 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high） | `/obsidian-task-runner-round1 <task>`：读 ADR 知识 → 版本化计划 + Prototype 建议 | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed` | plan-review；autoApproveEligible=true 时 daemon 同轮直接转 implementing |
+| 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 OMP 子进程（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；**单任务触发扩展：`grill_repeat≥2` 或 `plan_version≥3`（反复 replan）也进统筹**；**新项目/大 REQ 附加拆分建议（split skill）与技术栈建议**；distribute：清单答案写回 REQ + 拆分落地（子 REQ 创建）+ 任务重置 refining | `grill_parked/grill_repeat/plan_version`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
+| 7 | planning | maturity 成熟 | OMP 子进程（assignee 模型，thinking high）；**REQ hash 由 daemon 预写（`refine_req_hash`）** | `/obsidian-task-runner-round1 <task>`：Step -1 知识图谱 → 版本化计划 + Prototype 建议；**命中的知识文档写入 `knowledge_refs`（引用链）**；**成功完成后 daemon 自动折叠 `## 实现计划` 历史（keep=3，防文档膨胀）** | `plan_version`、`status=plan-review`、`plan_approved=<autoApproveEligible>`、`adr_proposed`、`knowledge_refs` | plan-review；autoApproveEligible=true 时 daemon 同轮直接转 implementing |
 
 > **auto_approve（完全自主任务）**：`auto_approve=true` AND 首次规划（plan_version==0）AND 非新项目 AND 非 pending_req AND `adr_proposed` 为空 → Round 1 写 `plan_approved=true`，daemon 自动跳过人工审计划进入 implementing。**ADR 护栏**：有 ADR 提议时即使 auto_approve 也强制 `plan_approved=false`——架构决策随计划人工审阅。已进入 plan-review 的任务（plan_version>0）改 auto_approve 不生效，需手动批准或 replan。
 | 8 | plan-review | `plan_approved=true` | `nextLocalTransition` → implementing，自动 `adr_approved=true`；预热 worktree | 无 | `status=implementing` | Round 2 |
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时） | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining |
 | 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
-| 11 | 交付 | merge 成功 | 写 done；异步 `ExtractProjectKnowledge`（ADR → References，verified 翻转，INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（pending_req 则回 refining） |
+| 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（pending_req 则回 refining） |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
 
 ### 0.3 时序事实（与历史文档的差异说明）
@@ -154,7 +154,7 @@ stateDiagram-v2
     blocked --> implementing: resume_approved=true and blocked_phase=implementing
     blocked --> refining: 自动 resume (blocked_by 上游依赖链，恢复 blocked_phase 对应阶段)
 
-    ready --> refining: daemon 拾取（立即；priority 评估并行于 refining，scan 末尾每轮≤2）
+    ready --> refining: daemon 拾取（blocked_by 上游未 done 不调度；priority 评估并行，scan 末尾每轮≤2）
 
     refining --> planning: maturity=fully_mature（含 fact/auto 处置后成熟）
     refining --> needs_grilling: 仅剩 dispute，或大型需求 (AC>10 / 3+服务) → Wayfinder Map 决策地图作为焦点
@@ -242,7 +242,7 @@ daemon 停机（SIGTERM：`systemctl stop`、`otg install`、系统重启）时�
 ```mermaid
 flowchart TD
     Start[ready or pending_req] --> Refining[status=refining]
-    Refining --> Hash[记录完整 REQ bytes SHA-256]
+    Refining --> Hash[daemon 预写 refine_req_hash（零 token）；skill 分段读取 REQ]
     Hash --> Gate{Maturity Gate}
     Gate -->|fully_mature| Planning[status=planning]
     Gate -->|mostly_mature or immature| Grilling[status=needs-grilling]
@@ -449,13 +449,16 @@ Pending requirement 导致 Round 2 停止时，planning 必须读取 `checkpoint
 
 ### 6.5 新项目
 
-`new_project=true` 的 refining/planning 只读需求、模板和项目规范：
+`new_project=true` 的 refining/planning 只读需求、模板和项目规范（零文件系统副作用）：
 
-- 不创建项目目录。
-- 不执行 `git init`。
-- 不创建脚手架文件。
+- 不创建项目目录、不执行 `git init`、不创建脚手架文件。
 
-用户批准后，Round 2 才创建项目、初始化 Git 并执行 `register-project`。
+Round 2 首次调度（`resolveRepo` new 分支）自动完成项目初始化：
+
+- 创建项目目录（`new_project_root/<name>`）。
+- **自动注册 vault-map.json**：`name`/`path` 按解析结果写入，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`）——后续扫描以 `existing` 解析，无需手动配置。
+- **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns` / `## Reference Map`），由首轮 agent 填充。
+- 新项目首个 REQ 由 PM 统筹触发 `skill://obsidian-task-runner-split` 拆分建议（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
 
 ### 6.6 planning 失败恢复
 
@@ -685,6 +688,9 @@ grill_prev_status: ""
 grill_parked: false # 争议已并入项目级 Grilling-Decisions.md
 grill_repeat: 0 # 同一争议集连续未答轮次；≥2 → park 升级
 auto_accepted: "" # refining 自动采纳建议审计记录
+knowledge_extracted: false # 该任务 ADR 已提取到知识库（幂等）
+knowledge_refs: [] # Round 1 计划引用的知识文档（Round 2 应用 / merge 度量 / verifier 校验）
+knowledge_applied: "" # merge 时度量：命中/总数（如 2/3）
 ```
 
 ## 12. 知识库知识流（KB v2）
@@ -692,10 +698,16 @@ auto_accepted: "" # refining 自动采纳建议审计记录
 ```mermaid
 flowchart LR
     FAIL[阶段失败] -->|首次 错误码+阶段| SINK[AppendFailurePattern 自动沉淀]
-    MERGE[merge→done] -->|ExtractProjectKnowledge| EXTRACT[ADR → References/]
-    EXTRACT -->|MarkVerified| V[verified=true]
+    MERGE[merge→done] -->|ExtractTaskKnowledge 按任务提取| EXTRACT[adr_written 的 ADR → 分类]
+    EXTRACT -->|classifyADR 数据驱动| CLS{命中?}
+    CLS -->|tag/多词/长精确词| REF[写入对应 References 文档]
+    CLS -->|无匹配| UNC[自动归档 uncategorized/]
+    UNC -->|词表扩展后 ReclassifyUncategorized| REF
+    REF -->|MarkVerified| V[verified=true]
     SINK --> KB[(References/)]
-    EXTRACT --> KB
+    REF --> KB
+    UNC --> KB
+    ADR[ADR 写入] -->|watcher EnsureADRTags 自动打标| ADR
     KB -->|RebuildINDEX| IDX[(INDEX.md 摘要层)]
     IDX -->|Step -1 项目知识图谱| R1[Round 1]
     IDX -->|计划技术栈检索| R2[Round 2]
@@ -705,9 +717,10 @@ flowchart LR
 
 **触发点（代码实现）**：
 
-1. `merge_runner.go` merge→done：`ExtractProjectKnowledge`（扫描 `Notes/adr/`，按 `classifyADR` 分类写入对应 References 文件）→ `MarkVerified`（翻转 verified）→ `RebuildINDEX`。
-2. `daemon.go` `handlePhaseFailure`：`AppendFailurePattern`（错误码映射表：API_KEY_UNAVAILABLE/PHASE_INTERRUPTED/MODEL_FAILED/PHASE_TIMEOUT/MODEL_QUOTA_EXHAUSTED；按 `错误码 — 阶段` 去重，知识库文件本身是去重存储）。
-3. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
+1. `merge_runner.go` merge→done：`ExtractTaskKnowledge`（只提取该任务 `adr_written` 引用的 ADR，`knowledge_extracted` 幂等）→ `classifyADR`（知识库 topics/aliases/tags 数据驱动 + tag 优先 + 置信门槛）→ 命中写入对应 References 文件、未命中自动归档 `References/uncategorized/` → `MarkVerified` → `ReclassifyUncategorized`（词表扩展后归档自动归位）→ `measureKnowledgeApplied`（Round 1 的 `knowledge_refs` 命中统计 → 写回 `knowledge_applied` hit/total）→ `RebuildINDEX`。
+2. `daemon.go` watcher：ADR 写入 → `EnsureADRTags` 自动打标（additive，用户可审查）；References 变更 → 失效分类索引缓存。
+3. `daemon.go` `handlePhaseFailure`：`AppendFailurePattern`（错误码映射表：API_KEY_UNAVAILABLE/PHASE_INTERRUPTED/MODEL_FAILED/PHASE_TIMEOUT/MODEL_QUOTA_EXHAUSTED；按 `错误码 — 阶段` 去重，知识库文件本身是去重存储）。
+4. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
 
 **检索路径（skill 指令）**：
 

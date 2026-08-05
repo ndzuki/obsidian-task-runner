@@ -17,6 +17,7 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
+	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -308,8 +309,8 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, prURL string) error {
 	}
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "合并成功",
 		fmt.Sprintf("PR %s 已合并，任务完成", prURL), r.cfg.Notifications.Desktop)
-	// Step 0: Extract project knowledge to knowledge base (non-blocking)
-	go r.extractProjectKnowledge(candidate.Project)
+	// Step 0: Extract this task's knowledge to the knowledge base (non-blocking)
+	go r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
 	return nil
 }
 
@@ -662,17 +663,85 @@ func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks
 	return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL}, nil
 }
 
-func (r *Runner) extractProjectKnowledge(projectName string) {
+// measureKnowledgeApplied counts how many of the task's knowledge_refs
+// (planned by Round 1) exist in References/ at delivery time, records
+// "hit/total" in the task frontmatter (knowledge_applied), and logs the
+// result — the lifecycle's knowledge-application metric.
+func (r *Runner) measureKnowledgeApplied(taskPath, vaultDir string) error {
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return err
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return fmt.Errorf("parse task: %w", err)
+	}
+	if len(fm.KnowledgeRefs) == 0 {
+		return nil
+	}
+	refsDir := filepath.Join(vaultDir, "References")
+	hits := 0
+	var missing []string
+	for _, ref := range fm.KnowledgeRefs {
+		clean := strings.TrimPrefix(strings.TrimSpace(ref), "References/")
+		clean = strings.TrimPrefix(clean, "/")
+		if clean == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(refsDir, clean)); err == nil {
+			hits++
+		} else {
+			missing = append(missing, clean)
+		}
+	}
+	applied := fmt.Sprintf("%d/%d", hits, len(fm.KnowledgeRefs))
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_applied": applied}); err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		r.logger.Printf("knowledge-base applied: %s (missing: %s)", applied, strings.Join(missing, ", "))
+	} else {
+		r.logger.Printf("knowledge-base applied: %s (all refs found)", applied)
+	}
+	return nil
+}
+
+func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	vaultDir := r.cfg.ObsidianVault
 
-	result, err := knowledge.ExtractProjectKnowledge(vaultDir, projectName)
+	result, err := knowledge.ExtractTaskKnowledge(vaultDir, projectName, taskPath)
 	if err != nil {
-		r.logger.Printf("knowledge-base Step 0 failed: project=%s error=%v", projectName, err)
+		r.logger.Printf("knowledge-base Step 0 failed: project=%s task=%s error=%v", projectName, filepath.Base(taskPath), err)
 		return
 	}
 	if result.ADRCount > 0 || result.NewRefs > 0 || result.UpdatedRefs > 0 {
 		r.logger.Printf("knowledge-base extracted: project=%s adrs=%d new=%d updated=%d",
 			projectName, result.ADRCount, result.NewRefs, result.UpdatedRefs)
+	}
+	if len(result.Unclassified) > 0 {
+		r.logger.Printf("knowledge-base archived: %d ADRs under References/uncategorized/", len(result.Unclassified))
+	}
+	// Archived knowledge re-classifies automatically as the vocabulary grows.
+	if moved, rerr := knowledge.ReclassifyUncategorized(vaultDir); rerr != nil {
+		r.logger.Printf("knowledge-base reclassify failed: %v", rerr)
+	} else if moved > 0 {
+		r.logger.Printf("knowledge-base reclassified: %d archived docs moved to topics", moved)
+	}
+	// Measure knowledge application: Round 1's planned knowledge_refs are
+	// checked against the knowledge base at delivery time, recorded as
+	// "hit/total" on the task (knowledge_applied) and logged.
+	if err := r.measureKnowledgeApplied(taskPath, vaultDir); err != nil {
+		r.logger.Printf("knowledge-base applied measure failed: %v", err)
+	}
+	// Delivered project experience grows the scaffold registry: classified
+	// topics without a matching capability become new capabilities.
+	if len(result.Topics) > 0 {
+		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+		if err := project.RegisterScaffoldFromProject(mapFile, projectName, result.Topics); err != nil {
+			r.logger.Printf("knowledge-base scaffold registry update failed: %v", err)
+		} else {
+			r.logger.Printf("knowledge-base scaffold registry: %d topics reviewed for %s", len(result.Topics), projectName)
+		}
 	}
 	// The delivery passed verification and merged — the extracted ADR decisions
 	// are now validated by real practice. Flip verified on touched files so the
