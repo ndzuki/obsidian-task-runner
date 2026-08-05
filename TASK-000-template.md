@@ -6,19 +6,14 @@ project: ""
 project_id: ""  # 项目内唯一数字 ID，如 "001"
 assignee: ""  # deepseek / gpt / gemini / claude / minimax / flash
 req_doc: ""
+status: blocked
 
-# 🟡 推荐
-tags: []
-epic: ""
-blocked_by: []
-blocks: []
-
-# 🟡 系统评分
+# 🟡 系统评分（人工可覆盖）
 priority: ""
-priority_assessment_status: ""
+priority_assessment_status: ""  # pending / running / completed / failed
+priority_assessment_attempts: 0
 priority_assessment_started_at: ""
 priority_assessed_at: ""
-priority_assessment_attempts: 0
 priority_assessed_value: ""
 priority_impact: ""
 priority_urgency: ""
@@ -28,18 +23,80 @@ priority_confidence: 0
 priority_reason: ""
 priority_recommendation: ""
 
+# 🔵 Gate — 由你批准
+plan_approved: false  # 仅 plan-review 状态有效
+auto_merge: true  # 默认自动合并：进入 review 后 daemon 自动授权 merge；设 false 恢复人工审查
+merge_approved: false
+adr_approved: false  # daemon 自动管理，plan-review→implementing 时置 true
+resume_approved: false
+close_approved: false
+pending_req: false
+
+# 🟡 推荐
+tags: []
+epic: ""
+blocked_by: []  # 同项目 TASK-010；跨项目 project-key:TASK-010
+blocks: []
+target_env: staging
+stage: ""  # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；由 REQ 继承或 PM 拆分时写入
+new_project: false
+
 # 🟢 高级（按需取消注释）
-# auto_approve: true  # 完全自主任务：首规划自动 plan_approved，跳过人工审计划（有 ADR 提议时仍强制人工）
-# off_peak_only: false
-# new_project: false
-# template: ""
 # due_date: ""
 # estimated_hours: 0
+# actual_hours: 0
 # component: ""
 # parent: ""
 # reviewer: ""
 # author: ""
-# target_env: staging
+# template: ""  # 旧脚手架提示字段，已由 scaffold 取代；保留向后兼容
+# off_peak_only: false
+# auto_approve: true  # 完全自主任务：首次规划自动 plan_approved，跳过人工审计划（有 ADR 提议时仍强制人工）
+
+# 时间戳（系统维护）
+created: ""
+updated: ""
+
+# ⚪ 系统维护 — 不要手动改
+maturity: ""  # fully_mature / mostly_mature / immature
+refine_version: 0
+refine_req_hash: ""
+refine_retry_count: 0
+refine_error: ""
+plan_req_hash: ""
+plan_version: 0
+planning_retry_count: 0
+checkpoint_commit: ""
+target_branch: ""
+pr_url: ""
+completed: ""
+merge_status: ""
+approved_head: ""
+task_schema_version: 1
+req_refine_count: 0  # 需求缺口循环计数：≥3 时 Agent 主动交互，全部 AC 通过后清零
+blocked_phase: ""
+phase_error: ""
+phase_error_code: ""  # MODEL_FAILED / PHASE_TIMEOUT / PHASE_INTERRUPTED / API_KEY_UNAVAILABLE 等
+phase_log: ""
+auto_resume_pending: false
+auto_resume_count: 0
+grill_owner: ""
+grill_started_at: ""
+grill_heartbeat_at: ""
+grill_timeout_minutes: 30
+grill_done: false
+grill_resolution: ""  # resume | replan | ""
+grill_context: ""
+grill_continue: false
+grill_prev_status: ""
+grill_parked: false
+grill_repeat: 0
+auto_accepted: ""  # refining 自动采纳建议审计记录
+review_feedback: ""
+rework_resolution: ""  # resume | replan | close
+closure_reason: ""  # already_implemented | duplicate | cancelled | wont_fix | not-bet
+closure_note: ""
+replacement_task: ""  # closure_reason=duplicate
 
 # 🟠 新项目脚手架（按需取消注释）
 # scaffold:
@@ -47,71 +104,18 @@ priority_recommendation: ""
 #   capabilities: []
 #   preferences: {}
 #   notes: ""
-# remote_create: false
+# remote_create: false  # 在 GitHub 创建远程仓库（gh repo create）
 # github_owner: ""
 # repository_name: ""
 # repository_visibility: private
 # repository_description: ""
 # repository_url: ""
 
-# 🔵 Gate — 由你批准
-plan_approved: false
-auto_merge: true  # 默认自动合并：进入 review 后 daemon 自动授权 merge；设 false 恢复人工审查
-merge_approved: false
-adr_approved: false
-resume_approved: false
-
-# review_feedback: ""        # 审阅反馈
-# rework_resolution: ""      # resume | replan | close
-# close_approved: false       # 关闭 Gate
-# closure_reason: ""          # already_implemented | duplicate | cancelled | wont_fix
-# closure_note: ""
-# replacement_task: ""        # closure_reason=duplicate
-
-# ⚪ 系统维护 — 不要手动改
-status: blocked
-pending_req: false
-maturity: ""
-refine_version: 0
-refine_req_hash: ""
-plan_req_hash: ""
-plan_version: 0
-checkpoint_commit: ""
-refine_retry_count: 0
-refine_error: ""
-planning_retry_count: 0
-blocked_phase: ""
-phase_error: ""
-phase_log: ""
-auto_resume_count: 0
-auto_resume_pending: false
-phase_error_code: ""
-grill_owner: ""
-grill_started_at: ""
-grill_heartbeat_at: ""
-grill_timeout_minutes: 30
-grill_done: false
-grill_resolution: ""
-grill_context: ""
-grill_prev_status: ""
-grill_continue: ""
-grill_parked: false
-grill_repeat: 0
-auto_accepted: ""
-req_refine_count: 0
-adr_proposed: ""
+adr_proposed: []
 adr_written: []
-created: ""
-updated: ""
-completed: ""
-target_branch: ""
-pr_url: ""
-merge_status: ""
-approved_head: ""
-actual_hours: 0
-
-# ⚪ 系统维护（新增）
-task_schema_version: 1
+knowledge_extracted: false  # merge 后 ADR 已提取到知识库（幂等）
+knowledge_refs: []  # Round 1 计划引用的知识文档（References/ 相对路径）
+knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---
 
 # <!-- 标题 -->

@@ -123,6 +123,15 @@ WHERE contains(file.folder, "Tasks") AND assignee = "deepseek"
 SORT priority asc
 ```
 
+### 按交付阶段分组
+
+```dataview
+TABLE stage, status, priority, file.link AS "任务"
+FROM "Projects"
+WHERE contains(file.folder, "Tasks") AND stage != null
+SORT stage asc, priority asc
+```
+
 
 ## 7. 看板为空时按顺序排查
 
