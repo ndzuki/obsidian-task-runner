@@ -98,6 +98,16 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 			want:    true,
 		},
 		{
+			name:    "lone task with churning replans consolidates",
+			members: []task.GrillingTask{{PlanVersion: 3, GrillRepeat: 1, GrillParked: false}},
+			want:    true,
+		},
+		{
+			name:    "lone task below both thresholds stays per-task",
+			members: []task.GrillingTask{{PlanVersion: 2, GrillRepeat: 1, GrillParked: false}},
+			want:    false,
+		},
+		{
 			name:    "lone parked task does not re-consolidate",
 			members: []task.GrillingTask{{GrillRepeat: 3, GrillParked: true}},
 			want:    false,

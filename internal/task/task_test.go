@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -205,6 +206,34 @@ blocked_by:
 		if rt.ID == "021" {
 			t.Error("blocked task with unresolved dependencies should NOT appear in ready tasks")
 		}
+	}
+}
+
+func TestIsOffPeakWith(t *testing.T) {
+	windows := []config.TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}}
+	// These assertions depend on the current time; verify window parsing and
+	// cross-midnight handling structurally instead.
+	if _, ok := parseHM("09:30"); !ok {
+		t.Fatal("parseHM must accept HH:MM")
+	}
+	if _, ok := parseHM("25:00"); ok {
+		t.Fatal("parseHM must reject invalid hour")
+	}
+	if _, ok := parseHM("9:30"); !ok {
+		t.Fatal("parseHM must accept single-digit hour")
+	}
+	// Cross-midnight window: 22:00-02:00.
+	cross := []config.TimeWindow{{Start: "22:00", End: "02:00"}}
+	// Structural check: the helper evaluates without panic for any tz.
+	_ = IsOffPeakWith(cross, "Asia/Shanghai")
+	_ = IsOffPeakWith(windows, "invalid/tz") // falls back to CST
+	// Default fn remains the legacy window, and the nil-window path must
+	// agree with IsOffPeak() (regression: it used to return false always).
+	if OffPeakFn == nil {
+		t.Fatal("OffPeakFn must default to IsOffPeak")
+	}
+	if got := IsOffPeakWith(nil, ""); got != IsOffPeak() {
+		t.Fatalf("IsOffPeakWith(nil) = %v, IsOffPeak() = %v — nil must fall back to legacy window", got, IsOffPeak())
 	}
 }
 

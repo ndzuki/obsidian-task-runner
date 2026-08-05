@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,7 +50,18 @@ type Runner struct {
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
+	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
+	gatedLogged        map[string]bool // task paths whose dependency-gate log was emitted
 }
+
+// Path tokens for watcher-event routing, built with the platform separator
+// so daemon logic works identically on Windows and Unix.
+const (
+	tasksDirToken = string(filepath.Separator) + "Tasks" + string(filepath.Separator)
+	notesDirToken = string(filepath.Separator) + "Notes" + string(filepath.Separator)
+	adrDirToken   = string(filepath.Separator) + "Notes" + string(filepath.Separator) + "adr" + string(filepath.Separator)
+	refsDirToken  = string(filepath.Separator) + "References" + string(filepath.Separator)
+)
 
 type repoLockMode uint8
 
@@ -66,16 +80,33 @@ type preparedTask struct {
 }
 
 func New(cfg *config.Config) *Runner {
+	// Off-peak readiness uses the configured windows/timezone instead of the
+	// hardcoded Beijing window.
+	windows := cfg.OffPeakWindows
+	tz := cfg.OffPeakTimezone
+	task.OffPeakFn = func() bool { return task.IsOffPeakWith(windows, tz) }
 	return &Runner{
 		cfg:                cfg,
 		implementationGate: newImplementationGate(cfg.MaxConcurrentTasks),
 		daemonCtx:          context.Background(),
+		taskIdx:            task.NewIndex(),
+		gatedLogged:        map[string]bool{},
 	}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
+	}
+	// Optional pprof endpoint for heap/memory investigation, e.g.
+	// OTG_PPROF_ADDR=127.0.0.1:6060 → go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+	if addr := os.Getenv("OTG_PPROF_ADDR"); addr != "" {
+		go func() {
+			r.logger.Printf("pprof listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				r.logger.Printf("pprof server: %v", err)
+			}
+		}()
 	}
 	defer func() {
 		if err := r.logWriter.Close(); err != nil {
@@ -150,6 +181,33 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue // events channel closed; ctx.Done is imminent
 			}
 			r.logger.Printf("watcher: %s %s changed", evt.Dir, filepath.Base(evt.Path))
+			// Task write-backs invalidate the frontmatter index entry so the
+			// next scan re-reads the file instead of serving stale state.
+			if strings.Contains(evt.Path, tasksDirToken) {
+				r.taskIdx.Invalidate(evt.Path)
+			}
+			// CONTEXT.md / ADR changes drop the per-project context caches so
+			// the next dispatch injects fresh constraints and decisions.
+			if strings.Contains(evt.Path, notesDirToken) {
+				invalidateProjectContext(evt.Path)
+			}
+			// ADR writes get auto-tagged from the knowledge-base vocabulary
+			// (user-reviewable, additive only) so extraction classifies by tag.
+			// INDEX/COVERAGE are generated bookkeeping, not decision docs.
+			if strings.Contains(evt.Path, adrDirToken) {
+				name := filepath.Base(evt.Path)
+				if strings.HasPrefix(name, "ADR-") && strings.HasSuffix(name, ".md") &&
+					name != "ADR-INDEX.md" && name != "ADR-COVERAGE.md" {
+					if err := knowledge.EnsureADRTags(evt.Path, filepath.Join(r.cfg.ObsidianVault, "References")); err != nil {
+						r.logger.Printf("watcher: auto-tag %s: %v", name, err)
+					}
+				}
+			}
+			// Knowledge-base writes drop the classification index cache so new
+			// topics/tags participate in extraction immediately.
+			if strings.Contains(evt.Path, refsDirToken) {
+				knowledge.InvalidateRefIndex(filepath.Join(r.cfg.ObsidianVault, "References"))
+			}
 			if evt.Dir == "Requirements" {
 				reqRel, _ := filepath.Rel(r.cfg.ObsidianVault, evt.Path)
 				var results []task.AffectedResult
@@ -313,9 +371,26 @@ func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
 	r.syncTaskSchemaDefaults()
 	r.resolveBlockedDependencies()
-	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
+	tasks, err := r.taskIdx.Scan(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
+	}
+	// Explain ready-looking tasks held back by unresolved dependencies, but
+	// only on state changes — a long-gated task must not spam every scan.
+	if len(r.taskIdx.GatedPaths) > 0 || len(r.gatedLogged) > 0 {
+		now := make(map[string]bool, len(r.taskIdx.GatedPaths))
+		for _, p := range r.taskIdx.GatedPaths {
+			now[p] = true
+			if !r.gatedLogged[p] {
+				r.logger.Printf("scan: %s not dispatched (blocked_by upstream not done)", filepath.Base(p))
+			}
+		}
+		for p := range r.gatedLogged {
+			if !now[p] {
+				r.logger.Printf("scan: %s dependency gate cleared", filepath.Base(p))
+			}
+		}
+		r.gatedLogged = now
 	}
 	r.logger.Printf("scan: %d ready tasks", len(tasks))
 	r.scanMu.Unlock()
@@ -410,6 +485,24 @@ func (r *Runner) runTask(p preparedTask) {
 	r.activeTasks.Add(1)
 	defer r.activeTasks.Add(-1)
 	defer r.unlockRepo(p.repoDir, p.lockMode)
+	// New-project tasks opting into remote creation get their GitHub remote
+	// (name/description/README) before the OMP session starts; failure blocks
+	// the task with an actionable error instead of failing the session.
+	if p.task.Status == "implementing" && p.task.NewProject {
+		if err := r.ensureRemoteRepository(p.task.FilePath, p.repoDir); err != nil {
+			r.logger.Printf("task %s: remote repo creation failed: %v", p.task.ID, err)
+			if uerr := yamlfrontmatter.Update(p.task.FilePath, map[string]interface{}{
+				"status":            "blocked",
+				"blocked_phase":     "implementing",
+				"phase_error_code":  string(ErrRemotePartialCreate),
+				"phase_error":       "GitHub remote creation failed: " + err.Error(),
+				"resume_approved":   false,
+			}); uerr != nil {
+				r.logger.Printf("task %s: record remote-create failure: %v", p.task.ID, uerr)
+			}
+			return
+		}
+	}
 	r.processPreparedTask(p)
 	r.requestScan()
 }
@@ -646,7 +739,7 @@ func taskPIDFile(taskLogDir, taskID, taskPath string) string {
 }
 
 func (r *Runner) findReadyTasks() ([]task.ReadyTask, error) {
-	tasks, err := task.FindReadyTasks(r.cfg.ObsidianVault)
+	tasks, err := r.taskIdx.Scan(r.cfg.ObsidianVault)
 	if err != nil {
 		return nil, err
 	}
@@ -1162,6 +1255,50 @@ func reqHashChanged(t task.ReadyTask) bool {
 	return t.RefineReqHash != "" && t.PlanReqHash != "" && t.RefineReqHash != t.PlanReqHash
 }
 
+// compactPlanHistory folds old plan versions after a successful planning
+// round, on both the primary and fallback completion paths.
+func (r *Runner) compactPlanHistory(taskPath, phase string) {
+	if phase != "planning" {
+		return
+	}
+	if compacted, cerr := task.CompactPlanHistory(taskPath, 3); cerr != nil {
+		r.logger.Printf("task %s: compact plan history: %v", filepath.Base(taskPath), cerr)
+	} else if compacted {
+		r.logger.Printf("task %s: plan history compacted (kept 3 versions)", filepath.Base(taskPath))
+	}
+}
+
+// ensureReqHash precomputes the requirement document SHA-256 into the task's
+// refine_req_hash frontmatter (daemon-side, zero LLM tokens) so the
+// refining/planning skills can trust the stored hash instead of reading the
+// full REQ to compute it.
+func (r *Runner) ensureReqHash(taskPath, reqDoc string) {
+	if reqDoc == "" {
+		return
+	}
+	reqPath := filepath.Join(r.cfg.ObsidianVault, reqDoc)
+	data, err := os.ReadFile(reqPath)
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256(data)
+	hash := "sha256:" + hex.EncodeToString(sum[:])
+	raw, err := os.ReadFile(taskPath)
+	if err != nil {
+		return
+	}
+	fm, err := yamlfrontmatter.Parse(raw)
+	if err != nil || fm == nil {
+		return
+	}
+	if fm.RefineReqHash == hash {
+		return
+	}
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"refine_req_hash": hash}); err != nil {
+		r.logger.Printf("task %s: precompute req hash: %v", filepath.Base(taskPath), err)
+	}
+}
+
 func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {
 	processed := 0
 	for _, t := range tasks {
@@ -1334,6 +1471,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
 			continue
+		}
+
+		// Precompute the requirement hash into frontmatter so the
+		// refining/planning skills do not read the full REQ document just to
+		// hash it — the dominant token cost for large requirement docs.
+		if phase == "refining" || phase == "planning" {
+			r.ensureReqHash(taskPath, t.ReqDoc)
 		}
 
 		var thinking string
@@ -1558,6 +1702,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
 							r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
 						}
+						r.compactPlanHistory(taskPath, phase)
 						r.validateChangedDocs(repoDir, t.ID, phase)
 						if _, statErr := os.Stat(taskPath); statErr == nil {
 							notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
@@ -1577,6 +1722,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
 				r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
 			}
+			// A successful planning round folds the plan-history section down
+			// to the newest versions — large TASK docs are mostly historical
+			// plan blocks that every later session would otherwise re-read.
+			r.compactPlanHistory(taskPath, phase)
 			r.validateChangedDocs(repoDir, t.ID, phase)
 			if phase == "round2" && t.TargetBranch == "" {
 				if branch, err := gitCurrentBranch(repoDir); err == nil && branch != "" && branch != "HEAD" {
@@ -1774,8 +1923,56 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 		if err := os.MkdirAll(result.Path, 0755); err != nil {
 			return "", fmt.Errorf("create new project %s: %w", result.Path, err)
 		}
+		// Auto-register the new project in vault-map.json (name/path/
+		// git_remote/project_id generated from existing conventions) so later
+		// scans resolve it as "existing" without manual configuration.
+		gitRemote := project.GitRemoteFor(mapFile, projectName)
+		if err := project.RegisterProject(mapFile, projectName, result.Path, gitRemote, false); err != nil {
+			r.logger.Printf("task %s: register new project %s: %v", t.ID, projectName, err)
+		}
+		// Seed the CONTEXT.md skeleton so context injection has a base and
+		// agents build on it instead of creating ad-hoc files.
+		if err := r.ensureProjectContext(result.Path); err != nil {
+			r.logger.Printf("task %s: seed CONTEXT.md: %v", t.ID, err)
+		}
 	}
 	return result.Path, nil
+}
+
+// ensureProjectContext creates the Notes/CONTEXT.md skeleton for a brand-new
+// project when it does not exist yet. Agents fill in the sections during the
+// first rounds.
+func (r *Runner) ensureProjectContext(projDir string) error {
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		return err
+	}
+	contextPath := filepath.Join(notesDir, "CONTEXT.md")
+	if _, err := os.Stat(contextPath); err == nil {
+		return nil // already exists
+	}
+	content := `# <Project> Context
+
+本文件定义 <project> 流水线自动化中的共享领域词汇。
+
+## Language
+
+**（术语）**: （定义）。_Avoid_: （反义词）
+
+## Development Constraints
+
+- （开发约束，如技术栈、边界）
+
+## Anti-patterns
+
+- （反模式）
+
+## Reference Map
+| 领域关键词 | 参考路径 |
+|---|---|
+| （关键词） | （References 路径） |
+`
+	return os.WriteFile(contextPath, []byte(content), 0o644)
 }
 
 func (r *Runner) selectModel(assignee string) string {

@@ -10,7 +10,7 @@
 blocked → ready → refining ─┬─ fully_mature → planning → plan-review → implementing → review → done
                             ├─ needs input → needs-grilling → refining
                             ├─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
-                            └─ 重复争议（grill_repeat≥2）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
+                            └─ 重复争议（grill_repeat≥2 或单任务 plan_version≥3 反复 replan）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
 
 needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 
@@ -27,8 +27,8 @@ closed -- [终态，不可恢复]
 | 状态 | 含义 | 执行者 | 下一步 |
 |------|------|--------|--------|
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
-| `ready` | 可开始 priority assessment + maturity gate | daemon | `refining` |
-| `refining` | Headless 检查需求规格成熟度 | `models.default` | `planning` / `needs-grilling` / `blocked` |
+| `ready` | 可开始 priority assessment + maturity gate；**`blocked_by` 上游未 done 时不调度**（依赖门禁前置，防无效重规划） | daemon | `refining` |
+| `refining` | Headless 检查需求规格成熟度；**同样受依赖门禁约束** | `models.default` | `planning` / `needs-grilling` / `blocked` |
 | `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
@@ -63,8 +63,8 @@ closed -- [终态，不可恢复]
 | `assignee` | string | planning/Round 2/Merge 模型 key |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
-| `template` | string | 新项目脚手架提示（已弃用，见 `scaffold_intent`） |
-| `scaffold_intent` | string | 新项目脚手架意图描述，结构化技术栈/框架/构建/部署 |
+| `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
+| `scaffold` | object | 新项目脚手架意图（`kind`/`capabilities`/`preferences`/`notes`），供 Round 1 / project-scaffold 消费 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 完全自主任务声明：首次既有项目计划 + 非 pending_req + 无 ADR 提议时跳过 Plan Review（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
@@ -128,6 +128,9 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
+| `knowledge_extracted` | bool | `false` | 该任务 ADR 已提取到知识库（`ExtractTaskKnowledge` 幂等标记，merge 后写） |
+| `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
+| `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
 
 | `grill_resolution` | enum/string | `""` | `resume` 直接恢复实现；`replan` 转 refining；空值保持等待 |
 Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使用 `${TMPDIR}/otg-grill-<task-path-sha256>.lock` flock 强化本机原子性。
@@ -216,9 +219,9 @@ Priority Assessment 由 daemon 在 refining 阶段触发，评定完成后写入
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `scaffold_intent` | string | `""` | 新项目脚手架意图描述，替代原 `template` 自由文本字段 |
+| `scaffold` | object | `{}` | 新项目脚手架意图：`kind`（类型）、`capabilities`（能力列表）、`preferences`（键值偏好）、`notes`（自然语言说明） |
 
-`scaffold_intent` 结构化描述新项目技术栈、框架、构建系统和部署目标，供 `project-scaffold` Skill 消费。原 `template` 字段保留向后兼容但优先使用 `scaffold_intent`。
+`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段保留向后兼容。**接线状态**：frontmatter 解析与 Round 1 读取（Step 2.5：对照 `scaffold_registry` 能力校验 + `template_registry` 模板基线）已实现；project-scaffold 技能深度消费为可选项。
 
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
@@ -230,7 +233,12 @@ Priority Assessment 由 daemon 在 refining 阶段触发，评定完成后写入
 | `repository_visibility` | string | `"private"` | `private` / `public` / `internal` |
 | `repository_description` | string | `""` | 仓库描述 |
 
-`remote_create=true` 时 daemon 在 Round 2 开始前通过 GitHub API 创建远程仓库并设置 `origin`。
+`remote_create=true` 时 daemon 在 Round 2 开始前创建 GitHub 远程仓库并设置 `origin`（`ensureRemoteRepository`）：
+
+- **命名**：`repository_name` 显式值优先；否则用项目名去掉 Vault 数字前缀（`001-release-manager` → `release-manager`）。
+- **描述**：由 agent 在 Round 1 从需求自主提炼，写入 `repository_description`（项目定位 + 核心能力，≤200 字符）；daemon 侧 REQ 标题+摘要提炼为兜底；传给 `gh repo create --description` 并写入 `README.md`（含初始 commit）。
+- **可见性**：默认 `private`（`repository_visibility` 可覆盖；daemon 不持续关注仓库性质）。
+- **失败处理**：`gh repo create` 失败 → 探测 `gh repo view`（已存在则补 origin 并记录 URL 继续）；仍失败 → 任务 `blocked` + `REMOTE_PARTIAL_CREATE`（不消耗重试预算，人工 resume 幂等重试）。
 
 #### 4.6.9 文档校验字段
 
@@ -358,6 +366,15 @@ Installer 随包安装 6 个顶层 Skill（真实文件，非 symlink）：core�
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 
 **模型兜底（`fallback_models`）**：顶层映射，key 为 assignee（对应 `models` 的 key），value 为任意 OMP 模型标识。gpt/default/deepseek 失败时 daemon 用对应 value 重启 OMP；可增删任意 key、置 `""` 禁用单个 assignee 的兜底。默认三者均指向 `deepseek/deepseek-v4-flash`。
+
+**vault-map 自主维护（daemon）**：
+
+- **新项目自动注册**：Round 2 首次调度 `new_project=true` 任务时自动写入 `projects` 条目——`name`/`path` 按解析结果，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`），并播种 `Notes/CONTEXT.md` 骨架。
+- **保序写入**：所有 daemon 维护写回（注册、scaffold 补充、默认补齐）保留用户手排的顶层字段顺序（`orderedJSON`），不按字母序重排。
+- **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
+- **scaffold_registry 随项目积累**：merge→done 后，`classifyADR` 命中的知识主题中无对应能力（key/alias）的自动追加为能力（`Auto-derived from <project>`），registry 只增不减。
+
+**Skill 清单**：installer 安装 core、refining、round1、round2、merge、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）。
 
 外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality。
 

@@ -19,6 +19,7 @@ type GrillingTask struct {
 	FilePath    string
 	GrillParked bool
 	GrillRepeat int
+	PlanVersion int // high replan count drives single-task consolidation
 }
 
 // FindGrillingTasks returns every task currently in needs-grilling status.
@@ -66,6 +67,7 @@ func FindGrillingTasks(vaultPath string) ([]GrillingTask, error) {
 				FilePath:    path,
 				GrillParked: fm.GrillParked,
 				GrillRepeat: fm.GrillRepeat,
+				PlanVersion: fm.PlanVersion,
 			})
 		}
 	}

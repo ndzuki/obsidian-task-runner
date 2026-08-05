@@ -1,0 +1,10 @@
+# Phase skills installed to ~/.omp/skills/obsidian-task-runner-<name>.
+# Single source of truth: internal/install/install.go and Makefile sync-docs
+# both read this file — add a new phase skill here only.
+refining
+round1
+round2
+merge
+priority
+pm
+split

@@ -1,6 +1,6 @@
 ---
 name: obsidian-task-runner
-description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon directly invokes refining, round1, round2, and merge skills. Trigger: task runner, auto-run task, process workflow, execute pipeline, 自动执行 Obsidian 任务."
+description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon directly invokes refining, round1, round2, and merge skills. Trigger: task runner, 自动执行 Obsidian 任务."
 ---
 
 # Obsidian Task Runner — Core Contract

@@ -359,13 +359,22 @@ func installPhaseSkills(opts Options) error {
 	if srcBase == "" {
 		srcBase = "obsidian-task-runner"
 	}
-	phases := []struct{ name, srcRel string }{
-		{"obsidian-task-runner-refining", "skills/refining/SKILL.md"},
-		{"obsidian-task-runner-round1", "skills/round1/SKILL.md"},
-		{"obsidian-task-runner-round2", "skills/round2/SKILL.md"},
-		{"obsidian-task-runner-merge", "skills/merge/SKILL.md"},
-		{"obsidian-task-runner-priority", "skills/priority/SKILL.md"},
-		{"obsidian-task-runner-pm", "skills/pm/SKILL.md"},
+	// Phase skill list comes from skills/manifest — the single source shared
+	// with Makefile sync-docs; add a new phase skill there only.
+	manifest, err := os.ReadFile(filepath.Join(srcBase, "skills", "manifest"))
+	if err != nil {
+		return fmt.Errorf("read phase skill manifest: %w", err)
+	}
+	var phases []struct{ name, srcRel string }
+	for _, line := range strings.Split(string(manifest), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		phases = append(phases, struct{ name, srcRel string }{
+			name:   "obsidian-task-runner-" + name,
+			srcRel: filepath.Join("skills", name, "SKILL.md"),
+		})
 	}
 	if opts.DryRun {
 		for _, phase := range phases {

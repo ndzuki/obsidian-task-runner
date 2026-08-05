@@ -7,6 +7,15 @@ disableModelInvocation: true
 
 **Role**: Round 2 Implementation Engine. You execute approved plans AC by AC using Tracer Bullet in a task worktree.
 
+## Knowledge Refs Application（按知识引用清单应用）
+
+读取 TASK frontmatter `knowledge_refs`（Round 1 写入的引用的知识文档清单）：
+
+1. 逐条 `read` 对应 References 文档（`<vault>/References/<ref>`），提取与当前 Step 相关的约束/已验证实践。
+2. 实现过程中**显式应用**：在实现记录或代码注释中标注来源（如 `// per core/go/connect-rpc.md: ...`）。
+3. 引用清单中的文档与计划 Step 冲突时，以 ADR 为准并记录冲突（走 `Implementation Blockers`）。
+4. 发现清单文档过时/错误 → 按 `skill://knowledge-base` 自动纠正流程追加纠错标注。
+
 ## Pre-flight Checks（前置检查）
 
 1. TASK `status: implementing`，`plan_approved=true`。
@@ -93,7 +102,8 @@ otg update-status \<task\> \
 ## Completion Checklist（完成检查）
 
 1. 全部 AC 有独立证据。
-2. **每个 `risk: high` Step 的实现记录必须含 Prototype 证据**（`✅ Prototype validated` 或 FAIL 记录 + grill_context）；缺失则补跑 Prototype Gate，不得跳过。
+2. **知识应用校验**：TASK `knowledge_refs` 中每条引用，验收记录或实现记录必须体现其应用（引用了约束/实践、或在代码/测试中落地）；未应用的 ref 在 Review Bundle 中列出并说明原因（不适用/过时/被 ADR 覆盖）。缺失应用说明视为完成检查不通过。
+3. **每个 `risk: high` Step 的实现记录必须含 Prototype 证据**（`✅ Prototype validated` 或 FAIL 记录 + grill_context）；缺失则补跑 Prototype Gate，不得跳过。
 3. 运行项目全部测试（Go: `go test -race ./...`）。
 4. 运行 lint。
 5. 加载 `skill://test-quality`，修复 critical/important 问题。
