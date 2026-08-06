@@ -244,6 +244,25 @@ func buildINDEX(entries []RefEntry, usage *ProjectUsage) string {
 	fmt.Fprintf(&b, "> 可信度：verified %d/%d；活跃：high %d；可能过期(>365d)：%d\n",
 		verifiedCount, len(entries), highCount, staleCount)
 
+	// Stale list: documents untouched for over a year, candidates for
+	// review or archiving (move to archived/). Shown so the user can act
+	// without scanning every row.
+	var stale []RefEntry
+	for _, e := range entries {
+		if t, err := time.Parse("2006-01-02", e.Updated); err == nil && time.Since(t) > 365*24*time.Hour {
+			stale = append(stale, e)
+		}
+	}
+	if len(stale) > 0 {
+		sort.SliceStable(stale, func(i, j int) bool { return stale[i].Updated < stale[j].Updated })
+		b.WriteString("\n## 可能过期（>365 天未更新，建议复核或归档）\n\n")
+		b.WriteString("| 文件 | 最后更新 |\n")
+		b.WriteString("|------|---------|\n")
+		for _, e := range stale {
+			fmt.Fprintf(&b, "| %s | %s |\n", e.Path, e.Updated)
+		}
+	}
+
 	// Project reference summary: per project, how many distinct documents it
 	// references and how many delivered tasks carry a knowledge_applied mark.
 	if usage != nil && len(usage.ProjectRefs) > 0 {
