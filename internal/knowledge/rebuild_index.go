@@ -27,13 +27,15 @@ type RefEntry struct {
 	Verified bool
 	Noisy    bool     // contains non-knowledge content (chat links, project file lists)
 	Activity string   // high|normal|low — usage frequency, metadata not directory
+	Projects []string // projects referencing this doc via TASK knowledge_refs (sorted)
 }
 
 // layerOrder defines display order for the three layers.
 var layerOrder = []string{"core", "extended", "archived"}
 
-// RebuildINDEX scans References/ and regenerates INDEX.md.
-// Returns the number of entries written.
+// RebuildINDEX scans References/ and regenerates INDEX.md, annotating every
+// entry with the projects that reference it (from TASK knowledge_refs) and
+// appending a project-usage summary. Returns the number of entries written.
 func RebuildINDEX(vaultDir string) (int, error) {
 	refsDir := filepath.Join(vaultDir, "References")
 	entries, err := scanReferences(refsDir)
@@ -41,7 +43,17 @@ func RebuildINDEX(vaultDir string) (int, error) {
 		return 0, fmt.Errorf("scan References/: %w", err)
 	}
 
-	content := buildINDEX(entries)
+	usage, err := ScanProjectUsage(vaultDir)
+	if err != nil {
+		return 0, fmt.Errorf("scan project usage: %w", err)
+	}
+	for i := range entries {
+		if projects, ok := usage.DocProjects[entries[i].Path]; ok {
+			entries[i].Projects = projects
+		}
+	}
+
+	content := buildINDEX(entries, usage)
 	indexPath := filepath.Join(refsDir, "INDEX.md")
 	if err := os.WriteFile(indexPath, []byte(content), 0o644); err != nil {
 		return 0, fmt.Errorf("write INDEX.md: %w", err)
@@ -209,8 +221,9 @@ func toStringSlice(v any) []string {
 	return nil
 }
 
-// buildINDEX generates the INDEX.md markdown from entries.
-func buildINDEX(entries []RefEntry) string {
+// buildINDEX generates the INDEX.md markdown from entries and the project
+// usage graph (which projects reference which documents).
+func buildINDEX(entries []RefEntry, usage *ProjectUsage) string {
 	var b strings.Builder
 	b.WriteString("# References INDEX\n\n")
 	fmt.Fprintf(&b, "> 自动生成于 %s\n", time.Now().Format("2006-01-02"))
@@ -230,6 +243,22 @@ func buildINDEX(entries []RefEntry) string {
 	}
 	fmt.Fprintf(&b, "> 可信度：verified %d/%d；活跃：high %d；可能过期(>365d)：%d\n",
 		verifiedCount, len(entries), highCount, staleCount)
+
+	// Project reference summary: per project, how many distinct documents it
+	// references and how many delivered tasks carry a knowledge_applied mark.
+	if usage != nil && len(usage.ProjectRefs) > 0 {
+		projects := make([]string, 0, len(usage.ProjectRefs))
+		for p := range usage.ProjectRefs {
+			projects = append(projects, p)
+		}
+		sort.Strings(projects)
+		b.WriteString("\n## 项目引用\n\n")
+		b.WriteString("| 项目 | 引用文档数 | 应用交付任务 |\n")
+		b.WriteString("|------|-----------|-------------|\n")
+		for _, p := range projects {
+			fmt.Fprintf(&b, "| %s | %d | %d |\n", p, len(usage.ProjectRefs[p]), usage.ProjectApplied[p])
+		}
+	}
 
 	layers := groupByLayer(entries)
 	for _, layer := range layerOrder {
@@ -254,8 +283,8 @@ func buildINDEX(entries []RefEntry) string {
 			"archived": "Archived（已废弃，人工归档）",
 		}[layer]
 		fmt.Fprintf(&b, "\n## %s\n\n", label)
-		b.WriteString("| 文件 | 标题 | 摘要 | topics | activity | level | updated | verified |\n")
-		b.WriteString("|------|------|------|--------|----------|-------|---------|----------|\n")
+		b.WriteString("| 文件 | 标题 | 摘要 | topics | activity | level | updated | verified | 引用项目 |\n")
+		b.WriteString("|------|------|------|--------|----------|-------|---------|----------|----------|\n")
 		for _, e := range group {
 			title := e.Title
 			if title == "" {
@@ -284,8 +313,12 @@ func buildINDEX(entries []RefEntry) string {
 			if t, err := time.Parse("2006-01-02", e.Updated); err == nil && time.Since(t) > 365*24*time.Hour {
 				activity += " ⚠️可能过期"
 			}
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				e.Path, title, summary, topics, activity, e.Level, e.Updated, verified)
+			projects := strings.Join(e.Projects, ", ")
+			if projects == "" {
+				projects = "—"
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+				e.Path, title, summary, topics, activity, e.Level, e.Updated, verified, projects)
 		}
 	}
 	return b.String()

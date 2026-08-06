@@ -784,6 +784,28 @@ func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks
 	return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL}, nil
 }
 
+// taskKnowledgeRefs returns the task's knowledge_refs (relative References/
+// paths) with the References/ prefix and slashes normalized.
+func taskKnowledgeRefs(taskPath string) ([]string, error) {
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return nil, err
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return nil, fmt.Errorf("parse task frontmatter")
+	}
+	refs := make([]string, 0, len(fm.KnowledgeRefs))
+	for _, ref := range fm.KnowledgeRefs {
+		clean := strings.TrimPrefix(strings.TrimSpace(ref), "References/")
+		clean = strings.TrimPrefix(clean, "/")
+		if clean != "" {
+			refs = append(refs, clean)
+		}
+	}
+	return refs, nil
+}
+
 // measureKnowledgeApplied counts how many of the task's knowledge_refs
 // (planned by Round 1) exist in References/ at delivery time, records
 // "hit/total" in the task frontmatter (knowledge_applied), and logs the
@@ -853,6 +875,18 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	// "hit/total" on the task (knowledge_applied) and logged.
 	if err := r.measureKnowledgeApplied(taskPath, vaultDir); err != nil {
 		r.logger.Printf("knowledge-base applied measure failed: %v", err)
+	}
+	// Record the delivery on every referenced knowledge document: a merged
+	// task is applied-and-verified by definition, so append the application
+	// line automatically (idempotent per project+date).
+	if refs, readErr := taskKnowledgeRefs(taskPath); readErr == nil {
+		if added, recErr := knowledge.AppendApplicationRecord(vaultDir, projectName, refs); recErr != nil {
+			r.logger.Printf("knowledge-base application record failed: %v", recErr)
+		} else if added > 0 {
+			r.logger.Printf("knowledge-base application recorded: %d docs for %s", added, projectName)
+		}
+	} else {
+		r.logger.Printf("knowledge-base read refs for record failed: %v", readErr)
 	}
 	// Delivered project experience grows the scaffold registry: classified
 	// topics without a matching capability become new capabilities.

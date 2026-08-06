@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,6 +133,91 @@ func TestRefiningDispatchWritesPhaseSpecificLogFile(t *testing.T) {
 
 	releaseBarrier(t, releaseFile)
 	waitForBatch(t, done)
+}
+
+// TestRefiningEarlyOutRoutesReplanToPlanning pins the refining early-out for
+// the "REQ changed after the last plan" case. Regression: the early-out only
+// fired when refine_req_hash == plan_req_hash, so a task whose requirement
+// changed after its plan (pending_req=true, refine != plan) was re-dispatched
+// into the maturity gate on every scan forever — 30+ identical refining
+// rounds for TASK-067. The gate must route to planning once the stored audit
+// covers the current REQ, and re-run only when the audit is stale.
+func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, _, _ := writeBarrierOMP(t, dir)
+
+	reqPath := filepath.Join(dir, "REQ-067.md")
+	reqContent := "## 目标\nchanged requirement\n"
+	if err := os.WriteFile(reqPath, []byte(reqContent), 0o644); err != nil {
+		t.Fatalf("write req: %v", err)
+	}
+	sum := sha256.Sum256([]byte(reqContent))
+	currentHash := "sha256:" + hex.EncodeToString(sum[:])
+	staleHash := "sha256:37d9b57ae3b284b91664b89265435d2e4172e803baa24838891e591fdda26bfd"
+
+	tests := []struct {
+		name      string
+		refine    string
+		plan      string
+		wantPhase string
+	}{
+		{
+			name:      "audit current, req changed since plan → planning",
+			refine:    currentHash,
+			plan:      staleHash,
+			wantPhase: "/obsidian-task-runner-round1",
+		},
+		{
+			name:      "audit stale, req changed after audit → gate re-runs",
+			refine:    staleHash,
+			plan:      staleHash,
+			wantPhase: "/obsidian-task-runner-refining",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub := filepath.Join(dir, tt.name)
+			startDir := filepath.Join(sub, "starts")
+			argsDir := filepath.Join(sub, "args")
+			rel := filepath.Join(sub, "release")
+			t.Setenv("START_DIR", startDir)
+			t.Setenv("RELEASE_FILE", rel)
+			t.Setenv("ARGS_DIR", argsDir)
+			t.Cleanup(func() { _ = os.WriteFile(rel, nil, 0o644) })
+
+			taskPath := writeTaskFile(t, sub, "TASK-067.md", "refining")
+			runner := newTestRunner(skillDir, omp, filepath.Join(sub, "logs"), 1)
+			done := runBatch(runner, []task.ReadyTask{{
+				ID: "067", Title: "Operation creation workflow",
+				FilePath: taskPath, Status: "refining", Assignee: "default",
+				ReqDoc: reqPath, Maturity: "fully_mature",
+				RefineReqHash: tt.refine, PlanReqHash: tt.plan, PendingReq: true,
+			}})
+
+			waitForStartCount(t, startDir, 1)
+			waitForArgsFile(t, argsDir)
+			entries, err := os.ReadDir(argsDir)
+			if err != nil {
+				t.Fatalf("read OMP args directory: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("OMP invocation count = %d, want 1", len(entries))
+			}
+			args, err := os.ReadFile(filepath.Join(argsDir, entries[0].Name()))
+			if err != nil {
+				t.Fatalf("read OMP args: %v", err)
+			}
+			wantPrompt := tt.wantPhase + " " + taskPath
+			if !strings.Contains(string(args), wantPrompt) {
+				t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
+			}
+
+			releaseBarrier(t, rel)
+			waitForBatch(t, done)
+		})
+	}
 }
 
 // TestGrillContinueResetReleasesParkedState guards the grill_continue reset
@@ -958,7 +1045,7 @@ func waitForStartCount(t *testing.T, dir string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if countStartFiles(t, dir) == want {
+		if n := countStartFiles(t, dir); n == want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1304,15 +1391,25 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	runner.daemonCtx = ctx
 	defer cancel()
 
-	// First scan dispatches the planning task, then blocks in processBatch
-	// while the barrier holds the OMP session.
+	// Hold scanMu so the scan cycle blocks before it can dispatch; the
+	// requestScan goroutine parks on the mutex while scanActive is already
+	// set synchronously. This makes the coalescing contract observable
+	// without racing the dispatch-only cycle (which completes in
+	// milliseconds once OMP launch returns).
+	runner.scanMu.Lock()
 	runner.requestScan()
-	waitForStartCount(t, startDir, 1)
-	runner.scanGateMu.Lock()
-	active := runner.scanActive
-	runner.scanGateMu.Unlock()
-	if !active {
-		t.Fatal("scan should be active while the batch is blocked")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runner.scanGateMu.Lock()
+		active := runner.scanActive
+		runner.scanGateMu.Unlock()
+		if active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scan did not become active")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 
 	// A burst of requests while the scan is active must not start a second
@@ -1327,13 +1424,19 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 		t.Fatal("requests during an active scan should be marked pending")
 	}
 
+	// Let the blocked scan proceed: it dispatches the planning task (OMP
+	// starts and parks on the barrier), then unwinds.
+	runner.scanMu.Unlock()
+	waitForStartCount(t, startDir, 1)
+
 	// Release the barrier: the cycle unwinds and the coalesced follow-up scan
 	// is scheduled. Consuming the pending marker and re-activating the gate
 	// happen deterministically in runScanCycle, so settle == idle gate with
 	// the pending marker cleared (the follow-up itself may finish too fast to
 	// observe as an active window, since the task may no longer be ready).
 	releaseBarrier(t, releaseFile)
-	deadline := time.Now().Add(10 * time.Second)
+	var active bool
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		runner.scanGateMu.Lock()
 		active = runner.scanActive

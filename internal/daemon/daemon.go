@@ -54,6 +54,7 @@ type Runner struct {
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map   // "key" → time.Time (API-key-unavailable toast debounce)
+	refIndexRebuiltAt  sync.Map   // "last" → time.Time (References INDEX rebuild debounce)
 	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
@@ -222,9 +223,21 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 			// Knowledge-base writes drop the classification index cache so new
-			// topics/tags participate in extraction immediately.
+			// topics/tags participate in extraction immediately. The intake
+			// hook also validates the KB v2 six-field format and rebuilds
+			// INDEX (debounced) — interactive/agent writes that skip the
+			// skill's checks are caught here instead of silently polluting
+			// the index.
 			if strings.Contains(evt.Path, refsDirToken) {
 				knowledge.InvalidateRefIndex(filepath.Join(r.cfg.ObsidianVault, "References"))
+				if strings.HasSuffix(evt.Path, ".md") {
+					if verr := knowledge.ValidateRefFile(evt.Path); verr != nil {
+						r.logger.Printf("knowledge-base intake: %s invalid: %v", filepath.Base(evt.Path), verr)
+						notify.SendTaskAction("knowledge", filepath.Base(evt.Path), "📄", "知识库格式不合规",
+							verr.Error()+"; 请按 KB v2 六字段 frontmatter 修正，INDEX 将跳过该文档。", r.cfg.Notifications.Desktop)
+					}
+				}
+				r.maybeRebuildRefIndex()
 			}
 			if evt.Dir == "Requirements" {
 				reqRel, _ := filepath.Rel(r.cfg.ObsidianVault, evt.Path)
@@ -2679,6 +2692,23 @@ func procExists(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// maybeRebuildRefIndex rebuilds References/INDEX.md after writes, debounced
+// to 10 seconds so agent intake batches (multiple file writes) trigger one
+// rebuild. The first write after the window rebuilds synchronously enough to
+// keep INDEX fresh for the next retrieval.
+func (r *Runner) maybeRebuildRefIndex() {
+	now := time.Now()
+	if last, ok := r.refIndexRebuiltAt.Load("last"); ok && now.Sub(last.(time.Time)) < 10*time.Second {
+		return
+	}
+	r.refIndexRebuiltAt.Store("last", now)
+	if n, err := knowledge.RebuildINDEX(r.cfg.ObsidianVault); err != nil {
+		r.logger.Printf("knowledge-base INDEX rebuild failed: %v", err)
+	} else {
+		r.logger.Printf("knowledge-base INDEX rebuilt: %d entries", n)
+	}
 }
 
 // resolveVaultProjectDir resolves a project name to its vault directory.
