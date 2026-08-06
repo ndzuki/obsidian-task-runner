@@ -64,6 +64,10 @@ sync-docs:
 	@echo "=== Syncing skill docs to ~/.omp/ ==="
 	cp -r obsidian-task-runner/*.md $(HOME)/.omp/skills/obsidian-task-runner/
 	cp -r obsidian-task-runner/skills/ $(HOME)/.omp/skills/obsidian-task-runner/
+	@# knowledge-base is an external skill; the repo copy is the versioned
+	@# source for rollback. Only overwrite the installed file, never the
+	@# vault data it reads.
+	cp obsidian-task-runner/skills/knowledge-base/SKILL.md $(HOME)/.omp/skills/knowledge-base/SKILL.md
 	@for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
 		mkdir -p $(HOME)/.omp/skills/obsidian-task-runner-$$s; \
 		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.omp/skills/obsidian-task-runner-$$s/SKILL.md; \

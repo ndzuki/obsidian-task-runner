@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
@@ -73,6 +74,47 @@ func TestEmbeddingClientOpenAI(t *testing.T) {
 	}
 	if vec[1] != 1 {
 		t.Fatalf("vector = %v, want [0 1 0]", vec)
+	}
+}
+
+func TestBuildVectorsIncremental(t *testing.T) {
+	srv := fakeEmbeddingServer(t)
+	defer srv.Close()
+	client := NewEmbeddingClient(&config.KBEmbeddingConfig{Backend: "ollama", URL: srv.URL, Model: "bge-m3"})
+
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "core")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSearchDoc(t, refsDir, "a.md", "go, connect", "a 内容")
+	writeSearchDoc(t, refsDir, "b.md", "helm, chart", "b 内容")
+
+	n1, err := BuildVectors(vault, client)
+	if err != nil || n1 != 2 {
+		t.Fatalf("first build: n=%d err=%v, want 2,nil", n1, err)
+	}
+	// Second build with no changes: everything skipped (fast, no embeds).
+	before := time.Now()
+	n2, err := BuildVectors(vault, client)
+	if err != nil || n2 != 2 {
+		t.Fatalf("second build: n=%d err=%v, want 2,nil", n2, err)
+	}
+	if time.Since(before) > 500*time.Millisecond {
+		t.Fatalf("unchanged rebuild took %v, want <500ms (skipped embeds)", time.Since(before))
+	}
+	// Change one doc → only it re-embeds; vectors preserved for the other.
+	writeSearchDoc(t, refsDir, "b.md", "helm, chart, k8s", "b 内容更新")
+	if _, err := BuildVectors(vault, client); err != nil {
+		t.Fatal(err)
+	}
+	idx := LoadVectors(vault)
+	if idx["core/b.md"].SourceHash == "" || idx["core/a.md"].SourceHash == "" {
+		t.Fatal("source hashes missing")
+	}
+	if idx["core/b.md"].Chunks[0].Vector[1] != 1 {
+		t.Fatal("updated doc vector should reflect new content")
 	}
 }
 
