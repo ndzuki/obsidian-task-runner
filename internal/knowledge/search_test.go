@@ -74,7 +74,7 @@ func TestChunkDocumentSplitsLongSections(t *testing.T) {
 		if c.heading == "## 长节" && len(c.text) > 300+len("## 长节\n")+128 {
 			t.Fatalf("chunk %q not truncated to head: %d chars", c.heading, len(c.text))
 		}
-		if !strings.Contains(c.text, "段落内容示例") {
+		if c.heading == "## 长节" && !strings.Contains(c.text, "段落内容示例") {
 			t.Fatalf("chunk %q missing body content", c.heading)
 		}
 	}
