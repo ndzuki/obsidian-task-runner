@@ -44,7 +44,12 @@ func withAPIKeyValue(t *testing.T, value bool) {
 
 func TestGrillingListPaused(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "Grilling-Decisions.md")
+	vault := filepath.Join(dir, "vault")
+	notes := filepath.Join(vault, "Projects", "test", "Notes")
+	if err := os.MkdirAll(notes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(notes, "Grilling-Decisions.md")
 	open := `---
 id: "grilling-decisions"
 project: test
@@ -85,6 +90,26 @@ status: closed
 	}
 	if !grillingListPaused(path) {
 		t.Fatal("status=closed should be paused")
+	}
+	// User typo variant "pause" (seen in the field) must also suppress.
+	typo := `---
+id: "grilling-decisions"
+project: test
+status: pause
+---
+# Decisions
+`
+	if err := os.WriteFile(path, []byte(typo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !grillingListPaused(path) {
+		t.Fatal("status=pause (typo) should be paused")
+	}
+	if ok, err := activatePausedDecisionList(vault, "test"); !ok || err != nil {
+		t.Fatalf("activate pause-typo list: ok=%v err=%v, want true,nil", ok, err)
+	}
+	if fm := mustParse(t, path); fm.Status != "open" {
+		t.Fatalf("status after activation = %q, want open", fm.Status)
 	}
 	if grillingListPaused(filepath.Join(dir, "missing.md")) {
 		t.Fatal("missing list should not be paused")
