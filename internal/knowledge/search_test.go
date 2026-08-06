@@ -62,17 +62,20 @@ func TestChunkDocument(t *testing.T) {
 }
 
 func TestChunkDocumentSplitsLongSections(t *testing.T) {
-	// A section far longer than the 1500-char window must split into
-	// multiple chunks, each under the cap (with document prefix).
-	long := strings.Repeat("段落内容示例。", 200) // 700 chars
+	// A very long section is truncated to its head (CPU-inference budget):
+	// the chunk stays one per section but is capped at 300 body chars.
+	long := strings.Repeat("段落内容示例。", 200) // 1400 chars
 	body := "---\ntopics: [go]\n---\n# T\n\n> s\n\n## 长节\n" + long + "\n\n## 尾节\n- x\n"
 	chunks := chunkDocument([]byte(body))
-	if len(chunks) < 2 {
-		t.Fatalf("long section should split into ≥2 chunks, got %d", len(chunks))
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (preamble + 2 sections)", len(chunks))
 	}
 	for _, c := range chunks {
-		if c.heading == "## 长节" && len(c.text) > 1500+len("## 长节\n")+64 {
-			t.Fatalf("chunk %q too long: %d", c.heading, len(c.text))
+		if c.heading == "## 长节" && len(c.text) > 300+len("## 长节\n")+128 {
+			t.Fatalf("chunk %q not truncated to head: %d chars", c.heading, len(c.text))
+		}
+		if !strings.Contains(c.text, "段落内容示例") {
+			t.Fatalf("chunk %q missing body content", c.heading)
 		}
 	}
 }
