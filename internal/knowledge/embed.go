@@ -42,51 +42,61 @@ func NewEmbeddingClient(cfg *config.KBEmbeddingConfig) *EmbeddingClient {
 
 // Embed returns the embedding vector for one text.
 func (c *EmbeddingClient) Embed(text string) ([]float64, error) {
-	if c == nil {
+	vecs, err := c.EmbedBatch([]string{text})
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
+// EmbedBatch embeds multiple texts in one API call — the throughput win for
+// index builds (ollama /api/embed handles arrays; batching ~8 chunks per
+// call is ~8x faster than serial single-text requests).
+func (c *EmbeddingClient) EmbedBatch(texts []string) ([][]float64, error) {
+	if c == nil || len(texts) == 0 {
 		return nil, fmt.Errorf("embedding client not configured")
 	}
 	switch c.cfg.Backend {
 	case "", "ollama":
-		return c.embedOllama(text)
+		return c.embedOllamaBatch(texts)
 	case "openai":
-		return c.embedOpenAI(text)
+		return c.embedOpenAIBatch(texts)
 	default:
 		return nil, fmt.Errorf("unknown embedding backend %q", c.cfg.Backend)
 	}
 }
 
-// embedOllama calls POST {base}/api/embeddings with {model, prompt}.
-func (c *EmbeddingClient) embedOllama(text string) ([]float64, error) {
-	body, err := json.Marshal(map[string]string{"model": c.cfg.Model, "prompt": text})
+// embedOllamaBatch calls POST {base}/api/embed with {model, input: [...]}.
+func (c *EmbeddingClient) embedOllamaBatch(texts []string) ([][]float64, error) {
+	body, err := json.Marshal(map[string]any{"model": c.cfg.Model, "input": texts})
 	if err != nil {
 		return nil, err
 	}
-	url := c.cfg.URL + "/api/embeddings"
+	url := c.cfg.URL + "/api/embed"
 	resp, err := c.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("ollama embeddings: %w", err)
+		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("ollama embeddings: %s: %s", resp.Status, string(data))
+		return nil, fmt.Errorf("ollama embed: %s: %s", resp.Status, string(data))
 	}
 	var payload struct {
-		Embedding []float64 `json:"embedding"`
+		Embeddings [][]float64 `json:"embeddings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("ollama embeddings decode: %w", err)
+		return nil, fmt.Errorf("ollama embed decode: %w", err)
 	}
-	if len(payload.Embedding) == 0 {
-		return nil, fmt.Errorf("ollama embeddings: empty vector")
+	if len(payload.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("ollama embed: got %d embeddings for %d inputs", len(payload.Embeddings), len(texts))
 	}
-	return payload.Embedding, nil
+	return payload.Embeddings, nil
 }
 
-// embedOpenAI calls POST {base}/embeddings (OpenAI-compatible) with
-// {model, input}.
-func (c *EmbeddingClient) embedOpenAI(text string) ([]float64, error) {
-	body, err := json.Marshal(map[string]string{"model": c.cfg.Model, "input": text})
+// embedOpenAIBatch calls POST {base}/embeddings with {model, input: [...]}.
+func (c *EmbeddingClient) embedOpenAIBatch(texts []string) ([][]float64, error) {
+	body, err := json.Marshal(map[string]any{"model": c.cfg.Model, "input": texts})
 	if err != nil {
 		return nil, err
 	}
@@ -116,10 +126,14 @@ func (c *EmbeddingClient) embedOpenAI(text string) ([]float64, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("openai embeddings decode: %w", err)
 	}
-	if len(payload.Data) == 0 || len(payload.Data[0].Embedding) == 0 {
-		return nil, fmt.Errorf("openai embeddings: empty data")
+	if len(payload.Data) != len(texts) {
+		return nil, fmt.Errorf("openai embeddings: got %d for %d inputs", len(payload.Data), len(texts))
 	}
-	return payload.Data[0].Embedding, nil
+	vecs := make([][]float64, 0, len(payload.Data))
+	for _, d := range payload.Data {
+		vecs = append(vecs, d.Embedding)
+	}
+	return vecs, nil
 }
 
 // chunkVector is one embedded section of a document.
@@ -141,6 +155,9 @@ type docVectors struct {
 type vectorIndex map[string]*docVectors
 
 const vectorIndexVersion = 2
+
+// embedBatchSize is the number of chunks per embedding API call.
+const embedBatchSize = 8
 
 // LoadVectors reads the vector store; nil when absent or of the legacy
 // single-vector format.
@@ -239,17 +256,29 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 				mu.Unlock()
 				chunks := chunkDocument(j.data)
 				doc := &docVectors{Title: extractH1(j.data), SourceHash: hash, Chunks: make([]chunkVector, 0, len(chunks))}
-				for _, c := range chunks {
-					vec, err := client.Embed(c.text)
+				// Batch 8 chunks per API call — /api/embed arrays make this
+				// ~8x faster than serial single-text requests.
+				for start := 0; start < len(chunks); start += embedBatchSize {
+					end := start + embedBatchSize
+					if end > len(chunks) {
+						end = len(chunks)
+					}
+					texts := make([]string, 0, end-start)
+					for _, c := range chunks[start:end] {
+						texts = append(texts, c.text)
+					}
+					vecs, err := client.EmbedBatch(texts)
 					if err != nil {
 						mu.Lock()
 						if firstErr == nil {
-							firstErr = fmt.Errorf("embed %s %q: %w", j.rel, c.heading, err)
+							firstErr = fmt.Errorf("embed %s %q: %w", j.rel, chunks[start].heading, err)
 						}
 						mu.Unlock()
 						return
 					}
-					doc.Chunks = append(doc.Chunks, chunkVector{Heading: c.heading, Vector: vec})
+					for i, vec := range vecs {
+						doc.Chunks = append(doc.Chunks, chunkVector{Heading: chunks[start+i].heading, Vector: vec})
+					}
 				}
 				mu.Lock()
 				idx[j.rel] = doc
