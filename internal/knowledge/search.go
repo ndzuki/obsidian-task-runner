@@ -260,7 +260,8 @@ func (idx *searchIndex) docByPath(path string) (searchDoc, bool) {
 	return searchDoc{}, false
 }
 
-// rank converts per-doc scores to sorted results.
+// rank converts per-doc scores to sorted results, deduplicating near-identical
+// documents (≥2 shared topics) so a topic cluster surfaces once.
 func (idx *searchIndex) rank(scores []float64, limit int) []SearchResult {
 	order := make([]int, 0, idx.totalDocs)
 	for i, s := range scores {
@@ -269,20 +270,46 @@ func (idx *searchIndex) rank(scores []float64, limit int) []SearchResult {
 		}
 	}
 	sort.Slice(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
-	if len(order) > limit {
-		order = order[:limit]
-	}
 	results := make([]SearchResult, 0, len(order))
+	var keptTopics [][]string
 	for _, docID := range order {
 		d := idx.docs[docID]
+		if topicOverlap(d.Topics, keptTopics) {
+			continue
+		}
 		results = append(results, SearchResult{
-			Path:    d.Path,
-			Title:   d.Title,
-			Summary: d.Summary,
-			Score:   scores[docID],
+			Path: d.Path, Title: d.Title, Summary: d.Summary, Score: scores[docID],
 		})
+		keptTopics = append(keptTopics, strings.Fields(d.Topics))
+		if len(results) >= limit {
+			break
+		}
 	}
 	return results
+}
+
+// topicOverlap reports whether the document's topics share ≥2 terms with any
+// kept cluster (semantic noise dedup).
+func topicOverlap(topics string, kept [][]string) bool {
+	fields := strings.Fields(topics)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, cluster := range kept {
+		shared := 0
+		for _, f := range fields {
+			for _, c := range cluster {
+				if f == c {
+					shared++
+					break
+				}
+			}
+		}
+		if shared >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 // cosine returns the cosine similarity between two vectors (0 for empty/zero).

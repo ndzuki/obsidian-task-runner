@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -129,8 +130,9 @@ type chunkVector struct {
 
 // docVectors holds a document's chunked embeddings.
 type docVectors struct {
-	Title  string        `json:"title"`
-	Chunks []chunkVector `json:"chunks"`
+	Title      string        `json:"title"`
+	Chunks     []chunkVector `json:"chunks"`
+	SourceHash string        `json:"source_hash,omitempty"` // content sha256 prefix; unchanged docs skip re-embedding
 }
 
 // vectorIndex maps document path → chunked vectors. Versioned for format
@@ -211,6 +213,9 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 	}
 
 	idx := make(vectorIndex)
+	// Incremental: reuse vectors for unchanged documents (content hash
+	// match) so rebuilds only re-embed what actually changed.
+	prev := LoadVectors(vaultDir)
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
@@ -224,8 +229,16 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 		go func() {
 			defer wg.Done()
 			for j := range jobCh {
+				hash := contentHash(j.data)
+				mu.Lock()
+				if old, ok := prev[j.rel]; ok && old.SourceHash == hash {
+					idx[j.rel] = old
+					mu.Unlock()
+					continue
+				}
+				mu.Unlock()
 				chunks := chunkDocument(j.data)
-				doc := &docVectors{Title: extractH1(j.data), Chunks: make([]chunkVector, 0, len(chunks))}
+				doc := &docVectors{Title: extractH1(j.data), SourceHash: hash, Chunks: make([]chunkVector, 0, len(chunks))}
 				for _, c := range chunks {
 					vec, err := client.Embed(c.text)
 					if err != nil {
@@ -258,6 +271,12 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 	return len(idx), nil
 }
 
+// contentHash returns a short content fingerprint for incremental builds.
+func contentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:8])
+}
+
 // textChunk is one embeddable section.
 type textChunk struct {
 	heading string
@@ -287,17 +306,27 @@ func chunkDocument(data []byte) []textChunk {
 	var chunks []textChunk
 	current := strings.Builder{}
 	currentHeading := ""
+	appendChunk := func(text string) {
+		text = prefix.String() + currentHeading + "\n" + text
+		// bge-m3 input ceiling is 8192 tokens; Chinese text is ~1-2 tokens
+		// per character, so cap each embedded chunk conservatively.
+		const maxChunk = 1500
+		for len(text) > maxChunk {
+			// Cut at the last paragraph break within the window.
+			cut := strings.LastIndex(text[:maxChunk], "\n\n")
+			if cut < maxChunk/2 {
+				cut = maxChunk
+			}
+			chunks = append(chunks, textChunk{heading: currentHeading, text: text[:cut]})
+			text = text[cut:]
+		}
+		chunks = append(chunks, textChunk{heading: currentHeading, text: text})
+	}
 	flush := func() {
 		if strings.TrimSpace(current.String()) == "" {
 			return
 		}
-		text := prefix.String() + currentHeading + "\n" + current.String()
-		// bge-m3 input ceiling is 8192 tokens; Chinese text is ~1-2 tokens
-		// per character, so cap conservatively at 4000 chars.
-		if len(text) > 4000 {
-			text = text[:4000]
-		}
-		chunks = append(chunks, textChunk{heading: currentHeading, text: text})
+		appendChunk(current.String())
 		current.Reset()
 	}
 	for _, line := range strings.Split(body, "\n") {

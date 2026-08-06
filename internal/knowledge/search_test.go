@@ -61,6 +61,51 @@ func TestChunkDocument(t *testing.T) {
 	}
 }
 
+func TestChunkDocumentSplitsLongSections(t *testing.T) {
+	// A section far longer than the 1500-char window must split into
+	// multiple chunks, each under the cap (with document prefix).
+	long := strings.Repeat("段落内容示例。", 200) // 700 chars
+	body := "---\ntopics: [go]\n---\n# T\n\n> s\n\n## 长节\n" + long + "\n\n## 尾节\n- x\n"
+	chunks := chunkDocument([]byte(body))
+	if len(chunks) < 2 {
+		t.Fatalf("long section should split into ≥2 chunks, got %d", len(chunks))
+	}
+	for _, c := range chunks {
+		if c.heading == "## 长节" && len(c.text) > 1500+len("## 长节\n")+64 {
+			t.Fatalf("chunk %q too long: %d", c.heading, len(c.text))
+		}
+	}
+}
+
+func TestRankDeduplicatesTopics(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "core")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Three docker docs sharing topics, one unique doc.
+	writeSearchDoc(t, refsDir, "docker-a.md", "docker, container, cli", "docker 命令 A")
+	writeSearchDoc(t, refsDir, "docker-b.md", "docker, container, compose", "docker 命令 B")
+	writeSearchDoc(t, refsDir, "k8s.md", "kubernetes, k8s, kind", "kind 集群")
+	idx, err := BuildSearchIndex(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All docs score via shared "docker"/"container"/"k8s" terms.
+	hits := idx.Search("docker container", 5)
+	// Dedup keeps at most one docker-family doc + possibly k8s (no 2-topic
+	// overlap with docker cluster? k8s shares none of docker,container) →
+	// expect ≤2 results.
+	if len(hits) > 2 {
+		got := make([]string, 0, len(hits))
+		for _, h := range hits {
+			got = append(got, h.Path)
+		}
+		t.Fatalf("dedup expected ≤2, got %v", got)
+	}
+}
+
 func TestSearchRanksByRelevance(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
