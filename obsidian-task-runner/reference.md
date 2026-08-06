@@ -237,13 +237,16 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 | `repository_name` | string | `""` | 仓库名 |
 | `repository_visibility` | string | `"private"` | `private` / `public` / `internal` |
 | `repository_description` | string | `""` | 仓库描述 |
+| `repository_url` | string | `""` | 远端仓库地址；非空时创建逻辑短路（幂等） |
 
 `remote_create=true` 时 daemon 在 Round 2 开始前创建 GitHub 远程仓库并设置 `origin`（`ensureRemoteRepository`）：
 
 - **命名**：`repository_name` 显式值优先；否则用项目名去掉 Vault 数字前缀（`001-release-manager` → `release-manager`）。
 - **描述**：由 agent 在 Round 1 从需求自主提炼，写入 `repository_description`（项目定位 + 核心能力，≤200 字符）；daemon 侧 REQ 标题+摘要提炼为兜底；传给 `gh repo create --description` 并写入 `README.md`（含初始 commit）。
 - **可见性**：默认 `private`（`repository_visibility` 可覆盖；daemon 不持续关注仓库性质）。
+- **gh 版本**：`gh ≥2.9x` 要求 `--source` 才能用 `--remote`，两处创建路径（新项目/提升）均以 `--source .` 形式从仓库目录执行。
 - **失败处理**：`gh repo create` 失败 → 探测 `gh repo view`（已存在则补 origin 并记录 URL 继续）；仍失败 → 任务 `blocked` + `REMOTE_PARTIAL_CREATE`（不消耗重试预算，人工 resume 幂等重试）。
+- **既有项目提升路径（`ensureProjectCheckout`）**：已注册项目 path 回退 vault 目录（非 git 根）且配置 `git_remote` 时，`resolveRepo` 自动创建 `new_project_root/<name>` 独立 checkout（README 初始提交）并把 vault-map `path` 更新指向 checkout；远端仓库缺失时同样自动 `gh repo create`（private，description 从 REQ 蒸馏），无需 `remote_create=true`（git_remote 注册即声明仓库归属）。详见 docs/workflow.md §6.5。
 
 #### 4.6.9 文档校验字段
 
@@ -356,7 +359,7 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 
 - 同一 Vault watcher/timer 互斥。
 - 不同 Vault 可并行。
-- refining 不需要仓库。
+- refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见 workflow.md §6.5）。
 - 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree OMP 隔离，避免被 planning/refining 读锁长期阻塞）。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。

@@ -79,7 +79,9 @@ func (r *Runner) ensureRemoteRepository(taskPath, repoDir string) error {
 		return fmt.Errorf("git commit README: %v: %s", gerr, strings.TrimSpace(string(out)))
 	}
 
-	args := []string{"repo", "create", owner + "/" + name, "--" + visibility, "--remote", "origin"}
+	// gh ≥2.9x rejects --remote without --source; the source form works on
+	// older gh too, so create from repoDir itself.
+	args := []string{"repo", "create", owner + "/" + name, "--" + visibility, "--source", ".", "--remote", "origin"}
 	if description != "" {
 		args = append(args, "--description", description)
 	}
