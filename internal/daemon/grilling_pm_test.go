@@ -141,6 +141,41 @@ func TestProjectFromReqPath(t *testing.T) {
 	}
 }
 
+// TestResolveVaultProjectDirAcceptsPrefixedProject guards the decision-list
+// distribute/reminder path: task frontmatter historically carries the full
+// prefixed directory name ("002-magic-models-manager") while vault-map uses
+// the unprefixed name — both must resolve to the same directory, otherwise
+// grillingDecisionListPath returns "" and answers never distribute.
+func TestResolveVaultProjectDirAcceptsPrefixedProject(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	for _, proj := range []string{"001-release-manager", "002-magic-models-manager", "003-obsidian-task-runner"} {
+		if err := os.MkdirAll(filepath.Join(vault, "Projects", proj), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := map[string]string{
+		"002-magic-models-manager": "002-magic-models-manager", // prefixed (legacy frontmatter)
+		"magic-models-manager":     "002-magic-models-manager", // unprefixed vault-map name
+		"release-manager":          "001-release-manager",
+		"obsidian-task-runner":     "003-obsidian-task-runner",
+		"no-such-project":          "",
+	}
+	for input, wantDir := range cases {
+		got := resolveVaultProjectDir(vault, input)
+		if wantDir == "" {
+			if got != "" {
+				t.Errorf("resolveVaultProjectDir(%q) = %q, want empty", input, got)
+			}
+			continue
+		}
+		want := filepath.Join(vault, "Projects", wantDir)
+		if got != want {
+			t.Errorf("resolveVaultProjectDir(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("create task dir: %v", err)

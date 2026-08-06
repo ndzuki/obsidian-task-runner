@@ -52,3 +52,52 @@ priority_assessment_status: completed
 		t.Fatalf("priority tasks = %+v, want pending and stale running", got)
 	}
 }
+
+// TestFindPriorityTasksSkipsLateStageTasks guards the state filter: a task
+// already in planning (or later) must not be picked up for assessment —
+// priority drives scheduling only in the early stages, and assessing late
+// tasks would spawn a wasted OMP session per scan.
+func TestFindPriorityTasksSkipsLateStageTasks(t *testing.T) {
+	vault := t.TempDir()
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+	writeTask(t, tasksDir, "TASK-001-ready.md", `
+id: "001"
+title: Ready
+project: test
+status: ready
+assignee: ""
+req_doc: Projects/001-test/Requirements/REQ-001.md
+priority: ""
+priority_assessment_status: pending
+`)
+	writeTask(t, tasksDir, "TASK-002-planning.md", `
+id: "002"
+title: Planning
+project: test
+status: planning
+assignee: ""
+req_doc: Projects/001-test/Requirements/REQ-002.md
+priority: ""
+priority_assessment_status: pending
+`)
+	writeTask(t, tasksDir, "TASK-003-review.md", `
+id: "003"
+title: Review
+project: test
+status: review
+assignee: ""
+req_doc: Projects/001-test/Requirements/REQ-003.md
+priority: ""
+priority_assessment_status: pending
+`)
+	got, err := FindPriorityTasks(vault, time.Now())
+	if err != nil {
+		t.Fatalf("FindPriorityTasks: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "001" {
+		t.Fatalf("priority tasks = %+v, want only the ready task", got)
+	}
+}
