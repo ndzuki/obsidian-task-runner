@@ -21,11 +21,12 @@ type searchIndex struct {
 }
 
 type searchDoc struct {
-	Path    string
-	Title   string
-	Summary string
-	Topics  string
-	Body    string
+	Path     string
+	Title    string
+	Summary  string
+	Topics   string
+	Body     string
+	termFreq map[string]int // precomputed at index time (BM25 tf)
 }
 
 // SearchResult is one ranked hit.
@@ -95,12 +96,13 @@ func (idx *searchIndex) addDoc(doc searchDoc) {
 	text := strings.ToLower(doc.Title + " " + doc.Summary + " " + doc.Topics + " " + doc.Body)
 	tokens := tokenize(text)
 	idx.docLen = append(idx.docLen, len(tokens))
-	seen := make(map[string]bool)
+	freq := make(map[string]int, 32)
 	for _, t := range tokens {
-		if seen[t] {
-			continue
-		}
-		seen[t] = true
+		freq[t]++
+	}
+	doc.termFreq = freq
+	idx.docs[docID] = doc
+	for t := range freq {
 		idx.postings[t] = append(idx.postings[t], docID)
 	}
 	idx.totalDocs++
@@ -156,12 +158,7 @@ func (idx *searchIndex) Search(query string, limit int) []SearchResult {
 		df := len(postings)
 		idf := log2(1 + (float64(idx.totalDocs)-float64(df)+0.5)/(float64(df)+0.5))
 		for _, docID := range postings {
-			tf := 0
-			for _, t := range tokenize(idx.docs[docID].Title + " " + idx.docs[docID].Summary + " " + idx.docs[docID].Topics + " " + idx.docs[docID].Body) {
-				if t == term {
-					tf++
-				}
-			}
+			tf := idx.docs[docID].termFreq[term]
 			if tf == 0 {
 				continue
 			}
@@ -171,6 +168,88 @@ func (idx *searchIndex) Search(query string, limit int) []SearchResult {
 			scores[docID] += idf * tfF * (bm25K + 1) / denom
 		}
 	}
+	return idx.rank(scores, limit)
+}
+
+// SearchHybrid blends BM25 scores with embedding cosine similarity when a
+// vector store is available: each document's cosine to the query contributes
+// with the configured weight, BM25 with (1-weight). Documents that only the
+// vector side finds (no shared tokens) still surface — this is the semantic
+// recall gain over keyword matching.
+func (idx *searchIndex) SearchHybrid(query string, limit int, vectors vectorIndex, weight float64, embed func(string) ([]float64, error)) []SearchResult {
+	if idx == nil || idx.totalDocs == 0 || limit <= 0 {
+		return nil
+	}
+	bm25 := idx.Search(query, idx.totalDocs)
+	bm25Scores := make(map[string]float64, len(bm25))
+	for _, h := range bm25 {
+		bm25Scores[h.Path] = h.Score
+	}
+	// Normalize BM25 scores to [0,1] for blending.
+	maxBm25 := 0.0
+	for _, s := range bm25Scores {
+		if s > maxBm25 {
+			maxBm25 = s
+		}
+	}
+	qvec, err := embed(query)
+	if err != nil || len(vectors) == 0 {
+		return bm25 // embedding unavailable → pure BM25
+	}
+	if weight <= 0 {
+		return bm25
+	}
+	if weight > 1 {
+		weight = 1
+	}
+	blend := make(map[string]float64, idx.totalDocs)
+	for path, vec := range vectors {
+		cos := cosine(qvec, vec)
+		if cos <= 0 {
+			continue
+		}
+		bm := 0.0
+		if maxBm25 > 0 {
+			bm = bm25Scores[path] / maxBm25
+		}
+		blend[path] = weight*cos + (1-weight)*bm
+	}
+	// Documents only found by BM25 keep a scaled BM25 score.
+	for path, s := range bm25Scores {
+		if _, ok := blend[path]; !ok && maxBm25 > 0 {
+			blend[path] = (1 - weight) * s / maxBm25
+		}
+	}
+	paths := make([]string, 0, len(blend))
+	for p := range blend {
+		paths = append(paths, p)
+	}
+	sort.Slice(paths, func(a, b int) bool { return blend[paths[a]] > blend[paths[b]] })
+	if len(paths) > limit {
+		paths = paths[:limit]
+	}
+	results := make([]SearchResult, 0, len(paths))
+	for _, p := range paths {
+		doc, ok := idx.docByPath(p)
+		if !ok {
+			continue
+		}
+		results = append(results, SearchResult{Path: doc.Path, Title: doc.Title, Summary: doc.Summary, Score: blend[p]})
+	}
+	return results
+}
+
+func (idx *searchIndex) docByPath(path string) (searchDoc, bool) {
+	for _, d := range idx.docs {
+		if d.Path == path {
+			return d, true
+		}
+	}
+	return searchDoc{}, false
+}
+
+// rank converts per-doc scores to sorted results.
+func (idx *searchIndex) rank(scores []float64, limit int) []SearchResult {
 	order := make([]int, 0, idx.totalDocs)
 	for i, s := range scores {
 		if s > 0 {
@@ -192,6 +271,27 @@ func (idx *searchIndex) Search(query string, limit int) []SearchResult {
 		})
 	}
 	return results
+}
+
+// cosine returns the cosine similarity between two vectors (0 for empty/zero).
+func cosine(a, b []float64) float64 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (sqrt(na) * sqrt(nb))
+}
+
+func sqrt(x float64) float64 {
+	return math.Sqrt(x)
 }
 
 func log2(x float64) float64 {
