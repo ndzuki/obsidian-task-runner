@@ -455,6 +455,9 @@ func grillingDecisionPending(path string) int {
 // requirement is still being thought through. Reminders (Kitty decision tab)
 // are suppressed, but distribution still works: answering the list and
 // setting grill_continue=true dispatches normally.
+//
+// Accepts "pause" (user typo variant seen in the field), "paused" and
+// "closed", case-insensitively.
 func grillingListPaused(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -464,7 +467,11 @@ func grillingListPaused(path string) bool {
 	if err != nil || fm == nil {
 		return false
 	}
-	return fm.Status == "paused" || fm.Status == "closed"
+	switch strings.ToLower(fm.Status) {
+	case "paused", "pause", "closed":
+		return true
+	}
+	return false
 }
 
 // activatePausedDecisionList flips a project's decision list from paused
@@ -486,7 +493,10 @@ func activatePausedDecisionList(vaultPath, project string) (bool, error) {
 	if err != nil || fm == nil {
 		return false, nil
 	}
-	if fm.Status != "paused" {
+	switch strings.ToLower(fm.Status) {
+	case "paused", "pause", "closed":
+		// Fall through to reactivate.
+	default:
 		return false, nil
 	}
 	if err := yamlfrontmatter.Update(path, map[string]interface{}{
