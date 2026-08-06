@@ -53,6 +53,17 @@ func FindPriorityTasks(vaultPath string, now time.Time) ([]PriorityTask, error) 
 			if parseErr != nil || fm == nil || fm.Priority != "" {
 				continue
 			}
+			// Assessment only makes sense for tasks in their early stages:
+			// blocked (waiting for fields/deps), ready, refining, or
+			// needs-grilling. A task already in planning or later has passed
+			// the point where priority drives scheduling — assessing it here
+			// would spawn a wasted OMP session per scan (observed: planning
+			// fixture tasks launching a second OMP in scan tests).
+			switch fm.Status {
+			case "blocked", "ready", "refining", "needs-grilling":
+			default:
+				continue
+			}
 
 			takeover := false
 			switch fm.PriorityAssessmentStatus {

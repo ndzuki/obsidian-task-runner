@@ -1618,11 +1618,21 @@ func gitCurrentBranch(workDir string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// reqHashChanged reports whether the requirement document hash differs between
-// refine_req_hash and plan_req_hash, indicating the requirement changed after
-// the last plan was generated.
-func reqHashChanged(t task.ReadyTask) bool {
-	return t.RefineReqHash != "" && t.PlanReqHash != "" && t.RefineReqHash != t.PlanReqHash
+// reqHash computes the SHA-256 of the requirement document, or "" when the
+// document is unavailable. Refining audits against this hash, so the refining
+// early-out can compare the last AUDIT hash with the current requirement
+// without an LLM read.
+func (r *Runner) reqHash(reqDoc string) string {
+	if reqDoc == "" {
+		return ""
+	}
+	reqPath := filepath.Join(r.cfg.ObsidianVault, reqDoc)
+	data, err := os.ReadFile(reqPath)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // compactPlanHistory folds old plan versions after a successful planning
@@ -1643,16 +1653,10 @@ func (r *Runner) compactPlanHistory(taskPath, phase string) {
 // refining/planning skills can trust the stored hash instead of reading the
 // full REQ to compute it.
 func (r *Runner) ensureReqHash(taskPath, reqDoc string) {
-	if reqDoc == "" {
+	hash := r.reqHash(reqDoc)
+	if hash == "" {
 		return
 	}
-	reqPath := filepath.Join(r.cfg.ObsidianVault, reqDoc)
-	data, err := os.ReadFile(reqPath)
-	if err != nil {
-		return
-	}
-	sum := sha256.Sum256(data)
-	hash := "sha256:" + hex.EncodeToString(sum[:])
 	raw, err := os.ReadFile(taskPath)
 	if err != nil {
 		return
@@ -1811,9 +1815,16 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, model)
 		case t.Status == "refining":
 			model = r.cfg.Model("default")
-			// ── Refining early-out: skip to planning if fully_mature and hash unchanged ──
-			if t.Maturity == "fully_mature" && !reqHashChanged(t) {
-				r.logger.Printf("task %s: fully mature, req hash unchanged → planning", t.ID)
+			// ── Refining early-out: skip to planning when the maturity gate
+			// has already passed for the CURRENT requirement. A REQ change
+			// after the last plan (pending_req, refine_req_hash !=
+			// plan_req_hash) must still reach planning to regenerate the
+			// plan; routing it back into the gate would re-run the same
+			// audit every scan forever (TASK-067: 30+ identical rounds).
+			// The gate re-runs only when the stored audit predates the
+			// current REQ hash. ──
+			if t.Maturity == "fully_mature" && t.RefineReqHash != "" && t.RefineReqHash == r.reqHash(t.ReqDoc) {
+				r.logger.Printf("task %s: fully mature, audit current → planning", t.ID)
 				phase = "planning"
 				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 			} else {
@@ -2671,6 +2682,9 @@ func procExists(pid int) bool {
 }
 
 // resolveVaultProjectDir resolves a project name to its vault directory.
+// Accepts both the vault-map name ("magic-models-manager") and the full
+// directory name with numeric prefix ("002-magic-models-manager") — task
+// frontmatter historically carries either form.
 func resolveVaultProjectDir(vaultPath, projectName string) string {
 	projectsDir := filepath.Join(vaultPath, "Projects")
 	entries, err := os.ReadDir(projectsDir)
@@ -2681,8 +2695,13 @@ func resolveVaultProjectDir(vaultPath, projectName string) string {
 		if !e.IsDir() {
 			continue
 		}
-		// Vault dirs use "NNN-name" format; match by suffix after the numeric prefix.
+		// Exact directory match first (prefixed project values like
+		// "002-magic-models-manager"), then suffix match for unprefixed
+		// vault-map names ("magic-models-manager").
 		name := e.Name()
+		if name == projectName {
+			return filepath.Join(projectsDir, name)
+		}
 		if idx := strings.IndexByte(name, '-'); idx > 0 {
 			if name[idx+1:] == projectName {
 				return filepath.Join(projectsDir, name)
