@@ -336,19 +336,14 @@ func chunkDocument(data []byte) []textChunk {
 	current := strings.Builder{}
 	currentHeading := ""
 	appendChunk := func(text string) {
-		text = prefix.String() + currentHeading + "\n" + text
-		// bge-m3 input ceiling is 8192 tokens; Chinese text is ~1-2 tokens
-		// per character, so cap each embedded chunk conservatively.
-		const maxChunk = 1500
-		for len(text) > maxChunk {
-			// Cut at the last paragraph break within the window.
-			cut := strings.LastIndex(text[:maxChunk], "\n\n")
-			if cut < maxChunk/2 {
-				cut = maxChunk
-			}
-			chunks = append(chunks, textChunk{heading: currentHeading, text: text[:cut]})
-			text = text[cut:]
+		// CPU-only inference (~200 chars/s on bge-m3) bounds the embeddable
+		// volume: embed only the section head — the first 300 chars after the
+		// heading carry the section's topic sentence, which is what retrieval
+		// matches. Full-body vectors would take 40+ minutes to build.
+		if len(text) > 300 {
+			text = text[:300]
 		}
+		text = prefix.String() + currentHeading + "\n" + text
 		chunks = append(chunks, textChunk{heading: currentHeading, text: text})
 	}
 	flush := func() {
