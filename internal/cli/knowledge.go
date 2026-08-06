@@ -120,7 +120,11 @@ var kbSearchCmd = &cobra.Command{
 			if r := []rune(summary); len(r) > 60 {
 				summary = string(r[:57]) + "..."
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s\n      %s\n      %s\n", h.Score, h.Path, h.Title, summary)
+			chunk := ""
+			if h.Chunk != "" {
+				chunk = "  → " + h.Chunk
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s%s\n      %s\n      %s\n", h.Score, h.Path, chunk, h.Title, summary)
 		}
 		return nil
 	},

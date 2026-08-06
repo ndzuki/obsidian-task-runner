@@ -34,6 +34,33 @@ func TestTokenize(t *testing.T) {
 	}
 }
 
+func TestChunkDocument(t *testing.T) {
+	data := []byte("---\ntopics: [go, connect]\n---\n# Connect\n\n> summary\n\n前言内容。\n\n## 要点\n- a\n- b\n\n## 更新记录\n- 2026-08-01 x\n")
+	chunks := chunkDocument(data)
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (preamble + 2 sections)", len(chunks))
+	}
+	if chunks[0].heading != "" || !strings.Contains(chunks[0].text, "前言内容") {
+		t.Fatalf("chunk 0 = %+v, want preamble with body text", chunks[0])
+	}
+	if chunks[1].heading != "## 要点" || !strings.Contains(chunks[1].text, "- a") {
+		t.Fatalf("chunk 1 = %+v, want 要点 section", chunks[1])
+	}
+	if chunks[2].heading != "## 更新记录" {
+		t.Fatalf("chunk 2 heading = %q, want ## 更新记录", chunks[2].heading)
+	}
+	// Every chunk carries the document prefix (topics + title + summary).
+	for _, c := range chunks {
+		if !strings.Contains(c.text, "connect") || !strings.Contains(c.text, "Connect") {
+			t.Fatalf("chunk %q missing document context prefix", c.heading)
+		}
+	}
+	// Empty body → no chunks (preamble flush skips empty content).
+	if got := chunkDocument([]byte("---\ntopics: [go]\n---\n")); len(got) != 0 {
+		t.Fatalf("empty body chunks = %d, want 0", len(got))
+	}
+}
+
 func TestSearchRanksByRelevance(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

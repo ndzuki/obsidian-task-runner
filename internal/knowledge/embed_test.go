@@ -94,9 +94,12 @@ func TestSearchHybridSurfacesVectorOnlyHit(t *testing.T) {
 	if hits := idx.Search("zircon mesh", 3); len(hits) != 0 {
 		t.Fatalf("BM25 should not match zircon mesh, got %+v", hits)
 	}
-	// Vectors: doc vector component 0; the fake embeds "zircon" to the same
+	// Vectors: doc chunk component 0; the fake embeds "zircon" to the same
 	// component — semantic (not lexical) similarity.
-	vectors := vectorIndex{"core/state-machine.md": []float64{1, 0, 0}}
+	vectors := vectorIndex{"core/state-machine.md": &docVectors{
+		Title:  "State",
+		Chunks: []chunkVector{{Heading: "## 要点", Vector: []float64{1, 0, 0}}},
+	}}
 	embed := func(text string) ([]float64, error) {
 		if strings.Contains(text, "zircon") || strings.Contains(text, "状态机") {
 			return []float64{1, 0, 0}, nil
@@ -106,6 +109,9 @@ func TestSearchHybridSurfacesVectorOnlyHit(t *testing.T) {
 	hybrid := idx.SearchHybrid("zircon mesh", 3, vectors, 1.0, embed)
 	if len(hybrid) == 0 || hybrid[0].Path != "core/state-machine.md" {
 		t.Fatalf("hybrid should surface vector-only hit, got %+v", hybrid)
+	}
+	if hybrid[0].Chunk != "## 要点" {
+		t.Fatalf("chunk heading = %q, want ## 要点", hybrid[0].Chunk)
 	}
 	// Embedding failure → graceful BM25 fallback (no hits for this query).
 	hybrid = idx.SearchHybrid("zircon mesh", 3, vectors, 1.0, func(string) ([]float64, error) {
