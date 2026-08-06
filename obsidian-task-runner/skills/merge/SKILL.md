@@ -16,6 +16,7 @@ disableModelInvocation: true
 3. `pending_req=false`。
 4. 当前 REQ 完整 bytes SHA-256 等于 `plan_req_hash`。
 5. `target_branch` 存在。
+6. **目标仓库守卫**：repoDir 的 `origin` 必须与 vault-map 配置的 `git_remote` 指向同一仓库（URL 归一化比较）。不一致 → daemon 拒绝 push，写 `phase_error_code=REPO_MISMATCH` + `status=review` + `merge_approved=false`，通知人工处理（vault 回退项目应在 resolveRepo 提升为独立 checkout，见 docs/workflow.md §6.5；守卫是兜底）。
 
 任一失败：
 

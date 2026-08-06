@@ -25,6 +25,7 @@ const (
 	ErrGitConflict              ErrorCode = "GIT_CONFLICT"
 	ErrGitDirty                 ErrorCode = "GIT_DIRTY"
 	ErrGitHubUnavailable        ErrorCode = "GITHUB_UNAVAILABLE"
+	ErrRepoMismatch             ErrorCode = "REPO_MISMATCH"
 	ErrBaseCommitMismatch       ErrorCode = "BASE_COMMIT_MISMATCH"
 	ErrBranchOwnershipConflict  ErrorCode = "BRANCH_OWNERSHIP_CONFLICT"
 	ErrDependencyCycle          ErrorCode = "DEPENDENCY_CYCLE"
@@ -53,6 +54,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrGitConflict,
 	ErrGitDirty,
 	ErrGitHubUnavailable,
+	ErrRepoMismatch,
 	ErrBaseCommitMismatch,
 	ErrBranchOwnershipConflict,
 	ErrDependencyCycle,

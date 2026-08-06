@@ -1263,12 +1263,17 @@ req_doc: Projects/001-test/Requirements/REQ-080.md
 		t.Fatal(err)
 	}
 	downstream := filepath.Join(tasksDir, "TASK-081-downstream.md")
+	// priority: P2 keeps the task out of FindPriorityTasks: the unblock in
+	// processBatch turns it "ready" mid-scan, and a priority assessment OMP
+	// would race this test's barrier-OMP start-count assertion (observed
+	// flake: "start count did not reach 1; got 2").
 	if err := os.WriteFile(downstream, []byte(`---
 id: "081"
 title: Downstream
 project: test
 status: blocked
 blocked_by: ["TASK-080"]
+priority: P2
 assignee: default
 ---
 # Downstream

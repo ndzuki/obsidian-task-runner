@@ -40,6 +40,7 @@ flowchart TD
     RV -->|auto_merge 默认自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>push → PR → CI checks]
     MERGE -->|SUCCESS| DONE[done<br/>+ 知识库提取]
     MERGE -.->|环境性失败：2min 退避自动重试 ×5| MERGE
+    MERGE -->|REPO_MISMATCH 目标仓库不符<br/>硬失败不重试| RV
     MERGE -->|CONFLICTING| AI[AI 自动解决一次<br/>/obsidian-task-runner-merge]
     AI -->|本地解决 + 测试通过| MERGE
     AI -->|失败| CF[conflict<br/>critical 通知]
@@ -79,7 +80,7 @@ flowchart TD
 > **auto_approve（完全自主任务）**：`auto_approve=true` AND 首次规划（plan_version==0）AND 非新项目 AND 非 pending_req AND `adr_proposed` 为空 → Round 1 写 `plan_approved=true`，daemon 自动跳过人工审计划进入 implementing。**ADR 护栏**：有 ADR 提议时即使 auto_approve 也强制 `plan_approved=false`——架构决策随计划人工审阅。已进入 plan-review 的任务（plan_version>0）改 auto_approve 不生效，需手动批准或 replan。
 | 8 | plan-review | `plan_approved=true` | `nextLocalTransition` → implementing，自动 `adr_approved=true`；预热 worktree | 无 | `status=implementing` | Round 2 |
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时） | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining |
-| 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；AI 失败 → conflict |
+| 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`（phase_error 非空不自动批准）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch/**origin==git_remote 目标仓库守卫，REPO_MISMATCH 硬失败**）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` 指向已合并 PR 时单次调用收敛 done | 冲突时 `/obsidian-task-runner-merge <task>`（AI 会话本地解决一次，禁远程操作） | `merge_approved`、`pr_url`、`merge_status`、`approved_head` | SUCCESS → done；CONFLICTING → AI 解决；FAILURE/head 变更 → review+phase_error；REPO_MISMATCH → review+phase_error 不重试；AI 失败 → conflict |
 | 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（pending_req 则回 refining） |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
 | 13 | 阶段评审 | 某阶段全部任务 done+merged（`merge_status=merged`） | `processStageReviews` 检测（每轮 ≤1）→ PM stage-review 四维评分写 `Notes/Stage-Review.md`；用户填「评审决策:」后 daemon 检测 → PM distribute 分发 | `/obsidian-task-runner-pm stage-review` / distribute | `Notes/Stage-Review.md`、Stage-Plan 阶段状态（review-pending/delivered/ended/completed） | continue → 下一阶段 in-progress；supplement:{建议} → 追加下一阶段；end → 后续阶段任务 close（不维护积压） |
@@ -497,6 +498,7 @@ Round 2 首次调度（`resolveRepo` new 分支）自动完成项目初始化：
 - 创建项目目录（`new_project_root/<name>`）。
 - **自动注册 vault-map.json**：`name`/`path` 按解析结果写入，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`）——后续扫描以 `existing` 解析，无需手动配置。
 - **REQ 出现即注册**：目录已存在但 vault-map 未登记的项目（如手工创建的 `Projects/010-demo/`），首个 REQ 文件出现时由 `ensureProjectRegistered` 自动补登记（事件与每轮 scan 双通道；name 去数字前缀，path 优先 `new_project_root/<name>` 的约定 checkout，不存在则回退 vault 项目目录），随后正常建 TASK 走细化——新项目无需任何手工配置。
+- **vault 回退项目自动提升（`ensureProjectCheckout`）**：已注册项目若 path 是 vault 项目目录（非 git 根）且配置了 `git_remote`，`resolveRepo` 自动创建 `new_project_root/<name>` 独立 checkout（README 初始提交，供 worktree 分支），vault-map `path` 更新指向 checkout，远端仓库缺失时自动 `gh repo create`（private，description 从 REQ 蒸馏）并补 origin。不提升的话 worktree 与 merge 会静默落入外层 Vault 仓库——错误仓库合并（TASK-001-demo 教训：交付物被合入 myNote）。提升对任意阶段生效（refining 扫描也可能触发，README-only 仓库无副作用）；提升失败仅记日志、回退原路径，由 merge 守卫兜底。
 - **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns` / `## Reference Map`），由首轮 agent 填充。
 - 新项目首个 REQ 由 PM 统筹触发 `skill://obsidian-task-runner-split` 拆分建议（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
 
@@ -612,6 +614,7 @@ Merge Skill 必须在任何远程操作前确认：
 3. `pending_req=false`。
 4. 当前 REQ hash 等于已批准计划的 `plan_req_hash`。
 5. `target_branch` 存在。
+6. **目标仓库守卫**：repoDir 的 `origin` 必须与 vault-map 配置的 `git_remote` 指向同一仓库（URL 归一化比较：`git@…:`/`https://`/`.git` 后缀/大小写等价）。不一致（vault 回退目录场景）→ **拒绝 push**，写 `status=review` + `merge_approved=false` + `phase_error_code=REPO_MISMATCH` + 通知，属永久配置缺陷，不自动重试。
 
 任一失败时不得执行远程操作。
 
@@ -622,6 +625,7 @@ Merge Skill 必须在任何远程操作前确认：
 - Merge 失败回退（CI 失败 / head 变更 / gh 缺失）写 `status=review` + `merge_approved=false` + `phase_error`，通知用户处理；`phase_error_code` 非空时 daemon 不会自动重新授权。
 - 环境性失败自动重试：push / 网络 / 瞬时 GitHub API 错误（`GITHUB_UNAVAILABLE` 类）**不写回** `merge_approved`，`processMergeTaskWithRetry` 以 2 分钟退避独立重试（最多 5 次，daemonCtx 感知），不依赖下一轮 scan 批次——避免被同批长任务（最长 1h 的 Round 2）拖死。重试用尽后保持 `merge_approved=true`，下一轮 scan 继续。
 - 已合并收敛：`pr_url` 已知时先查 PR 状态，`MERGED`（手动合并或先前运行已合并）直接写 `done`，跳过 push/checks/merge，且不会重建 `gh pr merge --delete-branch` 已删除的远端分支。
+- 错误仓库守卫：push 前校验 origin 与 `git_remote` 一致（§8.2 前置条件 6）。vault 回退项目经 §6.5 提升后走独立 checkout，正常情况下不会触发；守卫是配置错乱（如 vault-map `path` 手工改回 vault 目录）时的兜底，`REPO_MISMATCH` 硬失败并保留现场供人工修正。
 - PR 冲突（`CONFLICTING`）：daemon 以 Merge Skill 启动一次 AI 自动解决（`skill://resolving-merge-conflicts`，本地 commit，禁远程操作）。解决后 push 新 head 并重新评估 checks；仍冲突或 AI 失败 → `status=conflict` + critical 通知，用户手动解决后重设 `merge_approved: true`（`merge_status: conflict-resolve-attempted` 标记已尝试，不再重复 AI 解决）。
 
 ## 9. ID 与依赖作用域
@@ -670,7 +674,7 @@ ${TMPDIR}/otg-daemon-<vault-path-sha256>.lock
 
 ### 10.2 仓库并发
 
-- refining 不需要仓库。
+- refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见 §6.5——README-only 仓库，无副作用）。
 - 既有项目 planning、Merge 使用主工作区独占锁。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建仓库，因此不持有不存在的 repo 锁。
@@ -743,6 +747,12 @@ auto_accepted: "" # refining 自动采纳建议审计记录
 knowledge_extracted: false # 该任务 ADR 已提取到知识库（幂等）
 knowledge_refs: [] # Round 1 计划引用的知识文档（Round 2 应用 / merge 度量 / verifier 校验）
 knowledge_applied: "" # merge 时度量：命中/总数（如 2/3）
+remote_create: false # 新项目 opt-in：implementing 时自动 gh repo create 远端仓库（仅 NewProject 任务）
+github_owner: "" # 远端仓库 owner；为空时从 vault-map 既有 git_remote 推断
+repository_name: "" # 仓库名；为空时取项目名去数字前缀（"001-release-manager" → "release-manager"）
+repository_visibility: "" # 新仓库可见性；为空默认 private
+repository_description: "" # 新仓库 --description 与 README 内容（Round 1 从 REQ 提炼）
+repository_url: "" # 远端仓库地址；非空时 ensureRemoteRepository 短路（幂等）
 ```
 
 ## 12. 知识库知识流（KB v2）

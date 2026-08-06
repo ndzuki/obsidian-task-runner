@@ -2511,6 +2511,22 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 	if result.Status == "error" {
 		return "", fmt.Errorf("resolve project: %s", result.Error)
 	}
+	if result.Status == "existing" {
+		// Vault-fallback promotion: a registered project whose path is not a
+		// git root (registered via the Vault project dir fallback) but has a
+		// conventional git_remote must run in its own checkout — otherwise
+		// worktrees and merges silently target the enclosing Vault repo
+		// (wrong-repo merges, observed with TASK-001-demo). Promotion
+		// failures fall back to the registered path: read-only phases must
+		// not block, and the merge-time ensureGitRemote guard still refuses
+		// pushes to a mismatched origin.
+		promoted, promoteErr := r.ensureProjectCheckout(t, result.Path)
+		if promoteErr != nil {
+			r.logger.Printf("task %s: promote project %s to standalone checkout: %v", t.ID, projectName, promoteErr)
+			return result.Path, nil
+		}
+		return promoted, nil
+	}
 	if result.Status == "new" {
 		if err := os.MkdirAll(result.Path, 0755); err != nil {
 			return "", fmt.Errorf("create new project %s: %w", result.Path, err)

@@ -25,8 +25,26 @@ import (
 // ensureGitRemote adds the project's configured git_remote as the "origin"
 // remote if it does not already exist. Returns an error only when origin is
 // missing and no git_remote is configured in vault-map.json.
+//
+// Guard: when origin already exists but points at a DIFFERENT repository than
+// the project's configured git_remote, the merge refuses to proceed. This is
+// the vault-fallback failure mode — a project registered without a standalone
+// checkout resolves to its Vault directory, whose enclosing repository (e.g.
+// the Vault's own backup repo) silently becomes the push/PR/merge target.
+// Pushing there would merge project deliverables into the wrong repository.
+//
+// errMergeTargetMismatch marks that permanent configuration defect: hard-fail,
+// never retried (matched via errors.Is, not string scanning).
+var errMergeTargetMismatch = errors.New("merge target mismatch")
+
 func ensureGitRemote(cfg *config.Config, repoDir, projectName string) error {
 	if output, err := exec.Command("git", "-C", repoDir, "remote", "get-url", "origin").Output(); err == nil && len(output) > 0 {
+		originURL := strings.TrimSpace(string(output))
+		for _, p := range cfg.Projects {
+			if p.Name == projectName && p.GitRemote != "" && !sameGitRepo(originURL, p.GitRemote) {
+				return fmt.Errorf("%w: origin %q does not match git_remote %q configured in vault-map for project %q — refusing to push to the wrong repository (project resolved to a Vault fallback directory instead of a standalone checkout)", errMergeTargetMismatch, originURL, p.GitRemote, projectName)
+			}
+		}
 		return nil
 	}
 	var remoteURL string
@@ -46,6 +64,53 @@ func ensureGitRemote(cfg *config.Config, repoDir, projectName string) error {
 		return fmt.Errorf("add origin remote: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// sameGitRepo reports whether two remote URLs reference the same repository,
+// normalizing transport spellings (https://, git@…:, ssh://git@…/,
+// scp-style), trailing slashes, ".git" suffixes and case:
+// "git@github.com:ndzuki/demo.git" and "https://github.com/NDZUKI/demo"
+// both normalize to "github.com/ndzuki/demo".
+func sameGitRepo(a, b string) bool {
+	return normalizeGitRepo(a) == normalizeGitRepo(b)
+}
+
+// normalizeGitRepo canonicalizes a git remote URL to "host/owner/repo"
+// (lowercased). Shared by the merge-target guard (sameGitRepo) and the
+// checkout promotion (gh owner/repo derivation).
+func normalizeGitRepo(raw string) string {
+	u := strings.TrimSpace(raw)
+	u = strings.TrimSuffix(u, "/")
+	u = strings.TrimSuffix(u, ".git")
+	// scp-style: git@github.com:owner/repo — ":" separates host from path
+	// only in scheme-less URLs where a "/" and no port follows it
+	// (user@host:path). Port spellings (host:22/path, ssh://…:22/…) are
+	// skipped here and lose the port below.
+	hasScheme := strings.Contains(u, "://")
+	if i := strings.LastIndex(u, ":"); i > 0 && !hasScheme && strings.Contains(u[i:], "/") && !isDigit(u[i+1:]) {
+		u = u[:i] + "/" + u[i+1:]
+	}
+	if hasScheme {
+		u = u[strings.Index(u, "://")+3:]
+	}
+	u = strings.TrimPrefix(u, "git@")
+	u = strings.TrimPrefix(u, "ssh://")
+	u = strings.TrimPrefix(u, "git://")
+	if i := strings.Index(u, "/"); i > 0 {
+		host := strings.ToLower(u[:i])
+		if j := strings.LastIndex(host, ":"); j > 0 {
+			host = host[:j] // drop ":port"
+		}
+		return host + "/" + strings.ToLower(u[i+1:])
+	}
+	return strings.ToLower(u)
+}
+
+func isDigit(s string) bool {
+	if s == "" {
+		return false
+	}
+	return s[0] >= '0' && s[0] <= '9'
 }
 
 func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) error {
@@ -125,6 +190,17 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	}
 
 	if err := ensureGitRemote(r.cfg, repoDir, candidate.Project); err != nil {
+		// A merge target mismatch is a permanent configuration defect, not a
+		// transient failure: retrying would re-attempt the same wrong-repo
+		// push every scan. Revoke the merge authorization and surface the
+		// exact origin/git_remote conflict for a human decision.
+		if errors.Is(err, errMergeTargetMismatch) {
+			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "review", "merge_approved": false,
+				"phase_error_code": string(ErrRepoMismatch), "phase_error": err.Error(),
+			})
+			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		}
 		return err
 	}
 	fresh := false
@@ -523,6 +599,9 @@ func isMergeRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, errMergeTargetMismatch) {
+		return false
+	}
 	msg := err.Error()
 	for _, marker := range []string{
 		"gh CLI not found",
@@ -530,6 +609,7 @@ func isMergeRetryable(err error) bool {
 		string(ErrBaseCommitMismatch),
 		string(ErrReqMissing),
 		string(ErrGitConflict),
+		string(ErrRepoMismatch),
 		string(ErrInternal),
 		"merge already in progress",
 		"decode PR checks",
