@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
@@ -13,7 +14,7 @@ func newKnowledgeCommand() *cobra.Command {
 		Use:   "kb",
 		Short: "Knowledge-base inspection commands",
 	}
-	cmd.AddCommand(kbGapsCmd, kbUsageCmd)
+	cmd.AddCommand(kbGapsCmd, kbUsageCmd, kbSearchCmd)
 	return cmd
 }
 
@@ -80,8 +81,43 @@ var kbUsageCmd = &cobra.Command{
 
 var kbMapFile string
 
+// kbSearchCmd ranks References documents by BM25 relevance to the query.
+var kbSearchCmd = &cobra.Command{
+	Use:   "search <query>",
+	Short: "Rank knowledge documents by relevance (BM25, local)",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(kbMapFile)
+		if err != nil {
+			return err
+		}
+		query := strings.Join(args, " ")
+		idx, err := knowledge.BuildSearchIndex(cfg.ObsidianVault)
+		if err != nil {
+			return err
+		}
+		hits := idx.Search(query, kbSearchLimit)
+		if len(hits) == 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
+			return nil
+		}
+		for _, h := range hits {
+			summary := h.Summary
+			if r := []rune(summary); len(r) > 60 {
+				summary = string(r[:57]) + "..."
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s\n      %s\n      %s\n", h.Score, h.Path, h.Title, summary)
+		}
+		return nil
+	},
+}
+
+var kbSearchLimit int
+
 func init() {
 	kbGapsCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbUsageCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
+	kbSearchCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
+	kbSearchCmd.Flags().IntVar(&kbSearchLimit, "limit", 5, "max results")
 	rootCmd.AddCommand(newKnowledgeCommand())
 }
