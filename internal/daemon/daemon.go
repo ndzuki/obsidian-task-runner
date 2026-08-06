@@ -54,6 +54,7 @@ type Runner struct {
 	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
 	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map   // "key" → time.Time (API-key-unavailable toast debounce)
+	refNotifyAt        sync.Map   // refPath → time.Time (knowledge intake validation toast debounce)
 	refIndexRebuiltAt  sync.Map   // "last" → time.Time (References INDEX rebuild debounce)
 	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
@@ -233,8 +234,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				if strings.HasSuffix(evt.Path, ".md") {
 					if verr := knowledge.ValidateRefFile(evt.Path); verr != nil {
 						r.logger.Printf("knowledge-base intake: %s invalid: %v", filepath.Base(evt.Path), verr)
-						notify.SendTaskAction("knowledge", filepath.Base(evt.Path), "📄", "知识库格式不合规",
-							verr.Error()+"; 请按 KB v2 六字段 frontmatter 修正，INDEX 将跳过该文档。", r.cfg.Notifications.Desktop)
+						// Debounced per file: watcher events for one broken
+						// document (or a storm of invalid writes) must not
+						// spam the desktop.
+						if last, ok := r.refNotifyAt.Load(evt.Path); !ok || time.Since(last.(time.Time)) > 5*time.Minute {
+							r.refNotifyAt.Store(evt.Path, time.Now())
+							notify.SendTaskAction("knowledge", filepath.Base(evt.Path), "📄", "知识库格式不合规",
+								verr.Error()+"; 请按 KB v2 六字段 frontmatter 修正，INDEX 将跳过该文档。", r.cfg.Notifications.Desktop)
+						}
 					}
 				}
 				r.maybeRebuildRefIndex()
