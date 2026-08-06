@@ -1088,3 +1088,39 @@ grill_prev_status: ""
 		t.Fatal("second pass must be a no-op")
 	}
 }
+
+func TestParseFrontmatterMap(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantRaw bool // whether a non-nil map is expected
+		wantKey string
+		wantVal interface{}
+		wantErr bool
+	}{
+		{"no frontmatter", "# plain markdown\n", false, "", nil, false},
+		{"unclosed block", "---\nid: \"001\"\n", false, "", nil, true},
+		{"empty block", "---\n---\n# body\n", true, "", nil, false},
+		{"valid block", "---\nid: \"001\"\nstatus: refining\n---\n# body\n", true, "id", "001", false},
+		{"malformed yaml", "---\nid: \"001\"\nstatus: [unclosed\n---\n", false, "", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := parseFrontmatterMap([]byte(tt.content))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseFrontmatterMap() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if (raw != nil) != tt.wantRaw {
+				t.Fatalf("parseFrontmatterMap() map presence = %v, want %v", raw != nil, tt.wantRaw)
+			}
+			if tt.wantKey != "" {
+				if raw[tt.wantKey] != tt.wantVal {
+					t.Fatalf("raw[%q] = %v, want %v", tt.wantKey, raw[tt.wantKey], tt.wantVal)
+				}
+			}
+		})
+	}
+}

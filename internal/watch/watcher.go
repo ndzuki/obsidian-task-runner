@@ -141,7 +141,15 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 		// user has to manually set grill_continue=true as a workaround.
 		dir = "Notes"
 	default:
-		return
+		// Requirements may live directly in the project directory (or any
+		// subdirectory): the daemon routes them by the REQ-* filename
+		// pattern, so a brand-new project's first requirement is discovered
+		// even when no Requirements/ folder exists yet.
+		if strings.HasPrefix(base, "REQ-") {
+			dir = "Requirements"
+		} else {
+			return
+		}
 	}
 
 	w.mu.Lock()

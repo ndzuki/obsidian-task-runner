@@ -252,6 +252,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				if _, statErr := os.Stat(evt.Path); os.IsNotExist(statErr) {
 					results = task.OnReqDeleted(r.cfg.ObsidianVault, reqRel)
 				} else {
+					// A requirement under an unlisted project directory
+					// auto-registers the project (name/path/project_id
+					// derived from conventions) so the brand-new project
+					// flows straight into task creation and refining without
+					// manual config. Only on add/change — a delete must not
+					// register an empty project.
+					r.ensureProjectRegistered(reqRel)
 					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
 				}
 				// A REQ detail update reactivates the project's paused
@@ -557,6 +564,10 @@ func (r *Runner) scanAndProcess() error {
 	r.resolveBlockedDependencies()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
+	// Discover requirement files the watcher never delivered (new
+	// directories, daemon downtime). Runs before the TASK scan so freshly
+	// created tasks dispatch in this very cycle.
+	r.scanOrphanReqs()
 	tasks, err := r.taskIdx.Scan(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("scan error: %v", err)
@@ -676,6 +687,120 @@ func projectFromReqPath(reqRel string) string {
 		return parts[1]
 	}
 	return ""
+}
+
+// ensureProjectRegistered auto-registers an unlisted project into
+// vault-map.json the first time a requirement appears under
+// Projects/<dir>/ (project root or Requirements/). The vault-map name
+// strips the numeric prefix ("010-demo" → "demo"), project_id derives from
+// the directory, and path prefers the conventional repo checkout under
+// new_project_root, falling back to the vault project directory when no
+// checkout exists yet (e.g. vault-only demo projects). Idempotent: an
+// already-mapped directory is a no-op, so every REQ event is safe to route
+// through here.
+func (r *Runner) ensureProjectRegistered(reqRel string) {
+	dir := projectFromReqPath(reqRel)
+	if dir == "" {
+		return
+	}
+	mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+	if project.MatchVaultDir(mapFile, dir) != "" {
+		return // already registered
+	}
+	name := stripNumericPrefix(dir)
+	repoPath := filepath.Join(r.cfg.NewProjectRoot, name)
+	path := repoPath
+	if _, err := os.Stat(repoPath); err != nil {
+		path = filepath.Join(r.cfg.ObsidianVault, "Projects", dir)
+	}
+	gitRemote := project.GitRemoteFor(mapFile, name)
+	if err := project.RegisterProject(mapFile, name, path, gitRemote, false); err != nil {
+		r.logger.Printf("auto-register project %s: %v", dir, err)
+		return
+	}
+	r.logger.Printf("auto-registered project %q (vault dir %s) in vault-map", name, dir)
+}
+
+// stripNumericPrefix removes a "<digits>-" prefix from a project directory
+// name ("010-demo" → "demo"); unprefixed names pass through unchanged.
+func stripNumericPrefix(dir string) string {
+	for i, c := range dir {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '-' && i > 0 {
+			return dir[i+1:]
+		}
+		break
+	}
+	return dir
+}
+
+// scanOrphanReqs is the periodic-scan fallback for requirement files that
+// never produced a watcher event (daemon down while the file was written,
+// or a file moved into a directory created moments before the move, which
+// inotify cannot deliver). It walks every project's Requirements/ and
+// project root, auto-registers unlisted projects, and routes each REQ that
+// has no canonical TASK through OnReqChanged so the task is created and
+// refining starts on the next dispatch round. Idempotent: OnReqChanged
+// no-ops once the canonical TASK exists.
+func (r *Runner) scanOrphanReqs() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, proj := range entries {
+		if !proj.IsDir() {
+			continue
+		}
+		// Requirements/ first (canonical), then the project root (a REQ
+		// file placed next to the folder itself must not be lost either).
+		for _, sub := range []string{"Requirements", ""} {
+			dir := filepath.Join(projectsDir, proj.Name(), sub)
+			files, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, f := range files {
+				if f.IsDir() {
+					continue
+				}
+				abs := filepath.Join(dir, f.Name())
+				reqRel, err := filepath.Rel(r.cfg.ObsidianVault, abs)
+				if err != nil {
+					continue
+				}
+				id, _ := task.ParseReqFilename(reqRel)
+				if id == "" {
+					continue
+				}
+				if r.hasCanonicalTask(reqRel) {
+					continue
+				}
+				r.ensureProjectRegistered(reqRel)
+				results := task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
+				for _, res := range results {
+					r.logger.Printf("scan: orphan REQ %s → %s (%s)", filepath.Base(abs), res.TaskID, res.Action)
+				}
+			}
+		}
+	}
+}
+
+// hasCanonicalTask reports whether a TASK file already exists for the
+// requirement path (Tasks/<project>/TASK-<id>-<slug>.md).
+func (r *Runner) hasCanonicalTask(reqRel string) bool {
+	target := task.TaskFilenameForReq(reqRel)
+	if target == "" {
+		return true // unparsable filename; nothing to match
+	}
+	projDir := projectFromReqPath(reqRel)
+	if projDir == "" {
+		return true // legacy flat path; no canonical Tasks/ layout
+	}
+	_, err := os.Stat(filepath.Join(r.cfg.ObsidianVault, "Projects", projDir, "Tasks", target))
+	return err == nil
 }
 
 // phaseGateKey maps a task's dispatch stage to its concurrency gate key.
@@ -937,10 +1062,20 @@ func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
 }
 
 // validateChangedDocs scans git-tracked .md files modified in the working tree
-// since the last commit and validates them with ValidateDocument. Corrupted
-// documents (CONTEXT.md, ADR files, etc.) are logged but do not
-// halt the pipeline.
+// since the last commit and validates them with ValidateDocument. Salvageable
+// corruption is auto-repaired with Repair (agent output leaked into the YAML
+// block etc.); only documents that cannot be fixed automatically are surfaced
+// to the user. Projects without a standalone checkout (repoDir falls back to
+// the vault project directory) are skipped: git would resolve the enclosing
+// vault repository, whose diff paths are repo-root-relative — joining them
+// under repoDir fabricates wrong paths and false "damaged" notifications
+// (observed for vault-only demo projects).
 func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
+	top, err := gitTopLevel(repoDir)
+	if err != nil || filepath.Clean(top) != filepath.Clean(repoDir) {
+		r.logger.Printf("task %s: skip doc validation after %s (repoDir %s is not a git root)", taskID, phase, repoDir)
+		return
+	}
 	files, err := gitDiffNameOnly(repoDir)
 	if err != nil {
 		r.logger.Printf("task %s: git diff scan failed: %v", taskID, err)
@@ -952,12 +1087,31 @@ func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
 		}
 		absPath := filepath.Join(repoDir, f)
 		if err := yamlfrontmatter.ValidateDocument(absPath); err != nil {
+			if repairErr := yamlfrontmatter.Repair(absPath); repairErr == nil {
+				// Repair guarantees syntactic validity only — required
+				// fields are not backfilled. Re-validate; only a genuinely
+				// fixed document is silent.
+				if verifyErr := yamlfrontmatter.ValidateDocument(absPath); verifyErr == nil {
+					r.logger.Printf("task %s: %s auto-repaired after %s (was: %v)", taskID, f, phase, err)
+					continue
+				}
+			}
 			r.logger.Printf("task %s: %s damaged after %s: %v", taskID, f, phase, err)
 			notify.SendTaskAction(taskID, "", "📄", "文档损坏",
-				fmt.Sprintf("%s 在 %s 阶段后被修改但无法通过校验: %v", f, phase, err),
+				fmt.Sprintf("%s 在 %s 阶段后被修改且无法自动修复，需要人工处理: %v", f, phase, err),
 				r.cfg.Notifications.Desktop)
 		}
 	}
+}
+
+// gitTopLevel returns the absolute git repository root containing dir.
+func gitTopLevel(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse: %w: %s", err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // gitDiffNameOnly returns the list of files modified in the working tree

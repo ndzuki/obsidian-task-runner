@@ -12,7 +12,7 @@
 
 ```mermaid
 flowchart TD
-    W[用户写/改 REQ] -->|fsnotify 监听 Requirements/| ONREQ[OnReqChanged / OnReqDeleted]
+    W[用户写/改 REQ] -->|fsnotify 监听 Requirements/ 与项目根 REQ-*| ONREQ[OnReqChanged / OnReqDeleted]
     ONREQ -->|create_task| TASK[TASK blocked<br/>等待 project + assignee]
     ONREQ -->|pending_req / reset| SCAN
     TIMER[systemd timer 兜底] --> SCAN
@@ -66,7 +66,7 @@ flowchart TD
 
 | # | 环节 | 触发 | daemon 动作 | 调用的 skill | 写回 TASK 字段 | 出口 |
 |---|------|------|-------------|---------------|----------------|------|
-| 1 | 需求变更 | fsnotify 监听 `Requirements/` 目录 | `OnReqChanged` / `OnReqDeleted` 解析受影响任务；按 action（create_task / pending_req / reset_to_ready / req_missing…）发通知 | 无（纯 Go） | 新任务 `status=blocked`；既有任务按状态设 `pending_req` | 3s 后触发 scan |
+| 1 | 需求变更 | fsnotify 监听 `Requirements/` 目录与项目根 `REQ-*` 文件 | `OnReqChanged` / `OnReqDeleted` 解析受影响任务；按 action（create_task / pending_req / reset_to_ready / req_missing…）发通知；新增/修改事件下未注册项目自动写入 vault-map.json（`ensureProjectRegistered`） | 无（纯 Go） | 新任务 `status=blocked`；既有任务按状态设 `pending_req` | 3s 后触发 scan |
 | 2 | 任务解锁 | 用户补齐 `project`+`assignee`、依赖满足 | `IsAutoUnblockable` 判定 → unblock | 无 | `status=ready`，清 phase_error | scan 拾取 |
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
@@ -496,6 +496,7 @@ Round 2 首次调度（`resolveRepo` new 分支）自动完成项目初始化：
 
 - 创建项目目录（`new_project_root/<name>`）。
 - **自动注册 vault-map.json**：`name`/`path` 按解析结果写入，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`）——后续扫描以 `existing` 解析，无需手动配置。
+- **REQ 出现即注册**：目录已存在但 vault-map 未登记的项目（如手工创建的 `Projects/010-demo/`），首个 REQ 文件出现时由 `ensureProjectRegistered` 自动补登记（事件与每轮 scan 双通道；name 去数字前缀，path 优先 `new_project_root/<name>` 的约定 checkout，不存在则回退 vault 项目目录），随后正常建 TASK 走细化——新项目无需任何手工配置。
 - **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns` / `## Reference Map`），由首轮 agent 填充。
 - 新项目首个 REQ 由 PM 统筹触发 `skill://obsidian-task-runner-split` 拆分建议（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
 
@@ -581,9 +582,12 @@ Daemon 在调度 OMP 前从 CONTEXT.md 提取精简上下文，以 `<project_con
 
 daemon 在 OMP 成功后调用 `validateChangedDocs`：
 
-1. `git diff --name-only` 获取工作区变更文件列表。
-2. 对每个 `.md` 文件调用 `ValidateDocument`（自动识别 TASK/REQ/ADR 类型）。
-3. 损坏文件的路径和错误写入日志 + 桌面通知，不阻塞流水线。
+1. **仅独立 git 根项目执行**：`repoDir` 不是 git 根（项目无独立 checkout、路径回退 vault 目录）时跳过——git 会解析到外层 Vault 仓库，diff 路径相对仓库根，与 `repoDir` 拼接产生假"文档损坏"误报。
+2. `git diff --name-only` 获取工作区变更文件列表。
+3. 对每个 `.md` 文件调用 `ValidateDocument`（**frontmatter 块严格解析**，自动识别 TASK/REQ/ADR 类型；YAML 解析失败即视为损坏，不再降级通过）。
+4. 校验失败先尝试 `Repair` 自动修复（丢弃泄漏进 YAML 块的非法行），修复后**重新校验**：
+   - 修复成功 → 日志记录，不通知。
+   - 无法自动修复（缺必填字段、frontmatter 未闭合等）→ 日志 + 桌面通知「文档损坏，需要人工处理」，不阻塞流水线。
 
 ## 8. Review、Conflict 与 Merge
 

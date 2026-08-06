@@ -190,19 +190,34 @@ func normalizeNumericStrings(doc *yaml.Node) error {
 	return nil
 }
 
-// Parse extracts YAML frontmatter from a markdown document.
-// Returns nil, nil if the document has no frontmatter.
-func Parse(data []byte) (*Frontmatter, error) {
-	content := string(data)
+// extractFrontmatterBlock returns the raw YAML block between the leading
+// "---" delimiters, trimmed of surrounding whitespace. ok=false when the
+// document has no frontmatter at all; err non-nil when the block is opened
+// but never closed. Shared by Parse and ValidateDocument so type detection
+// and parsing always agree on what "the frontmatter" is.
+func extractFrontmatterBlock(content string) (block string, ok bool, err error) {
 	if !strings.HasPrefix(content, "---") {
-		return nil, nil
+		return "", false, nil
 	}
 	rest := content[3:]
 	end := strings.Index(rest, "\n---")
 	if end == -1 {
-		return nil, fmt.Errorf("frontmatter not closed")
+		return "", true, fmt.Errorf("frontmatter not closed")
 	}
-	fmBlock := strings.TrimSpace(rest[:end])
+	return strings.TrimSpace(rest[:end]), true, nil
+}
+
+// Parse extracts YAML frontmatter from a markdown document.
+// Returns nil, nil if the document has no frontmatter.
+func Parse(data []byte) (*Frontmatter, error) {
+	content := string(data)
+	fmBlock, ok, err := extractFrontmatterBlock(content)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
 
 	// Empty frontmatter returns a zero-value legacy-compatible struct.
 	if fmBlock == "" {
@@ -425,16 +440,13 @@ func missingDefaults(doc *yaml.Node, fm *Frontmatter) []FieldDefault {
 // empty values — are never touched. Returns nil when nothing is missing or
 // the document has no frontmatter.
 func MissingDefaults(data []byte) ([]FieldDefault, error) {
-	content := string(data)
-	if !strings.HasPrefix(content, "---") {
+	fmBlock, ok, err := extractFrontmatterBlock(string(data))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, nil // no frontmatter: leave the document alone
 	}
-	rest := content[3:]
-	end := strings.Index(rest, "\n---")
-	if end == -1 {
-		return nil, fmt.Errorf("frontmatter not closed")
-	}
-	fmBlock := strings.TrimSpace(rest[:end])
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
@@ -1099,9 +1111,15 @@ func ValidateDocument(path string) error {
 		return err
 	}
 
-	// Parse raw YAML for type detection.
-	var raw map[string]interface{}
-	_ = yaml.Unmarshal(data, &raw)
+	// Type detection parses the frontmatter block only. Parsing the whole
+	// file (body included) fails on ordinary markdown and the ignored error
+	// silently degraded the doc to a syntax-only check — genuinely corrupt
+	// frontmatter (agent output leaked into the YAML block) passed
+	// validation. A malformed frontmatter block is corruption by itself.
+	raw, err := parseFrontmatterMap(data)
+	if err != nil {
+		return fmt.Errorf("frontmatter parse: %w", err)
+	}
 
 	switch {
 	case raw["adr_id"] != nil && raw["adr_id"] != "":
@@ -1139,6 +1157,28 @@ func ValidateDocument(path string) error {
 		return err
 	}
 	return nil
+}
+
+// parseFrontmatterMap extracts the YAML block between the leading "---"
+// delimiters and unmarshals it into a map. Files without frontmatter return
+// a nil map (valid for non-task documents); an unclosed or malformed block
+// returns an error.
+func parseFrontmatterMap(data []byte) (map[string]interface{}, error) {
+	fmBlock, ok, err := extractFrontmatterBlock(string(data))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if fmBlock == "" {
+		return map[string]interface{}{}, nil
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(fmBlock), &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // WriteADR atomically writes an ADR markdown file with validation.
