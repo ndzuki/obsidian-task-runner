@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
@@ -176,14 +177,20 @@ func SaveVectors(vaultDir string, idx vectorIndex) error {
 // ("## heading" chunks; pre-heading content becomes one chunk) and persists
 // the vector store. Section-level vectors give precise hits on long
 // documents (a query about error handling matches the error-handling
-// section, not the whole doc). Returns the number of documents embedded.
+// section, not the whole doc). Embedding calls run concurrently (4 workers)
+// because ollama bge-m3 takes seconds per chunk serially. Returns the number
+// of documents embedded.
 func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 	if client == nil {
 		return 0, fmt.Errorf("embedding not configured")
 	}
 	refsDir := filepath.Join(vaultDir, "References")
-	idx := make(vectorIndex)
-	embedded := 0
+	type job struct {
+		path string
+		data []byte
+		rel  string
+	}
+	var jobs []job
 	err := filepath.WalkDir(refsDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -196,26 +203,59 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(refsDir, path)
-		chunks := chunkDocument(data)
-		doc := &docVectors{Title: extractH1(data), Chunks: make([]chunkVector, 0, len(chunks))}
-		for _, c := range chunks {
-			vec, err := client.Embed(c.text)
-			if err != nil {
-				return fmt.Errorf("embed %s %q: %w", rel, c.heading, err)
-			}
-			doc.Chunks = append(doc.Chunks, chunkVector{Heading: c.heading, Vector: vec})
-		}
-		idx[filepath.ToSlash(rel)] = doc
-		embedded++
+		jobs = append(jobs, job{path: path, data: data, rel: filepath.ToSlash(rel)})
 		return nil
 	})
 	if err != nil {
-		return embedded, err
+		return 0, err
+	}
+
+	idx := make(vectorIndex)
+	var mu sync.Mutex
+	var firstErr error
+	var wg sync.WaitGroup
+	workers := 4
+	if len(jobs) < workers {
+		workers = len(jobs)
+	}
+	jobCh := make(chan job)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobCh {
+				chunks := chunkDocument(j.data)
+				doc := &docVectors{Title: extractH1(j.data), Chunks: make([]chunkVector, 0, len(chunks))}
+				for _, c := range chunks {
+					vec, err := client.Embed(c.text)
+					if err != nil {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("embed %s %q: %w", j.rel, c.heading, err)
+						}
+						mu.Unlock()
+						return
+					}
+					doc.Chunks = append(doc.Chunks, chunkVector{Heading: c.heading, Vector: vec})
+				}
+				mu.Lock()
+				idx[j.rel] = doc
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+	wg.Wait()
+	if firstErr != nil {
+		return 0, firstErr
 	}
 	if err := SaveVectors(vaultDir, idx); err != nil {
-		return embedded, err
+		return 0, err
 	}
-	return embedded, nil
+	return len(idx), nil
 }
 
 // textChunk is one embeddable section.
@@ -252,8 +292,10 @@ func chunkDocument(data []byte) []textChunk {
 			return
 		}
 		text := prefix.String() + currentHeading + "\n" + current.String()
-		if len(text) > 8000 {
-			text = text[:8000] // bge-m3 8192-token input ceiling guard
+		// bge-m3 input ceiling is 8192 tokens; Chinese text is ~1-2 tokens
+		// per character, so cap conservatively at 4000 chars.
+		if len(text) > 4000 {
+			text = text[:4000]
 		}
 		chunks = append(chunks, textChunk{heading: currentHeading, text: text})
 		current.Reset()
