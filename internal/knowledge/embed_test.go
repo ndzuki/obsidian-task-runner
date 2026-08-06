@@ -14,39 +14,51 @@ import (
 )
 
 // fakeEmbeddingServer returns deterministic small vectors: token-length
-// dependent so "connect rpc" and "connect" texts share direction.
+// dependent so "connect rpc" and "connect" texts share direction. Supports
+// both single (/api/embeddings) and batch (/api/embed) ollama endpoints.
 func fakeEmbeddingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Model  string `json:"model"`
-			Prompt string `json:"prompt"`
-			Input  string `json:"input"`
+			Model  string   `json:"model"`
+			Prompt string   `json:"prompt"`
+			Input  []string `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode: %v", err)
 		}
-		text := req.Prompt
-		if text == "" {
-			text = req.Input
+		texts := req.Input
+		if len(texts) == 0 && req.Prompt != "" {
+			texts = []string{req.Prompt}
 		}
-		// Vector: dimension 3, each component counts keyword presence.
-		vec := []float64{0, 0, 0}
-		if strings.Contains(text, "connect") || strings.Contains(text, "rpc") {
-			vec[0] = 1
-		}
-		if strings.Contains(text, "helm") || strings.Contains(text, "chart") {
-			vec[1] = 1
-		}
-		if strings.Contains(text, "日志") || strings.Contains(text, "journal") {
-			vec[2] = 1
+		vecs := make([][]float64, 0, len(texts))
+		for _, text := range texts {
+			vec := []float64{0, 0, 0}
+			if strings.Contains(text, "connect") || strings.Contains(text, "rpc") {
+				vec[0] = 1
+			}
+			if strings.Contains(text, "helm") || strings.Contains(text, "chart") {
+				vec[1] = 1
+			}
+			if strings.Contains(text, "日志") || strings.Contains(text, "journal") {
+				vec[2] = 1
+			}
+			vecs = append(vecs, vec)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if strings.HasPrefix(r.URL.Path, "/api/embeddings") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": vec})
+		if strings.HasPrefix(r.URL.Path, "/api/embed") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": vecs})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"embedding": vec}}})
+		if strings.HasPrefix(r.URL.Path, "/api/embeddings") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": vecs[0]})
+			return
+		}
+		data := make([]map[string]any, 0, len(vecs))
+		for _, v := range vecs {
+			data = append(data, map[string]any{"embedding": v})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))
 	return srv
 }
