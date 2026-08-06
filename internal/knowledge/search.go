@@ -35,6 +35,7 @@ type SearchResult struct {
 	Title   string
 	Summary string
 	Score   float64
+	Chunk   string // best-matching section heading ("" when unknown)
 }
 
 const (
@@ -203,16 +204,24 @@ func (idx *searchIndex) SearchHybrid(query string, limit int, vectors vectorInde
 		weight = 1
 	}
 	blend := make(map[string]float64, idx.totalDocs)
-	for path, vec := range vectors {
-		cos := cosine(qvec, vec)
-		if cos <= 0 {
+	bestChunk := make(map[string]string)
+	for path, doc := range vectors {
+		bestCos, bestHeading := 0.0, ""
+		for _, c := range doc.Chunks {
+			if cos := cosine(qvec, c.Vector); cos > bestCos {
+				bestCos = cos
+				bestHeading = c.Heading
+			}
+		}
+		if bestCos <= 0 {
 			continue
 		}
 		bm := 0.0
 		if maxBm25 > 0 {
 			bm = bm25Scores[path] / maxBm25
 		}
-		blend[path] = weight*cos + (1-weight)*bm
+		blend[path] = weight*bestCos + (1-weight)*bm
+		bestChunk[path] = bestHeading
 	}
 	// Documents only found by BM25 keep a scaled BM25 score.
 	for path, s := range bm25Scores {
@@ -234,7 +243,10 @@ func (idx *searchIndex) SearchHybrid(query string, limit int, vectors vectorInde
 		if !ok {
 			continue
 		}
-		results = append(results, SearchResult{Path: doc.Path, Title: doc.Title, Summary: doc.Summary, Score: blend[p]})
+		results = append(results, SearchResult{
+			Path: doc.Path, Title: doc.Title, Summary: doc.Summary,
+			Score: blend[p], Chunk: bestChunk[p],
+		})
 	}
 	return results
 }
