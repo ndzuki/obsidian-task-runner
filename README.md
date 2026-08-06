@@ -183,7 +183,7 @@ otg install \
 }
 ```
 
-`project` 必须匹配 `projects[].name`。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
+`project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
 
 ### 阶段并发上限（`phase_concurrency`）
 
