@@ -203,6 +203,22 @@ otg install \
 - 任意 key 可调大/调小；置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks` 控制（不在此配置）。
 - 修改后重启 daemon 生效。
 
+### 知识库语义检索（`kb_embedding`，可选）
+
+`otg kb search` 默认 BM25 关键词检索（零依赖、本地）。配置 embedding 后端后可做**语义检索**（同义/跨词面匹配，如「状态机」命中 state-machine 文档）：
+
+```json
+"kb_embedding": {
+  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容 API）
+  "url": "http://127.0.0.1:11434",  // ollama 基址；openai 填 https://api.openai.com/v1
+  "model": "bge-m3",                // ollama 推荐 bge-m3（中文友好）
+  "api_key": "",                    // 仅 openai 后端需要
+  "weight": 0.5                     // 余弦相似度权重（0.5 = 与 BM25 对半）
+}
+```
+
+配置后执行一次 `otg kb index` 生成向量索引（存 `References/.kb-vectors.json`，45 篇约数秒）；之后 `otg kb search` 自动混合余弦 + BM25，embedding 后端不可用时自动回退纯 BM25。需先本地运行 ollama 并 `ollama pull bge-m3`。
+
 ### 并发任务
 
 `max_concurrent_tasks` 是 daemon 同时运行的 **implementing（Round 2）任务**上限，默认 `2`，配置值必须至少为 `1`。该限制覆盖同一 daemon 内所有批次和扫描周期，避免多个实现任务同时占用过多 LSP、debug adapter、编译器以及本机 CPU/内存资源。
@@ -362,6 +378,10 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg update-status <task> [key=value ...]` | 原子更新任务 frontmatter |
 | `otg review <task>` | 显示任务的 review bundle |
 | `otg stage-plan init <project>` | 按依赖拓扑生成/追加阶段计划（`--force` 重建，`--dry-run` 预览） |
+| `otg kb search "<关键词>"` | 知识库本地检索（BM25 + 可选 embedding 混合），语义命中优先 |
+| `otg kb index` | 构建 embedding 向量索引（配置 `kb_embedding` 后执行一次） |
+| `otg kb gaps <project>` | 列出无知识库覆盖的 ADR（知识缺口） |
+| `otg kb usage [project]` | 显示 topic ↔ 项目引用图 |
 | `otg validate-doc <path>` | 校验任意文档（自动识别 TASK/REQ/ADR）+ body tag 扫描 |
 | `otg repair-doc <task>` | 修复损坏的 frontmatter + body tag 自动转义 |
 | `otg version` | 查看版本（tag + commit hash） |

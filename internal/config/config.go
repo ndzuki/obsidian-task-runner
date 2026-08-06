@@ -43,9 +43,30 @@ type Config struct {
 	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
 	TemplateRegistry map[string]interface{}        `json:"template_registry,omitempty"`
 
+	// Knowledge-base vector search (optional). When configured and the
+	// vector index exists, otg kb search blends embedding cosine similarity
+	// with BM25; otherwise BM25 alone is used (zero-dependency fallback).
+	KBEmbedding *KBEmbeddingConfig `json:"kb_embedding,omitempty"`
+
 	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
 	ConfigPath      string `json:"-"`
+}
+
+// KBEmbeddingConfig configures the local/API embedding backend for semantic
+// knowledge search.
+type KBEmbeddingConfig struct {
+	// Backend: "ollama" (default) or "openai" (OpenAI-compatible API).
+	Backend string `json:"backend,omitempty"`
+	// URL for the embedding endpoint: ollama base URL ("http://127.0.0.1:11434")
+	// or OpenAI-compatible base ("https://api.openai.com/v1").
+	URL string `json:"url,omitempty"`
+	// Model name: ollama "bge-m3", OpenAI "text-embedding-3-small" etc.
+	Model string `json:"model,omitempty"`
+	// APIKey for OpenAI-compatible backends (ollama needs none).
+	APIKey string `json:"api_key,omitempty"`
+	// Blend weight for cosine similarity vs BM25 (0.5 = equal).
+	Weight float64 `json:"weight,omitempty"`
 }
 
 type TimeWindow struct {
@@ -141,6 +162,18 @@ func ModelReference() string {
 | minimax  | %s | 可选 |
 | fallback_models | 映射（默认 gpt/default/deepseek → %s） | 各 assignee 失败兜底；可增删任意 key、改任意模型标识，置 "" 禁用 |
 `, d["default"], d["deepseek"], d["gpt"], d["gemini"], d["claude"], d["minimax"], fb["gpt"])
+}
+
+// DefaultKBEmbedding returns the shipped embedding defaults (ollama, bge-m3,
+// equal blend). Callers may override per field; a nil config disables vector
+// search entirely.
+func DefaultKBEmbedding() *KBEmbeddingConfig {
+	return &KBEmbeddingConfig{
+		Backend: "ollama",
+		URL:     "http://127.0.0.1:11434",
+		Model:   "bge-m3",
+		Weight:  0.5,
+	}
 }
 
 // Defaults returns a Config with default values.
@@ -243,6 +276,21 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.FallbackModels == nil {
 		cfg.FallbackModels = defaults.FallbackModels
+	}
+	if cfg.KBEmbedding != nil {
+		d := DefaultKBEmbedding()
+		if cfg.KBEmbedding.Backend == "" {
+			cfg.KBEmbedding.Backend = d.Backend
+		}
+		if cfg.KBEmbedding.URL == "" {
+			cfg.KBEmbedding.URL = d.URL
+		}
+		if cfg.KBEmbedding.Model == "" {
+			cfg.KBEmbedding.Model = d.Model
+		}
+		if cfg.KBEmbedding.Weight == 0 {
+			cfg.KBEmbedding.Weight = d.Weight
+		}
 	}
 	if cfg.OMPCmd == "" {
 		cfg.OMPCmd = defaults.OMPCmd

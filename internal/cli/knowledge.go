@@ -14,7 +14,7 @@ func newKnowledgeCommand() *cobra.Command {
 		Use:   "kb",
 		Short: "Knowledge-base inspection commands",
 	}
-	cmd.AddCommand(kbGapsCmd, kbUsageCmd, kbSearchCmd)
+	cmd.AddCommand(kbGapsCmd, kbUsageCmd, kbSearchCmd, kbIndexCmd)
 	return cmd
 }
 
@@ -81,10 +81,12 @@ var kbUsageCmd = &cobra.Command{
 
 var kbMapFile string
 
-// kbSearchCmd ranks References documents by BM25 relevance to the query.
+// kbSearchCmd ranks References documents by relevance: BM25 plus embedding
+// cosine similarity when kb_embedding is configured and the vector index
+// exists.
 var kbSearchCmd = &cobra.Command{
 	Use:   "search <query>",
-	Short: "Rank knowledge documents by relevance (BM25, local)",
+	Short: "Rank knowledge documents by relevance (BM25 + optional embedding)",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(kbMapFile)
@@ -96,7 +98,19 @@ var kbSearchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		hits := idx.Search(query, kbSearchLimit)
+		var hits []knowledge.SearchResult
+		if cfg.KBEmbedding != nil {
+			client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+			vectors := knowledge.LoadVectors(cfg.ObsidianVault)
+			if len(vectors) > 0 {
+				hits = idx.SearchHybrid(query, kbSearchLimit, vectors, cfg.KBEmbedding.Weight, client.Embed)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
+			}
+		}
+		if hits == nil {
+			hits = idx.Search(query, kbSearchLimit)
+		}
 		if len(hits) == 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
 			return nil
@@ -112,6 +126,29 @@ var kbSearchCmd = &cobra.Command{
 	},
 }
 
+// kbIndexCmd builds the embedding vector store for semantic search.
+var kbIndexCmd = &cobra.Command{
+	Use:   "index",
+	Short: "Build the embedding vector index for knowledge search",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(kbMapFile)
+		if err != nil {
+			return err
+		}
+		if cfg.KBEmbedding == nil {
+			return fmt.Errorf("kb_embedding not configured in vault-map.json (add {backend,url,model})")
+		}
+		client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+		n, err := knowledge.BuildVectors(cfg.ObsidianVault, client)
+		if err != nil {
+			return fmt.Errorf("build vectors: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "embedded %d documents (%s, model %s)\n", n, cfg.KBEmbedding.Backend, cfg.KBEmbedding.Model)
+		return nil
+	},
+}
+
 var kbSearchLimit int
 
 func init() {
@@ -119,5 +156,6 @@ func init() {
 	kbUsageCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbSearchCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbSearchCmd.Flags().IntVar(&kbSearchLimit, "limit", 5, "max results")
+	kbIndexCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	rootCmd.AddCommand(newKnowledgeCommand())
 }
