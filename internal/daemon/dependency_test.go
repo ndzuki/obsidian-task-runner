@@ -1431,6 +1431,85 @@ stage: "P1"
 	waitForScanIdle(t, runner)
 }
 
+// TestScanAndProcessAutoResumesInterruptedBlockedTask guards the
+// PHASE_INTERRUPTED self-heal: legacy daemons wrote shutdown-interrupted
+// phases as blocked (observed: TASK-015, 8/5 era), while the skill contract
+// (docs/workflow.md 3.2) promises automatic re-scheduling on restart with NO
+// manual resume_approved. The scan must restore the blocked_phase exactly
+// like the API-key probe does.
+func TestScanAndProcessAutoResumesInterruptedBlockedTask(t *testing.T) {
+	dir := t.TempDir()
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"test": repo})
+
+	taskPath := filepath.Join(tasksDir, "TASK-083-interrupted.md")
+	if err := os.WriteFile(taskPath, []byte(`---
+id: "083"
+title: Interrupted Refining
+project: test
+status: blocked
+blocked_phase: refining
+phase_error_code: PHASE_INTERRUPTED
+phase_error: daemon 重启中断，等待自动恢复
+resume_approved: false
+priority: P2
+assignee: default
+req_doc: Projects/001-test/Requirements/REQ-083.md
+stage: "P1"
+---
+# Interrupted
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner.cfg.ObsidianVault = vault
+	runner.cfg.SkillInstallDir = skillDir
+
+	done := make(chan error, 1)
+	go func() { done <- runner.scanAndProcess() }()
+
+	waitForStartCount(t, startDir, 1)
+
+	fm := mustParse(t, taskPath)
+	if fm.Status != "refining" {
+		t.Fatalf("status = %q, want refining (auto-restored, no manual resume)", fm.Status)
+	}
+	if fm.BlockedPhase != "" {
+		t.Fatalf("blocked_phase = %q, want empty", fm.BlockedPhase)
+	}
+	if fm.PhaseErrorCode != "" {
+		t.Fatalf("phase_error_code = %q, want empty", fm.PhaseErrorCode)
+	}
+	if fm.ResumeApproved {
+		t.Fatal("resume_approved = true, want false (self-heal, not manual resume)")
+	}
+
+	// Stop the re-dispatch loop before releasing the barrier: the fake OMP
+	// leaves status=refining, so the follow-up scan would re-dispatch it
+	// forever. A done marker ends the loop so waitForScanIdle can unwind.
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	releaseBarrier(t, releaseFile)
+	if err := <-done; err != nil {
+		t.Fatalf("scanAndProcess: %v", err)
+	}
+	waitForScanIdle(t, runner)
+}
+
 // TestScanAndProcessKeepsKeyBlockedWhenUnavailable verifies that a key-blocked
 // task stays blocked and OMP is NOT launched while the key probe fails.
 func TestScanAndProcessKeepsKeyBlockedWhenUnavailable(t *testing.T) {

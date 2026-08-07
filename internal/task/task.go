@@ -247,9 +247,15 @@ func isAutoUnblockableWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lo
 	if fm.BlockedPhase != "" && !fm.ResumeApproved {
 		// API_KEY_UNAVAILABLE tasks are auto-resumed by the daemon's key probe
 		// (no manual resume_approved needed) — admit them for processing.
-		if fm.PhaseErrorCode != PhaseErrorCodeAPIKeyUnavailable {
-			return false
+		// PHASE_INTERRUPTED tasks are self-healed the same way on restart
+		// (docs/workflow.md 3.2 promises automatic re-scheduling, no manual
+		// resume); legacy daemons wrote interrupted phases as blocked
+		// (observed: TASK-015).
+		switch fm.PhaseErrorCode {
+		case PhaseErrorCodeAPIKeyUnavailable, PhaseErrorCodeInterrupted:
+			return true
 		}
+		return false
 	}
 	return true
 }
@@ -260,6 +266,12 @@ func isAutoUnblockableWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lo
 // daemon probes key availability each scan and auto-resumes these tasks
 // without manual resume_approved. Single source shared with internal/daemon.
 const PhaseErrorCodeAPIKeyUnavailable = "API_KEY_UNAVAILABLE"
+
+// PhaseErrorCodeInterrupted marks tasks blocked by a daemon shutdown that
+// interrupted the running phase. The daemon self-heals these on restart
+// (docs/workflow.md 3.2) without manual resume_approved — legacy daemons
+// wrote interrupted phases as blocked instead of keeping the phase status.
+const PhaseErrorCodeInterrupted = "PHASE_INTERRUPTED"
 
 // DoneReopensMerge reports whether a done task still owes its PR merge:
 // merge_status is set but not "merged" (merge interrupted/conflicted), or a
