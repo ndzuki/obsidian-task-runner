@@ -50,7 +50,11 @@ func parseStagePlan(planPath string) []stagePhase {
 	if err != nil {
 		return nil
 	}
-	content := string(data)
+	return parseStagePlanContent(string(data))
+}
+
+// parseStagePlanContent parses phase blocks from in-memory Stage-Plan text.
+func parseStagePlanContent(content string) []stagePhase {
 	headings := stagePhaseRE.FindAllStringIndex(content, -1)
 	phases := make([]stagePhase, 0, len(headings))
 	for i, loc := range headings {
@@ -82,20 +86,26 @@ func parseStagePlan(planPath string) []stagePhase {
 	return phases
 }
 
-// stageTasksLanded reports whether every task belonging to the phase is
-// done AND merged (merge_status=merged — a done task with a stale PR does
-// not count; the PR-closure loop must finish it first). Tasks are resolved
+// stageTasksState reports the convergence state of a phase's tasks, resolved
 // by their frontmatter `stage` field (inherited from the REQ at creation),
 // not by the Stage-Plan task list — the field follows the task when it
-// moves between stages and never goes stale. A phase with no tasks does not
-// land (nothing to review).
-func (r *Runner) stageTasksLanded(projDir, stageID string) bool {
+// moves between stages and never goes stale.
+//
+// landed: every task is done AND merged (merge_status=merged — a done task
+// with a stale PR does not count; the PR-closure loop must finish it first).
+// reviewable: landed, OR every remaining task is blocked/closed — nothing in
+// the phase is still dispatchable (a phase stuck on blockers must not stay
+// silent forever; the PM stage-review then advises wait/narrow/split).
+// blockers: ids of the remaining blocked tasks (review input reference).
+// A phase with no tasks is neither landed nor reviewable (nothing to review).
+func (r *Runner) stageTasksState(projDir, stageID string) (landed, reviewable bool, blockers []string) {
 	tasksDir := filepath.Join(projDir, "Tasks")
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		return false
+		return false, false, nil
 	}
 	foundAny := false
+	onlyBlocked := true
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -110,11 +120,24 @@ func (r *Runner) stageTasksLanded(projDir, stageID string) bool {
 			continue
 		}
 		foundAny = true
-		if fm.Status != "done" || fm.MergeStatus != "merged" {
-			return false
+		if fm.Status == "done" && fm.MergeStatus == "merged" {
+			continue
 		}
+		if fm.Status == "closed" {
+			continue // closed tasks never block a phase review
+		}
+		if fm.Status == "blocked" {
+			blockers = append(blockers, fm.ID)
+			continue
+		}
+		onlyBlocked = false // a dispatchable task remains: phase not reviewable
 	}
-	return foundAny
+	if !foundAny {
+		return false, false, nil
+	}
+	landed = onlyBlocked && len(blockers) == 0
+	reviewable = onlyBlocked
+	return landed, reviewable, blockers
 }
 
 // stageIDFor returns the short stage id ("P1") for a parsed phase heading
@@ -154,8 +177,15 @@ func (r *Runner) processStageReviews(ctx context.Context) int {
 				continue
 			}
 			stageID := stageIDFor(phase.Name)
-			if stageID == "" || !r.stageTasksLanded(projDir, stageID) {
+			if stageID == "" {
 				continue
+			}
+			landed, reviewable, blockers := r.stageTasksState(projDir, stageID)
+			if !reviewable {
+				continue
+			}
+			if !landed {
+				r.logger.Printf("project %s: stage-review dispatched for %q (blocked-only remainder: %v)", projectEntry.Name(), phase.Name, blockers)
 			}
 			if err := r.runGrillingPM(ctx, "stage-review", planPath); err != nil {
 				if errors.Is(err, errAPIKeyUnavailable) {
@@ -165,6 +195,7 @@ func (r *Runner) processStageReviews(ctx context.Context) int {
 				continue
 			}
 			r.logger.Printf("project %s: stage-review dispatched for %q (stage tasks landed)", projectEntry.Name(), phase.Name)
+			r.updateRoadmap(projectEntry.Name(), "阶段评审触发", phase.Name+" 评审已触发（任务全部合入或阻塞收敛），等待用户评审决策")
 			return 1
 		}
 	}

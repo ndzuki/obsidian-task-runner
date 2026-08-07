@@ -56,7 +56,10 @@ type Runner struct {
 	keyNotifyAt        sync.Map   // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map   // refPath → time.Time (knowledge intake validation toast debounce)
 	refIndexRebuiltAt  sync.Map   // "last" → time.Time (References INDEX rebuild debounce)
+	kbSyncAt           sync.Map   // "last" → time.Time (knowledge retrieval-store sync debounce)
+	kbSyncRunning      atomic.Bool // true while a retrieval-store sync goroutine is in flight
 	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
+	diagNotifyAt       sync.Map   // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
 	gatedLogged        map[string]bool // task paths whose dependency-gate log was emitted
@@ -231,7 +234,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			// the index.
 			if strings.Contains(evt.Path, refsDirToken) {
 				knowledge.InvalidateRefIndex(filepath.Join(r.cfg.ObsidianVault, "References"))
-				if strings.HasSuffix(evt.Path, ".md") {
+				// INDEX.md is a daemon-generated index, not a knowledge
+				// document: its rebuild write must not trip the intake
+				// frontmatter validation (and the debounced notification).
+				if strings.HasSuffix(evt.Path, ".md") && filepath.Base(evt.Path) != "INDEX.md" {
 					if verr := knowledge.ValidateRefFile(evt.Path); verr != nil {
 						r.logger.Printf("knowledge-base intake: %s invalid: %v", filepath.Base(evt.Path), verr)
 						// Debounced per file: watcher events for one broken
@@ -245,6 +251,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 				}
 				r.maybeRebuildRefIndex()
+				r.maybeSyncKnowledgeDB()
 			}
 			if evt.Dir == "Requirements" {
 				reqRel, _ := filepath.Rel(r.cfg.ObsidianVault, evt.Path)
@@ -465,11 +472,16 @@ func (r *Runner) initLogging() error {
 	return nil
 }
 
-// syncStageInheritance backfills the `stage` field on tasks whose REQ
-// declares a stage (REQ → TASK one-way inheritance; an existing task-level
-// stage is never overwritten). This keeps Stage-Plan, REQ and TASK documents
-// aligned as the PM assigns stages — a REQ staged after its canonical tasks
-// were created must not leave its tasks drifting outside the stage plan.
+// syncStageInheritance keeps TASK `stage` aligned with its REQ. Two modes:
+//
+//  1. Backfill — a task whose stage is empty inherits the REQ stage
+//     (REQ → TASK one-way; the task records stage_source=req so it follows
+//     later REQ stage changes).
+//  2. Follow — a task whose stage_source is "req" tracks the REQ stage when
+//     the PM re-stages the requirement; the task never drifts outside the
+//     stage plan. Tasks staged by daemon auto-staging or by PM manual
+//     assignment (stage_source empty) are deliberately left untouched — an
+//     explicit assignment outranks inheritance.
 func (r *Runner) syncStageInheritance() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -495,7 +507,12 @@ func (r *Runner) syncStageInheritance() {
 				continue
 			}
 			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil || fm.Stage != "" || fm.ReqDoc == "" {
+			if err != nil || fm == nil || fm.ReqDoc == "" {
+				continue
+			}
+			// Explicitly assigned stages (daemon auto-staging / PM manual)
+			// never follow REQ changes; only empty or REQ-inherited stages do.
+			if fm.Stage != "" && fm.StageSource != "req" {
 				continue
 			}
 			reqPath := fm.ReqDoc
@@ -510,15 +527,184 @@ func (r *Runner) syncStageInheritance() {
 			if err != nil || reqFM == nil || reqFM.Stage == "" {
 				continue
 			}
-			if err := yamlfrontmatter.Update(path, map[string]interface{}{"stage": reqFM.Stage}); err != nil {
+			if fm.Stage == reqFM.Stage && fm.StageSource == "req" {
+				continue // already aligned
+			}
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{"stage": reqFM.Stage, "stage_source": "req"}); err != nil {
 				r.logger.Printf("task %s: inherit stage from REQ failed: %v", fm.ID, err)
 				continue
 			}
-			r.logger.Printf("task %s: inherited stage=%s from REQ %s", fm.ID, reqFM.Stage, filepath.Base(fm.ReqDoc))
+			r.logger.Printf("task %s: stage=%s from REQ %s (stage_source=req)", fm.ID, reqFM.Stage, filepath.Base(fm.ReqDoc))
 		}
 	}
 }
 
+// syncDependencyInheritance backfills `blocked_by` on tasks whose REQ
+// declares `depends_on` dependencies (REQ → TASK one-way inheritance; an
+// existing task-level blocked_by is never overwritten — explicit PM/daemon
+// assignments outrank inheritance). REQ depends_on references REQ ids
+// ("023") or cross-project ids ("project:REQ-023"); the canonical TASK of a
+// REQ carries the same numeric id, so the mapping is identity within a
+// project. References to REQs whose canonical TASK does not exist yet are
+// skipped — the task inherits them on the scan after it is created.
+// This closes the automation loop: PM writes dependencies on the REQ (split
+// distribute, manual), the daemon propagates them to tasks without manual
+// blocked_by bookkeeping (release-manager lesson: 72 tasks with empty
+// blocked_by collapsed the staging topology).
+func (r *Runner) syncDependencyInheritance() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		projDir := filepath.Join(projectsDir, projectEntry.Name())
+		tasksDir := filepath.Join(projDir, "Tasks")
+		reqDeps, taskIDs := r.reqDependsOn(projDir, tasksDir)
+
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || len(fm.BlockedBy) > 0 || fm.ReqDoc == "" {
+				continue
+			}
+			reqID := reqIDFromPath(fm.ReqDoc)
+			if reqID == "" {
+				continue
+			}
+			deps := reqDeps[reqID]
+			if len(deps) == 0 {
+				continue
+			}
+			var inherited []string
+			for _, dep := range deps {
+				id := strings.TrimPrefix(dep, "REQ-")
+				if strings.Contains(id, ":") {
+					// Cross-project: "other:REQ-023" → "other:023" — the
+					// reference target exists as a task in its own project;
+					// existence is not verifiable here, keep it verbatim.
+					parts := strings.SplitN(id, ":", 2)
+					inherited = append(inherited, parts[0]+":"+strings.TrimPrefix(parts[1], "REQ-"))
+					continue
+				}
+				if taskIDs[id] {
+					inherited = append(inherited, id)
+				}
+			}
+			if len(inherited) == 0 {
+				continue
+			}
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{"blocked_by": inherited}); err != nil {
+				r.logger.Printf("task %s: inherit blocked_by from REQ failed: %v", fm.ID, err)
+				continue
+			}
+			r.logger.Printf("task %s: inherited blocked_by=%v from REQ %s", fm.ID, inherited, reqID)
+		}
+	}
+}
+
+// reqDependsOn scans a project's Requirements/ for depends_on lists keyed by
+// REQ id, plus the set of canonical task ids present in Tasks/.
+func (r *Runner) reqDependsOn(projDir, tasksDir string) (map[string][]string, map[string]bool) {
+	reqDeps := make(map[string][]string)
+	reqDir := filepath.Join(projDir, "Requirements")
+	if entries, err := os.ReadDir(reqDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "REQ-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(reqDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			id := reqIDFromPath(entry.Name())
+			if id == "" {
+				continue
+			}
+			var deps []string
+			if raw, ok := fm.Extra["depends_on"]; ok {
+				for _, item := range toStringSlice(raw) {
+					if item != "" {
+						deps = append(deps, item)
+					}
+				}
+			}
+			reqDeps[id] = deps
+		}
+	}
+	taskIDs := make(map[string]bool)
+	if entries, err := os.ReadDir(tasksDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(tasksDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.ID == "" {
+				continue
+			}
+			taskIDs[fm.ID] = true
+		}
+	}
+	return reqDeps, taskIDs
+}
+
+// reqIDFromPath extracts the numeric REQ id from a vault-relative path or
+// filename (".../REQ-023-slug.md" → "023").
+func reqIDFromPath(p string) string {
+	base := filepath.Base(p)
+	rest := strings.TrimPrefix(base, "REQ-")
+	if rest == base {
+		return ""
+	}
+	if idx := strings.IndexByte(rest, '-'); idx > 0 {
+		return rest[:idx]
+	}
+	return strings.TrimSuffix(rest, ".md")
+}
+
+// toStringSlice normalizes YAML list values ([...] or "a,b") to strings.
+func toStringSlice(raw interface{}) []string {
+	switch v := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return v
+	case string:
+		if v == "" {
+			return nil
+		}
+		return strings.Split(v, ",")
+	}
+	return nil
+}
 // compactOversizedTasks folds plan/prototype history for TASK docs above
 // the oversize threshold (config compact_oversize_threshold_kb). Runs on
 // every scan so bloated documents converge regardless of which path appended
@@ -567,6 +753,10 @@ func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
 	r.syncTaskSchemaDefaults()
 	r.syncStageInheritance()
+	r.syncDependencyInheritance()
+	r.validateDependencyRefs()
+	r.detectPlanFileOverlaps()
+	r.autoCloseStaleMergedTasks()
 	r.resolveBlockedDependencies()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
@@ -612,10 +802,14 @@ func (r *Runner) scanAndProcess() error {
 		// tasks are phased in milliseconds instead of an LLM session, and
 		// the PM input shrinks to genuine disputes only.
 		r.processAutoStaging()
+		// Deterministic archive fallback runs before PM consolidation so the
+		// distribution sees the converged list (no stale 500KB read).
+		r.autoArchiveDecisions()
 		// PM consolidation runs before priority assessments so answered
 		// decision lists un-park tasks as early as possible in the cycle.
 		r.processGrillingConsolidation(r.daemonCtx)
 		r.processPriorityAssessments(r.daemonCtx)
+		r.projectHealthDiagnostics()
 	}
 	return nil
 }
@@ -2910,6 +3104,43 @@ func (r *Runner) maybeRebuildRefIndex() {
 	} else {
 		r.logger.Printf("knowledge-base INDEX rebuilt: %d entries", n)
 	}
+}
+
+// maybeSyncKnowledgeDB incrementally syncs the retrieval store (SQLite FTS +
+// vectors) after References/ writes, debounced to 10 seconds like the INDEX
+// rebuild. Runs in a goroutine so the watcher event loop never blocks behind
+// embedding; kbSyncRunning single-flights overlapping triggers. SyncKnowledgeDB
+// is idempotent (content_hash comparison): an unchanged vault is a cheap no-op,
+// and a re-trigger after a long embed pass picks up writes that arrived during
+// the window. Embedding failures are non-fatal (FTS still commits) and logged
+// without a desktop notification — the same policy as the merge path.
+func (r *Runner) maybeSyncKnowledgeDB() {
+	now := time.Now()
+	if last, ok := r.kbSyncAt.Load("last"); ok && now.Sub(last.(time.Time)) < 10*time.Second {
+		return
+	}
+	if !r.kbSyncRunning.CompareAndSwap(false, true) {
+		return
+	}
+	r.kbSyncAt.Store("last", now)
+	go func() {
+		defer r.kbSyncRunning.Store(false)
+		dbPath := knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb)
+		var client *knowledge.EmbeddingClient
+		if r.cfg.KBEmbedding != nil {
+			client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
+		}
+		stats, err := knowledge.SyncKnowledgeDB(r.cfg.ObsidianVault, dbPath, client)
+		if err != nil {
+			r.logger.Printf("knowledge-base store sync failed: %v", err)
+			return
+		}
+		if stats.VecError != nil {
+			r.logger.Printf("knowledge-base store synced (FTS, vectors failed): %d docs: %v", stats.TotalDocs, stats.VecError)
+		} else if stats.VectorsRefreshed {
+			r.logger.Printf("knowledge-base store synced: %d docs, %d chunks", stats.TotalDocs, stats.TotalChunks)
+		}
+	}()
 }
 
 // resolveVaultProjectDir resolves a project name to its vault directory.

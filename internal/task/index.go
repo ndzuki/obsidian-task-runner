@@ -110,6 +110,25 @@ func (idx *Index) Scan(vaultPath string) ([]ReadyTask, error) {
 		}
 	}
 	sort.Slice(ready, func(i, j int) bool {
+		// Stage ordering is project-scoped: "P2" in one project has no
+		// relation to "P1" in another, so cross-project candidates keep the
+		// legacy priority-then-created fairness instead of comparing stages
+		// globally. Only within a project does stage outrank priority.
+		if ready[i].Project != ready[j].Project {
+			pi := priorityOrder(ready[i].Priority)
+			pj := priorityOrder(ready[j].Priority)
+			if pi != pj {
+				return pi < pj
+			}
+			if ready[i].Created != ready[j].Created {
+				return ready[i].Created < ready[j].Created
+			}
+			return ready[i].Project < ready[j].Project
+		}
+		si, sj := stageOrder(ready[i].Stage), stageOrder(ready[j].Stage)
+		if si != sj {
+			return si < sj
+		}
 		pi := priorityOrder(ready[i].Priority)
 		pj := priorityOrder(ready[j].Priority)
 		if pi != pj {
@@ -117,9 +136,6 @@ func (idx *Index) Scan(vaultPath string) ([]ReadyTask, error) {
 		}
 		if ready[i].Created != ready[j].Created {
 			return ready[i].Created < ready[j].Created
-		}
-		if ready[i].Project != ready[j].Project {
-			return ready[i].Project < ready[j].Project
 		}
 		if ready[i].ID != ready[j].ID {
 			return ready[i].ID < ready[j].ID
@@ -237,6 +253,7 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 	return ReadyTask{
 		ID: fm.ID, Title: fm.Title, Project: fm.Project,
 		NewProject: fm.NewProject, Priority: fm.Priority, Created: fm.Created,
+		Stage:    fm.Stage,
 		FilePath: filePath, FileName: fileName,
 		Status: fm.Status, PlanApproved: fm.PlanApproved,
 		MergeApproved: fm.MergeApproved, CloseApproved: fm.CloseApproved,

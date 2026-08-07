@@ -295,7 +295,7 @@ Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-rev
 | `Notes/Stage-Plan.md` | 阶段权威定义。固定格式：`### Phase N: {名称}` 块 + `- 目标:` / `- tasks:` / `- status:` 行（daemon 解析契约；只由 `stageplan` 包写入，PM/agent 不得自行追加阶段块） |
 | `Notes/Stage-Review.md` | PM 阶段评审产出：四维评分（完成度/质量/一致性/用户可体验性）+ 建议 + 「评审决策: continue / supplement:{建议} / end」 |
 | `stage` 字段（TASK/REQ frontmatter） | 阶段归属**权威判定**（`P{N}`）。创建 TASK 时从 REQ 继承；PM 拆分落地时写入；daemon 阶段完成检测按字段聚合，不依赖 Stage-Plan 的 tasks 列表（字段跟随任务移动，永不过期） |
-| `Notes/Roadmap.md` | 项目发展历史总览（回顾性，与 Stage-Plan 前瞻性互补），PM 在阶段化/阶段评审时自动维护 |
+| `Notes/Roadmap.md` | 项目发展历史总览（回顾性，与 Stage-Plan 前瞻性互补），daemon 在交付事件点确定性追加（阶段评审/阶段决策/收口/归档），PM 补充语义 |
 
 **确定性自动分组（`processAutoStaging`）**：daemon 每轮 scan 对未分阶段（stage 空）的进行中任务执行确定性拓扑分层 → 合并为阶段（`stage_min_per_phase`/`stage_max_phases` 配置控制）→ 写 Stage-Plan 骨架 + 批量写入 stage 字段。秒级、幂等、增量追加（编号接续），无需 LLM 会话。手动触发：`otg stage-plan init <project>`（`--force` 重建 / `--dry-run` 预览）。
 

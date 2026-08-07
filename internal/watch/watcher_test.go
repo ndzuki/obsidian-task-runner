@@ -35,6 +35,24 @@ func drainEvent(t *testing.T, w *Watcher) (Event, bool) {
 	}
 }
 
+// TestHandleRoutesReferencesFile guards knowledge-base intake: a write under
+// References/ (any subdirectory depth) must surface as a watcher event so the
+// daemon rebuilds INDEX and syncs the retrieval store automatically.
+func TestHandleRoutesReferencesFile(t *testing.T) {
+	w := newTestWatcher(t)
+	ref := filepath.Join(t.TempDir(), "References", "core", "go", "probe-ref.md")
+
+	w.handle(fsnotify.Event{Name: ref, Op: fsnotify.Write})
+
+	evt, ok := drainEvent(t, w)
+	if !ok {
+		t.Fatal("expected event for References file")
+	}
+	if evt.Dir != "References" || evt.Path != ref || evt.Operation != "WRITE" {
+		t.Fatalf("event = %+v, want dir=References path=%s op=WRITE", evt, ref)
+	}
+}
+
 func TestHandleRoutesProjectRootReq(t *testing.T) {
 	w := newTestWatcher(t)
 	vault := t.TempDir()

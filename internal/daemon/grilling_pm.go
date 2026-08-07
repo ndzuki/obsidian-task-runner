@@ -118,15 +118,25 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			// Fully answered AND nothing changed since the last distribute:
 			// reset the flag so the user's repeated grill_continue=true
 			// cannot spin an empty session, and tell them the list is
-			// complete.
+			// complete. The toast is debounced per project per day — a
+			// re-set flag must not re-notify.
 			r.logger.Printf("project %s: decision list fully answered and distributed (%d decisions), closing", project, grillingDecisionTotal(listPath))
 			_ = yamlfrontmatter.Update(listPath, map[string]interface{}{"grill_continue": false, "status": "answered"})
-			notify.SendTaskAction("grilling", "Grilling-Decisions", "✅", "决策清单已全部回答",
-				"无需再次设置 grill_continue；清单已关闭，任务按已答决策恢复流转。", r.cfg.Notifications.Desktop)
+			if !r.diagNotified("grilling|answered|" + project + "|" + time.Now().Format("2006-01-02")) {
+				notify.SendTaskAction("grilling", "Grilling-Decisions", "✅", "决策清单已全部回答",
+					"无需再次设置 grill_continue；清单已关闭，任务按已答决策恢复流转。", r.cfg.Notifications.Desktop)
+			}
 			continue
 		}
 		revPath := stageReviewPath(r.cfg.ObsidianVault, project)
 		if revPath != "" && grillingListAnswered(revPath) {
+			// The state flip is daemon-deterministic: Stage-Plan status
+			// transitions happen here, before the PM session — the PM
+			// session still runs afterwards for REQ annotations and the
+			// knowledge sink (Mode 2.5 remainder).
+			if r.flipStageReviewDecision(ctx) {
+				r.logger.Printf("project %s: stage-plan flipped by daemon, PM session continues for annotations", project)
+			}
 			if err := r.runGrillingPM(ctx, "distribute", revPath); err != nil {
 				if errors.Is(err, errAPIKeyUnavailable) {
 					return 0 // retry next scan
@@ -221,6 +231,19 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	cmd.WaitDelay = 30 * time.Second
 	go func() {
 		defer cancel()
+		// Snapshot the answer state BEFORE the session runs — the
+		// notification decision compares pre-session vs post-session hashes.
+		listPath := ""
+		var stored, beforeHash string
+		if mode == "distribute" && len(args) > 0 {
+			listPath = args[0]
+			if data, err := os.ReadFile(listPath); err == nil {
+				beforeHash = grillingAnswersHash(string(data))
+				if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil {
+					stored, _ = fm.Extra["distributed_answers_hash"].(string)
+				}
+			}
+		}
 		output, runErr := cmd.Output()
 		if runErr != nil {
 			if runCtx.Err() != nil && ctx.Err() != nil {
@@ -243,19 +266,37 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 		case "distribute":
 			// Record the answer snapshot right after the session so the
 			// next change detection is exact (daemon-side, deterministic —
-			// not left to the LLM session).
-			if listPath := args[0]; listPath != "" {
+			// not left to the LLM session). A failed hash write would leave
+			// changed=true forever and re-dispatch every scan — surface it.
+			var afterHash string
+			if listPath != "" {
 				if data, err := os.ReadFile(listPath); err == nil {
-					_ = yamlfrontmatter.Update(listPath, map[string]interface{}{
-						"distributed_answers_hash": grillingAnswersHash(string(data)),
+					afterHash = grillingAnswersHash(string(data))
+					if uerr := yamlfrontmatter.Update(listPath, map[string]interface{}{
+						"distributed_answers_hash": afterHash,
 						"last_distributed_at":      time.Now().Format(time.RFC3339),
-					})
+					}); uerr != nil {
+						r.logger.Printf("grilling pm distribute %s: record answer hash failed: %v", listPath, uerr)
+					}
 				}
 			}
 			// The user answers the decision list and then hears nothing —
 			// surface what the distribution consumed and what stays blocked.
-			notify.SendTaskAction("grilling", "Grilling-Decisions", "📨", "决策分发完成",
-				"清单答案已写回 REQ；未答决策点对应任务保持阻塞。全部回答后会自动分发，无需手动操作。", r.cfg.Notifications.Desktop)
+			// Convergence: only notify when this session actually consumed
+			// NEW answers relative to the last distribution (first
+			// distribution, or the pre-session answer hash differs from the
+			// stored one). A no-change session (user re-set grill_continue
+			// on a fully answered list) must stay silent instead of
+			// re-notifying. Note: the PM session itself never edits the
+			// list's answer region (it writes REQs), so before-vs-after
+			// comparison would always be equal — the stored hash is the
+			// correct baseline.
+			if stored == "" || (beforeHash != "" && beforeHash != stored) {
+				notify.SendTaskAction("grilling", "Grilling-Decisions", "📨", "决策分发完成",
+					"清单答案已写回 REQ；未答决策点对应任务保持阻塞。全部回答后会自动分发，无需手动操作。", r.cfg.Notifications.Desktop)
+			} else {
+				r.logger.Printf("grilling pm distribute %s: no new answer changes, notification skipped", listPath)
+			}
 		case "consolidate":
 			// Parked tasks are silent by design — but the user must know
 			// there are decisions waiting (the D-11..D-18 pile-up root cause:

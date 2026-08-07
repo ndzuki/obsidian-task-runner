@@ -78,13 +78,26 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - **stage 字段**：TASK/REQ frontmatter `stage: "P{N}"` 是阶段归属的**权威判定**（OnReqChanged 创建 TASK 时从 REQ 继承；PM 拆分落地时写入）。
 - **自动阶段化**：daemon 每轮 scan 对未分阶段（stage 空）的进行中任务执行**确定性拓扑分组**（`processAutoStaging`，秒级幂等）——新任务/新需求自动归入新阶段，无需 LLM 会话；也可手动 `otg stage-plan init <project>`（`--force` 重建 / `--dry-run` 预览）。
 - **贯穿型需求**（e2e/测试/环境/CI）：按阶段拆成**场景包**，只依赖同阶段或更早阶段交付——禁止一次性全量（TASK-066 17 轮 replan 死锁的教训）。
-- **阶段完成**：daemon 检测某 in-progress 阶段全部 `stage` 任务 done+merged → 调 PM `stage-review`（四维评分 + 建议 → `Notes/Stage-Review.md`）。
+- **阶段顺序调度**：daemon 对 ready 任务按 **项目内 stage 升序**（数字序，`P10` 在 `P2` 后）→ priority → created 排序拾取——低阶段任务优先消耗实现容量，P1 未收敛前 P2+ 任务不抢容量；**跨项目不做 stage 比较**（各项目阶段独立，保持创建时间公平），未分阶段任务排最后（当轮即被 auto-staging 归组）。阶段只用于「顺序调度 + 完成后评审」，不阻止后阶段任务提前进入 refining/planning——依赖先后由 `blocked_by` 表达（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
+- **阶段完成**：daemon 检测某 in-progress 阶段全部 `stage` 任务 done+merged → 调 PM `stage-review`（四维评分 + 建议 → `Notes/Stage-Review.md`）；**防卡死放宽**——剩余任务全部 blocked/closed（无可推进任务）的阶段同样触发评审，PM 给出「继续等待 / 收窄 / 拆出」建议，阶段不会无限静默。
+- **阶段目标自动填**：auto-staging 生成阶段块时 `- 目标:` 自动派生（阶段名 + 任务数），PM 可覆盖为可演示成果——占位不退化（P4/P5/P6 空目标教训）。
 - **用户决策**：回答 Stage-Review「评审决策: continue / supplement:{建议} / end」→ daemon 分发（继续下一阶段 / 建议写入下一阶段 / 后续阶段任务 close，功能满足即结束）。
 - **阶段规模**：由配置 `stage_min_per_phase`/`stage_max_phases` 控制（daemon 分组参数）；PM 仅在新需求到达时评估归入现有阶段或**建议增/拆阶段**（写清单「阶段规划确认」区，用户拍板，不塞进进行中阶段）。
 
+## 依赖卫生与健康诊断（Daemon Health）
+
+每轮 scan 自动执行，防"任务静默饿死/冲突延迟暴露/队列虚胖"：
+
+- **依赖引用校验**：`blocked_by`/REQ `depends_on` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）。
+- **计划文件重叠预警**：同项目并发 implementing 任务的 `plan_files`（Round 1 写回）重叠 → 一次性通知——把合并冲突信号从 merge 阶段前置到调度阶段。
+- **项目健康诊断**：每轮输出 in-flight / stage 空 / merged-未收口 计数；超阈值（每日一次）通知——`merged 未收口 ≥5 且 in-flight ≥20` 提示跑 `project-rebaseline`；`stage 空 ≥5` 提示 `otg stage-plan init`；in-progress 阶段任务 >8 提示拆阶段。
+- **任务自动收口**（D4）：`merge_status=merged` + 非 done/closed + 无 `pending_req` 的任务自动转 `done`（PR 合入是确定性证据；pending_req 增量任务不误收口）+ 通知 + Roadmap 里程碑。
+- **决策归档兜底**（D3）：主决策清单 >50KB 且未答 ≤3 时，daemon 确定性归档已答决策点至 `Grilling-Decisions-archive.md`（PM Step 4.5 是主路径，此为无会话兜底，主清单永不膨胀）。
+- **阶段状态 daemon 翻转**（D2）：用户填「评审决策:」后，daemon 在 PM 分发**前**确定性翻转 Stage-Plan 状态机（continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）；PM 会话只做 REQ 标注与知识沉淀。
+
 ## Roadmap（里程碑路线图）
 
-`Notes/Roadmap.md`：项目发展历史总览（里程碑时间线 + 当前状态），PM 在阶段化/阶段评审时自动维护。用户可随时查看项目走到哪、经历过什么；与 `Stage-Plan.md`（前瞻规划）互补。细化阶段产物（路线图/领域索引类 REQ）归档见 `Notes/legacy-requirements.md`。
+`Notes/Roadmap.md`：项目发展历史总览（里程碑时间线 + 当前状态），**daemon 在交付事件点确定性追加**（阶段评审触发/阶段决策/任务自动收口/决策归档，幂等按日期+标题），PM 在阶段评审/阶段化时补充语义。用户可随时查看项目走到哪、经历过什么；与 `Stage-Plan.md`（前瞻规划）互补。细化阶段产物（路线图/领域索引类 REQ）归档见 `Notes/legacy-requirements.md`。
 
 ## OnReqChanged（需求变更联动）
 - blocked：保持 blocked，pending_req=true。
@@ -120,6 +133,8 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 
 - **弃用字段**：`switch_settings`（迁移专用，新代码/新文档必须用 `assignee`）、REQ 的 `domain`/`parent_req`/`task_size`（不再被解析）。模板与文档不得再写入；存量文档由 `otg migrate-tasks <path> --write` 或手工清理。
 - `stage` 字段是阶段归属的**权威判定**（TASK 从 REQ 继承，PM 拆分落地时写入），与 `Notes/Stage-Plan.md` 的 `### Phase N:` 块对应。
+- `stage_source`：阶段来源标记——`req`（REQ 继承，跟随 REQ stage 变更）、空（daemon 自动分组 / PM 手动分配，不跟随）。PM 手动改 TASK stage 时必须清空 `stage_source`（`otg update-status stage=... stage_source=`）。
+- `plan_files`：Round 1 计划产出的将修改文件清单（repo 相对路径），daemon 用于同项目并行实现的文件重叠预警。
 
 ## Documentation（文档）
 完整规范和实现验收清单见 `docs/workflow.md`；字段参考见 `reference.md`。

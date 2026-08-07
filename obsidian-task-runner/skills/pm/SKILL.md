@@ -105,7 +105,7 @@ updated: {ISO8601}
 - **status=answered 的清单追加新决策点时，必须重置 `status: open`**（`grill_continue` 保持 false 等用户）——否则清单状态与「有新未答决策」的事实不一致（distribute 触发不受影响，但状态语义混乱）。
 - **决策点去重（防清单膨胀，强制）**：open 清单中已存在 normalize 标题相同（同 REQ + 同问题标题）的决策点 → **不追加新条目**。仅当本次「冲突/建议」内容有实质增量时，更新该条目的「来源任务」列表与 `updated` 时间戳；完全无增量（问题、冲突、建议与已有条目一致，REQ hash 未变）→ 直接跳过并在日志记录（TASK-025 的 D-11 曾被追加 6 次的教训——同一问题反复 park 不得反复膨胀清单）。
 - **清单收敛上限**：open 清单决策点 > 15 条时，不再追加新的非紧急决策点；在清单顶部「收敛提示」区提示用户优先回答存量决策点（堆积 19 条未答会使用户失去回答意愿）。
-- **决策点编号 D-n 全局单调递增，不清零**：读取清单中现有最大编号（跨全部 REQ 组），新决策点从 `D-{max+1}` 开始。**禁止按 REQ 组重新编号**——多组 consolidate 时必须携带全局计数器，否则 distribute 时 `D-n` 引用歧义（回归：v0.23 初版曾因 REQ-012 组与 REQ-018 组各自从 D-3 编号导致重复）。
+- **决策点编号 D-n 全局单调递增，不清零**：读取**主清单与归档文件**（`Grilling-Decisions-archive.md`，如有）中现有最大编号（跨全部 REQ 组），新决策点从 `D-{max+1}` 开始。**禁止按 REQ 组重新编号**——多组 consolidate 时必须携带全局计数器，否则 distribute 时 `D-n` 引用歧义（回归：v0.23 初版曾因 REQ-012 组与 REQ-018 组各自从 D-3 编号导致重复）。
 
 ### Step 4: 更新任务状态
 对每个输入任务：
@@ -128,9 +128,11 @@ otg update-status {task} \
 
 ## Mode 2: distribute（分发答案）
 
-### Step 1: 读取清单
-- 校验 `grill_continue=true`；读取全部决策点的「决策:」内容。
+### Step 1: 读取清单（只读未答决策点）
+
+- 校验 `grill_continue=true`；**只读取未答决策点**——「决策:」为空或占位符的 D-n 条目，以及「拆分:」「评审决策:」未填项。**占位符判定与 daemon `decisionAnswered` 一致**：空值或含「用户填写」字样即未答（三种括号形态 `（用户填写）`/`{用户填写}`/`<用户填写>` 全覆盖；遗漏任一变体会把未答项当已答）。**已答条目一律跳过、不加载**（清单会累积数百条历史，全量读取单次浪费 10 万+ token；daemon 的决策 tab 与计数同样只面向未答项）。
 - 未填写的决策点 → 不处理该点，在日志中标注，其余照常分发。
+- 已答条目的决策内容如需引用（如推翻前次决策），按 D-n 定位后**分段读取**该条目，禁止全文加载。
 
 ### Step 2: 写回 REQ
 每条决策写回其 REQ 文档相关章节，追加标注：
@@ -162,6 +164,16 @@ otg update-status {task} \
 2. 原 REQ 作为**总纲**保留，frontmatter 追加 `superseded_by: [{子 REQ id 列表}]` 或正文顶部标注「已拆分为 {子 REQ}，本文件为总纲」。
 3. 子 REQ 创建后 `OnReqChanged` 自动生成各自 canonical TASK；原任务的 grilling 结果（已决策点）在 distribute Step 2 中已写回原 REQ，子 REQ 继承相关内容。
 
+### Step 2.41: 拆分不落地（用户选择「拆分: 不拆分」）
+
+用户明确不拆分（或修改后仍为单需求）时，**依赖不能丢**——单任务大需求若无依赖拓扑，阶段分组退化为按创建时间堆层（release-manager 教训：72 任务 blocked_by 全空、拓扑分组失效）：
+
+1. 把 split 建议表格的「依赖」列**逐条写全到原 REQ frontmatter `depends_on`**（引用既有 REQ 编号，如 `depends_on: ["023", "067"]`；不存在的引用跳过并标注）。这是该 REQ 后续创建 TASK 时的依赖基线，PM 统筹/daemon 按它补 blocked_by。
+2. 「阶段规划确认」区给出归组建议：该单需求归入现有阶段（写 `stage: "P{N}"` 到 REQ frontmatter）或建议追加新阶段（你拍板）。REQ stage 写入后 canonical TASK 经 daemon `syncStageInheritance` 自动继承（`stage_source=req`，REQ 后续重排阶段任务自动跟随）。
+3. 明确标注：`> 拆分: 不拆分（用户决策 {ISO8601}）——依赖列已写全 depends_on，阶段归属 {P{N} / 待定}`。
+
+> 幂等：重复 distribute 时 `split_applied` 已含该 REQ → 跳过（同 Step 2.4 幂等前置检查）。
+
 ### Step 2.44: 阶段规划确认落地（若清单含「阶段规划确认」）
 
 若用户填写了「阶段:」或「阶段规划确认」答案（确认 / 修改 / 追加新阶段）：
@@ -170,7 +182,7 @@ otg update-status {task} \
    - 用户确认的阶段 → `otg update-status {task} stage="P{N}"` 解除 park（`grill_parked=false`），REQ frontmatter 同步 `stage: "P{N}"`；
    - 仍无法归属 → 保持 park 并标注，用户后续单独决定。
    > 注意：daemon 的 auto-staging 可能已按依赖拓扑**自动追加**了临时阶段（编号接续、目标占位）——distribute 只需按用户确认**调整命名/目标/归属**（改 Stage-Plan 块与 stage 字段），无需重复创建。
-2. **修改既有阶段**（用户调整阶段划分）→ 按答案更新 Stage-Plan 对应块 + 相关 REQ/TASK 的 stage 字段（TASK 用 `otg update-status`，REQ 直接编辑 frontmatter）。
+2. **修改既有阶段**（用户调整阶段划分）→ 按答案更新 Stage-Plan 对应块 + 相关 REQ/TASK 的 stage 字段（TASK 用 `otg update-status`，REQ 直接编辑 frontmatter）。**手动调整 TASK stage 时必须同时清空 `stage_source`**（`otg update-status {task} stage="P{N}" stage_source=`）——否则该任务会继续跟随 REQ stage（daemon `syncStageInheritance` 按 `stage_source=req` 覆盖手动分配）；REQ 上的 stage 变更则自动传播给 `stage_source=req` 的任务，无需逐任务改。
 3. 所有 stage 变更后，受影响的未 park 任务回到原状态继续调度（不需重新 grilling）。
 
 ### Step 2.45: 技术栈决定写回
@@ -213,6 +225,21 @@ last_distributed_at: <ISO8601>
 - `pending_count` 归零 = 清单全部回答 → daemon 不再派 distribute（grill_continue=true 会被直接关闭并通知「清单已全部回答」）。
 - 追加新决策点（consolidate）时刷新 answered_count/pending_count；distribute 完成时刷新三字段。
 
+### Step 4.5: 归档已答决策点（防清单无限膨胀，强制）
+
+清单全部回答并关闭时（pending_count=0），**把已答决策点条目**（`### D-n` 标题 + 来源任务 + 冲突 + 建议 + 决策行）移动到 `Notes/Grilling-Decisions-archive.md`（不存在则创建；frontmatter：`id/project/type: archive/created/updated`——归档文件不含 daemon 解析字段，daemon 不读它）。主清单只保留：frontmatter、未答条目（如有）、归档指针：
+
+```markdown
+> 历史决策已归档至 [[Grilling-Decisions-archive]]（D-1 ~ D-{N}，{ISO8601}）
+```
+
+规则：
+- **幂等**：归档文件已含 D-n → 跳过（重复 distribute 不重复移动）；
+- **D-n 编号保持全局单调递增**：新决策点编号 = max(主清单最大 D-n, 归档文件最大 D-n) + 1——归档**不重置**编号（consolidate Step 3 同规则）；
+- **可见性字段**：`answered_count` = 已归档决策点总数（历史审计，含归档文件条目），`pending_count` = 主清单未答数（0 则决策 tab 不再创建）；
+- **daemon 兼容**：归档在 distribute 会话内完成，会话结束后 daemon 对归档后的主清单写 `distributed_answers_hash`——changed 判定基于新主清单，无额外触发；
+- 归档文件本身不参与 daemon 解析（文件名非 `Grilling-Decisions.md`），仅作审计与编号来源。
+
 ### 完成标准
 - [ ] 每条已填决策写回对应 REQ，标注含来源与时间
 - [ ] 每个引用任务重置为 refining，grill_parked=false / grill_repeat=0
@@ -221,14 +248,13 @@ last_distributed_at: <ISO8601>
 
 ## Mode 2.5: distribute — 阶段评审决策（输入为 Stage-Review.md）
 
-当 `distribute {list_path}` 的路径文件名是 `Stage-Review.md` 时，按阶段决策分发（不执行 Mode 2 的 REQ 决策写回）：
+> **状态翻转已由 daemon 确定性完成**（`flipStageReviewDecision`：continue/supplement/end 的 Stage-Plan 状态机——当前阶段 delivered、下一阶段 in-progress/completed、end 时后续阶段 ended + 任务 close——在 PM 会话**之前**执行，并已写 `status=answered`/`grill_continue=false`）。本模式**不再执行状态机动作**，只做：
 
-1. 读取「评审决策:」行：`continue` / `supplement:{建议}` / `end`。
-2. **continue**：更新 Stage-Plan.md——当前阶段 `status: review-pending → delivered`（追加评审摘要一行），下一阶段 `planned → in-progress`；无下一阶段 → 项目完成，Stage-Plan `status: completed`。
-3. **supplement:{建议}**：先执行 continue 的全部动作，再把建议追加到下一阶段块的 `- 补充: {建议}` 行（后续 refining 该阶段 REQ 时参考）；建议涉及具体 REQ → 同时追加标注到对应 REQ（`> [阶段补充: {来源阶段}]: {建议} — 用户决策 {ISO8601}`）。
-4. **end**：当前阶段 `delivered`；后续所有阶段 `status: ended`；后续阶段 TASK 逐条 `otg update-status {task} status=closed closure_reason=cancelled closure_note="阶段化交付提前结束（用户评估满意）"`——**功能需求满足即可结束，不维护积压**。贯穿型需求的未挂载场景包同样 close。
-5. Stage-Review.md frontmatter `status=answered, grill_continue=false`。
-6. 沉淀到知识库（同 Mode 2 Step 2.5 格式，分类 `core/{project}-stage-decisions.md`）。
+1. 读取「评审决策:」行确认内容（continue / supplement:{建议} / end——判定与 daemon 一致，供后续标注引用）。
+2. **supplement:{建议}** 且建议涉及具体 REQ → 追加标注到对应 REQ（`> [阶段补充: {来源阶段}]: {建议} — 用户决策 {ISO8601}`）——Stage-Plan 的 `- 补充:` 行已由 daemon 追加，PM 不重复写。
+3. 沉淀到知识库（同 Mode 2 Step 2.5 格式，分类 `core/{project}-stage-decisions.md`）。
+4. **写 Stage-Review.md frontmatter `status=answered, grill_continue=false`**（分发完成标记，daemon 据此停止重新分发；PM 会话失败时该标记不写 → daemon 下轮重试，标注不丢）。
+5. **禁止修改 Stage-Plan.md 的阶段状态行**（daemon 已确定性翻转）。
 
 ## Roadmap（项目里程碑路线图，PM 自动维护）
 
