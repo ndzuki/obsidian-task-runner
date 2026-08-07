@@ -45,11 +45,14 @@ disableModelInvocation: true
 
 每条 AC 独立执行，Red/Green/Refactor 标准参照 `skill://tdd`：
 
-1. Red：最小失败测试。
-2. Green：刚好足够的实现。
-3. Refactor：只在 Green 后。
-4. 记录实现和测试证据。
-5. **AC 完成后重新读取 TASK frontmatter。**
+1. **测试打在计划声明的 Seam**：读取当前 Step 的「测试 Seam」行——测试必须通过该层公共接口表达行为（HTTP handler / Repository 接口 / 纯函数层），禁止测内部实现、私有方法、实现耦合的 mock。**计划未声明 Seam 行（旧版本计划）时，默认取该 Step 的最高公共接口**（最接近用户/调用方的可观察层）。
+2. Red：最小失败测试。
+3. Green：刚好足够的实现。
+4. Refactor：只在 Green 后。
+5. 记录实现和测试证据。
+6. **AC 完成后重新读取 TASK frontmatter。**
+
+**计划外 Seam = 架构信号**：若某个行为无法通过计划声明的 seam 测试（必须测内部、必须新增 mock 边界、或 seam 本身放错层），不要静默绕过——按 `Implementation Blockers` 走 grilling，附证据（测什么测不到、为什么）。计划外 seam 往往意味着 Step 边界或接口设计需要修正（回归 Round 1 的 design-it-twice 对比）。
 
 
 ### Scope Hammering（时间盒过半自动削 scope）

@@ -100,6 +100,32 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 > Title the ADR for the decision itself, not the task.
 > Good: `ADR: Use <technology> as the sole business database`
 > Bad: `ADR: TASK-069 implementation`
+
+## Step 1.5: Target-Area Architecture Survey（目标区域架构探索，条件触发）
+
+**Purpose**: 计划质量的上限取决于对目标模块真实结构的理解。Step -1 知识图谱只读文档，不读代码——大型/跨模块需求在此补一次**轻量代码探索**，让 Step 边界、seam 与接口设计与实际代码结构对齐，降低 Round 2 中途「架构摩擦」转 needs-grilling 的概率。
+
+**触发条件**（任一，否则跳过本步）：
+- REQ 涉及 3 个以上模块/服务；
+- 重构类需求（替换/废弃既有模式、跨服务数据流变更）；
+- `depends_on` 复杂（≥3 未解决依赖）；
+- 计划者对目标模块结构不熟（读码后仍无法说出模块边界与耦合点）。
+
+**方法**（加载 `skill://improve-codebase-architecture` 借用其 Explore 方法论——**不生成 HTML 报告、不进入 grilling**，只取探索模式）：
+0. **知识库预检（防重蹈覆辙）**：`otg kb search` 检索目标模块主题与相关技术栈，读取命中文档的「踩坑实践」小节与 `core/daemon-stuck-task-patterns.md`（系统级失败模式）——已记录失败的方案作为子代理走查的**验证点**（该坑在当前代码里是否仍存在），`verified: true` 的已验证架构模式作为 seam/模块边界判断参考；命中文档路径记入探索产出，纳入 Step 3.5 的 `knowledge_refs`。
+1. **热区定位**：`git log --oneline -20` 走查最近变更，让活跃路径先吸引注意力（deepening 的机会在正在变的代码里）。
+2. **子代理并行走查**：spawn 2-3 个只读子代理分头走查目标模块，记录摩擦点——概念需跨多少文件才能理解（Locality）、模块是否**浅**（接口与实现一样复杂）、纯函数仅为可测而抽离但真 bug 在调用方、耦合模块是否跨 seam 泄漏、哪些部分不可测/难测。**对照预检命中的失败模式逐项验证**（坑已修 / 仍存在 / 换了形态）。
+3. **Deletion Test**：对任何疑似浅的模块问——删除它，复杂度是集中到更小接口还是扩散到调用方？只有「集中」才算 deepening 候选。
+4. 检查 `Notes/adr/` 是否已有禁止重开的决策；候选与既有 ADR 冲突时只在摩擦真实存在时提出并标注。
+
+**产出**：写入 `## 实现计划` 的 `### 架构探索` 小节（计划头部）：
+- 目标区域现状：模块清单、seam 位置、已知耦合点（1-3 句/模块）；
+- 命中的知识文档（含「踩坑实践」结论与验证结果：坑已修/仍存在/换形态）；
+- deepening 候选：≤3 个（带 deletion test 结论与影响范围）；
+- 对计划的影响：Step 边界是否按真实 seam 调整、哪些 Step 需要先做局部深化。
+
+> 成本控制：探索只读不写；产出 ≤300 字；子代理数量 ≤3。小需求（触发条件不满足）绝不执行本步。
+> 版本化：`### 架构探索` 为计划头部固定小节，**每次 planning（含 replan）由本步重写**，不留存旧版探索结论（旧结论随 `### vN` 历史保留）。
 ## Step 2: Checkpoint Assessment（Checkpoint 评估）
 
 若 `checkpoint_commit` 非空：
@@ -126,6 +152,17 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 - Seam 是否放在调用方不需关心的位置（Locality）？
 - 删除该模块，复杂度是消失还是扩散（Deletion Test）？
 
+**Design It Twice（高风险接口 Step 强制）**：若 Step 声明 `risk: high` 且涉及接口设计（新模块、跨服务契约、数据流变更、存储抽象），必须用 `skill://codebase-design` 的 DESIGN-IT-TWICE 模式产出方案对比，而非直接写第一个想法：
+
+1. **并行 3 个子代理**，各用一个激进不同的设计约束：
+   - Agent 1: "Minimize the interface — 1–3 个入口点，最大化每个入口的 leverage"
+   - Agent 2: "Maximise flexibility — 支持多用例与扩展"
+   - Agent 3: "Optimise for the most common caller — 默认场景零摩擦"
+2. 每个子代理输出：接口形状（类型/方法/参数 + 不变量、顺序、错误模式）、调用方用法示例、seam 背后隐藏什么、依赖策略、权衡（leverage 高/薄处）。
+3. 顺序呈现 → 按 **depth / locality / seam placement** 对比 → 给出推荐（可 hybrid），连同落选方案的取舍写入计划 Step 的「设计对比」小节。
+
+> 第一个想法通常不是最好的（Ousterhout）。接口返工是 Round 2 阻塞的常见来源——设计两次的成本远低于实现期返工。非高风险接口 Step 仍按上方深度模块原则检查即可。
+
 每个 Step 使用固定表格：
 
 ```markdown
@@ -134,6 +171,7 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 |------|------|
 | 目标 | ... |
 | 产出 | ... |
+| 测试 Seam | 本 Step 的测试打在哪层公共接口（如 HTTP handler、Repository 接口、纯函数层）；计划外 seam 在 Round 2 视为架构信号走实现阻塞 |
 | Step 依赖 | ... |
 | 前序契约 | ... |
 | Checkpoint 处理 | 保留/修改/废弃/N/A |
