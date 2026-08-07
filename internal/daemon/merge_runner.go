@@ -950,6 +950,16 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	} else if moved > 0 {
 		r.logger.Printf("knowledge-base reclassified: %d archived docs moved to topics", moved)
 	}
+	// High-heat extended/ documents join the core retrieval layer so reused
+	// experience is found first (core → extended → archived cascade).
+	if promoted, perr := knowledge.PromoteToCore(vaultDir, 3); perr != nil {
+		r.logger.Printf("knowledge-base core promotion failed: %v", perr)
+	} else if len(promoted) > 0 {
+		r.logger.Printf("knowledge-base promoted to core: %d docs", len(promoted))
+		for _, m := range promoted {
+			r.logger.Printf("knowledge-base promote: %s", m)
+		}
+	}
 	// Measure knowledge application: Round 1's planned knowledge_refs are
 	// checked against the knowledge base at delivery time, recorded as
 	// "hit/total" on the task (knowledge_applied) and logged.
@@ -990,5 +1000,16 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	}
 	if _, idxErr := knowledge.RebuildINDEX(vaultDir); idxErr != nil {
 		r.logger.Printf("knowledge-base INDEX rebuild failed: %v", idxErr)
+	}
+	// Refresh the embedding vectors incrementally so newly extracted lessons
+	// participate in semantic retrieval immediately. Non-blocking: embedding
+	// outages degrade to BM25-only, never fail the merge.
+	if r.cfg.KBEmbedding != nil {
+		client := knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
+		if n, verr := knowledge.BuildVectors(vaultDir, client); verr != nil {
+			r.logger.Printf("knowledge-base vector refresh failed: %v", verr)
+		} else {
+			r.logger.Printf("knowledge-base vectors refreshed: %d docs", n)
+		}
 	}
 }

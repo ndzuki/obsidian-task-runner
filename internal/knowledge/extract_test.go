@@ -186,6 +186,385 @@ func TestReclassifyUncategorized(t *testing.T) {
 	}
 }
 
+func TestExtractTaskKnowledgePitfalls(t *testing.T) {
+	vault := t.TempDir()
+	project := "bench-project"
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(refsDir, "kulala-http-client.md")
+	seed := "---\ntopics: [kulala, http-client]\nlevel: reference\nupdated: \"2026-08-06\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# Kulala\n\n> summary\n\n## 要点\n- a\n\n## 更新记录\n- 2026-08-06 init\n"
+	if err := os.WriteFile(target, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	taskDir := filepath.Join(vault, "Projects", project, "Tasks")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(taskDir, "TASK-007-test.md")
+	taskContent := `---
+id: "007"
+title: Test pitfall task
+project: ` + project + `
+assignee: gpt
+status: done
+adr_written: []
+---
+
+## 实现记录
+
+- AC-1 done
+
+## 踩坑记录
+
+### 2026-08-07: Kulala pre-request 脚本不执行
+
+- 现象: pre-request script（小于号 ./pre.js）引用后请求直接失败，无 Authorization 头
+- 失败方案: 把密钥写进 http-client.env.json 公共文件
+- 根因: 公共 env 文件会被提交，且脚本路径相对当前文件解析
+- 成功方案: 改用 pre-request script + request-scoped variable
+- 相关文档: extended/tools/kulala-http-client.md
+`
+	if err := os.WriteFile(taskPath, []byte(taskContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ExtractTaskKnowledge(vault, project, taskPath)
+	if err != nil {
+		t.Fatalf("ExtractTaskKnowledge: %v", err)
+	}
+	if len(result.Touched) == 0 {
+		t.Fatalf("pitfall must touch a knowledge doc, got %+v", result)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"踩坑实践（TASK-007）",
+		"把密钥写进 http-client.env.json 公共文件",
+		"改用 pre-request script + request-scoped variable",
+		"2026-08-07",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("target doc missing %q:\n%s", want, content)
+		}
+	}
+
+	// Second run must be a no-op (knowledge_extracted marker).
+	before := content
+	result2, err := ExtractTaskKnowledge(vault, project, taskPath)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(result2.Touched) != 0 {
+		t.Fatalf("second run must not re-extract, got %+v", result2)
+	}
+	after, _ := os.ReadFile(target)
+	if string(after) != before {
+		t.Fatal("pitfall note duplicated on re-extraction")
+	}
+}
+
+func TestParsePitfalls(t *testing.T) {
+	body := `## 实现记录
+- x
+
+## 踩坑记录
+<!-- 注释行不解析 -->
+
+### 2026-08-07: 方案 A 失败
+
+- 现象: 500
+- 失败方案: A
+- 根因: 缺参数
+- 成功方案: B
+- 相关文档: core/go/connect-rpc.md
+
+### 无日期条目
+
+- 现象: 超时
+- 成功方案: 重试
+`
+	pits := parsePitfalls(body)
+	if len(pits) != 2 {
+		t.Fatalf("parsePitfalls = %d entries, want 2", len(pits))
+	}
+	if pits[0].Time != "2026-08-07" || pits[0].Failed != "A" || pits[0].Success != "B" || pits[0].Refs != "core/go/connect-rpc.md" {
+		t.Fatalf("entry 0 = %+v", pits[0])
+	}
+	if pits[1].Time != "" || pits[1].Failed != "" {
+		t.Fatalf("entry 1 = %+v", pits[1])
+	}
+	if got := parsePitfalls("## 实现记录\n- no pitfalls here\n"); got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+func TestTailLogTail(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "phase.log")
+	if err := os.WriteFile(logPath, []byte("line1\nline2\nerror: connection reset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := tailLogTail(logPath, 4096); got != "error: connection reset" {
+		t.Fatalf("tail = %q, want last line", got)
+	}
+	if got := tailLogTail("", 4096); got != "" {
+		t.Fatalf("empty path must return empty, got %q", got)
+	}
+	if got := tailLogTail(filepath.Join(dir, "missing.log"), 4096); got != "" {
+		t.Fatalf("missing log must return empty, got %q", got)
+	}
+	// Long line is collapsed and capped.
+	long := strings.Repeat("x", 500) + " tail-marker"
+	if err := os.WriteFile(logPath, []byte(long), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := tailLogTail(logPath, 4096)
+	if !strings.Contains(got, "tail-marker") || len(got) > 205 {
+		t.Fatalf("capped tail = %q (len %d)", got, len(got))
+	}
+}
+
+func TestAbsorbKnowledgePitfall(t *testing.T) {
+	vault := t.TempDir()
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(refsDir, "kulala-http-client.md")
+	seed := "---\ntopics: [kulala, http-client]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# Kulala\n\n> summary\n\n## 更新记录\n- init\n"
+	if err := os.WriteFile(target, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lesson := `### 2026-08-07: 密钥写进公共 env 文件
+
+- 现象: Authorization 泄漏风险
+- 失败方案: 把密钥写进 http-client.env.json 公共文件
+- 根因: 公共文件会被提交
+- 成功方案: 用 pre-request script 读取
+- 相关文档: extended/tools/kulala-http-client.md
+`
+	res, err := AbsorbKnowledge(vault, "daily", lesson, false)
+	if err != nil {
+		t.Fatalf("AbsorbKnowledge: %v", err)
+	}
+	if res.Appended != 1 || res.Duplicates != 0 || len(res.Archived) != 0 {
+		t.Fatalf("absorb = %+v, want 1 appended", res)
+	}
+
+	// Same lesson again → duplicate (note body unchanged), and the repeat
+	// encounter bumps the document's heat (hits 0 → 1).
+	res2, err := AbsorbKnowledge(vault, "daily", lesson, false)
+	if err != nil {
+		t.Fatalf("second absorb: %v", err)
+	}
+	if res2.Appended != 0 || res2.Duplicates != 1 {
+		t.Fatalf("dedup absorb = %+v, want 1 duplicate", res2)
+	}
+	after, _ := os.ReadFile(target)
+	if !strings.Contains(string(after), "hits: 1") {
+		t.Fatal("duplicate absorb must bump heat (hits: 1)")
+	}
+	if strings.Count(string(after), "踩坑实践") != 1 {
+		t.Fatal("duplicate absorb must not duplicate the note body")
+	}
+}
+
+func TestAbsorbKnowledgeUnclassifiedArchived(t *testing.T) {
+	vault := t.TempDir()
+	refsDir := filepath.Join(vault, "References", "core")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "---\ntopics: [connect]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# Connect\n\n> summary\n"
+	if err := os.WriteFile(filepath.Join(refsDir, "connect-rpc.md"), []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lesson := `### 2026-08-07: 纯业务规则试错
+
+- 现象: 规则计算错误
+- 失败方案: 方案 A
+- 根因: 业务语义未对齐
+- 成功方案: 方案 B
+`
+	res, err := AbsorbKnowledge(vault, "daily", lesson, false)
+	if err != nil {
+		t.Fatalf("AbsorbKnowledge: %v", err)
+	}
+	if res.Appended != 0 || len(res.Archived) != 1 {
+		t.Fatalf("absorb = %+v, want 1 archived", res)
+	}
+	entries, _ := filepath.Glob(filepath.Join(vault, "References", "uncategorized", "TASK-interactive-pitfall-*.md"))
+	if len(entries) != 1 {
+		t.Fatalf("archived files = %v, want 1", entries)
+	}
+}
+
+func TestAbsorbKnowledgeSummary(t *testing.T) {
+	vault := t.TempDir()
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(refsDir, "kulala-http-client.md")
+	seed := "---\ntopics: [kulala, http-client]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# Kulala\n\n> summary\n\n## 更新记录\n- init\n"
+	if err := os.WriteFile(target, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := "Kulala 集合用 @no-log 防止 Authorization 头落盘"
+	res, err := AbsorbKnowledge(vault, "daily", summary, true)
+	if err != nil {
+		t.Fatalf("AbsorbKnowledge summary: %v", err)
+	}
+	if res.Appended != 1 {
+		t.Fatalf("summary absorb = %+v, want 1 appended", res)
+	}
+	data, _ := os.ReadFile(target)
+	if !strings.Contains(string(data), "经验总结（interactive）") {
+		t.Fatal("summary note missing from target doc")
+	}
+
+	// Same title again → duplicate.
+	res2, err := AbsorbKnowledge(vault, "daily", summary, true)
+	if err != nil {
+		t.Fatalf("second summary: %v", err)
+	}
+	if res2.Duplicates != 1 {
+		t.Fatalf("summary dedup = %+v, want 1 duplicate", res2)
+	}
+}
+
+func TestAppendPitfallNoteDedup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	seed := "---\ntopics: [x]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# Doc\n\n> s\n"
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := taskPitfall{Time: "2026-08-07", Title: "方案 X 失败", Symptom: "500", Failed: "方案 X", RootCause: "缺参数", Success: "方案 Y"}
+	ok, err := appendPitfallNote(path, p, "p", "1")
+	if err != nil || !ok {
+		t.Fatalf("first append ok=%v err=%v", ok, err)
+	}
+	// Same failed approach, different title → duplicate.
+	dup := p
+	dup.Title = "另一个标题"
+	ok, err = appendPitfallNote(path, dup, "p", "2")
+	if err != nil {
+		t.Fatalf("dup append: %v", err)
+	}
+	if ok {
+		t.Fatal("same failed approach must be deduplicated")
+	}
+	// Same title, different failed approach → duplicate too.
+	dup2 := p
+	dup2.Failed = "方案 Z"
+	ok, err = appendPitfallNote(path, dup2, "p", "3")
+	if err != nil {
+		t.Fatalf("dup2 append: %v", err)
+	}
+	if ok {
+		t.Fatal("same title must be deduplicated")
+	}
+}
+
+func TestIncrementHitsAndRankBoost(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) {
+		content := "---\ntopics: [probe, hot]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\nhits: 0\n---\n# " + name + "\n\n> summary\n"
+		if err := os.WriteFile(filepath.Join(refsDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("cold.md")
+	write("hot.md")
+
+	n, err := IncrementHits(vault, []string{"extended/tools/hot.md", "extended/tools/missing.md"})
+	if err != nil {
+		t.Fatalf("IncrementHits: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("bumped = %d, want 1 (missing skipped)", n)
+	}
+	if _, err := IncrementHits(vault, []string{"extended/tools/hot.md"}); err != nil {
+		t.Fatal(err)
+	}
+	// The bump must preserve the KB v2 frontmatter contract: updated stays
+	// YYYY-MM-DD and the document still validates.
+	hotPath := filepath.Join(refsDir, "hot.md")
+	if err := ValidateRefFile(hotPath); err != nil {
+		t.Fatalf("hits bump broke KB v2 schema: %v", err)
+	}
+	after, _ := os.ReadFile(hotPath)
+	if !strings.Contains(string(after), "updated: \"2026-08-07\"") {
+		t.Fatal("hits bump must not rewrite the updated field")
+	}
+
+	idx, err := BuildSearchIndex(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := idx.Search("probe hot", 2)
+	if len(hits) == 0 {
+		t.Fatal("no hits")
+	}
+	// Both docs match the topics equally; the hot doc (hits=2) must rank first.
+	if hits[0].Path != "extended/tools/hot.md" {
+		t.Fatalf("heat boost failed, top = %+v", hits)
+	}
+}
+
+func TestPromoteToCore(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntopics: [probe]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\nhits: 4\n---\n# Hot Doc\n\n> summary\n"
+	if err := os.WriteFile(filepath.Join(refsDir, "hot.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cold := strings.Replace(content, "hits: 4", "hits: 1", 1)
+	if err := os.WriteFile(filepath.Join(refsDir, "cold.md"), []byte(cold), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := PromoteToCore(vault, 3)
+	if err != nil {
+		t.Fatalf("PromoteToCore: %v", err)
+	}
+	if len(moved) != 1 {
+		t.Fatalf("moved = %v, want 1", moved)
+	}
+	if _, err := os.Stat(filepath.Join(refsDir, "hot.md")); !os.IsNotExist(err) {
+		t.Fatal("source must be removed after promotion")
+	}
+	if _, err := os.Stat(filepath.Join(vault, "References", "core", "tools", "hot.md")); err != nil {
+		t.Fatalf("core target missing: %v", err)
+	}
+	movedData, _ := os.ReadFile(filepath.Join(vault, "References", "core", "tools", "hot.md"))
+	if !strings.Contains(string(movedData), "自动升级至 core/") {
+		t.Fatal("promotion must leave a migration trail in 更新记录")
+	}
+	// Cold doc stays in extended/.
+	if _, err := os.Stat(filepath.Join(refsDir, "cold.md")); err != nil {
+		t.Fatal("cold doc must stay in extended/")
+	}
+}
+
 func TestExtractTaskKnowledgeDanglingADRRef(t *testing.T) {
 	vault := t.TempDir()
 	project := "bench-project"

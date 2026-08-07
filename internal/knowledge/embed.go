@@ -3,6 +3,7 @@ package knowledge
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +20,13 @@ import (
 
 // vectorIndexFile is the JSON vector store next to References/. Hidden from
 // Obsidian's markdown views; rebuilt by `otg kb index` (or lazily by search
-// when stale).
+// when stale). Kept as a read fallback for migration.
 const vectorIndexFile = ".kb-vectors.json"
+
+// vectorIndexGobFile is the compact binary vector store (gob). JSON is ~3x
+// larger and 10x slower to parse at 10k-document scale, so writes go to gob;
+// LoadVectors falls back to JSON for existing deployments.
+const vectorIndexGobFile = ".kb-vectors.gob"
 
 // EmbeddingClient talks to an ollama or OpenAI-compatible embedding backend.
 type EmbeddingClient struct {
@@ -159,37 +165,128 @@ const vectorIndexVersion = 2
 // embedBatchSize is the number of chunks per embedding API call.
 const embedBatchSize = 8
 
+// vectorStoreMeta is the shared store header in both the gob and JSON
+// formats — the single decoding point for LoadVectors/VectorsModel/
+// VectorStoreCorrupt so format evolution happens in one place.
+type vectorStoreMeta struct {
+	Version int
+	Model   string
+	Docs    map[string]*docVectors
+}
+
+// healthy reports whether a decoded store is usable (right version, non-nil
+// docs). Legacy single-vector files decode as JSON but carry another shape
+// and fail here, triggering a rebuild — same semantics as before.
+func (m vectorStoreMeta) healthy() bool {
+	return m.Version == vectorIndexVersion && m.Docs != nil
+}
+
+func decodeGobMeta(data []byte) (vectorStoreMeta, bool) {
+	var meta vectorStoreMeta
+	if gob.NewDecoder(bytes.NewReader(data)).Decode(&meta) != nil {
+		return vectorStoreMeta{}, false
+	}
+	return meta, true
+}
+
+func decodeJSONMeta(data []byte) (vectorStoreMeta, bool) {
+	var raw struct {
+		Version int                    `json:"version"`
+		Model   string                 `json:"model,omitempty"`
+		Docs    map[string]*docVectors `json:"docs"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return vectorStoreMeta{}, false
+	}
+	return vectorStoreMeta{Version: raw.Version, Model: raw.Model, Docs: raw.Docs}, true
+}
+
+// loadVectorsWithModel reads the vector store once and returns both the
+// index and the recorded embedding model. Nil index when absent or of the
+// legacy single-vector format. Prefers the compact gob file and falls back
+// to JSON so existing deployments migrate on the next SaveVectors.
+func loadVectorsWithModel(vaultDir string) (vectorIndex, string) {
+	refsDir := filepath.Join(vaultDir, "References")
+	if data, err := os.ReadFile(filepath.Join(refsDir, vectorIndexGobFile)); err == nil {
+		if meta, ok := decodeGobMeta(data); ok && meta.healthy() {
+			return meta.Docs, meta.Model
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(refsDir, vectorIndexFile)); err == nil {
+		if meta, ok := decodeJSONMeta(data); ok && meta.healthy() {
+			return meta.Docs, meta.Model
+		}
+	}
+	return nil, ""
+}
+
+// VectorStoreCorrupt reports whether no vector store format is readable:
+// a healthy gob OR a healthy JSON fallback means retrieval works, and only
+// when every existing format fails to decode (or the version mismatches)
+// does the store need a rebuild. Distinguishes "missing" (nothing to read —
+// first build) from "corrupt" (needs a rebuild to heal).
+func VectorStoreCorrupt(vaultDir string) bool {
+	refsDir := filepath.Join(vaultDir, "References")
+	found := false
+	if data, err := os.ReadFile(filepath.Join(refsDir, vectorIndexGobFile)); err == nil {
+		found = true
+		if meta, ok := decodeGobMeta(data); ok && meta.healthy() {
+			return false // healthy gob
+		}
+		// gob unreadable — a valid JSON fallback still serves retrieval.
+	}
+	if data, err := os.ReadFile(filepath.Join(refsDir, vectorIndexFile)); err == nil {
+		found = true
+		if meta, ok := decodeJSONMeta(data); ok && meta.healthy() {
+			return false // healthy JSON fallback
+		}
+	}
+	// Corrupt only when a store file exists but no format decodes; a
+	// completely missing store is the normal first-build state.
+	return found
+}
+
 // LoadVectors reads the vector store; nil when absent or of the legacy
 // single-vector format.
 func LoadVectors(vaultDir string) vectorIndex {
-	data, err := os.ReadFile(filepath.Join(vaultDir, "References", vectorIndexFile))
-	if err != nil {
-		return nil
-	}
-	var meta struct {
-		Version int                   `json:"version"`
-		Docs    map[string]*docVectors `json:"docs"`
-	}
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil // legacy format → rebuild
-	}
-	if meta.Version != vectorIndexVersion {
-		return nil
-	}
-	return meta.Docs
+	idx, _ := loadVectorsWithModel(vaultDir)
+	return idx
 }
 
-// SaveVectors writes the vector store atomically.
-func SaveVectors(vaultDir string, idx vectorIndex) error {
+// VectorsModel returns the embedding model recorded in the vector store, or
+// "" when the store predates model tracking (legacy files were always built
+// with the locally configured model).
+func VectorsModel(vaultDir string) string {
+	_, model := loadVectorsWithModel(vaultDir)
+	return model
+}
+
+// LoadVectorsFor returns the vector store only when it was built with the
+// given model. A model mismatch (or legacy store with no recorded model —
+// treated as "matches whatever is configured first") returns nil, forcing a
+// full rebuild: vectors from different embedding models have incompatible
+// dimensions and must never be mixed in cosine comparison.
+func LoadVectorsFor(vaultDir, model string) vectorIndex {
+	idx, stored := loadVectorsWithModel(vaultDir)
+	if stored != "" && stored != model {
+		return nil
+	}
+	return idx
+}
+
+// SaveVectors writes the vector store atomically in compact gob format,
+// recording the embedding model so later model switches invalidate it.
+func SaveVectors(vaultDir string, idx vectorIndex, model string) error {
 	meta := struct {
-		Version int                    `json:"version"`
-		Docs    map[string]*docVectors `json:"docs"`
-	}{Version: vectorIndexVersion, Docs: idx}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
+		Version int
+		Model   string
+		Docs    map[string]*docVectors
+	}{Version: vectorIndexVersion, Model: model, Docs: idx}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(&meta); err != nil {
 		return err
 	}
-	return yamlfrontmatter.AtomicWrite(filepath.Join(vaultDir, "References", vectorIndexFile), data)
+	return yamlfrontmatter.AtomicWrite(filepath.Join(vaultDir, "References", vectorIndexGobFile), buf.Bytes())
 }
 
 // BuildVectors embeds every References document section-by-section
@@ -231,8 +328,10 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 
 	idx := make(vectorIndex)
 	// Incremental: reuse vectors for unchanged documents (content hash
-	// match) so rebuilds only re-embed what actually changed.
-	prev := LoadVectors(vaultDir)
+	// match) so rebuilds only re-embed what actually changed. A stored store
+	// built by a different model is treated as absent: mixing embedding
+	// dimensions would corrupt cosine comparison, so it forces a full rebuild.
+	prev := LoadVectorsFor(vaultDir, client.cfg.Model)
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
@@ -294,7 +393,7 @@ func BuildVectors(vaultDir string, client *EmbeddingClient) (int, error) {
 	if firstErr != nil {
 		return 0, firstErr
 	}
-	if err := SaveVectors(vaultDir, idx); err != nil {
+	if err := SaveVectors(vaultDir, idx, client.cfg.Model); err != nil {
 		return 0, err
 	}
 	return len(idx), nil

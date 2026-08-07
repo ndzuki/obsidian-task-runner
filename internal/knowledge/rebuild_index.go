@@ -25,8 +25,9 @@ type RefEntry struct {
 	Level    string   // beginner|intermediate|advanced|reference
 	Updated  string   // ISO 8601
 	Verified bool
-	Noisy    bool     // contains non-knowledge content (chat links, project file lists)
-	Activity string   // high|normal|low — usage frequency, metadata not directory
+	Noisy    bool   // contains non-knowledge content (chat links, project file lists)
+	Activity string // high|normal|low — usage frequency, metadata not directory
+	Hits     int    // successful-application count — retrieval ranking boost
 	Projects []string // projects referencing this doc via TASK knowledge_refs (sorted)
 }
 
@@ -136,6 +137,12 @@ func parseRefFile(path, rel string) (*RefEntry, error) {
 				entry.Activity = vv
 			}
 		}
+	}
+	switch vv := fm["hits"].(type) {
+	case int:
+		entry.Hits = vv
+	case float64:
+		entry.Hits = int(vv)
 	}
 	if entry.Activity == "" {
 		entry.Activity = "normal"
@@ -302,8 +309,8 @@ func buildINDEX(entries []RefEntry, usage *ProjectUsage) string {
 			"archived": "Archived（已废弃，人工归档）",
 		}[layer]
 		fmt.Fprintf(&b, "\n## %s\n\n", label)
-		b.WriteString("| 文件 | 标题 | 摘要 | topics | activity | level | updated | verified | 引用项目 |\n")
-		b.WriteString("|------|------|------|--------|----------|-------|---------|----------|----------|\n")
+		b.WriteString("| 文件 | 标题 | 摘要 | topics | activity | hits | level | updated | verified | 引用项目 |\n")
+		b.WriteString("|------|------|------|--------|----------|------|-------|---------|----------|----------|\n")
 		for _, e := range group {
 			title := e.Title
 			if title == "" {
@@ -336,8 +343,8 @@ func buildINDEX(entries []RefEntry, usage *ProjectUsage) string {
 			if projects == "" {
 				projects = "—"
 			}
-			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				e.Path, title, summary, topics, activity, e.Level, e.Updated, verified, projects)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %d | %s | %s | %s | %s |\n",
+				e.Path, title, summary, topics, activity, e.Hits, e.Level, e.Updated, verified, projects)
 		}
 	}
 	return b.String()

@@ -1,0 +1,126 @@
+# Gateway GPT health and stability probes for Kulala.nvim.
+#
+# The pre-request script reads CODEX_API_KEY/GATEWAY_API_KEY from the process
+# environment, or falls back to ~/.omp/get-api-key.sh with API_KEY=CODEX_API_KEY.
+# It never prints the key.
+#
+# Run GATEWAY_CHAT_BASIC and GATEWAY_CHAT_XHIGH repeatedly to observe success
+# rate and latency. Use `omp bench` for controlled serial/concurrent statistics.
+
+@GATEWAY_BASE_URL=https://gateway.magicrew.io/v1
+@GATEWAY_MODEL=gpt-5.6-sol
+
+### GATEWAY_MODELS
+# @kulala-curl--connect-timeout 10
+# @kulala-curl--max-time 60
+# @no-cookie-jar
+# @no-log
+< ./gateway-gpt-health.pre.js
+GET {{GATEWAY_BASE_URL}}/models HTTP/1.1
+Authorization: Bearer {{GATEWAY_API_KEY}}
+Accept: application/json
+X-Title: kulala-gateway-health-check
+X-Request-ID: {{REQUEST_ID}}
+
+> {%
+  const body = response.body && typeof response.body === "object" ? response.body : {};
+  const elapsed = Date.now() - Number(request.variables.get("PROBE_STARTED_AT") || Date.now());
+  const requestID = response.headers.valueOf("x-request-id") || response.headers.valueOf("X-Request-ID") || "";
+
+  client.test("Gateway models endpoint returns 200", function() {
+    client.assert(response.status === 200, "Expected HTTP 200, got " + response.status);
+  });
+
+  client.log("elapsed_ms", elapsed);
+  client.log("request_id", requestID);
+  client.log("model_count", Array.isArray(body.data) ? body.data.length : "unknown");
+%}
+
+### GATEWAY_CHAT_BASIC
+# @kulala-curl--connect-timeout 10
+# @kulala-curl--max-time 60
+# @no-cookie-jar
+# @no-log
+< ./gateway-gpt-health.pre.js
+POST {{GATEWAY_BASE_URL}}/chat/completions HTTP/1.1
+Authorization: Bearer {{GATEWAY_API_KEY}}
+Accept: application/json
+Content-Type: application/json
+X-Title: kulala-gateway-health-check
+X-Request-ID: {{REQUEST_ID}}
+
+{
+  "model": "{{GATEWAY_MODEL}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply exactly OK."
+    }
+  ],
+  "max_completion_tokens": 16,
+  "temperature": 0
+}
+
+> {%
+  const body = response.body && typeof response.body === "object" ? response.body : {};
+  const elapsed = Date.now() - Number(request.variables.get("PROBE_STARTED_AT") || Date.now());
+  const requestID = response.headers.valueOf("x-request-id") || response.headers.valueOf("X-Request-ID") || "";
+
+  client.test("Gateway basic chat returns 200", function() {
+    client.assert(response.status === 200, "Expected HTTP 200, got " + response.status);
+  });
+
+  client.test("Gateway basic chat returns a choice", function() {
+    client.assert(Array.isArray(body.choices) && body.choices.length > 0, "Response has no choices");
+  });
+
+  client.log("elapsed_ms", elapsed);
+  client.log("request_id", requestID);
+  client.log("model", body.model || "");
+  client.log("usage", JSON.stringify(body.usage || {}));
+%}
+
+### GATEWAY_CHAT_XHIGH
+# @kulala-curl--connect-timeout 10
+# @kulala-curl--max-time 60
+# @no-cookie-jar
+# @no-log
+< ./gateway-gpt-health.pre.js
+POST {{GATEWAY_BASE_URL}}/chat/completions HTTP/1.1
+Authorization: Bearer {{GATEWAY_API_KEY}}
+Accept: application/json
+Content-Type: application/json
+X-Title: kulala-gateway-health-check
+X-Request-ID: {{REQUEST_ID}}
+
+{
+  "model": "{{GATEWAY_MODEL}}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply exactly OK."
+    }
+  ],
+  "max_completion_tokens": 16,
+  "reasoning_effort": "xhigh",
+  "temperature": 0
+}
+
+> {%
+  const body = response.body && typeof response.body === "object" ? response.body : {};
+  const elapsed = Date.now() - Number(request.variables.get("PROBE_STARTED_AT") || Date.now());
+  const requestID = response.headers.valueOf("x-request-id") || response.headers.valueOf("X-Request-ID") || "";
+
+  client.test("Gateway xhigh chat returns 200", function() {
+    client.assert(response.status === 200, "Expected HTTP 200, got " + response.status);
+  });
+
+  client.test("Gateway xhigh chat returns a choice", function() {
+    client.assert(Array.isArray(body.choices) && body.choices.length > 0, "Response has no choices");
+  });
+
+  client.log("elapsed_ms", elapsed);
+  client.log("request_id", requestID);
+  client.log("model", body.model || "");
+  client.log("usage", JSON.stringify(body.usage || {}));
+%}

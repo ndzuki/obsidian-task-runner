@@ -217,7 +217,9 @@ otg install \
 }
 ```
 
-配置后执行一次 `otg kb index` 生成向量索引（存 `References/.kb-vectors.json`，45 篇约数秒）；之后 `otg kb search` 自动混合余弦 + BM25，embedding 后端不可用时自动回退纯 BM25。需先本地运行 ollama 并 `ollama pull bge-m3`。
+配置后执行一次 `otg kb index` 生成向量索引（存 `References/.kb-vectors.gob`，45 篇约数秒）；之后 `otg kb search` 自动混合余弦 + BM25，embedding 后端不可用时自动回退纯 BM25。需先本地运行 ollama 并 `ollama pull bge-m3`。向量库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。
+
+**Intel Arc 显卡方案**：Ollama 官方镜像不带 Intel GPU 后端。Intel Arc 独显请用社区 SYCL 构建 `eleiton/ollama-intel-arc`（本机副本 `~/src/repos/github.com/ndzuki/ollama-intel-arc`，`docker compose -f docker-compose.ollama-sycl.yml up -d --build`，端口仍为 11434，`kb_embedding` 配置无需改动）。完整部署、验证与排障见知识库 `core/containers/ollama-intel-arc.md`。
 
 ### 并发任务
 
@@ -287,8 +289,12 @@ flowchart LR
 
 - **自动沉淀**：阶段失败时，`handlePhaseFailure` 自动把首次出现的错误码+阶段组合（`API_KEY_UNAVAILABLE`/`PHASE_INTERRUPTED`/`MODEL_FAILED` 等）追加为知识库「模式」（现象→根因→修复→教训），按错误码+阶段去重，跨重启有效——**踩坑在发生时即记录，不等人工**。
 - **自动提取**：merge→done 交付后按任务提取其 `adr_written` 的 ADR 到 References/（`knowledge_extracted` 幂等）；分类由知识库自身 topics/aliases/tags 数据驱动（tag 优先 + 置信门槛），未匹配自动归档 `References/uncategorized/` 并在词表扩展后自动重分类归位；翻转 `verified=true`（实践验证信号）。ADR 写入时 daemon 自动打标（additive，用户可在 Obsidian 属性面板审查）。
+- **踩坑回流（防重蹈覆辙）**：Round 2 实现中"以为方案 X 对 → 失败 → 换 Y 成功"的负向经验写入 TASK `## 踩坑记录`（现象/失败方案/根因/成功方案）；merge 时 `ExtractTaskKnowledge` 自动提取到 References 对应文档「踩坑实践」小节（`相关文档` 引用优先，否则按 topics/aliases/tags 分类），未命中归档 `References/uncategorized/`。**日常交互会话**（任务管道之外）用 `otg kb absorb` 沉淀同类经验（踩坑格式或 `--summary` 自由文本总结）。所有写入路径内置**归一化去重**（相同标题/失败方案自动跳过并计数），同一教训不重复占索引。Round 1 规划时检索失败模式（`daemon-stuck-task-patterns.md` + 目标文档踩坑实践），已验证失败的方案作为计划风险输入——负向经验在规划阶段即被消费。系统级失败（模型/key/超时）由 `AppendFailurePattern` 自动沉淀（含 phase_log 日志现场）。
+- **经验热度与 core 升级（自排序知识库）**：frontmatter `hits` = 成功应用热度——merge 命中 `knowledge_refs`、`kb absorb` 重复遇到、交互会话 `otg kb hit` 都会 +1；检索排序给每个 hit 约 0.02 BM25 加成，高频复用经验优先命中。`hits ≥ 3` 的 `extended/` 文档自动移入 `core/`（`otg kb promote` 或 daemon merge 后自动），配合 core → extended → archived 逐级检索，让复用热度最高的经验最先被找到。任何提问/需求先按关键字检索知识库，命中实践经验直接作为解决方案输入。
 - **主动检索**：Round 1/2 的 skill 强制加载 `skill://knowledge-base`：Round 1 执行 Step -1 项目知识图谱（CONTEXT + ADR + References 三源交叉）并把技术栈约束纳入计划，命中的知识文档写入 TASK `knowledge_refs` 形成跨会话引用链；Round 2 按 `knowledge_refs` 清单逐项应用，实现中发现的坑写回知识库；merge 时 daemon 度量 `knowledge_applied`（hit/total）；refining 对 REQ 细化做增量重关联（新术语 → CONTEXT 回写 + 检索注入）。
 - **KB v2 格式**：每个文件 H1 后强制摘要（INDEX 自动提取为检索摘要列）、>300 行强制目录、要点化/表格化、零 AI 聊天链接与项目文件清单（`RebuildINDEX` 自动标记噪音）。
+- **索引重建与标签检索**：frontmatter 的 `topics`/`aliases`/`tags` 全部纳入 BM25 与向量检索（`otg kb search "kulala"` 可按 tag 命中）；手动或 agent 写入 References/ 后执行 `otg kb rebuild-index` 重建 INDEX.md（watcher 只监听 Projects/，不自动触发 References 重建）。
+- **检索性能（万篇级）**：BM25 索引持久化缓存（`.kb-bm25.gob`，按文件指纹失效，命中 <1s/查，避免每次全量重建 80–100s）；向量库二进制化（`.kb-vectors.gob`，JSON 的约 1/3 体积与 10 倍解析速度，旧 JSON 自动回退迁移）；`archived/` 层默认不参与检索（`otg kb search --archived` 显式包含），匹配 core → extended → archived 逐级检索语义。
 
 ### 5. 确认服务状态
 

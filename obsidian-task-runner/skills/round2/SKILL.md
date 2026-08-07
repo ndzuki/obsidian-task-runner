@@ -116,16 +116,34 @@ otg update-status \{task\} \
    - `grill_resolution=replan`：需求/设计/计划变化，设置 pending_req=true 后转 refining。
 5. grill_resolution 为空时 daemon 不猜测，保持 needs-grilling。
 
+## Pitfall Recording（踩坑记录）
+
+**只要实现过程中"以为方案 X 对 → 失败 → 换 Y 才成功"，就必须在 TASK `## 踩坑记录` 追加一条**（模板见 TASK-000-template.md）：
+
+```markdown
+### {YYYY-MM-DD}: {现象一句话}
+- 现象: {观察到的失败行为}
+- 失败方案: {尝试过但不成立的方案与失败证据}
+- 根因: {失败原因分析}
+- 成功方案: {最终生效的方案}
+- 相关文档: {knowledge_refs 里的 References 路径，可选}
+```
+
+- 成功方案本身可另写 ADR；**踩坑记录专记失败路径**——ADR 决策不含"试过 X 不行"。
+- `相关文档` 帮助 merge 时分类归档到正确知识文档；省略时按内容自动分类。
+- merge→done 时 daemon 自动提取到 References（`ExtractTaskKnowledge`，与 ADR 提取同批、`knowledge_extracted` 幂等），未命中自动归档 `References/uncategorized/`——负向经验不丢失。
+
 ## Completion Checklist（完成检查）
 
 1. 全部 AC 有独立证据。
-2. **知识应用校验**：TASK `knowledge_refs` 中每条引用，验收记录或实现记录必须体现其应用（引用了约束/实践、或在代码/测试中落地）；未应用的 ref 在 Review Bundle 中列出并说明原因（不适用/过时/被 ADR 覆盖）。缺失应用说明视为完成检查不通过。
-3. **每个 `risk: high` Step 的实现记录必须含 Prototype 证据**（`✅ Prototype validated` 或 FAIL 记录 + grill_context）；缺失则补跑 Prototype Gate，不得跳过。
-3. 运行项目全部测试（Go: `go test -race ./...`）。
-4. 运行 lint。
-5. 加载 `skill://test-quality`，修复 critical/important 问题。
-6. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
-7. 调 task-verifier 核验 AC。
+2. **踩坑记录校验**：实现过程中发生过试错换方案（`失败方案` → `成功方案`）的，`## 踩坑记录` 必须存在对应条目；确实零试错的，在 Review Bundle 显式声明"无踩坑"。缺失且未声明视为完成检查不通过。
+3. **知识应用校验**：TASK `knowledge_refs` 中每条引用，验收记录或实现记录必须体现其应用（引用了约束/实践、或在代码/测试中落地）；未应用的 ref 在 Review Bundle 中列出并说明原因（不适用/过时/被 ADR 覆盖）。缺失应用说明视为完成检查不通过。
+4. **每个 `risk: high` Step 的实现记录必须含 Prototype 证据**（`✅ Prototype validated` 或 FAIL 记录 + grill_context）；缺失则补跑 Prototype Gate，不得跳过。
+5. 运行项目全部测试（Go: `go test -race ./...`）。
+6. 运行 lint。
+7. 加载 `skill://test-quality`，修复 critical/important 问题。
+8. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
+9. 调 task-verifier 核验 AC。
 
 ### Write ADRs (BEFORE implementation — do not skip)
 

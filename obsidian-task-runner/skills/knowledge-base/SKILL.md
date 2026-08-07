@@ -42,6 +42,9 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
      merge→done 交付驱动（`MarkVerified`），避免单次应用误翻 true。
      执行失败且根因是知识内容错误 → **自动纠正**（保留原文并追加
      `> ⚠️ 纠正（<日期>）：原 <X> 应为 <Y>`，不删除原文）。
+   - **去重优先**：沉淀经验前先 `otg kb search` 确认是否已存在；写入类操作
+     （`ExtractTaskKnowledge`、`otg kb absorb`）内置归一化去重（标题/失败方案
+     精确匹配），重复记录自动跳过并计数——同一教训不重复占索引、不重复耗 token。
    - **不确定**：标注 `confidence: low` / `待验证`，绝不冒充已验证。
    - 用户只需要在「重大改写」时确认，日常增删改由 agent 完成。
 
@@ -113,7 +116,8 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 | `Notes/adr/ADR-*.md` | 架构决策：技术选型、取舍理由、约束 | `References/<domain>/` 对应分类 |
 | `Notes/CONTEXT.md` | 领域词汇、反模式、约束 | 追加到对应 Reference Map 条目 |
 | `Requirements/REQ-*.md` 详细规格 | 技术栈、框架版本、集成方案 | 更新对应 References 文件的版本和验证状态 |
-| TASK `## 实现记录` | 踩坑经验、解决方案 | 追加 `## 实践经验` 小节 |
+| TASK `## 实现记录` | 解决方案、实践细节 | 追加 `## 实践经验` 小节 |
+| TASK `## 踩坑记录` | 失败方案+根因+成功方案（试错换方案的负向经验） | 追加对应文档「踩坑实践」小节；未命中归档 `References/uncategorized/` |
 | TASK `## 验收记录` | 验证通过的技术决策 | 标记 `verified: true` |
 
 **提取规则**：
@@ -125,8 +129,47 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 
 > 写入前执行与 Step 4 相同的 5 项强制校验（见下方"强制校验规则"）。
 
+### Step 0.5: 交互会话经验沉淀（日常 OMP 会话）
+
+任务管道之外的日常会话（用户直接对话、非 TASK 驱动的调试/试错）同样会积累"以为方案 X 对 → 失败 → 换 Y 成功"的经验。**经验发生时立即沉淀，不等会话结束、不依赖记忆**：
+
+1. **试错换方案**（踩坑）→ `otg kb absorb`，stdin 传踩坑格式：
+   ```bash
+   otg kb absorb --project <项目名或 daily> <<'EOF'
+   ### {YYYY-MM-DD}: {现象一句话}
+   - 现象: {观察到的失败行为}
+   - 失败方案: {尝试过但不成立的方案与失败证据}
+   - 根因: {失败原因分析}
+   - 成功方案: {最终生效的方案}
+   - 相关文档: {References 相对路径，可选，帮助分类}
+   EOF
+   ```
+2. **项目/会话经验总结**（自由文本）→ `otg kb absorb --summary`：
+   ```bash
+   otg kb absorb --project <项目名> --summary <<'EOF'
+   {自由文本：技术栈验证结论、踩坑要点、最佳实践}
+   EOF
+   ```
+3. **去重由命令保证**：相同（归一化）标题或失败方案已在目标文档 → 输出 `duplicates: N` 并跳过，不重复追加——同一教训被多个会话/任务重复记录不会膨胀索引和 token 消耗。
+4. **索引与向量自动刷新**：`otg kb absorb`、`otg kb promote` 以及 daemon merge 提取后都会**自动**重建 INDEX.md 并增量刷新 embedding 向量（未变文档跳过，<1 秒；embedding 后端不可用时仅告警，BM25 检索不受影响）——记录即检索，无需手动执行 `kb rebuild-index`/`kb index`。`otg kb hit` 只改热度计数，不触发向量刷新（hits 不参与 embedding）。
+5. **模型切换自动失效**：向量库记录 embedding 模型；切换后端/模型（本地 ollama ↔ 云 OpenAI 兼容）后旧向量视为无效，`kb search` 回退 BM25 并提示重跑 `otg kb index`——不同模型向量维度不兼容，绝不混用。
+
+### Step 0.6: 经验热度与 core 升级
+
+知识文档 frontmatter 的 `hits` 是**成功应用热度**——每次成功应用 +1，检索排序获得小加成（每个 hit ≈ 0.02 BM25 分），让高频复用经验排在冷门匹配之前：
+
+| 触发 | 机制 |
+|------|------|
+| 任务 merge 命中 `knowledge_refs` | daemon 自动（`AppendApplicationRecord` 同批 bump） |
+| `otg kb absorb` 遇到已记录教训（duplicate） | 自动 bump——同一教训反复出现本身就是热度信号 |
+| 交互会话应用知识文档成功后 | `otg kb hit <ref-path>` 手动 bump |
+
+**core 升级**：`hits ≥ 3` 且位于 `extended/` 的文档自动移入 `core/`（同子目录，`otg kb promote` 或 daemon merge 后自动执行）——经验复用热度达标即进入核心检索层，配合 core → extended → archived 的逐级检索让高热度经验最先被找到。目标路径已存在同名文档时不自动合并（跳过并保留 extended 原档）。
+
+**提问即检索**：任何用户提问/需求（含日常交互会话），先按关键字 `otg kb search` 检索知识库，命中案例的「实践经验/踩坑实践」小节直接作为解决方案输入；应用成功后按上表提升热度——知识库随使用持续自排序。
+
 ### Step 1: 本地检索
-0. **先跑语义检索（本地 BM25）**：`otg kb search "<关键词>"`（vault-map 自动定位）— 输出按相关度排序的文档路径/摘要。命中 top-3 内即视为本地命中。
+0. **先跑语义检索（本地 BM25）**：`otg kb search "<关键词>"`（vault-map 自动定位）— 输出按相关度排序的文档路径/摘要。命中 top-3 内即视为本地命中。性能说明：BM25 索引有持久化缓存（`.kb-bm25.gob`，指纹失效），重复查询亚秒级；`archived/` 层默认不检索，确需时加 `--archived`。
 1. 读取 `$OBSIDIAN_VAULT/References/INDEX.md` 获取知识库目录（作为关键词检索与引用项目视图的补充）。
 2. **关键词构造（多轮扩展）**：
    - 从问题/REQ 提取技术名词与实体（含中文表述）；
@@ -166,12 +209,12 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 2. 确定目标分类目录（见三层分类体系）。
 3. 若目标文件不存在 → 创建新文件，写入标准 frontmatter + 正文。
 4. 若目标文件存在 → 更新/补充相关小节，在文末 `## 更新记录` 追加一条。
-5. **重建 INDEX.md** — 每次入库后必须重建 INDEX.md。daemon SHOULD call `knowledge.RebuildINDEX()` after any write to References/:
+5. **重建 INDEX.md** — 每次入库后必须重建 INDEX.md。手动或 agent 写入后执行 `otg kb rebuild-index`（vault-map 自动定位）；daemon 内部走 `knowledge.RebuildINDEX()`：
    ```go
    // Go implementation: internal/knowledge/rebuild_index.go
    knowledge.RebuildINDEX(vaultDir)
    ```
-   重建时自动检测：空 topics 文件、缺少 level 字段、日期格式异常，标记 `⚠️`。
+   重建时自动检测：空 topics 文件、缺少 level 字段、日期格式异常，标记 `⚠️`。注意 watcher 只监听 `Projects/`，References/ 写入不会自动触发重建，必须显式执行上述命令。
 
 **绝不**删除用户原有内容。去重时内容高度重叠，追加 `> ⚠️ 与 <旧文件路径> 存在重叠，待人工确认合并` 标记。
 
@@ -209,16 +252,17 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 所有 `References/` 下的 `.md` 文件 **必须** 以标准 YAML frontmatter 开头。
 入库前和每次修改后都必须校验格式。不合规的文档视为待修复，不得跳过。
 
-### 标准 Frontmatter（6 个必填字段）
+### 标准 Frontmatter（6 个必填字段 + 可选热度）
 
 ```yaml
 ---
 topics: [keyword1, keyword2]    # 索引关键词，全小写英文，逗号分隔
 level: beginner|intermediate|advanced|reference
-updated: "2026-07-28"           # ISO 8601 日期
+updated: "2026-07-28"           # ISO 8601 日期（YYYY-MM-DD，勿写时间戳）
 source: ""                      # 原始 URL；本地创建填 "local"
 verified: true|false            # 实践验证后才可翻 true
 aliases: []                     # 中文别名，方便中文搜索匹配
+hits: 0                         # 可选：成功应用热度，自动维护（merge/absorb/hit 命令），勿手改
 ---
 ```
 
@@ -309,7 +353,8 @@ References/
 | 知识形态 | 定义 | 存放位置 | 自动路径 |
 |----------|------|----------|----------|
 | **技术要点** | 主题明确的技术知识（API 用法、配置、模式） | 按主题域：`core/<域>/` 或 `extended/<域>/` 对应文件，追加「实践经验」小节 | merge 提取（classifyADR 按主题映射）+ agent 检索入库 |
-| **系统运维模式** | otg 自身/跨主题的排障模式（错误码、卡死、重启） | `core/daemon-stuck-task-patterns.md`（系统模式文件） | `AppendFailurePattern` 自动沉淀（按错误码+阶段去重） |
+| **领域踩坑** | 实现中"以为方案 X 对 → 失败 → 换 Y 成功"的负向经验（失败方案+根因+成功方案） | 对应主题文档的「踩坑实践」小节；未命中归档 `References/uncategorized/` | `ExtractTaskKnowledge` merge 时从 TASK `## 踩坑记录` 自动提取（相关文档引用优先，否则按 topics/aliases/tags 分类；`knowledge_extracted` 幂等） |
+| **系统运维模式** | otg 自身/跨主题的排障模式（错误码、卡死、重启） | `core/daemon-stuck-task-patterns.md`（系统模式文件） | `AppendFailurePattern` 自动沉淀（按错误码+阶段去重，含 phase_log 日志现场） |
 | **方法论/流程** | 工作方法、模型、流程 | `extended/tools/` | agent 按需 |
 
 判断顺序：主题是否明确 → 明确按域归类；跨主题/系统级 → 系统模式文件；方法论 → tools/。

@@ -113,7 +113,7 @@ replacement_task: ""  # closure_reason=duplicate
 
 adr_proposed: []
 adr_written: []
-knowledge_extracted: false  # merge 后 ADR 已提取到知识库（幂等）
+knowledge_extracted: false  # merge 后 ADR + 踩坑记录已提取到知识库（幂等）
 knowledge_refs: []  # Round 1 计划引用的知识文档（References/ 相对路径）
 knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---
@@ -149,6 +149,18 @@ knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 
 ## 实现记录
 <!-- 🤖 Round 2 按 AC 追加证据 -->
+
+---
+
+## 踩坑记录
+<!-- 🤖 Round 2 每次试错换方案后追加；merge 时自动提取到知识库 References（防重蹈覆辙）。格式：
+### {YYYY-MM-DD}: {现象一句话}
+- 现象: {观察到的失败行为}
+- 失败方案: {尝试过但不成立的方案与失败证据}
+- 根因: {失败原因分析}
+- 成功方案: {最终生效的方案}
+- 相关文档: {knowledge_refs 里的 References 路径，可选，帮助分类归档}
+-->
 
 ---
 

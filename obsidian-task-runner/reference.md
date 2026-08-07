@@ -133,7 +133,9 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时提醒整体抑制（需求未想好），REQ 更新自动激活回 `open` |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
-| `knowledge_extracted` | bool | `false` | 该任务 ADR 已提取到知识库（`ExtractTaskKnowledge` 幂等标记，merge 后写） |
+| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记，merge 后写） |
+
+TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
 | `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
 | `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +18,22 @@ type ExtractResult struct {
 	ADRCount     int
 	NewRefs      int
 	UpdatedRefs  int
+	Duplicates   int // pitfall/practice notes skipped as already recorded
 	Unclassified []string // ADR ids auto-archived under References/uncategorized/
 	Topics       []string // matched knowledge topics (deduped) — feeds scaffold_registry
 	Touched      []string // absolute paths of knowledge files created/updated
 	Errors       []string
+}
+
+// AbsorbResult reports one `otg kb absorb` run (interactive-session
+// knowledge sink, outside the task pipeline).
+type AbsorbResult struct {
+	Appended   int      // notes written into References/
+	Duplicates int      // skipped: an equivalent note already exists
+	Archived   []string // unclassified entries stored under References/uncategorized/
+	Topics     []string // matched topics from touched documents
+	Touched    []string // absolute paths written
+	Errors     []string
 }
 
 // ExtractProjectKnowledge implements Step 0 of the knowledge-base skill:
@@ -194,40 +207,73 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 	}
 
 	adrIDs := collectADRIDs(fm.AdrWritten)
-	if len(adrIDs) == 0 {
-		_ = markTaskExtracted(taskPath)
-		return result, nil
-	}
+	_, body, _ := parseFrontmatter(data)
 
 	refsDir := filepath.Join(vaultDir, "References")
-	adrs, err := scanADRs(filepath.Join(vaultDir, "Projects", projectName, "Notes", "adr"))
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("scan ADRs: %v", err))
-	} else {
-		result.ADRCount = len(adrs)
-	}
-	for _, adr := range adrs {
-		if !matchesADRID(adr.ID, adrIDs) {
-			continue
-		}
-		written, updated, touchedPath, unclassified, err := extractADRKnowledge(adr, refsDir, projectName)
+	if len(adrIDs) > 0 {
+		adrs, err := scanADRs(filepath.Join(vaultDir, "Projects", projectName, "Notes", "adr"))
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("extract %s: %v", adr.ID, err))
+			result.Errors = append(result.Errors, fmt.Sprintf("scan ADRs: %v", err))
+		} else {
+			result.ADRCount = len(adrs)
+		}
+		for _, adr := range adrs {
+			if !matchesADRID(adr.ID, adrIDs) {
+				continue
+			}
+			written, updated, touchedPath, unclassified, err := extractADRKnowledge(adr, refsDir, projectName)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("extract %s: %v", adr.ID, err))
+				continue
+			}
+			if unclassified {
+				result.Unclassified = append(result.Unclassified, adr.ID)
+				if perr := appendUnclassifiedADR(refsDir, adr, projectName); perr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("pending %s: %v", adr.ID, perr))
+				}
+				continue
+			}
+			result.NewRefs += written
+			result.UpdatedRefs += updated
+			if touchedPath != "" {
+				result.Touched = append(result.Touched, touchedPath)
+				result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, touchedPath))
+			}
+		}
+	}
+
+	// Pitfall extraction: the task body's "## 踩坑记录" section captures
+	// failed-then-succeeded attempts (tried X, failed, switched to Y). These
+	// negative lessons are sunk into the matching knowledge document so later
+	// rounds can avoid re-treading the failed path. Runs even when the task
+	// has no ADR (a deliverable can be pitfall-rich and decision-free).
+	for _, p := range parsePitfalls(body) {
+		target, unclassified, duplicate, err := extractTaskPitfall(p, refsDir, projectName, fm.ID)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("pitfall %q: %v", p.Title, err))
 			continue
 		}
 		if unclassified {
-			result.Unclassified = append(result.Unclassified, adr.ID)
-			if perr := appendUnclassifiedADR(refsDir, adr, projectName); perr != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("pending %s: %v", adr.ID, perr))
+			result.Unclassified = append(result.Unclassified, "TASK-"+fm.ID+" pitfall")
+			if perr := appendUnclassifiedPitfall(refsDir, p, projectName, fm.ID); perr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("pending pitfall %q: %v", p.Title, perr))
 			}
 			continue
 		}
-		result.NewRefs += written
-		result.UpdatedRefs += updated
-		if touchedPath != "" {
-			result.Touched = append(result.Touched, touchedPath)
-			result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, touchedPath))
+		if duplicate {
+			result.Duplicates++
+			// The lesson was re-encountered and already recorded — the
+			// repeated encounter itself is a heat signal.
+			if target != "" {
+				if _, herr := IncrementHits(vaultDir, []string{target}); herr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("pitfall hit %q: %v", p.Title, herr))
+				}
+			}
+			continue
 		}
+		result.UpdatedRefs++
+		result.Touched = append(result.Touched, filepath.Join(refsDir, target))
+		result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, target))
 	}
 	if err := markTaskExtracted(taskPath); err != nil {
 		result.Errors = append(result.Errors, err.Error())
@@ -575,6 +621,581 @@ func EnsureADRTags(adrPath, refsDir string) error {
 	return yamlfrontmatter.Update(adrPath, map[string]interface{}{"tags": merged})
 }
 
+// ── Pitfall extraction ──────────────────────────────────────────────
+//
+// A task pitfall is a failed-then-succeeded attempt recorded by Round 2:
+// the agent believed approach X was correct, hit failure, and only
+// succeeded after switching to Y. Recording X is what prevents re-treading
+// it — the success alone (which may also live in an ADR) cannot.
+
+// taskPitfall is one parsed "## 踩坑记录" entry from a task body.
+type taskPitfall struct {
+	Time      string // ISO date from the entry heading, "" when missing
+	Title     string // entry heading text
+	Symptom   string
+	Failed    string // approach that did not work + observed failure
+	RootCause string
+	Success   string // approach that worked
+	Refs      string // optional comma-separated References/ paths
+}
+
+// parsePitfalls extracts "## 踩坑记录" entries from a task body.
+// Format (one entry per "### " heading):
+//
+//	### 2026-08-07: {phenomenon}
+//	- 现象: ...
+//	- 失败方案: ...
+//	- 根因: ...
+//	- 成功方案: ...
+//	- 相关文档: extended/tools/kulala-http-client.md (optional)
+func parsePitfalls(body string) []taskPitfall {
+	idx := strings.Index(body, "## 踩坑记录")
+	if idx < 0 {
+		return nil
+	}
+	rest := body[idx+len("## 踩坑记录"):]
+	if end := strings.Index(rest, "\n## "); end >= 0 {
+		rest = rest[:end]
+	}
+	var out []taskPitfall
+	for _, block := range strings.Split(rest, "### ") {
+		block = strings.TrimSpace(block)
+		if block == "" || strings.HasPrefix(block, "<!--") {
+			continue
+		}
+		lines := strings.SplitN(block, "\n", 2)
+		title := strings.TrimSpace(lines[0])
+		p := taskPitfall{Title: title}
+		if len(lines) == 2 {
+			for _, line := range strings.Split(lines[1], "\n") {
+				line = strings.TrimSpace(line)
+				switch {
+				case strings.HasPrefix(line, "- 现象:"):
+					p.Symptom = strings.TrimSpace(strings.TrimPrefix(line, "- 现象:"))
+				case strings.HasPrefix(line, "- 失败方案:"):
+					p.Failed = strings.TrimSpace(strings.TrimPrefix(line, "- 失败方案:"))
+				case strings.HasPrefix(line, "- 根因:"):
+					p.RootCause = strings.TrimSpace(strings.TrimPrefix(line, "- 根因:"))
+				case strings.HasPrefix(line, "- 成功方案:"):
+					p.Success = strings.TrimSpace(strings.TrimPrefix(line, "- 成功方案:"))
+				case strings.HasPrefix(line, "- 相关文档:"):
+					p.Refs = strings.TrimSpace(strings.TrimPrefix(line, "- 相关文档:"))
+				}
+			}
+		}
+		// ISO date prefix ("2026-08-07: ...") becomes the entry time.
+		if len(title) >= 11 && title[4] == '-' && title[7] == '-' {
+			if t, terr := time.Parse("2006-01-02", title[:10]); terr == nil {
+				p.Time = t.Format("2006-01-02")
+			}
+		}
+		if p.Title != "" && (p.Symptom != "" || p.Failed != "" || p.Success != "") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// extractTaskPitfall routes one pitfall to its knowledge document and sinks
+// the negative lesson. An explicit 相关文档 reference wins; otherwise the
+// pitfall is classified against the knowledge-base vocabulary like an ADR.
+// Returns the relative target path, whether it remained unclassified,
+// whether it was a duplicate (lesson already recorded), and an error.
+// duplicate=true carries the target so callers can bump the document's heat.
+func extractTaskPitfall(p taskPitfall, refsDir, projectName, taskID string) (target string, unclassified, duplicate bool, err error) {
+	sink := func(targetPath, rel string) (string, bool, bool, error) {
+		appended, aerr := appendPitfallNote(targetPath, p, projectName, taskID)
+		if aerr != nil {
+			return "", false, false, aerr
+		}
+		if !appended {
+			return rel, false, true, nil // duplicate — already recorded
+		}
+		return rel, false, false, nil
+	}
+	if p.Refs != "" {
+		for _, ref := range strings.Split(p.Refs, ",") {
+			ref = strings.TrimSpace(ref)
+			ref = strings.TrimPrefix(ref, "References/")
+			if ref == "" || strings.Contains(ref, "..") {
+				continue
+			}
+			target := filepath.Join(refsDir, filepath.FromSlash(ref))
+			if _, serr := os.Stat(target); serr == nil {
+				return sink(target, filepath.ToSlash(ref))
+			}
+		}
+	}
+	adr := adrInfo{
+		Title:    p.Title,
+		Decision: strings.Join([]string{p.Symptom, p.RootCause, p.Success}, " "),
+	}
+	target = classifyADR(adr, refsDir)
+	if target == "" {
+		return "", true, false, nil
+	}
+	return sink(filepath.Join(refsDir, filepath.FromSlash(target)), target)
+}
+
+// normalizeKey folds a string for dedup comparisons: lowercase, trimmed,
+// whitespace collapsed.
+func normalizeKey(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+// hasRecordedKey reports whether the document already carries a normalized
+// key as a `**label**：value` line — the dedup check for practice notes.
+func hasRecordedKey(content, label, key string) bool {
+	if key == "" {
+		return false
+	}
+	want := normalizeKey(key)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "**"+label+"**") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "**"+label+"**"))
+		rest = strings.TrimPrefix(rest, "：")
+		rest = strings.TrimPrefix(rest, ":")
+		if normalizeKey(rest) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// appendPitfallNote appends one pitfall practice note before the document's
+// "## 更新记录" section (creating the section when absent). Returns false
+// when an equivalent note (same normalized title or failed approach) already
+// exists — the dedup store is the document itself, so repeated deliveries or
+// interactive absorbs of the same lesson never duplicate index/token cost.
+func appendPitfallNote(path string, p taskPitfall, projectName, taskID string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	content := string(data)
+	if hasRecordedKey(content, "标题", p.Title) || hasRecordedKey(content, "失败方案", p.Failed) {
+		return false, nil
+	}
+	now := time.Now().Format("2006-01-02")
+	note := fmt.Sprintf("\n### %s 踩坑实践（TASK-%s）\n\n**时间**：%s\n\n**标题**：%s\n\n**现象**：%s\n\n**失败方案**：%s\n\n**根因**：%s\n\n**成功方案**：%s\n",
+		projectName, taskID, p.Time, p.Title, p.Symptom, p.Failed, p.RootCause, p.Success)
+	if idx := strings.LastIndex(content, "## 更新记录"); idx >= 0 {
+		content = content[:idx] + note + content[idx:]
+	} else {
+		content += "\n" + note + "\n## 更新记录\n\n- `" + now + "` — 从 " + projectName + " 项目 TASK-" + taskID + " 提取踩坑实践\n"
+	}
+	return true, os.WriteFile(path, []byte(content), 0o644)
+}
+
+// appendUnclassifiedPitfall archives a pitfall with no knowledge match under
+// References/uncategorized/ so the lesson is never dropped; Reclassify
+// vocabulary growth can migrate it later.
+func appendUnclassifiedPitfall(refsDir string, p taskPitfall, projectName, taskID string) error {
+	dir := filepath.Join(refsDir, "uncategorized")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	slug := strings.ToLower(p.Title)
+	re := regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	slug = strings.Trim(re.ReplaceAllString(slug, "-"), "-")
+	if len(slug) > 30 {
+		slug = slug[:30]
+	}
+	if slug == "" {
+		slug = "pitfall"
+	}
+	target := filepath.Join(dir, fmt.Sprintf("TASK-%s-pitfall-%s.md", taskID, slug))
+	if _, err := os.Stat(target); err == nil {
+		return nil // already stored
+	}
+	now := time.Now().Format("2006-01-02")
+	content := fmt.Sprintf(`---
+topics: [uncategorized, pitfall]
+level: intermediate
+updated: "%s"
+source: "local"
+verified: false
+aliases: []
+---
+
+# %s
+
+> 自动从项目 TASK-%s 提取，暂无匹配主题。来源：%s 项目 TASK-%s
+
+## 踩坑实践
+
+**时间**：%s
+
+**现象**：%s
+
+**失败方案**：%s
+
+**根因**：%s
+
+**成功方案**：%s
+
+## 更新记录
+
+- %s — 从 %s 项目 TASK-%s 自动归档
+`, now, p.Title, taskID, projectName, taskID,
+		p.Time, p.Symptom, p.Failed, p.RootCause, p.Success, now, projectName, taskID)
+	return os.WriteFile(target, []byte(content), 0o644)
+}
+
+// ── Interactive absorb (`otg kb absorb`) ─────────────────────────────
+//
+// Daily OMP conversations (outside the obsidian-task-runner pipeline) also
+// produce failed-then-succeeded lessons. AbsorbKnowledge gives those sessions
+// the same sink as task merges: classify → append to the matching References
+// document (deduped) or archive under uncategorized/. Summary mode absorbs
+// free-text project lessons as 「实践经验」 notes.
+
+// AbsorbKnowledge sinks interactive-session knowledge into the vault.
+// With summary=false the input text is a "## 踩坑记录"-style block (with
+// "### {date}: {title}" heading and 现象/失败方案/根因/成功方案 keys);
+// with summary=true it is free-text project experience appended as a
+// 「实践经验」 note under the best-matching document.
+func AbsorbKnowledge(vaultDir, projectName, text string, summary bool) (*AbsorbResult, error) {
+	res := &AbsorbResult{}
+	if vaultDir == "" || strings.TrimSpace(text) == "" {
+		return res, nil
+	}
+	if projectName == "" {
+		projectName = "interactive"
+	}
+	refsDir := filepath.Join(vaultDir, "References")
+
+	if summary {
+		title := firstNonEmptyLine(text)
+		adr := adrInfo{Title: title, Decision: text}
+		target := classifyADR(adr, refsDir)
+		if target == "" {
+			if err := appendUnclassifiedSummary(refsDir, title, text, projectName); err != nil {
+				res.Errors = append(res.Errors, err.Error())
+			} else {
+				res.Archived = append(res.Archived, title)
+			}
+			return res, nil
+		}
+		targetPath := filepath.Join(refsDir, filepath.FromSlash(target))
+		appended, err := appendSummaryNote(targetPath, title, text, projectName)
+		if err != nil {
+			res.Errors = append(res.Errors, err.Error())
+			return res, nil
+		}
+		if !appended {
+			res.Duplicates++
+			return res, nil
+		}
+		res.Appended++
+		res.Touched = append(res.Touched, targetPath)
+		res.Topics = appendUniqueTopics(res.Topics, topicsForTarget(refsDir, target))
+		return res, nil
+	}
+
+	for _, p := range parsePitfalls("## 踩坑记录\n" + text) {
+		target, unclassified, duplicate, err := extractTaskPitfall(p, refsDir, projectName, "interactive")
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("pitfall %q: %v", p.Title, err))
+			continue
+		}
+		if unclassified {
+			if perr := appendUnclassifiedPitfall(refsDir, p, projectName, "interactive"); perr != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("pending pitfall %q: %v", p.Title, perr))
+			} else {
+				res.Archived = append(res.Archived, p.Title)
+			}
+			continue
+		}
+		if duplicate {
+			res.Duplicates++
+			// Re-encountering an already-recorded lesson is a heat signal:
+			// the same failure keeps surfacing, so the experience deserves
+			// higher retrieval priority.
+			if target != "" {
+				if _, herr := IncrementHits(vaultDir, []string{target}); herr != nil {
+					res.Errors = append(res.Errors, fmt.Sprintf("pitfall hit %q: %v", p.Title, herr))
+				}
+			}
+			continue
+		}
+		res.Appended++
+		res.Touched = append(res.Touched, filepath.Join(refsDir, target))
+		res.Topics = appendUniqueTopics(res.Topics, topicsForTarget(refsDir, target))
+	}
+	return res, nil
+}
+
+// firstNonEmptyLine returns the first non-blank line of a text block.
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			return s
+		}
+	}
+	return "经验总结"
+}
+
+// appendSummaryNote appends a free-text experience note (interactive summary
+// mode) before the document's "## 更新记录" section. Deduplicated by
+// normalized title. Returns false when an equivalent note already exists.
+func appendSummaryNote(path, title, text, projectName string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	content := string(data)
+	if hasRecordedKey(content, "标题", title) {
+		return false, nil
+	}
+	now := time.Now().Format("2006-01-02")
+	note := fmt.Sprintf("\n### %s 经验总结（interactive）\n\n**时间**：%s\n\n**标题**：%s\n\n**要点**：%s\n",
+		projectName, now, title, strings.TrimSpace(text))
+	if idx := strings.LastIndex(content, "## 更新记录"); idx >= 0 {
+		content = content[:idx] + note + content[idx:]
+	} else {
+		content += "\n" + note + "\n## 更新记录\n\n- `" + now + "` — 从 " + projectName + " 交互会话吸收经验总结\n"
+	}
+	return true, os.WriteFile(path, []byte(content), 0o644)
+}
+
+// appendUnclassifiedSummary archives an interactive summary with no knowledge
+// match under References/uncategorized/.
+func appendUnclassifiedSummary(refsDir, title, text, projectName string) error {
+	dir := filepath.Join(refsDir, "uncategorized")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	slug := strings.ToLower(title)
+	re := regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	slug = strings.Trim(re.ReplaceAllString(slug, "-"), "-")
+	if len(slug) > 30 {
+		slug = slug[:30]
+	}
+	if slug == "" {
+		slug = "summary"
+	}
+	target := filepath.Join(dir, "interactive-summary-"+slug+".md")
+	if _, err := os.Stat(target); err == nil {
+		return nil // already stored
+	}
+	now := time.Now().Format("2006-01-02")
+	content := fmt.Sprintf(`---
+topics: [uncategorized, summary]
+level: intermediate
+updated: "%s"
+source: "local"
+verified: false
+aliases: []
+---
+
+# %s
+
+> 从 %s 项目交互会话自动吸收，暂无匹配主题。
+
+## 要点
+
+%s
+
+## 更新记录
+
+- %s — 从 %s 项目交互会话自动归档
+`, now, title, projectName, strings.TrimSpace(text), now, projectName)
+	return os.WriteFile(target, []byte(content), 0o644)
+}
+
+// ── Experience heat & core promotion ─────────────────────────────────
+//
+// Knowledge that keeps proving itself rises: every successful application
+// (merge hit, repeated absorb, manual `otg kb hit`) bumps the document's
+// `hits` counter, which boosts retrieval ranking. Documents whose hits pass
+// the promotion threshold move from extended/ into core/ so the
+// core → extended → archived retrieval cascade prefers them.
+
+// IncrementHits bumps the `hits` frontmatter counter of each referenced
+// knowledge document by one. Missing documents are skipped. Returns the
+// number of documents bumped.
+//
+// The counter is updated with a field-preserving frontmatter rewrite: the KB
+// v2 schema pins `updated` to YYYY-MM-DD, which yamlfrontmatter.Update (task
+// semantics, timestamp refresh) would violate.
+func IncrementHits(vaultDir string, refPaths []string) (int, error) {
+	if vaultDir == "" || len(refPaths) == 0 {
+		return 0, nil
+	}
+	refsDir := filepath.Join(vaultDir, "References")
+	bumped := 0
+	for _, ref := range refPaths {
+		path := filepath.Join(refsDir, filepath.FromSlash(ref))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		fm, _, err := parseFrontmatter(data)
+		if err != nil || fm == nil {
+			continue
+		}
+		hits := 0
+		switch vv := fm["hits"].(type) {
+		case int:
+			hits = vv
+		case float64:
+			hits = int(vv)
+		}
+		if err := os.WriteFile(path, []byte(bumpHitsField(string(data), hits+1)), 0o644); err != nil {
+			return bumped, fmt.Errorf("bump hits on %s: %w", ref, err)
+		}
+		// Keep the in-process classification cache hot: bump the cached entry
+		// in place instead of invalidating (a full rescan at 10k docs is what
+		// this optimization exists to avoid).
+		if cached, ok := refIndexCache.Load(refsDir); ok {
+			entries := cached.([]RefEntry)
+			clean := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(ref), "References/"), "/")
+			for i := range entries {
+				if entries[i].Path == clean {
+					entries[i].Hits++
+					break
+				}
+			}
+			refIndexCache.Store(refsDir, entries)
+		}
+		bumped++
+	}
+	return bumped, nil
+}
+
+// bumpHitsField rewrites only the `hits:` line inside the frontmatter block,
+// preserving every other field, their order, and the exact `updated` value.
+// Appends the line when absent.
+func bumpHitsField(content string, hits int) string {
+	if !strings.HasPrefix(content, "---\n") {
+		return content
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return content
+	}
+	fmText := rest[:end]
+	body := rest[end+4:]
+	replaced := false
+	lines := strings.Split(fmText, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "hits:") {
+			lines[i] = "hits: " + strconv.Itoa(hits)
+			replaced = true
+		}
+	}
+	if !replaced {
+		lines = append(lines, "hits: "+strconv.Itoa(hits))
+	}
+	return "---\n" + strings.Join(lines, "\n") + "\n---" + body
+}
+
+// PromoteToCore moves extended/ documents whose hits reach minHits into
+// core/ (same subdirectory), so frequently reused experience joins the
+// primary retrieval layer. A document already existing at the destination is
+// skipped (no auto-merge). Returns the moved relative paths.
+//
+// Candidates come from the in-process ref index cache (kept hot by
+// IncrementHits), so at 10k-document scale the check is O(candidates) instead
+// of a full walk.
+func PromoteToCore(vaultDir string, minHits int) ([]string, error) {
+	if vaultDir == "" || minHits <= 0 {
+		return nil, nil
+	}
+	refsDir := filepath.Join(vaultDir, "References")
+	entries := loadRefIndex(refsDir)
+	var moved []string
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Path, "extended/") || e.Hits < minHits {
+			continue
+		}
+		sub := strings.TrimPrefix(e.Path, "extended/")
+		src := filepath.Join(refsDir, filepath.FromSlash(e.Path))
+		dest := filepath.Join(refsDir, "core", filepath.FromSlash(sub))
+		if _, serr := os.Stat(dest); serr == nil {
+			continue // destination occupied — no auto-merge
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return moved, err
+		}
+		// Leave a migration trail in the document's own 更新记录 so the
+		// move is traceable without external logs.
+		if uerr := appendPromoteNote(src, e.Hits); uerr != nil {
+			return moved, uerr
+		}
+		if err := os.Rename(src, dest); err != nil {
+			return moved, err
+		}
+		moved = append(moved, e.Path+" → core/"+sub)
+	}
+	if len(moved) > 0 {
+		InvalidateRefIndex(refsDir)
+	}
+	return moved, nil
+}
+
+// appendPromoteNote records the extended/ → core/ promotion in the
+// document's "## 更新记录" section before the file is moved.
+func appendPromoteNote(path string, hits int) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	now := time.Now().Format("2006-01-02")
+	line := "- `" + now + "` — 经验热度 hits=" + strconv.Itoa(hits) + "，从 extended/ 自动升级至 core/（成功应用复用）\n"
+	if idx := strings.LastIndex(content, "## 更新记录"); idx >= 0 {
+		content = content[:idx+len("## 更新记录")] + "\n" + line + content[idx+len("## 更新记录"):]
+	} else {
+		content += "\n## 更新记录\n\n" + line
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// tailLogTail returns the last meaningful line of a phase log as failure
+// evidence, collapsed and length-capped. Empty when the log is unreadable.
+func tailLogTail(logPath string, maxBytes int64) string {
+	if logPath == "" {
+		return ""
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return ""
+	}
+	off := st.Size() - maxBytes
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(buf))
+	if i := strings.LastIndex(s, "\n"); i >= 0 {
+		if tail := strings.TrimSpace(s[i+1:]); tail != "" {
+			s = tail
+		} else {
+			s = strings.TrimSpace(s[:i])
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	// Failure evidence lives at the tail of the log — keep the end, not the head.
+	if len(s) > 200 {
+		s = "…" + s[len(s)-199:]
+	}
+	return s
+}
+
 // layerRank maps the top-level References/ directory to a priority
 // (core=0, extended=1, archived=2).
 func layerRank(path string) int {
@@ -764,6 +1385,7 @@ func AppendFailurePattern(vaultDir, code, phase, taskID, logPath string) error {
 
 	patternNo := strings.Count(content, "## 模式") + 1
 	now := time.Now().Format("2006-01-02")
+	tail := tailLogTail(logPath, 4096)
 	entry := fmt.Sprintf(`
 ---
 
@@ -777,9 +1399,11 @@ func AppendFailurePattern(vaultDir, code, phase, taskID, logPath string) error {
 
 **教训**：%s
 
+**日志现场**：%s
+
 **检查项**：出现 %s 错误码 → %s（自动沉淀于 %s）
 `, patternNo, code, phase, taskID, code, phase, logPath,
-		rc.RootCause, rc.Fix, rc.Lesson, code, rc.Fix, now)
+		rc.RootCause, rc.Fix, rc.Lesson, tail, code, rc.Fix, now)
 
 	// 追加到"更新记录"前:把条目插到文件末尾的检查清单/更新记录之前
 	if idx := strings.LastIndex(content, "## 检查清单"); idx >= 0 {

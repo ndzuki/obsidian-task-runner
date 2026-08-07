@@ -142,3 +142,28 @@ func TestSearchRanksByRelevance(t *testing.T) {
 		t.Fatalf("unexpected hits for zircon: %+v", hits)
 	}
 }
+
+func TestSearchMatchesTagsAndAliases(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntopics: [http-client]\nlevel: reference\nupdated: \"2026-08-06\"\nsource: \"local\"\nverified: false\naliases: [REST Client, .http 文件]\ntags: [kulala, api-testing]\n---\n# Kulala\n\n> summary\n"
+	if err := os.WriteFile(filepath.Join(refsDir, "kulala.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := BuildSearchIndex(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tag-only match: body/topics never mention "kulala".
+	if hits := idx.Search("kulala", 3); len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
+		t.Fatalf("tag match missing: %+v", hits)
+	}
+	// Alias-only match: body/topics never mention "REST Client".
+	if hits := idx.Search("REST Client", 3); len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
+		t.Fatalf("alias match missing: %+v", hits)
+	}
+}
