@@ -25,7 +25,10 @@ type searchDoc struct {
 	Title    string
 	Summary  string
 	Topics   string
+	Aliases  string
+	Tags     string
 	Body     string
+	Hits     int // successful-application count — ranking boost
 	termFreq map[string]int // precomputed at index time (BM25 tf)
 }
 
@@ -45,10 +48,16 @@ const (
 
 // BuildSearchIndex loads every References/ document (frontmatter fields +
 // body) and builds the BM25 index. Rebuilding on each search is wasteful;
-// callers should cache the returned index and invalidate on References
-// writes (the daemon already tracks those events).
+// use BuildSearchIndexCached for hot paths.
 func BuildSearchIndex(vaultDir string) (*searchIndex, error) {
 	refsDir := filepath.Join(vaultDir, "References")
+	return buildSearchIndexFiltered(refsDir, false)
+}
+
+// buildSearchIndexFiltered builds the BM25 index over References/, optionally
+// skipping the archived/ layer (the default retrieval cascade is
+// core → extended → archived; archived only when explicitly requested).
+func buildSearchIndexFiltered(refsDir string, skipArchived bool) (*searchIndex, error) {
 	idx := &searchIndex{
 		postings: make(map[string][]int),
 	}
@@ -57,6 +66,9 @@ func BuildSearchIndex(vaultDir string) (*searchIndex, error) {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") || d.Name() == "INDEX.md" {
+			return nil
+		}
+		if skipArchived && strings.HasPrefix(filepath.ToSlash(path), filepath.ToSlash(refsDir)+"/archived/") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -77,6 +89,18 @@ func BuildSearchIndex(vaultDir string) (*searchIndex, error) {
 			if topics, ok := fm["topics"]; ok {
 				doc.Topics = strings.Join(toStringSlice(topics), " ")
 			}
+			if aliases, ok := fm["aliases"]; ok {
+				doc.Aliases = strings.Join(toStringSlice(aliases), " ")
+			}
+			if tags, ok := fm["tags"]; ok {
+				doc.Tags = strings.Join(toStringSlice(tags), " ")
+			}
+			switch vv := fm["hits"].(type) {
+			case int:
+				doc.Hits = vv
+			case float64:
+				doc.Hits = int(vv)
+			}
 		}
 		doc.Body = body
 		idx.addDoc(doc)
@@ -94,7 +118,7 @@ func BuildSearchIndex(vaultDir string) (*searchIndex, error) {
 func (idx *searchIndex) addDoc(doc searchDoc) {
 	docID := idx.totalDocs
 	idx.docs = append(idx.docs, doc)
-	text := strings.ToLower(doc.Title + " " + doc.Summary + " " + doc.Topics + " " + doc.Body)
+	text := strings.ToLower(doc.Title + " " + doc.Summary + " " + doc.Topics + " " + doc.Aliases + " " + doc.Tags + " " + doc.Body)
 	tokens := tokenize(text)
 	idx.docLen = append(idx.docLen, len(tokens))
 	freq := make(map[string]int, 32)
@@ -269,7 +293,13 @@ func (idx *searchIndex) rank(scores []float64, limit int) []SearchResult {
 			order = append(order, i)
 		}
 	}
-	sort.Slice(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
+	// Successful-application hits add a small ranking boost (each hit ≈ 0.02
+	// BM25 points): frequently reused experience surfaces above cold matches
+	// without overwhelming keyword relevance.
+	boost := func(i int) float64 { return float64(idx.docs[i].Hits) * 0.02 }
+	sort.Slice(order, func(a, b int) bool {
+		return scores[order[a]]+boost(order[a]) > scores[order[b]]+boost(order[b])
+	})
 	results := make([]SearchResult, 0, len(order))
 	var keptTopics [][]string
 	for _, docID := range order {

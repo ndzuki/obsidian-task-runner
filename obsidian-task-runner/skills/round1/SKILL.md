@@ -14,6 +14,7 @@ disableModelInvocation: true
 - **Daemon 已将项目上下文（Constraints + Anti-patterns + Domain Terms + ADR 摘要）注入到 prompt 顶部 `[Project Context]` 块中。以此为基线；仅在需要完整决策上下文时读取 `Notes/adr/` 中的完整 ADR 文件。**
 - `Notes/CONTEXT.md` 的完整术语表仅在注入摘要不覆盖所需术语时补充读取。
 - **必须在出计划前加载 `skill://knowledge-base`**：执行 Step -1（项目知识图谱）合成 CONTEXT + ADR + References 三源交叉引用，输出技术全景表。计划涉及的技术栈（Go、K8s、Helm、Docker 等），检索 core/ 文档的关键约束和版本要求纳入计划。发现知识缺口（ADR 引用了未入库的技术）标注在计划的"风险"或"前序契约"中。
+- **失败模式检索（防重蹈覆辙）**：Step -1 同时检索 `core/daemon-stuck-task-patterns.md`（系统级失败模式）与目标技术文档中的「踩坑实践」小节（领域级失败方案）。命中的失败模式作为计划风险输入：对应 Step 标注 `风险: medium/high`，并在 Step 目标中显式写"规避已验证失败的方案 X（来源：<References 路径>）"。这保证知识库沉淀的负向经验在规划阶段就被消费。
 
 ## Step 0: Read ADRs — MANDATORY（读取ADR）
 

@@ -40,6 +40,11 @@ func AppendApplicationRecord(vaultDir, projectName string, refPaths []string) (i
 		if err := yamlfrontmatter.AtomicWrite(path, []byte(updated)); err != nil {
 			return added, fmt.Errorf("record application on %s: %w", ref, err)
 		}
+		// A delivered task applied this document — bump its heat so reused
+		// experience ranks higher in later retrieval.
+		if _, herr := IncrementHits(vaultDir, []string{ref}); herr != nil {
+			return added, fmt.Errorf("bump heat on %s: %w", ref, herr)
+		}
 		added++
 	}
 	return added, nil
