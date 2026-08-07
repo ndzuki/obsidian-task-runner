@@ -91,12 +91,12 @@ func TestRankDeduplicatesTopics(t *testing.T) {
 	writeSearchDoc(t, refsDir, "docker-a.md", "docker, container, cli", "docker 命令 A")
 	writeSearchDoc(t, refsDir, "docker-b.md", "docker, container, compose", "docker 命令 B")
 	writeSearchDoc(t, refsDir, "k8s.md", "kubernetes, k8s, kind", "kind 集群")
-	idx, err := BuildSearchIndex(vault)
+	dbPath := syncTestKB(t, vault, nil)
+	// All docs score via shared "docker"/"container"/"k8s" terms.
+	hits, err := SearchKnowledgeDB(dbPath, "docker container", 5, true, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// All docs score via shared "docker"/"container"/"k8s" terms.
-	hits := idx.Search("docker container", 5)
 	// Dedup keeps at most one docker-family doc + possibly k8s (no 2-topic
 	// overlap with docker cluster? k8s shares none of docker,container) →
 	// expect ≤2 results.
@@ -123,23 +123,26 @@ func TestSearchRanksByRelevance(t *testing.T) {
 	writeSearchDoc(t, refsDir, "journalctl.md", "journalctl, systemd, linux",
 		"journalctl 查询 systemd 日志：按服务/时间/优先级过滤。")
 
-	idx, err := BuildSearchIndex(vault)
-	if err != nil {
-		t.Fatalf("BuildSearchIndex: %v", err)
-	}
+	dbPath := syncTestKB(t, vault, nil)
 
-	hits := idx.Search("connect grpc 协议", 3)
+	hits, err := SearchKnowledgeDB(dbPath, "connect grpc 协议", 3, true, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(hits) == 0 || hits[0].Path != "core/connect-rpc.md" {
 		t.Fatalf("top hit = %+v, want core/connect-rpc.md", hits)
 	}
 	// Chinese query via bigrams.
-	hits = idx.Search("日志 查询", 3)
+	hits, err = SearchKnowledgeDB(dbPath, "日志 查询", 3, true, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(hits) == 0 || hits[0].Path != "core/journalctl.md" {
 		t.Fatalf("chinese top hit = %+v, want core/journalctl.md", hits)
 	}
 	// No match → empty.
-	if hits := idx.Search("zircon mesh", 3); len(hits) != 0 {
-		t.Fatalf("unexpected hits for zircon: %+v", hits)
+	if hits, err := SearchKnowledgeDB(dbPath, "zircon mesh", 3, true, nil, 0); err != nil || len(hits) != 0 {
+		t.Fatalf("unexpected hits for zircon: %+v err=%v", hits, err)
 	}
 }
 
@@ -154,16 +157,13 @@ func TestSearchMatchesTagsAndAliases(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(refsDir, "kulala.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := BuildSearchIndex(vault)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dbPath := syncTestKB(t, vault, nil)
 	// Tag-only match: body/topics never mention "kulala".
-	if hits := idx.Search("kulala", 3); len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
-		t.Fatalf("tag match missing: %+v", hits)
+	if hits, err := SearchKnowledgeDB(dbPath, "kulala", 3, true, nil, 0); err != nil || len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
+		t.Fatalf("tag match missing: %+v err=%v", hits, err)
 	}
 	// Alias-only match: body/topics never mention "REST Client".
-	if hits := idx.Search("REST Client", 3); len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
-		t.Fatalf("alias match missing: %+v", hits)
+	if hits, err := SearchKnowledgeDB(dbPath, "REST Client", 3, true, nil, 0); err != nil || len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
+		t.Fatalf("alias match missing: %+v err=%v", hits, err)
 	}
 }

@@ -785,7 +785,7 @@ flowchart LR
 4. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
 5. `otg kb absorb`（交互会话沉淀）：任务管道之外的日常会话经验（踩坑格式或 `--summary` 自由文本）→ 与 merge 相同的分类/归档/去重链路（`AbsorbKnowledge`），按「标题/失败方案」归一化去重，未命中归档 `References/uncategorized/`；重复遇到已记录教训时自动 bump 该文档 `hits`。
 6. 经验热度与 core 升级：`AppendApplicationRecord`（merge 命中 `knowledge_refs`）与 `AbsorbKnowledge`（duplicate）与 `otg kb hit` 均 `IncrementHits`（字段保序改写 `hits`，不破坏 KB v2 `updated` 格式，并原地更新进程内 ref 索引缓存避免全扫）；merge 后 `PromoteToCore`（hits≥3 的 extended/ 文档移入 core/ 同子目录，目标占用则跳过，基于缓存 O(候选数) 判断）。检索 `rank` 对 hits 加 0.02/次排序加成。
-7. 检索性能：`kb search` 走 `BuildSearchIndexCached`（`.kb-bm25.gob` 持久化 + 文件指纹失效，万篇下从每次全量重建 ~100s 降至命中 <1s）；向量库 `SaveVectors`/`LoadVectors` 双格式（gob 优先、JSON 回退迁移）并记录 embedding 模型——`LoadVectorsFor` 在模型不匹配时返回 nil 触发全量重建，CLI 提示回退 BM25（不同模型向量维度不兼容）；`archived/` 默认跳过（`--archived` 显式包含）。
+7. 检索性能：`kb search` 走 SQLite 单库（`~/.local/share/otg/kb.sqlite`，vault 外；vault-map `kb_db` 可覆盖）——`SyncKnowledgeDB` 增量同步（文档 + FTS5 索引 + sqlite-vec 向量，按 content_hash 逐文档比对，增/改/删均行级事务，无全量重建、无指纹扫描；旧 `.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json` 首次同步自动清理）；**空扫描保护**：References/ 读为空（云同步间隙/错误 vault）时跳过删除，绝不批量清空索引；查询 `SearchKnowledgeDB`：FTS5 `bm25()`（取反恢复正分语义）+ vec0 余弦 KNN（`k = ?` 约束全量扫描，doc 级聚合）按历史公式融合；FTS5 中文检索靠预分词（`tokenize` bigram → 空格 join，unicode61 精确切分）；向量模型记录于 `kb_meta`，切换模型触发全量重建（`otg kb index`）；`archived/` 默认跳过（`--archived` 显式包含）；`IncrementHits` 同步更新 `kb_docs.hits`（排序 +0.02/次加成）；`openKB` 每次探测 FTS5——无 `-tags sqlite_fts5` 的构建在 kb 命令处立即报带构建提示的错误；`RebuildKnowledgeDB` 的 DROP 全部包在单事务内，失败回滚不留半状态库。
 
 **检索路径（skill 指令）**：
 
@@ -938,7 +938,7 @@ flowchart LR
 **目标文件**：
 
 - `pkg/yamlfrontmatter/frontmatter.go`
-- `TASK-000-template.md`
+- `templates/TASK-000-template.md`
 - `internal/task/on_req_changed.go` 的新任务模板
 - 相关单元测试
 
