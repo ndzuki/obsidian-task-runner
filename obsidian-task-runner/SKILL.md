@@ -25,6 +25,14 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - `skill://test-quality`
 - `skill://knowledge-base`
 
+## 构建强制条款（防坑）
+
+**otg 构建必须带 `-tags sqlite_fts5`**（Makefile 与 CI 已内置，任何绕过 Makefile 的手动 `go build`/`go test` 必须自行追加）。知识库检索库依赖 SQLite FTS5，而 mattn/go-sqlite3 的 FTS5 是 **opt-in 编译宏**：
+
+- 不带 tag 的 otg **能编译、能运行、能建库**，但所有 `otg kb *` 命令在打开检索库时失败：`no such module: fts5`（新版 otg 会附带构建提示）。这是**构建缺 tag**，不是环境/配置问题。
+- 正确构建：`make build` / `make install-force`；判断已装二进制是否缺 tag：跑 `otg kb search "x"`，报 `no such module: fts5` 即缺 tag，重跑 `make install-force`。
+- 本 repo 的 `go build`/`go test`/CI 全部走 `-tags sqlite_fts5`；新增构建入口（脚本、workflow、容器镜像）必须同样携带，否则知识库功能静默不可用。
+
 ## Status Routing（状态路由）
 | status | 行为 |
 |--------|------|

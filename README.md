@@ -217,9 +217,39 @@ otg install \
 }
 ```
 
-配置后执行一次 `otg kb index` 生成向量索引（存 `References/.kb-vectors.gob`，45 篇约数秒）；之后 `otg kb search` 自动混合余弦 + BM25，embedding 后端不可用时自动回退纯 BM25。需先本地运行 ollama 并 `ollama pull bge-m3`。向量库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。
+配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；**注意**：配置 `kb_db` 覆盖路径后，`otg kb hit` 的 hits 同步仍走默认库（该命令无配置上下文）——保持默认路径则实时生效，覆盖路径下 hits 在下次内容变更同步时从 frontmatter 补入。
 
 **Intel Arc 显卡方案**：Ollama 官方镜像不带 Intel GPU 后端。Intel Arc 独显请用社区 SYCL 构建 `eleiton/ollama-intel-arc`（本机副本 `~/src/repos/github.com/ndzuki/ollama-intel-arc`，`docker compose -f docker-compose.ollama-sycl.yml up -d --build`，端口仍为 11434，`kb_embedding` 配置无需改动）。完整部署、验证与排障见知识库 `core/containers/ollama-intel-arc.md`。
+
+### 检索模式与 ollama 依赖（实测）
+
+以下数据基于 **2026-08-07 实测（53 篇语料）**，规模推演为机制分析 [INFERENCE]。
+
+**三种检索模式**：
+
+| 模式 | 触发 | 依赖 |
+|---|---|---|
+| Hybrid（默认） | `kb_embedding` 已配置 + ollama 可用 + 向量库健康 | ollama（查询 embed + 建库 embed） |
+| BM25-only | ollama 不可用 / 未配置向量 | 零依赖 |
+| FTS-only 库 | 建库时 ollama 不可用 | 零依赖 |
+
+**命中率对比（53 篇术语型手册，Top-1 重合 6/6 = 100%）**：关键词查询（connect rpc / 日志 查询 / mysql 慢查询 / docker compose / helm chart / k8s kind）hybrid 与纯 BM25 结果一致；差异出现在**近义/零词面查询**——实测「链路追踪」全库词面零命中，hybrid 仍召回 mtr/connect-rpc/tcpdump（网络可观测主题），纯 BM25 完全不可能命中。即：术语型关键词查询无感知差异，抽象词/口语查询是向量层的主战场。
+
+**规模推演（差异随语料放大）**：
+
+| 语料 | Top-1 差异 | Top-5 差异 | 原因 |
+|---|---|---|---|
+| 百篇（全手册，术语标准化） | ~0-10% | ~10% | 实测锚点 |
+| 千篇（手册 + 项目经验） | ~10% | ~15-30% | 非标文本增多 |
+| 万篇（主题面宽 + 非标文本） | ~15-25% | ~25-45% | 词面巧合假阳性 + 近义表述场景上升 |
+
+**ollama 停/恢复行为（docker 实测）**：`docker stop` 后**立即**回退 BM25（0.10s/查，比 hybrid 0.45s 还快）；恢复后首次查询 ~3s（模型冷加载 1.1GB），之后回到 ~0.42s；向量层无需手动补齐（下次增量 sync 自动补 embed）。**唯一禁忌**：不要留**挂起不响应**的 ollama 进程（30s 超时惩罚），宁关勿挂。
+
+**省资源建议**：平时可关 ollama（查询毫秒级降级）；定期开启跑一次 `kb absorb`/`kb index` 补向量即可。彻底不用语义检索则删除 `kb_embedding` 配置。
+
+### 会话结束知识提炼（自动）
+
+交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库：`.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作时注入提炼指令，agent 委派 subagent 分析会话转录并按 `knowledge-base` Step 0.7 流程入库（`otg kb absorb` / 新建 References 文档）。安装：复制到 `~/.omp/agent/extensions/`（已随本仓库提供，用户级全项目生效）；禁用：`config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。手动触发：直接说"提炼本次会话"。
 
 ### 并发任务
 
@@ -294,7 +324,7 @@ flowchart LR
 - **主动检索**：Round 1/2 的 skill 强制加载 `skill://knowledge-base`：Round 1 执行 Step -1 项目知识图谱（CONTEXT + ADR + References 三源交叉）并把技术栈约束纳入计划，命中的知识文档写入 TASK `knowledge_refs` 形成跨会话引用链；Round 2 按 `knowledge_refs` 清单逐项应用，实现中发现的坑写回知识库；merge 时 daemon 度量 `knowledge_applied`（hit/total）；refining 对 REQ 细化做增量重关联（新术语 → CONTEXT 回写 + 检索注入）。
 - **KB v2 格式**：每个文件 H1 后强制摘要（INDEX 自动提取为检索摘要列）、>300 行强制目录、要点化/表格化、零 AI 聊天链接与项目文件清单（`RebuildINDEX` 自动标记噪音）。
 - **索引重建与标签检索**：frontmatter 的 `topics`/`aliases`/`tags` 全部纳入 BM25 与向量检索（`otg kb search "kulala"` 可按 tag 命中）；手动或 agent 写入 References/ 后执行 `otg kb rebuild-index` 重建 INDEX.md（watcher 只监听 Projects/，不自动触发 References 重建）。
-- **检索性能（万篇级）**：BM25 索引持久化缓存（`.kb-bm25.gob`，按文件指纹失效，命中 <1s/查，避免每次全量重建 80–100s）；向量库二进制化（`.kb-vectors.gob`，JSON 的约 1/3 体积与 10 倍解析速度，旧 JSON 自动回退迁移）；`archived/` 层默认不参与检索（`otg kb search --archived` 显式包含），匹配 core → extended → archived 逐级检索语义。
+- **检索性能（万篇级）**：SQLite 单库（`~/.local/share/otg/kb.sqlite`）——FTS5 提供 BM25 排名（倒排索引，增量 INSERT/UPDATE，无全量重建、无指纹扫描）；sqlite-vec `vec0` 提供余弦 KNN（float32 紧凑存储，gob float64 体积的 ~1/4）；同步按文档 content_hash 增量，单篇变更毫秒级；`archived/` 层默认不参与检索（`otg kb search --archived` 显式包含），匹配 core → extended → archived 逐级检索语义。旧 gob 索引文件（`.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json`）首次同步时自动清理。
 
 ### 5. 确认服务状态
 
@@ -421,8 +451,10 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 - [`docs/workflow.md`](docs/workflow.md)：架构和完整业务流程（含 §12 知识库知识流）。
 - [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md)：Agent 执行规则（含 KB v2 格式规范）。
 - [`obsidian-task-runner/reference.md`](obsidian-task-runner/reference.md)：状态、字段、故障排查参考。
-- [`REQ-000-template.md`](REQ-000-template.md)：需求模板。
-- [`TASK-000-template.md`](TASK-000-template.md)：任务模板。
+- [`templates/REQ-000-template.md`](templates/REQ-000-template.md)：需求模板。
+- [`templates/TASK-000-template.md`](templates/TASK-000-template.md)：任务模板。
+- [`templates/ADR-000-template.md`](templates/ADR-000-template.md)：架构决策记录模板。
+- [`deploy/systemd/`](deploy/systemd/)：systemd 单元模板（`otg install --systemd` 会生成实际单元）。
 
 ## License
 

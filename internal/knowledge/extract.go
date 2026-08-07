@@ -1028,6 +1028,11 @@ func IncrementHits(vaultDir string, refPaths []string) (int, error) {
 	}
 	refsDir := filepath.Join(vaultDir, "References")
 	bumped := 0
+	type syncHit struct {
+		path string
+		hits int
+	}
+	var syncHits []syncHit
 	for _, ref := range refPaths {
 		path := filepath.Join(refsDir, filepath.FromSlash(ref))
 		data, err := os.ReadFile(path)
@@ -1063,6 +1068,27 @@ func IncrementHits(vaultDir string, refPaths []string) (int, error) {
 			refIndexCache.Store(refsDir, entries)
 		}
 		bumped++
+		clean := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(ref), "References/"), "/")
+		syncHits = append(syncHits, syncHit{path: clean, hits: hits + 1})
+	}
+	// Mirror the bump into the retrieval store (frontmatter is the source of
+	// truth; a hits change does not alter content_hash, so no later sync
+	// would pick it up). Only when the store already exists — avoids
+	// creating the real XDG store from contexts without a config (tests,
+	// embedders); CLI/daemon hit paths run with the store present.
+	dbPath := KBPath(vaultDir, "")
+	if len(syncHits) > 0 {
+		if _, err := os.Stat(dbPath); err == nil {
+			if db, err := openKB(dbPath); err == nil {
+				for _, s := range syncHits {
+					if _, err := db.Exec(`UPDATE kb_docs SET hits=? WHERE path=?`, s.hits, s.path); err != nil {
+						db.Close()
+						break
+					}
+				}
+				db.Close()
+			}
+		}
 	}
 	return bumped, nil
 }

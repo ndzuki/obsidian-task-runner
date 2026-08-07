@@ -48,6 +48,10 @@ type Config struct {
 	// with BM25; otherwise BM25 alone is used (zero-dependency fallback).
 	KBEmbedding *KBEmbeddingConfig `json:"kb_embedding,omitempty"`
 
+	// Retrieval store path override (default: ~/.local/share/otg/kb.sqlite).
+	// Keep it outside the vault when the vault is cloud-synced.
+	KBDb string `json:"kb_db,omitempty"`
+
 	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
 	ConfigPath      string `json:"-"`

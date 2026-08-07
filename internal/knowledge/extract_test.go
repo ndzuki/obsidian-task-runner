@@ -512,11 +512,14 @@ func TestIncrementHitsAndRankBoost(t *testing.T) {
 		t.Fatal("hits bump must not rewrite the updated field")
 	}
 
-	idx, err := BuildSearchIndex(vault)
+	dbPath := filepath.Join(dir, "kb.sqlite")
+	if _, err := SyncKnowledgeDB(vault, dbPath, nil); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := SearchKnowledgeDB(dbPath, "probe hot", 2, true, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hits := idx.Search("probe hot", 2)
 	if len(hits) == 0 {
 		t.Fatal("no hits")
 	}

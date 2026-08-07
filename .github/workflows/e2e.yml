@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.24'
-      - run: go build -o otg ./cmd/otg/
+      - run: go build -tags sqlite_fts5 -o otg ./cmd/otg/
 
       - name: E2E — task workflow
         run: |

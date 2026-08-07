@@ -1001,15 +1001,22 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	if _, idxErr := knowledge.RebuildINDEX(vaultDir); idxErr != nil {
 		r.logger.Printf("knowledge-base INDEX rebuild failed: %v", idxErr)
 	}
-	// Refresh the embedding vectors incrementally so newly extracted lessons
-	// participate in semantic retrieval immediately. Non-blocking: embedding
-	// outages degrade to BM25-only, never fail the merge.
+	// Sync the retrieval store incrementally so newly extracted lessons
+	// participate in retrieval immediately. Non-blocking: embedding outages
+	// degrade to FTS-only, never fail the merge.
+	dbPath := knowledge.KBPath(vaultDir, r.cfg.KBDb)
+	var client *knowledge.EmbeddingClient
 	if r.cfg.KBEmbedding != nil {
-		client := knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
-		if n, verr := knowledge.BuildVectors(vaultDir, client); verr != nil {
-			r.logger.Printf("knowledge-base vector refresh failed: %v", verr)
-		} else {
-			r.logger.Printf("knowledge-base vectors refreshed: %d docs", n)
+		client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
+	}
+	stats, serr := knowledge.SyncKnowledgeDB(vaultDir, dbPath, client)
+	if serr != nil {
+		r.logger.Printf("knowledge-base store sync failed: %v", serr)
+	} else {
+		r.logger.Printf("knowledge-base store synced: %d docs (+%d -%d), %d chunks",
+			stats.TotalDocs, stats.Added, stats.Removed, stats.TotalChunks)
+		if stats.VecError != nil {
+			r.logger.Printf("knowledge-base vector refresh failed: %v", stats.VecError)
 		}
 	}
 }

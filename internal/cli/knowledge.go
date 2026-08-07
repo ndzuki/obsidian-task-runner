@@ -95,28 +95,27 @@ var kbSearchCmd = &cobra.Command{
 			return err
 		}
 		query := strings.Join(args, " ")
-		// Cached BM25: at 10k documents a full rebuild per query is
-		// 80-100s; the gob cache makes repeated queries sub-second.
-		idx, err := knowledge.BuildSearchIndexCached(cfg.ObsidianVault, !kbSearchArchived)
-		if err != nil {
-			return err
-		}
-		var hits []knowledge.SearchResult
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		// SQLite-backed retrieval: FTS5 BM25 (persistent, incremental) with
+		// optional embedding cosine blend when the vector layer is healthy.
+		var client *knowledge.EmbeddingClient
+		weight := 0.0
 		if cfg.KBEmbedding != nil {
-			client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
-			vectors := knowledge.LoadVectorsFor(cfg.ObsidianVault, cfg.KBEmbedding.Model)
-			if len(vectors) > 0 {
-				hits = idx.SearchHybrid(query, kbSearchLimit, vectors, cfg.KBEmbedding.Weight, client.Embed)
-			} else if stored := knowledge.VectorsModel(cfg.ObsidianVault); stored != "" && stored != cfg.KBEmbedding.Model {
-				fmt.Fprintf(cmd.OutOrStdout(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
-			} else if knowledge.VectorStoreCorrupt(cfg.ObsidianVault) {
-				fmt.Fprintln(cmd.OutOrStdout(), "vector store corrupt or unreadable — run `otg kb index` to rebuild; falling back to BM25.")
-			} else {
+			weight = cfg.KBEmbedding.Weight
+			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+			ready, stored := knowledge.VecStatus(dbPath)
+			switch {
+			case !ready:
 				fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
+				client = nil
+			case stored != "" && stored != cfg.KBEmbedding.Model:
+				fmt.Fprintf(cmd.OutOrStdout(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
+				client = nil
 			}
 		}
-		if hits == nil {
-			hits = idx.Search(query, kbSearchLimit)
+		hits, err := knowledge.SearchKnowledgeDB(dbPath, query, kbSearchLimit, !kbSearchArchived, client, weight)
+		if err != nil {
+			return err
 		}
 		if len(hits) == 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
@@ -184,19 +183,28 @@ Duplicate lessons (same normalized title or failed approach) are skipped.`,
 		if res.Appended+res.Duplicates+len(res.Archived)+len(res.Errors) == 0 {
 			fmt.Fprintln(cmd.ErrOrStderr(), "no lessons parsed — expected 踩坑记录 format (see --help)")
 		}
-		// The knowledge base changed: refresh INDEX and the embedding vectors
-		// so the new lessons are immediately retrievable. Embedding refresh is
-		// incremental (unchanged docs skip in <500ms) and non-blocking on
-		// failure — BM25 retrieval keeps working without ollama.
+		// The knowledge base changed: refresh INDEX and incrementally sync
+		// the retrieval store so new lessons are immediately searchable.
+		// Sync is idempotent (content_hash) and never rolls back on
+		// embedding failure — FTS keeps working without ollama.
 		if _, rerr := knowledge.RebuildINDEX(cfg.ObsidianVault); rerr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: INDEX rebuild failed: %v\n", rerr)
 		}
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding != nil {
-			client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
-			if n, verr := knowledge.BuildVectors(cfg.ObsidianVault, client); verr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (BM25 still works)\n", verr)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "vectors refreshed: %d docs\n", n)
+			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+		}
+		stats, serr := knowledge.SyncKnowledgeDB(cfg.ObsidianVault, dbPath, client)
+		if serr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "store synced: %d docs (+%d -%d), %d chunks\n",
+				stats.TotalDocs, stats.Added, stats.Removed, stats.TotalChunks)
+			if stats.VecSkipped {
+				fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — FTS-only store (add kb_embedding to vault-map.json for semantic search)")
+			} else if stats.VecError != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (BM25 still works)\n", stats.VecError)
 			}
 		}
 		return nil
@@ -255,18 +263,24 @@ var kbPromoteCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "no documents reached hits≥%d\n", kbPromoteMinHits)
 			return nil
 		}
-		// Rebuild INDEX and refresh vectors so the new core/ paths are
-		// immediately searchable (vector keys are path-based).
+		// Rebuild INDEX and sync the store so the new core/ paths are
+		// immediately searchable (moved files change layer + path → sync
+		// picks them up as updates).
 		n, rerr := knowledge.RebuildINDEX(cfg.ObsidianVault)
 		if rerr != nil {
 			return rerr
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "rebuilt INDEX.md: %d entries\n", n)
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding != nil {
-			client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
-			if _, verr := knowledge.BuildVectors(cfg.ObsidianVault, client); verr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v\n", verr)
-			}
+			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+		}
+		stats, serr := knowledge.SyncKnowledgeDB(cfg.ObsidianVault, dbPath, client)
+		if serr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
+		} else if stats.VecError != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v\n", stats.VecError)
 		}
 		return nil
 	},
@@ -295,25 +309,38 @@ var kbRebuildCmd = &cobra.Command{
 	},
 }
 
-// kbIndexCmd builds the embedding vector store for semantic search.
+// kbIndexCmd rebuilds the retrieval store from scratch — documents + FTS
+// always, embeddings when configured. The store is derived data, so a
+// rebuild is always safe.
 var kbIndexCmd = &cobra.Command{
 	Use:   "index",
-	Short: "Build the embedding vector index for knowledge search",
+	Short: "Rebuild the knowledge retrieval store (FTS + optional vectors)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load(kbMapFile)
 		if err != nil {
 			return err
 		}
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding == nil {
-			return fmt.Errorf("kb_embedding not configured in vault-map.json (add {backend,url,model})")
+			fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — building FTS-only store (add kb_embedding to vault-map.json for semantic search)")
+		} else {
+			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
 		}
-		client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
-		n, err := knowledge.BuildVectors(cfg.ObsidianVault, client)
+		stats, err := knowledge.RebuildKnowledgeDB(cfg.ObsidianVault, dbPath, client)
 		if err != nil {
-			return fmt.Errorf("build vectors: %w", err)
+			return fmt.Errorf("rebuild store: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "embedded %d documents (%s, model %s)\n", n, cfg.KBEmbedding.Backend, cfg.KBEmbedding.Model)
+		if stats.VecError != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (FTS-only store)\n", stats.VecError)
+		}
+		if client != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents, %d chunks (%s, model %s)\n",
+				stats.TotalDocs, stats.TotalChunks, cfg.KBEmbedding.Backend, cfg.KBEmbedding.Model)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents (FTS only)\n", stats.TotalDocs)
+		}
 		return nil
 	},
 }
