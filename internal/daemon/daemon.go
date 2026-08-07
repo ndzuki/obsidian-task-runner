@@ -456,6 +456,12 @@ func (r *Runner) initLogging() error {
 	}
 	r.logWriter = w
 	r.logger = log.New(w, "", log.LstdFlags)
+	// Route the stdlib global logger (used by the notify package for
+	// Kitty tab / grilling logs) into the same rotating file. Without
+	// this, grilling-tab attempts are only visible in journald while the
+	// daemon log file shows nothing — "no grilling tabs" looked like a
+	// broken daemon instead of a fixable notification gap.
+	log.SetOutput(w)
 	return nil
 }
 
@@ -1865,22 +1871,25 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
 					if fm.BlockedPhase != "" && fm.ResumeApproved {
 						r.logger.Printf("task %s: resume approved, restoring %s", t.ID, fm.BlockedPhase)
-						updates := map[string]interface{}{
-							"status":              fm.BlockedPhase,
-							"blocked_phase":       "",
-							"phase_error":         "",
-							"phase_log":           "",
-							"phase_error_code":    "",
-							"resume_approved":     false,
-							"auto_resume_pending": false,
-						}
 						// Manual resume (no pending marker) resets the failure budget;
 						// resolver approvals keep the count so retries stay bounded.
-						if !fm.AutoResumePending {
-							updates["auto_resume_count"] = 0
-						}
-						if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+						if err := r.restoreBlockedPhase(taskPath, fm.BlockedPhase, !fm.AutoResumePending); err != nil {
 							r.logger.Printf("task %s: restore blocked phase: %v", t.ID, err)
+							continue
+						}
+						t.Status = fm.BlockedPhase
+						// Fall through to normal dispatch below.
+					} else if fm.BlockedPhase != "" && fm.PhaseErrorCode == task.PhaseErrorCodeInterrupted {
+						// Interrupted by daemon shutdown: the skill contract
+						// (docs/workflow.md 3.2) promises automatic re-scheduling
+						// on restart with NO manual resume_approved. Current
+						// daemons keep the phase status and only write
+						// PHASE_INTERRUPTED, but legacy daemons wrote interrupted
+						// phases as blocked (observed: TASK-015, 8/5 era). Self-heal
+						// those leftovers exactly like the API-key probe.
+						r.logger.Printf("task %s: PHASE_INTERRUPTED, restoring %s", t.ID, fm.BlockedPhase)
+						if err := r.restoreBlockedPhase(taskPath, fm.BlockedPhase, false); err != nil {
+							r.logger.Printf("task %s: restore interrupted phase: %v", t.ID, err)
 							continue
 						}
 						t.Status = fm.BlockedPhase
@@ -1894,16 +1903,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							continue
 						}
 						r.logger.Printf("task %s: API key available, restoring %s", t.ID, fm.BlockedPhase)
-						updates := map[string]interface{}{
-							"status":              fm.BlockedPhase,
-							"blocked_phase":       "",
-							"phase_error":         "",
-							"phase_log":           "",
-							"phase_error_code":    "",
-							"resume_approved":     false,
-							"auto_resume_pending": false,
-						}
-						if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+						if err := r.restoreBlockedPhase(taskPath, fm.BlockedPhase, false); err != nil {
 							r.logger.Printf("task %s: restore API-key blocked phase: %v", t.ID, err)
 							continue
 						}
@@ -2000,6 +2000,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if t.Maturity == "fully_mature" && t.RefineReqHash != "" && t.RefineReqHash == r.reqHash(t.ReqDoc) {
 				r.logger.Printf("task %s: fully mature, audit current → planning", t.ID)
 				phase = "planning"
+				// Planning runs on the TASK assignee's model (docs/workflow.md
+				// 1.1); the refining early-out must not inherit the default
+				// model used for the maturity gate.
+				model = r.selectModel(t.Assignee)
 				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 			} else {
 				phase = "refining"
@@ -2340,6 +2344,26 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		processed++
 	}
 	return processed
+}
+
+// restoreBlockedPhase applies the shared resume updates for a blocked task
+// (manual resume, PHASE_INTERRUPTED self-heal, and API-key probe all use the
+// same field set). resetBudget additionally clears the auto-resume failure
+// budget — only manual resumes do that.
+func (r *Runner) restoreBlockedPhase(taskPath, phase string, resetBudget bool) error {
+	updates := map[string]interface{}{
+		"status":              phase,
+		"blocked_phase":       "",
+		"phase_error":         "",
+		"phase_log":           "",
+		"phase_error_code":    "",
+		"resume_approved":     false,
+		"auto_resume_pending": false,
+	}
+	if resetBudget {
+		updates["auto_resume_count"] = 0
+	}
+	return yamlfrontmatter.Update(taskPath, updates)
 }
 
 // handlePhaseFailure tracks retry counts for refining/planning phases and

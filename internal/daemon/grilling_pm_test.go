@@ -372,6 +372,41 @@ grill_continue: true
 	}
 }
 
+// TestDecisionAnsweredPlaceholderVariants guards placeholder-lenient
+// matching: PM templates write `{用户填写}`, older revisions `<用户填写>`,
+// and field copies render `（用户填写）` — all must count as UNANSWERED.
+// Otherwise a fully-placeholder list reports pending=0, the decision tab is
+// never opened, and every scan auto-distributes an empty batch (observed:
+// release-manager Grilling-Decisions.md grew 1800+ no-op distribute logs
+// and never opened its decision tab for 24h+).
+func TestDecisionAnsweredPlaceholderVariants(t *testing.T) {
+	for _, v := range []string{
+		"",
+		" ",
+		"（用户填写）",
+		"(用户填写)",
+		"<用户填写>",
+		"{用户填写}",
+		"  用户填写  ",
+		"确认 / 修改（列出修改）/ 不拆分",
+		"继续 / supplement:{建议} / end",
+	} {
+		if decisionAnswered(v) {
+			t.Errorf("decisionAnswered(%q) = true, want false (placeholder)", v)
+		}
+	}
+	for _, v := range []string{
+		"按建议方向采纳：不豁免（2026-08-04 确认）",
+		"选 A：TASK-071 缩小为集成任务",
+		"continue",
+		"不拆分",
+	} {
+		if !decisionAnswered(v) {
+			t.Errorf("decisionAnswered(%q) = false, want true (real answer)", v)
+		}
+	}
+}
+
 // TestFullyAnsweredButUndistributedStillDispatches guards the write-back
 // path: a list whose decisions are all filled but whose frontmatter status
 // is still open (never distributed) must dispatch once — otherwise the

@@ -431,12 +431,22 @@ func grillingDecisionCounts(path string) (total, pending int) {
 
 // decisionAnswered reports whether an answer line carries a real answer
 // (not empty and not the placeholder).
+//
+// Placeholder matching is deliberately loose: the PM skill template writes
+// `{用户填写}`, older list revisions carry `<用户填写>`, and field copies
+// render as `（用户填写）` — all three must count as unanswered, otherwise a
+// list whose answers are all placeholders reports pending=0 and the daemon
+// never opens the decision tab (and worse, auto-distributes an empty batch
+// every scan, inflating the list log).
 func decisionAnswered(value string) bool {
 	v := strings.TrimSpace(value)
 	if v == "" {
 		return false
 	}
-	for _, placeholder := range []string{"<用户填写>", "确认 / 修改（列出修改）/ 不拆分", "继续 / supplement:{建议} / end"} {
+	if strings.Contains(v, "用户填写") {
+		return false
+	}
+	for _, placeholder := range []string{"确认 / 修改（列出修改）/ 不拆分", "继续 / supplement:{建议} / end"} {
 		if strings.Contains(v, placeholder) {
 			return false
 		}
