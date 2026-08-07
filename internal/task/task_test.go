@@ -776,6 +776,180 @@ created: "2026-07-01T10:00:00+08:00"
 	}
 }
 
+// TestFindReadyTasksSortsByStageThenPriority guards the stage-ordered
+// dispatch: within a project, an earlier stage outranks a higher priority
+// in a later stage ("P2 P0" waits behind "P1 P3"), and stage ids compare
+// numerically ("P10" after "P2"). Unstaged tasks sort last.
+func TestFindReadyTasksSortsByStageThenPriority(t *testing.T) {
+	vault := t.TempDir()
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	writeTask(t, tasksDir, "TASK-010-p3-p0-late-stage.md", `
+id: "010"
+title: P2 P0 late
+project: test
+status: ready
+assignee: gpt
+priority: P0
+stage: "P2"
+created: "2026-07-28T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-020-p10.md", `
+id: "020"
+title: P10
+project: test
+status: ready
+assignee: gpt
+priority: P0
+stage: "P10"
+created: "2026-07-28T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-030-p1-p3.md", `
+id: "030"
+title: P1 P3
+project: test
+status: ready
+assignee: gpt
+priority: P3
+stage: "P1"
+created: "2026-07-28T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-040-p1-p0.md", `
+id: "040"
+title: P1 P0
+project: test
+status: ready
+assignee: gpt
+priority: P0
+stage: "P1"
+created: "2026-07-28T10:00:00+08:00"
+`)
+	writeTask(t, tasksDir, "TASK-050-unstaged.md", `
+id: "050"
+title: unstaged
+project: test
+status: ready
+assignee: gpt
+priority: P0
+created: "2026-07-01T10:00:00+08:00"
+`)
+
+	ready, err := FindReadyTasks(vault)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	got := make([]string, 0, len(ready))
+	for _, r := range ready {
+		got = append(got, r.ID)
+	}
+	want := []string{"040", "030", "010", "020", "050"} // P1 P0 → P1 P3 → P2 P0 → P10 P0 → unstaged last
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ready order = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestFindReadyTasksStageSortIsProjectScoped guards cross-project fairness:
+// stages of different projects are incomparable, so ordering falls back to
+// created time instead of comparing "P1" of project B against "P3" of A.
+func TestFindReadyTasksStageSortIsProjectScoped(t *testing.T) {
+	vault := t.TempDir()
+	projA := filepath.Join(vault, "Projects", "001-a", "Tasks")
+	projB := filepath.Join(vault, "Projects", "002-b", "Tasks")
+	if err := os.MkdirAll(projA, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+	if err := os.MkdirAll(projB, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	writeTask(t, projA, "TASK-001-a-p3.md", `
+id: "001"
+title: A P3
+project: a
+status: ready
+assignee: gpt
+priority: P0
+stage: "P3"
+created: "2026-07-02T10:00:00+08:00"
+`)
+	writeTask(t, projB, "TASK-002-b-p1.md", `
+id: "002"
+title: B P1
+project: b
+status: ready
+assignee: gpt
+priority: P0
+stage: "P1"
+created: "2026-07-01T10:00:00+08:00"
+`)
+
+	ready, err := FindReadyTasks(vault)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	got := []string{ready[0].ID, ready[1].ID}
+	want := []string{"002", "001"} // B created earlier: cross-project order ignores stage
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ready order = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestFindReadyTasksCrossProjectKeepsPriority guards that cross-project
+// ordering still respects priority: a later-created P0 in project A must
+// dispatch before an earlier-created P1 in project B (stage never leaks
+// across projects, priority always does).
+func TestFindReadyTasksCrossProjectKeepsPriority(t *testing.T) {
+	vault := t.TempDir()
+	projA := filepath.Join(vault, "Projects", "001-a", "Tasks")
+	projB := filepath.Join(vault, "Projects", "002-b", "Tasks")
+	if err := os.MkdirAll(projA, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+	if err := os.MkdirAll(projB, 0o755); err != nil {
+		t.Fatalf("create tasks: %v", err)
+	}
+
+	writeTask(t, projA, "TASK-001-a-p0.md", `
+id: "001"
+title: A P0
+project: a
+status: ready
+assignee: gpt
+priority: P0
+stage: "P3"
+created: "2026-07-02T10:00:00+08:00"
+`)
+	writeTask(t, projB, "TASK-002-b-p1.md", `
+id: "002"
+title: B P1
+project: b
+status: ready
+assignee: gpt
+priority: P1
+stage: "P1"
+created: "2026-07-01T10:00:00+08:00"
+`)
+
+	ready, err := FindReadyTasks(vault)
+	if err != nil {
+		t.Fatalf("FindReadyTasks: %v", err)
+	}
+	got := []string{ready[0].ID, ready[1].ID}
+	want := []string{"001", "002"} // A's P0 outranks B's earlier-created P1
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ready order = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestCreateTaskForReqWithoutPriorityStartsAssessment(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

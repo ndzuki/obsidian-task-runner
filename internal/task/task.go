@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type ReadyTask struct {
 	ID                       string `json:"id"`
 	Title                    string `json:"title"`
 	Project                  string `json:"project"`
+	Stage                    string `json:"stage,omitempty"`
 	NewProject               bool   `json:"new_project"`
 	Priority                 string `json:"priority"`
 	Created                  string `json:"created,omitempty"`
@@ -72,6 +74,21 @@ func priorityOrder(p string) int {
 	default:
 		return 2
 	}
+}
+
+// stageOrder maps a stage id ("P1") to a sortable int using numeric order
+// ("P10" sorts after "P2"). Empty or unparsable stages sort last so unstaged
+// tasks never starve staged ones — auto-staging assigns them a phase on the
+// same scan anyway.
+func stageOrder(stage string) int {
+	if stage == "" {
+		return int(^uint(0) >> 1)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(stage, "P"))
+	if err != nil {
+		return int(^uint(0) >> 1)
+	}
+	return n
 }
 
 // IsValidAssignee returns true for supported assignees.

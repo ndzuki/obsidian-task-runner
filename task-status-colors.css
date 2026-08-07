@@ -1,0 +1,54 @@
+/* Obsidian Task Runner — 任务状态配色
+ * Tasks-Dashboard.md 状态缩写对照图例使用（.sts-* class）。
+ * 部署：复制本文件到 Vault 的 .obsidian/snippets/ 并在外观设置启用；
+ * 或直接写入 appearance.json 的 enabledCssSnippets 数组。
+ * 浅色为默认值，深色主题由 .theme-dark 覆盖。 */
+
+.sts-blocked,
+.sts-ready,
+.sts-refining,
+.sts-needs-grilling,
+.sts-planning,
+.sts-plan-review,
+.sts-implementing,
+.sts-review,
+.sts-conflict,
+.sts-done,
+.sts-closed,
+.sts-wayfinder {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Light theme (default) */
+.sts-blocked        { background: rgba(220, 53, 69, .16);  color: #b02a37; }
+.sts-ready          { background: rgba(25, 135, 84, .16);  color: #0f5132; }
+.sts-refining       { background: rgba(13, 110, 253, .14); color: #084298; }
+.sts-needs-grilling { background: rgba(255, 193, 7, .24);  color: #664d03; }
+.sts-planning       { background: rgba(111, 66, 193, .16); color: #5a32a3; }
+.sts-plan-review    { background: rgba(111, 66, 193, .30); color: #5a32a3; }
+.sts-implementing   { background: rgba(13, 110, 253, .28); color: #084298; }
+.sts-review         { background: rgba(13, 202, 240, .18); color: #087990; }
+.sts-conflict       { background: rgba(220, 53, 69, .32);  color: #842029; }
+.sts-done           { background: rgba(25, 135, 84, .32);  color: #0f5132; }
+.sts-closed         { background: rgba(108, 117, 125, .20); color: #495057; }
+.sts-wayfinder      { background: rgba(214, 51, 132, .16); color: #a8326f; }
+
+/* Dark theme */
+.theme-dark .sts-blocked        { background: rgba(220, 53, 69, .28);  color: #ff9ba3; }
+.theme-dark .sts-ready          { background: rgba(25, 135, 84, .28);  color: #7ee2a8; }
+.theme-dark .sts-refining       { background: rgba(13, 110, 253, .24); color: #8ab8ff; }
+.theme-dark .sts-needs-grilling { background: rgba(255, 193, 7, .28);  color: #ffd966; }
+.theme-dark .sts-planning       { background: rgba(111, 66, 193, .24); color: #c4a7f3; }
+.theme-dark .sts-plan-review    { background: rgba(111, 66, 193, .40); color: #c4a7f3; }
+.theme-dark .sts-implementing   { background: rgba(13, 110, 253, .40); color: #8ab8ff; }
+.theme-dark .sts-review         { background: rgba(13, 202, 240, .26); color: #7de2f0; }
+.theme-dark .sts-conflict       { background: rgba(220, 53, 69, .44); color: #ff8a95; }
+.theme-dark .sts-done           { background: rgba(25, 135, 84, .44);  color: #7ee2a8; }
+.theme-dark .sts-closed         { background: rgba(108, 117, 125, .30); color: #b6bcc4; }
+.theme-dark .sts-wayfinder      { background: rgba(214, 51, 132, .26); color: #f59dc8; }

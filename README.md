@@ -374,7 +374,7 @@ assignee: deepseek
 
 ## Obsidian Dataview 看板
 
-安装 Dataview 后，打开 Vault 根目录的 `Tasks-Dashboard.md`，即可查看任务汇总、待处理任务、阻塞任务和最近完成记录。
+安装 Dataview 后，打开 Vault 根目录的 `Tasks-Dashboard.md`，即可查看任务汇总、阶段看板、待办与完成统计、审批与阻塞队列。
 
 Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/dataview.md`](docs/dataview.md)。
 

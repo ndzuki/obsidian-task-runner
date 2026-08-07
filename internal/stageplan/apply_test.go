@@ -41,6 +41,12 @@ func TestApplyUsesInjectedClock(t *testing.T) {
 	if !strings.Contains(string(plan), want) {
 		t.Fatalf("stage plan updated stamp = %q missing, want %q\n%s", want, want, string(plan))
 	}
+	// The auto-derived goal line must not be an empty placeholder: it names
+	// the phase from deriveName and the task count, so the plan is readable
+	// even before the PM replaces it.
+	if !strings.Contains(string(plan), "- 目标: 交付") || !strings.Contains(string(plan), "1 个任务") {
+		t.Fatalf("auto-derived goal line missing\n%s", string(plan))
+	}
 }
 
 // TestApplyDryRunWritesNothing guards the dry-run path: phases are computed

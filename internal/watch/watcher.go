@@ -70,6 +70,32 @@ func New(vaultPath string, debounceInterval time.Duration) (*Watcher, error) {
 			}
 		}
 	}
+	// Watch References/ recursively (knowledge-base intake): agent/user
+	// writes to knowledge documents surface as watcher events so the daemon
+	// rebuilds INDEX.md and incrementally syncs the retrieval store without
+	// any manual otg kb command. Optional — a vault without References/ is
+	// skipped, not an error.
+	refsPath := filepath.Join(vaultPath, "References")
+	if _, err := os.Stat(refsPath); err == nil {
+		if err := fsn.Add(refsPath); err != nil {
+			_ = fsn.Close()
+			return nil, fmt.Errorf("watch References directory: %w", err)
+		}
+		if err := filepath.Walk(refsPath, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				if err := fsn.Add(p); err != nil {
+					return fmt.Errorf("watch directory %s: %w", p, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			_ = fsn.Close()
+			return nil, err
+		}
+	}
 
 	return w, nil
 }
@@ -129,26 +155,33 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 
 	parent := filepath.Base(filepath.Dir(path))
 	var dir string
-	switch parent {
-	case "Tasks":
-		dir = "Tasks"
-	case "Requirements":
-		dir = "Requirements"
-	case "Notes":
-		// Grilling-Decisions.md / Stage-Plan.md / Stage-Review.md live here.
-		// The user edits decision answers directly in the vault; without
-		// watching Notes the daemon never learns the list changed and the
-		// user has to manually set grill_continue=true as a workaround.
-		dir = "Notes"
-	default:
-		// Requirements may live directly in the project directory (or any
-		// subdirectory): the daemon routes them by the REQ-* filename
-		// pattern, so a brand-new project's first requirement is discovered
-		// even when no Requirements/ folder exists yet.
-		if strings.HasPrefix(base, "REQ-") {
+	if strings.Contains(path, string(filepath.Separator)+"References"+string(filepath.Separator)) {
+		// Knowledge documents live in arbitrary subdirectories
+		// (References/core/..., References/extended/...); the daemon routes
+		// them by path token, not by parent name.
+		dir = "References"
+	} else {
+		switch parent {
+		case "Tasks":
+			dir = "Tasks"
+		case "Requirements":
 			dir = "Requirements"
-		} else {
-			return
+		case "Notes":
+			// Grilling-Decisions.md / Stage-Plan.md / Stage-Review.md live here.
+			// The user edits decision answers directly in the vault; without
+			// watching Notes the daemon never learns the list changed and the
+			// user has to manually set grill_continue=true as a workaround.
+			dir = "Notes"
+		default:
+			// Requirements may live directly in the project directory (or any
+			// subdirectory): the daemon routes them by the REQ-* filename
+			// pattern, so a brand-new project's first requirement is discovered
+			// even when no Requirements/ folder exists yet.
+			if strings.HasPrefix(base, "REQ-") {
+				dir = "Requirements"
+			} else {
+				return
+			}
 		}
 	}
 

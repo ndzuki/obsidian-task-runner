@@ -201,7 +201,7 @@ updated: %s
 			status = "in-progress"
 		}
 		fmt.Fprintf(&sb, "### Phase %d: %s\n", number, p.Name)
-		fmt.Fprintf(&sb, "- 目标: （PM 补充一句话可演示成果）\n")
+		fmt.Fprintf(&sb, "- 目标: 交付 %s 相关能力（%d 个任务；自动派生占位，PM 可覆盖为可演示成果）\n", p.Name, len(p.Tasks))
 		fmt.Fprintf(&sb, "- tasks: %s（参考；权威判定按 stage 字段）\n", strings.Join(p.Tasks, ", "))
 		fmt.Fprintf(&sb, "- status: %s\n", status)
 		fmt.Fprintf(&sb, "- 评审: （待定）\n\n")

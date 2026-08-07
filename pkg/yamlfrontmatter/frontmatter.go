@@ -141,6 +141,14 @@ type Frontmatter struct {
 	Blocks         []string `yaml:"blocks"`
 	TargetEnv      string   `yaml:"target_env"`
 	Stage          string   `yaml:"stage"`
+	// StageSource records where the stage came from: "req" = inherited from
+	// the REQ frontmatter (follows REQ stage changes), empty = daemon
+	// auto-staging or PM manual assignment (does NOT follow REQ changes).
+	StageSource string `yaml:"stage_source"`
+	// PlanFiles lists repo-relative files the current plan intends to modify.
+	// Round 1 writes it; the daemon detects overlaps across concurrently
+	// implementing tasks of the same project to warn before merge conflicts.
+	PlanFiles []string `yaml:"plan_files"`
 
 	// Deprecated migration-only field. New code must use Assignee.
 	SwitchSettings bool `yaml:"switch_settings"`
@@ -285,7 +293,7 @@ var taskFieldOrder = []string{
 	"plan_approved", "auto_merge", "merge_approved", "adr_approved",
 	"resume_approved", "close_approved", "pending_req",
 	// Metadata (template 🟡/🟢 sections).
-	"tags", "epic", "blocked_by", "blocks", "target_env", "stage", "new_project",
+	"tags", "epic", "blocked_by", "blocks", "target_env", "stage", "stage_source", "plan_files", "new_project",
 	"due_date", "estimated_hours", "actual_hours", "component", "parent",
 	"reviewer", "author", "template", "off_peak_only", "auto_approve",
 	// Timestamps.

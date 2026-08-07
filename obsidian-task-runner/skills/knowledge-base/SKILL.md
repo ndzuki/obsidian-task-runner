@@ -151,7 +151,7 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
    EOF
    ```
 3. **去重由命令保证**：相同（归一化）标题或失败方案已在目标文档 → 输出 `duplicates: N` 并跳过，不重复追加——同一教训被多个会话/任务重复记录不会膨胀索引和 token 消耗。
-4. **索引与向量自动刷新**：`otg kb absorb`、`otg kb promote` 以及 daemon merge 提取后都会**自动**重建 INDEX.md 并增量刷新 embedding 向量（未变文档跳过，<1 秒；embedding 后端不可用时仅告警，BM25 检索不受影响）——记录即检索，无需手动执行 `kb rebuild-index`/`kb index`。`otg kb hit` 只改热度计数，不触发向量刷新（hits 不参与 embedding）。
+4. **索引与向量自动刷新**：`otg kb absorb`、`otg kb promote`、daemon merge 提取以及 **daemon watcher 对 References/ 的直接写入**（agent/用户编辑，10s debounce）都会**自动**重建 INDEX.md 并增量刷新 embedding 向量（未变文档跳过，<1 秒；embedding 后端不可用时仅告警，BM25 检索不受影响）——记录即检索，无需手动执行 `kb rebuild-index`/`kb index`。`otg kb hit` 只改热度计数，不触发向量刷新（hits 不参与 embedding）。
 5. **模型切换自动失效**：向量库记录 embedding 模型；切换后端/模型（本地 ollama ↔ 云 OpenAI 兼容）后旧向量视为无效，`kb search` 回退 BM25 并提示重跑 `otg kb index`——不同模型向量维度不兼容，绝不混用。
 
 ### Step 0.6: 经验热度与 core 升级
@@ -178,7 +178,7 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 
 **执行流程（收到提炼指令后）**：
 1. **委派 subagent 分析**（推荐，省主会话 token）：`task` 委派 scout/task 读取会话转录（`history://<id>` 或会话文件），提取：踩坑（现象/失败方案/根因/成功方案）、验证结论（实测数据）、架构决策（选型与取舍）。
-2. **入库**：踩坑经验 → `otg kb absorb`（踩坑格式，内置归一化去重）；验证结论/架构决策 → 追加对应 References 文档「实践经验」小节或新建主题文档（标准 frontmatter + `otg kb rebuild-index`）。
+2. **入库**：踩坑经验 → `otg kb absorb`（踩坑格式，内置归一化去重）；验证结论/架构决策 → 追加对应 References 文档「实践经验」小节或新建主题文档（标准 frontmatter；写入后 daemon watcher 自动重建 INDEX 并增量同步检索库，无需手动 rebuild-index）。
 3. **判空**：无可复用知识 → 回复「无可提炼」并结束，不硬造知识。
 4. **幂等**：absorb 对重复标题/失败方案自动跳过——同一教训多会话记录不膨胀索引。
 
@@ -225,12 +225,14 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 2. 确定目标分类目录（见三层分类体系）。
 3. 若目标文件不存在 → 创建新文件，写入标准 frontmatter + 正文。
 4. 若目标文件存在 → 更新/补充相关小节，在文末 `## 更新记录` 追加一条。
-5. **重建 INDEX.md** — 每次入库后必须重建 INDEX.md。手动或 agent 写入后执行 `otg kb rebuild-index`（vault-map 自动定位）；daemon 内部走 `knowledge.RebuildINDEX()`：
+5. **重建 INDEX.md** — 入库后 INDEX.md 由 **daemon watcher 自动维护**：References/ 任意写入（agent/用户直接编辑、absorb、merge 提取）都会触发自动重建（10s debounce 合并批量写入）并**增量同步检索库**（SQLite FTS + embedding 向量，content_hash 跳过未变文档）——写入即检索，无需手动执行。daemon 内部实现：
    ```go
-   // Go implementation: internal/knowledge/rebuild_index.go
+   // Go implementation: internal/daemon/daemon.go maybeRebuildRefIndex /
+   // maybeSyncKnowledgeDB; internal/knowledge/{rebuild_index,sync}.go
    knowledge.RebuildINDEX(vaultDir)
+   knowledge.SyncKnowledgeDB(vaultDir, dbPath, client)
    ```
-   重建时自动检测：空 topics 文件、缺少 level 字段、日期格式异常，标记 `⚠️`。注意 watcher 只监听 `Projects/`，References/ 写入不会自动触发重建，必须显式执行上述命令。
+   重建时自动检测：空 topics 文件、缺少 level 字段、日期格式异常，标记 `⚠️`。手动兜底（daemon 未运行时）：`otg kb rebuild-index` / `otg kb index`（后者全量重建检索库，仅模型切换/迁移时需要）。
 
 **绝不**删除用户原有内容。去重时内容高度重叠，追加 `> ⚠️ 与 <旧文件路径> 存在重叠，待人工确认合并` 标记。
 

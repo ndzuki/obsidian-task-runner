@@ -205,6 +205,14 @@ Step -1 知识图谱与 core/ 检索命中的知识文档，**必须写入 TASK 
 - 写回方式：`otg update-status <task> knowledge_refs=<comma-separated>`（或等价 frontmatter 更新）。
 - 目的：形成跨会话引用链——Round 2 按清单应用、merge 时 daemon 度量 `knowledge_applied`（hit/total）、task-verifier 校验 AC 证据引用。
 
+## Step 3.6: Plan Files Write-back（计划文件清单写回）
+
+计划产出的**将修改文件清单**必须写入 TASK frontmatter `plan_files`（repo 相对路径，逗号分隔）：
+
+- 只列**计划实际要改写的文件**（新增/修改/删除），不含只读参考文件；估算不清时给保守集合（宁多勿漏——daemon 用它做同项目并行实现的重叠预警）。
+- 写回方式：`otg update-status <task> plan_files=internal/foo.go,web/src/bar.ts`（空计划或纯文档任务写 `plan_files=` 清空）。
+- 目的：daemon 检测**同项目并发 implementing 任务的文件重叠**并一次性通知——把合并冲突信号从 merge 阶段前置到调度阶段（release-manager 教训：253 commits 中 57 个冲突解决类合并，Vue 壳层/路由/proto 是重灾区）。
+
 ## Step 4: Pre-commit Hash Verification（提交前Hash复核）
 
 计划写回前校验 REQ hash——**hash 由 daemon 预计算写入 `refine_req_hash`（零 token），不要读取 REQ 全文重新计算**：

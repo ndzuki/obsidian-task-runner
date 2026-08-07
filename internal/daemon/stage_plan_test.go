@@ -103,14 +103,61 @@ func TestStageTasksLanded(t *testing.T) {
 	runner := New(&config.Config{})
 	runner.logger = log.New(io.Discard, "", 0)
 
-	if !runner.stageTasksLanded(dir, "P2") {
-		t.Fatal("P2 (single done+merged task) should land")
+	landed, reviewable, _ := runner.stageTasksState(dir, "P2")
+	if !landed || !reviewable {
+		t.Fatalf("P2 (single done+merged task) should land+reviewable, got landed=%v reviewable=%v", landed, reviewable)
 	}
-	if runner.stageTasksLanded(dir, "P1") {
-		t.Fatal("P1 has an unmerged task, must not land")
+	landed, reviewable, _ = runner.stageTasksState(dir, "P1")
+	if landed || reviewable {
+		t.Fatalf("P1 has an in-flight task, must not be landed or reviewable, got landed=%v reviewable=%v", landed, reviewable)
 	}
-	if runner.stageTasksLanded(dir, "P9") {
-		t.Fatal("stage with no tasks must not land")
+	landed, reviewable, _ = runner.stageTasksState(dir, "P9")
+	if landed || reviewable {
+		t.Fatalf("stage with no tasks must not land, got landed=%v reviewable=%v", landed, reviewable)
+	}
+}
+
+// TestStageTasksStateBlockedRemainderReviewable guards the anti-deadlock
+// relaxation: a phase whose remaining tasks are all blocked (nothing
+// dispatchable) is reviewable even though not landed — the PM stage-review
+// then advises wait / narrow / split instead of the phase staying silent.
+func TestStageTasksStateBlockedRemainderReviewable(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTaskFM := func(name, id, status, mergeStatus, stage string) {
+		t.Helper()
+		content := "---\nid: \"" + id + "\"\nstatus: " + status + "\nmerge_status: " + mergeStatus + "\nstage: \"" + stage + "\"\n---\n# " + id + "\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTaskFM("TASK-001-a.md", "001", "done", "merged", "P1")
+	writeTaskFM("TASK-002-b.md", "002", "blocked", "", "P1")
+	writeTaskFM("TASK-003-c.md", "003", "closed", "merged", "P1") // closed never blocks
+	writeTaskFM("TASK-004-d.md", "004", "blocked", "", "P2")
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+
+	landed, reviewable, blockers := runner.stageTasksState(dir, "P1")
+	if landed {
+		t.Fatal("P1 has a blocked task, must not be landed")
+	}
+	if !reviewable {
+		t.Fatal("P1 remainder is all blocked, must be reviewable")
+	}
+	if len(blockers) != 1 || blockers[0] != "002" {
+		t.Fatalf("P1 blockers = %v, want [002]", blockers)
+	}
+
+	// A dispatchable remainder (implementing) makes the phase unreviewable.
+	writeTaskFM("TASK-005-e.md", "005", "implementing", "", "P1")
+	_, reviewable, _ = runner.stageTasksState(dir, "P1")
+	if reviewable {
+		t.Fatal("P1 with an implementing task must not be reviewable")
 	}
 }
 

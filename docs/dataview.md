@@ -66,15 +66,27 @@ updated: 2026-07-15T10:30:00+08:00
 
 1. **按项目汇总**：每个项目的任务总数，按 `Projects/<项目>/` 前缀聚合。
 2. **按状态统计**：各状态（`ready` / `needs-grilling` / `planning` / `implementing` / `review` 等）的未完成任务数。
-3. **待处理任务**：排除 `done` / `closed` / `blocked` / `wayfinder`，按优先级排序。
-4. **等待审批**：`status = plan-review` 且 `plan_approved != true`，或 `status = review` 且 `merge_approved != true`。
-5. **阻塞任务**：`status = blocked`，按最后更新时间倒序。
-6. **最近完成**：`status = done`，按 `completed` 倒序，最多 10 条。
-7. **知识库汇总**：每个项目的知识库用量——引用知识库次数（`knowledge_refs` 条目数）、去重引用文档数、创新 ADR 数（`adr_written` 条目数）、知识应用任务数（`knowledge_applied` 非空的任务数）。
-8. **ADR 提议状态**：`adr_proposed` 非空且 `adr_approved != true` 的任务。
-9. **依赖阻塞详情**：`blocked_by` 非空且未完成的任务，按优先级排序。
+3. **Stage 看板**：按 `stage` 分组统计每阶段任务数、已完成、进行中（对应 daemon auto-staging / 阶段评审的推进情况）。
+4. **任务概览**：一个视图内统计两个数字——待处理任务数（排除 `done` / `closed` / `blocked` / `wayfinder`）与近 7 天完成数。
+5. **等待审批**：`status = plan-review` 且 `plan_approved != true`，或 `status = review` 且 `merge_approved != true`。
+6. **需求变更待处理**：`pending_req = true` 的未完成任务（REQ 变更后等待重新规划的增量任务），按最后更新时间倒序。
+7. **阻塞任务**：`status = blocked`，按最后更新时间倒序。
+8. **知识库汇总**：每个项目的知识库用量——引用知识库次数（`knowledge_refs` 条目数）、去重引用文档数、创新 ADR 数（`adr_written` 条目数）、知识应用任务数（`knowledge_applied` 非空的任务数）。
+9. **ADR 提议状态**：统计 `adr_proposed` 非空且 `adr_approved != true` 的未完成任务数。
 
 保存任务文件后，Dataview 会自动刷新查询。若没有刷新，可关闭并重新打开看板，或在命令面板执行 **Reload app without saving**。
+
+### 状态配色（可选）
+
+看板顶部的状态缩写对照图例默认是纯文字；启用仓库根目录的 [`task-status-colors.css`](../task-status-colors.css) 后，每个状态词会带语义底色（阻塞红 / 就绪绿 / 进行中蓝等，深浅主题自动适配）：
+
+1. 复制 `task-status-colors.css` 到 Vault 的 `.obsidian/snippets/`。
+2. 设置 → 外观 → CSS 代码片段 → 启用 `task-status-colors`（或直接把文件名写入 `appearance.json` 的 `enabledCssSnippets`）。
+3. 若未立即生效，重启 Obsidian 或在外观设置中关闭再开启该片段。
+
+图例用 `<span class="sts-<status>">` 渲染；自定义状态时在 CSS 中追加同名 class 即可。
+
+> 限制：Dataview 表格中的状态列是纯文本，DQL 无法注入样式——图例上色不需要改查询，但表格内状态列上色需要改用 dataviewjs 渲染（成本高，未内置）。
 
 ## 5. 查询分别做了什么
 
@@ -127,16 +139,6 @@ FROM "Projects"
 WHERE contains(file.folder, "Tasks") AND assignee = "deepseek"
 SORT priority asc
 ```
-
-### 按交付阶段分组
-
-```dataview
-TABLE stage, status, priority, file.link AS "任务"
-FROM "Projects"
-WHERE contains(file.folder, "Tasks") AND stage != null
-SORT stage asc, priority asc
-```
-
 
 ## 7. 看板为空时按顺序排查
 
