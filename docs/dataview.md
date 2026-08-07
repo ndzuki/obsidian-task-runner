@@ -62,12 +62,17 @@ updated: 2026-07-15T10:30:00+08:00
 
 ## 4. 打开任务看板
 
-在 Obsidian 的文件列表中打开 `Tasks-Dashboard.md`。正常情况下会看到四类内容：
+在 Obsidian 的文件列表中打开 `Tasks-Dashboard.md`。正常情况下会看到九个视图：
 
-1. **按项目汇总**：每个项目的任务总数，以及各状态数量。
-2. **待处理任务**：排除 `done` 和 `blocked` 的任务。
-3. **阻塞任务**：缺少配置或等待依赖的任务。
-4. **最近完成**：最近完成的任务和执行者。
+1. **按项目汇总**：每个项目的任务总数，按 `Projects/<项目>/` 前缀聚合。
+2. **按状态统计**：各状态（`ready` / `needs-grilling` / `planning` / `implementing` / `review` 等）的未完成任务数。
+3. **待处理任务**：排除 `done` / `closed` / `blocked` / `wayfinder`，按优先级排序。
+4. **等待审批**：`status = plan-review` 且 `plan_approved != true`，或 `status = review` 且 `merge_approved != true`。
+5. **阻塞任务**：`status = blocked`，按最后更新时间倒序。
+6. **最近完成**：`status = done`，按 `completed` 倒序，最多 10 条。
+7. **知识库汇总**：每个项目的知识库用量——引用知识库次数（`knowledge_refs` 条目数）、去重引用文档数、创新 ADR 数（`adr_written` 条目数）、知识应用任务数（`knowledge_applied` 非空的任务数）。
+8. **ADR 提议状态**：`adr_proposed` 非空且 `adr_approved != true` 的任务。
+9. **依赖阻塞详情**：`blocked_by` 非空且未完成的任务，按优先级排序。
 
 保存任务文件后，Dataview 会自动刷新查询。若没有刷新，可关闭并重新打开看板，或在命令面板执行 **Reload app without saving**。
 

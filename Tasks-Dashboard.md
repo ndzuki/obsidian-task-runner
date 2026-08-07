@@ -82,16 +82,19 @@ SORT completed desc
 LIMIT 10
 ```
 
-## 领域上下文
+## 知识库汇总
 
 ```dataview
 TABLE
-  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
-  file.link as "CONTEXT.md",
-  file.mtime as "最后更新"
+  length(rows) as "任务数",
+  sum(map(nonnull(rows.knowledge_refs), (x) => length(x))) as "引用知识库次数",
+  length(unique(flat(nonnull(rows.knowledge_refs)))) as "引用文档数",
+  length(flat(nonnull(rows.adr_written))) as "创新 ADR 数",
+  length(filter(rows.knowledge_applied, (x) => x != null and x != "")) as "知识应用任务数"
 FROM "Projects"
-WHERE file.name = "CONTEXT.md"
-SORT file.folder asc
+WHERE contains(file.folder, "Tasks")
+GROUP BY regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目"
+SORT 项目 asc
 ```
 
 ## ADR 提议状态
@@ -118,16 +121,4 @@ TABLE
 FROM "Projects"
 WHERE contains(file.folder, "Tasks") AND blocked_by != null AND status != "done"
 SORT priority asc
-```
-
-## 架构决策记录
-
-```dataview
-TABLE
-  regexreplace(file.folder, "Projects/([^/]+)/.*", "$1") as "项目",
-  file.link as "ADR",
-  file.mtime as "最后更新"
-FROM "Projects"
-WHERE contains(file.folder, "adr")
-SORT file.folder asc, file.name asc
 ```
