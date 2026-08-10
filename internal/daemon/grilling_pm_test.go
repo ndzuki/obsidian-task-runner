@@ -26,6 +26,19 @@ func writeArgsOMP(t *testing.T, argsPath string) string {
 	return omp
 }
 
+// writeSlowArgsOMP writes a fake OMP that sleeps before dumping its argv —
+// enough to hold the PM session in flight across the next scan, mimicking
+// the real 3-10 minute distribute sessions.
+func writeSlowArgsOMP(t *testing.T, argsPath string) string {
+	t.Helper()
+	omp := filepath.Join(filepath.Dir(argsPath), "fake-omp-slow")
+	script := "#!/bin/sh\nsleep 2\nprintf '%s\\n' \"$*\" > '" + argsPath + "'\n"
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake omp: %v", err)
+	}
+	return omp
+}
+
 func withAPIKey(t *testing.T) {
 	t.Helper()
 	withAPIKeyValue(t, true)
@@ -451,6 +464,100 @@ grill_continue: true
 	}
 	if args := waitForPmArgs(t, argsPath); !strings.Contains(args, "distribute") {
 		t.Fatalf("pm args = %q, want distribute prompt", args)
+	}
+}
+
+// TestDistributeInFlightDedup guards against concurrent PM distribute
+// sessions for the same list. A distribute takes minutes and the
+// changed-since-distribute signal stays true until the session records the
+// answer hash — without the in-flight dedup every scan re-dispatches and
+// stacks concurrent sessions (observed: 5 distribute processes on one
+// release-manager list within 4 minutes, 2026-08-07).
+func TestDistributeInFlightDedup(t *testing.T) {
+	dir := t.TempDir()
+	withAPIKey(t)
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-025.md"), "025", "Projects/001-test/Requirements/REQ-025.md", "test", true, 3)
+	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
+	content := `---
+id: "grilling-decisions"
+project: test
+status: open
+grill_continue: false
+---
+
+## 决策点
+
+### D-1: REQ-025 — 问题
+- 决策: 采纳方案 A
+`
+	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(listPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argsPath := filepath.Join(dir, "pm-args")
+	omp := writeSlowArgsOMP(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			OMPCmd:              omp,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              config.DefaultModels(),
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+	// First scan dispatches; the session is still in flight.
+	if n := runner.processGrillingConsolidation(context.Background()); n != 1 {
+		t.Fatalf("first processed = %d, want 1", n)
+	}
+	// Second scan while the session runs must NOT stack another dispatch.
+	if n := runner.processGrillingConsolidation(context.Background()); n != 0 {
+		t.Fatalf("in-flight processed = %d, want 0 (dedup)", n)
+	}
+	// The single dispatched session completes and its argv lands.
+	args := waitForPmArgs(t, argsPath)
+	if !strings.Contains(args, "distribute") {
+		t.Fatalf("pm args = %q, want distribute prompt", args)
+	}
+}
+
+// TestConsolidateInFlightDedup guards the consolidate path against the same
+// concurrent-session storm as distribute: a fresh dispute (unparked member)
+// bypasses the 4h cooldown every scan, so without the in-flight dedup each
+// scan stacks another consolidate session while the first runs.
+func TestConsolidateInFlightDedup(t *testing.T) {
+	dir := t.TempDir()
+	withAPIKey(t)
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	// Single task with a repeat dispute (grill_repeat>=2, unparked) is a
+	// fresh dispute → needsConsolidation without relying on a shared req_doc.
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-030.md"), "030", "Projects/001-test/Requirements/REQ-030.md", "test", false, 3)
+	argsPath := filepath.Join(dir, "pm-args")
+	omp := writeSlowArgsOMP(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			OMPCmd:              omp,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              config.DefaultModels(),
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+	// First scan dispatches; the session is still in flight.
+	if n := runner.processGrillingConsolidation(context.Background()); n != 1 {
+		t.Fatalf("first processed = %d, want 1", n)
+	}
+	// Second scan while the session runs must NOT stack another dispatch.
+	if n := runner.processGrillingConsolidation(context.Background()); n != 0 {
+		t.Fatalf("in-flight processed = %d, want 0 (dedup)", n)
+	}
+	args := waitForPmArgs(t, argsPath)
+	if !strings.Contains(args, "consolidate") {
+		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 }
 

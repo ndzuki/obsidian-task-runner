@@ -59,6 +59,7 @@ type Runner struct {
 	kbSyncAt           sync.Map   // "last" → time.Time (knowledge retrieval-store sync debounce)
 	kbSyncRunning      atomic.Bool // true while a retrieval-store sync goroutine is in flight
 	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
+	pmInFlight         sync.Map   // "distribute:<listPath>" / "consolidate:<taskPaths>" → true (PM session in flight)
 	diagNotifyAt       sync.Map   // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
 	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse

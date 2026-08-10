@@ -24,6 +24,15 @@ import (
 // round by default, the rest waits for the next scan.
 const grillingConsolidationBatchLimit = 1 // fallback when config is unset
 
+// errPMInFlight guards against concurrent PM sessions for the same target
+// (decision list for distribute, task group for consolidate). A session
+// takes 3-10 minutes and its trigger signal stays true until the session
+// finishes and records state — without this dedup every scan re-dispatches
+// and stacks concurrent sessions (observed: 5 distribute processes on one
+// list, 14:53-14:54; consolidate has the same shape when a fresh dispute
+// bypasses the 4h cooldown every scan).
+var errPMInFlight = errors.New("grilling pm session already in flight")
+
 // grillingDecisionListName is the project-level decision list filename.
 const grillingDecisionListName = "Grilling-Decisions.md"
 
@@ -108,6 +117,10 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 				if errors.Is(err, errAPIKeyUnavailable) {
 					return 0 // retry next scan
 				}
+				if errors.Is(err, errPMInFlight) {
+					r.logger.Printf("project %s: grilling pm distribute already in flight, skip", project)
+					continue
+				}
 				r.logger.Printf("project %s: grilling pm distribute: %v", project, err)
 				continue
 			}
@@ -140,6 +153,10 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			if err := r.runGrillingPM(ctx, "distribute", revPath); err != nil {
 				if errors.Is(err, errAPIKeyUnavailable) {
 					return 0 // retry next scan
+				}
+				if errors.Is(err, errPMInFlight) {
+					r.logger.Printf("project %s: stage review distribute already in flight, skip", project)
+					continue
 				}
 				r.logger.Printf("project %s: stage review distribute: %v", project, err)
 				continue
@@ -186,15 +203,24 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			for _, m := range members {
 				paths = append(paths, m.FilePath)
 			}
-			r.consolidatedAt.Store(req, time.Now())
 			if err := r.runGrillingPM(ctx, "consolidate", paths...); err != nil {
 				if errors.Is(err, errAPIKeyUnavailable) {
 					r.logger.Printf("grilling pm consolidate %s: api key unavailable, retry next scan", req)
 					return dispatched // retry next scan
 				}
+				if errors.Is(err, errPMInFlight) {
+					r.logger.Printf("grilling pm consolidate %s: already in flight, skip", req)
+					continue
+				}
 				r.logger.Printf("grilling pm consolidate %s: %v", req, err)
 				continue
 			}
+			// Cooldown records only SYNCHRONOUS success (session started).
+			// Synchronous failures (API key, in-flight) stay retryable on the
+			// next scan instead of parking for 4h; an async failure inside
+			// the session still parks the group, which is fine — the storm
+			// path (fresh dispute) bypasses the cooldown anyway.
+			r.consolidatedAt.Store(req, time.Now())
 			r.logger.Printf("grilling pm consolidate dispatched: %s (%d tasks)", req, len(members))
 			dispatched++
 			if dispatched >= batch {
@@ -223,6 +249,30 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMin)*time.Minute)
 
+	// Per-target in-flight dedup: mark BEFORE the async goroutine starts so a
+	// re-entrant scan cannot stack a second session (distribute for the same
+	// list, consolidate for the same task group) while the first is running.
+	var listPath string
+	var inflightKey string
+	if mode == "distribute" && len(args) > 0 {
+		listPath = args[0]
+		inflightKey = "distribute:" + listPath
+	} else if mode == "consolidate" && len(args) > 0 {
+		// Group key = the first task path: directory traversal order is
+		// stable, so a req_doc group keeps the same first member across
+		// scans. A member ADDED mid-session changes join(args) but not
+		// args[0] — the join-based key would spawn a concurrent session for
+		// the enlarged group (exactly the storm we guard against); the
+		// stable key defers it to the next scan after the session ends.
+		inflightKey = "consolidate:" + args[0]
+	}
+	if inflightKey != "" {
+		if _, loaded := r.pmInFlight.LoadOrStore(inflightKey, true); loaded {
+			cancel()
+			return errPMInFlight
+		}
+	}
+
 	prompt := "/obsidian-task-runner-pm " + mode + " " + strings.Join(args, " ")
 	cmd := exec.CommandContext(runCtx, r.cfg.OMPCmd,
 		"--model", r.cfg.Model("default"), "--auto-approve", "-p", prompt)
@@ -231,12 +281,13 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	cmd.WaitDelay = 30 * time.Second
 	go func() {
 		defer cancel()
+		if inflightKey != "" {
+			defer r.pmInFlight.Delete(inflightKey)
+		}
 		// Snapshot the answer state BEFORE the session runs — the
 		// notification decision compares pre-session vs post-session hashes.
-		listPath := ""
 		var stored, beforeHash string
 		if mode == "distribute" && len(args) > 0 {
-			listPath = args[0]
 			if data, err := os.ReadFile(listPath); err == nil {
 				beforeHash = grillingAnswersHash(string(data))
 				if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil {
