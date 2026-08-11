@@ -46,6 +46,8 @@ install-force: build
 	-mv $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(BINARY).old 2>/dev/null || true
 	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
 	cp $(BINARY) $(GOBIN)/$(BINARY)
+	@echo "=== Installing systemd units ==="
+	$(HOME)/.local/bin/$(BINARY) install-systemd
 	@echo "=== Ensuring services are running ==="
 	-systemctl --user reset-failed omp-task-watcher.service omp-task-runner.service 2>/dev/null || true
 	systemctl --user start omp-task-runner.timer 2>/dev/null || true
