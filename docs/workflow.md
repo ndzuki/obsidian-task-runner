@@ -20,6 +20,7 @@ flowchart TD
     READY --> SCAN[scanAndProcess 每轮]
     SCAN --> STAGE[processAutoStaging<br/>未分阶段任务确定性分组<br/>Stage-Plan 追加 + stage 字段]
     SCAN --> DEP[resolveBlockedDependencies<br/>blocked_by 链自动恢复]
+    SCAN --> VALIDATE[validateDependencyRefs<br/>blocked_by 引用存在性校验<br/>目标解析失败 defer 不误报]
     SCAN --> FR[FindReadyTasks → processBatch]
     FR --> SM[nextLocalTransition 本地状态机]
     SM -->|ready| REFINE[refining<br/>/obsidian-task-runner-refining]
@@ -90,7 +91,7 @@ flowchart TD
 - **旧版 `needs-refining` 状态自动迁移**：早期 daemon 使用 `needs-refining`，当前状态机已改名 `needs-grilling`。遗留任务文档中的 `needs-refining` 会被 scan 拾起（`IsReady` 视为可调度）并经 `nextLocalTransition` 同轮迁移为 `needs-grilling`——之后正常创建 Grilling tab、发送提醒并按 lease 语义处理。
 - **阶段顺序调度**：`Index.Scan` 排序键 = 项目内 stage 升序（数字序，P10 在 P2 后）→ priority → created；跨项目回到 created 公平（stage 是项目级语义，不做全局比较）；stage 空的任务排最后（当轮 auto-staging 归组后次轮生效）。低阶段任务优先消耗 `max_concurrent_tasks` 容量，P1 未收敛前 P2+ 实现任务不抢容量（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
 - **阶段评审防卡死放宽**：`stageTasksState` 三态——landed（全部 done+merged）/ reviewable（landed 或剩余全部 blocked/closed）/ unreviewable（存在可推进任务）。blocked-only 阶段触发 stage-review，PM 给「继续/收窄/拆出」建议；closed 任务不阻塞评审；无任务阶段不评审。
-- **依赖卫生与健康诊断**（每轮 scan）：① blocked_by / REQ depends_on 引用存在性校验（坏引用日志 + 一次性通知）；② 同项目 implementing 任务 `plan_files` 重叠预警（合并冲突前置）；③ 项目健康摘要（in-flight / stage 空 / merged 未收口）超阈值每日一次通知（rebaseline / stage-plan init / 拆阶段提示）。
+- **依赖卫生与健康诊断**（每轮 scan）：① blocked_by / REQ depends_on 引用存在性校验（坏引用日志 + 一次性通知；**目标文件存在但 frontmatter 暂解析失败——如 OMP 会话写回瞬时窗口——跳过本轮 defer，下一轮重查，不误报**）；② 同项目 implementing 任务 `plan_files` 重叠预警（合并冲突前置）；③ 项目健康摘要（in-flight / stage 空 / merged 未收口）超阈值每日一次通知（rebaseline / stage-plan init / 拆阶段提示）。
 - **任务自动收口**（`autoCloseStaleMergedTasks`）：`merge_status=merged` 且非 done/closed 且无 `pending_req` → 自动 `status=done`（PR 合入 = 确定性证据；pending_req 增量任务受保护）+ 通知 + Roadmap 里程碑。
 - **决策归档兜底**（`autoArchiveDecisions`）：主清单 >50KB 且未答 ≤3 → 已答 D-n 块移入 `Grilling-Decisions-archive.md`、主清单重写为 frontmatter+指针+未答、`distributed_answers_hash` 刷新防 changed 误分发；consolidation 前执行。
 - **Roadmap 自动维护**（`updateRoadmap`）：阶段评审触发/阶段决策/任务收口/决策归档事件点确定性追加里程碑（幂等按日期+标题，自动建目录/模板）。
@@ -712,7 +713,23 @@ refining/planning 的 retry count 在以下时机清零：
 - 循环依赖（A↔B）双方都不自动恢复。
 - `REQ_MISSING`、`VALIDATION_FAILED` 等非瞬时错误永不自动恢复。
 
-### 10.5 阶段并发上限
+### 10.5 依赖引用存在性校验
+
+每轮 scan 执行 `validateDependencyRefs`：把项目内所有 TASK 文件的 frontmatter `id` 收集为 ID 集合，逐任务检查 `blocked_by` 引用（跨项目 `project-key:TASK-xxx` 不在此检查，按 vault-map 解析）。引用目标不在 ID 集合时判为**悬空引用**——日志 + 一次性桌面通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）。
+
+**解析失败区分**：目标文件存在但 frontmatter 暂解析失败（如 OMP 会话写回产生的重复 YAML 键瞬时窗口）不等同于不存在——此类文件按文件名前缀 id 收集入 `unparsable` 集合，命中时只记 `deferring` 日志并跳过本轮，下一轮 scan 自动重新校验；避免把短暂写回窗口误报为「引用不存在的任务」。
+
+```mermaid
+flowchart TD
+    SCAN[每轮 scan validateDependencyRefs] --> COLLECT[收集任务 ID 集合<br/>+ 解析失败 unparsable 集合]
+    COLLECT --> CHECK{引用目标在 ID 集合?}
+    CHECK -->|是| OK[通过 —— 依赖可满足]
+    CHECK -->|否| PARSE{目标文件解析失败?<br/>unparsable 命中}
+    PARSE -->|是 OMP 写回瞬时窗口| DEFER[日志 deferring —— 跳过本轮<br/>下一轮 scan 重新校验]
+    PARSE -->|否 真不存在| NOTIFY[日志 + 一次性通知<br/>依赖引用失效]
+```
+
+### 10.6 阶段并发上限
 
 `max_concurrent_tasks` 只限制 implementing；其它启动 OMP 会话的阶段由 `phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1`）：
 
