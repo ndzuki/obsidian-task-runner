@@ -146,7 +146,7 @@ func (r *Runner) validateDependencyRefs() {
 		}
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
 		tasksDir := filepath.Join(projDir, "Tasks")
-		taskIDs, err := r.depIDs(tasksDir)
+		taskIDs, unparsable, err := r.depIDs(tasksDir)
 		if err != nil {
 			continue
 		}
@@ -176,6 +176,13 @@ func (r *Runner) validateDependencyRefs() {
 				if taskIDs[id] {
 					continue
 				}
+				if unparsable[id] {
+					// 目标文件存在但 frontmatter 当前解析失败（如 OMP 会话写回
+					// 的瞬时坏窗口）——不是悬空引用，跳过本轮，下一轮重新校验；
+					// 避免把短暂解析失败误报为"引用不存在的任务"。
+					r.logger.Printf("health %s: TASK-%s blocked_by references TASK-%s which exists but failed to parse; deferring", projectEntry.Name(), fm.ID, id)
+					continue
+				}
 				key := projectEntry.Name() + "|blocked_by|" + fm.ID + "->" + id
 				if r.diagNotified(key) {
 					continue
@@ -188,13 +195,19 @@ func (r *Runner) validateDependencyRefs() {
 	}
 }
 
-// depIDs returns the set of task ids present in a project's Tasks dir.
-func (r *Runner) depIDs(tasksDir string) (map[string]bool, error) {
+// depIDs returns the set of task ids present in a project's Tasks dir, plus
+// the set of ids whose file exists but failed to parse (keyed by the id
+// embedded in the filename). A task file being written back by an OMP session
+// can transiently fail to parse; treating that as "missing" would fire false
+// broken-reference notifications, so callers must consult unparsable before
+// declaring a reference dangling.
+func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, unparsable map[string]bool, err error) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ids := make(map[string]bool, len(entries))
+	ids = make(map[string]bool, len(entries))
+	unparsable = make(map[string]bool)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -205,12 +218,23 @@ func (r *Runner) depIDs(tasksDir string) (map[string]bool, error) {
 		}
 		fm, err := yamlfrontmatter.Parse(data)
 		if err != nil || fm == nil || fm.ID == "" {
+			// 文件存在但无法解析：按文件名前缀提取 id，供调用方区分
+			// "暂时解析失败" 与 "任务不存在"。
+			id := strings.TrimPrefix(entry.Name(), "TASK-")
+			if i := strings.IndexByte(id, '-'); i >= 0 {
+				id = id[:i]
+			}
+			if id != "" {
+				unparsable[id] = true
+			}
 			continue
 		}
 		ids[fm.ID] = true
 	}
-	return ids, nil
+	return ids, unparsable, nil
 }
+
+
 
 // detectPlanFileOverlaps warns when two concurrently implementing tasks of
 // the same project plan to modify the same file (Round 1 writes plan_files).
