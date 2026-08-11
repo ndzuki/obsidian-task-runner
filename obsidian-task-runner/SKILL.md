@@ -88,7 +88,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 每轮 scan 自动执行，防"任务静默饿死/冲突延迟暴露/队列虚胖"：
 
-- **依赖引用校验**：`blocked_by`/REQ `depends_on` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）。
+- **依赖引用校验**：`blocked_by`/REQ `depends_on` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）；**目标文件存在但 frontmatter 暂解析失败（OMP 会话写回瞬时窗口，如重复 YAML 键）→ 只记 deferring 日志跳过本轮，下一轮自动重查，不误报**。
 - **计划文件重叠预警**：同项目并发 implementing 任务的 `plan_files`（Round 1 写回）重叠 → 一次性通知——把合并冲突信号从 merge 阶段前置到调度阶段。
 - **项目健康诊断**：每轮输出 in-flight / stage 空 / merged-未收口 计数；超阈值（每日一次）通知——`merged 未收口 ≥5 且 in-flight ≥20` 提示跑 `project-rebaseline`；`stage 空 ≥5` 提示 `otg stage-plan init`；in-progress 阶段任务 >8 提示拆阶段。
 - **任务自动收口**（D4）：`merge_status=merged` + 非 done/closed + 无 `pending_req` 的任务自动转 `done`（PR 合入是确定性证据；pending_req 增量任务不误收口）+ 通知 + Roadmap 里程碑。
