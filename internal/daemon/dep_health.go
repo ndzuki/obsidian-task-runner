@@ -80,6 +80,56 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 	return closed
 }
 
+// recoverUnExtractedKnowledge 重试已交付任务的知识提取：daemon 在 merge
+// 写回与提取 goroutine 之间被杀、优雅停机截断、或部分提取失败，都会让
+// done+merged 任务留下 knowledge_extracted=false。done+merged 是终态，
+// 除此之外没有任何路径会再触碰它——教训此前被静默丢失。PR 合入是
+// "应当已提取"的确定性证据；本扫描让重试自动且幂等（marker 短路
+// 重复提取，ADR/踩坑写入是整文件覆盖，重跑安全）。每轮 scan 执行；
+// marker 已置位时开销极小——每个已交付任务一次 frontmatter 解析。
+func (r *Runner) recoverUnExtractedKnowledge() int {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return 0
+	}
+	retried := 0
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.KnowledgeExtracted || fm.MergeStatus != "merged" {
+				continue
+			}
+			if fm.Status != "done" || fm.PendingReq {
+				continue
+			}
+			r.logger.Printf("health %s: TASK-%s delivered but knowledge not extracted, re-extracting", projectEntry.Name(), fm.ID)
+			// 完整管道：提取 + 重分类/提升 + 应用记录 + verified 翻转
+			// + INDEX + 检索库同步。内部失败写 knowledge_extract_error
+			// + 通知并保持 marker false，下一轮 scan 再次重试。
+			r.extractProjectKnowledge(projectEntry.Name(), path)
+			retried++
+		}
+	}
+	return retried
+}
+
 // validateDependencyRefs surfaces broken dependency references before they
 // silently starve a task: a blocked_by / depends_on id that does not exist in
 // the project can never be satisfied, so the gated task waits forever without

@@ -173,7 +173,7 @@ OTR 的项目记忆，就是把'老法师的脑子'写成文档，而且是自�
   | 需求→PR 时间 | 需求创建到 PR 合并的时间差 | Git log + TASK 文件时间戳 |
   | 人工耗时 | 你实际花在任务上的时间 | TASK 的 actual_hours 字段 |
   | AI 首轮准确率 | Round 1 计划被直接批准的比例 | TASK 的 plan_version（v1 被批准 = 首轮准确） |
-  | 知识沉淀量 | memory.md 的条目数 | Projects/*/Notes/memory.md |
+  | 知识沉淀量 | References/ 知识库文档数（core/extended/archived） | `otg kb search` / `References/INDEX.md` |
   | 开发者满意度 | 由"写 CRUD"变成"review + 架构"的比例 | 团队 survey |
 
   量化示例（⚠️ 示意数据，请在积累 10+ 任务后用实际统计替换）：
@@ -249,7 +249,7 @@ Section 三（演讲策略）Layer 3 之前插入：
 
 原建议："项目累积记忆（memory.md）应该是演讲高潮"。现已升级为：
 
-- **不再是 memory.md**：改为分层知识库 `References/`（core/extended/archived），123 篇文档全部带标准 frontmatter
+- **不再是 memory.md**：改为分层知识库 `References/`（core/extended/archived），60+ 篇文档全部带标准 frontmatter
 - **双向流动**：项目 ADR/实现经验 → 自动提取到知识库；知识库内容 → Agent 查询时优先检索
 - **实践验证**：`verified: true/false` 标记，只有被项目实践证实的知识才翻 true
 - **slides 中已补充**：Slide 12（知识库技能）+ Slide 12.5（双向流动）

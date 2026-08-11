@@ -43,8 +43,10 @@ type AffectedResult struct {
 	OldStatus string `json:"old_status,omitempty"`
 }
 
-// OnReqChanged processes a requirement file change and updates affected tasks.
-func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
+// OnReqChanged 处理需求文件变更并更新受影响的任务。
+// defaultAssignee（vault-map 顶层 default_assignee）预写进新建 TASK 的
+// 委派字段；为空则保持旧行为（blocked 等待人工补填 assignee）。
+func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResult {
 	projectsDir := filepath.Join(vaultPath, "Projects")
 	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
 		return nil
@@ -78,7 +80,6 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 			if fm.ReqDoc == "" {
 				continue
 			}
-
 
 			if fm.ID == reqID && sameProjectRequirementPath(fm.ReqDoc, reqRelPath) && normalizePath(fm.ReqDoc) != normalizePath(reqRelPath) {
 				updates := requirementChangeUpdates(fm.Status)
@@ -200,7 +201,7 @@ func OnReqChanged(vaultPath, reqRelPath string) []AffectedResult {
 
 	// Fallback: auto-create task if no existing task matched
 	if len(affected) == 0 {
-		created := createTaskForReq(vaultPath, reqRelPath)
+		created := createTaskForReq(vaultPath, reqRelPath, defaultAssignee)
 		if created != nil {
 			affected = append(affected, *created)
 		}
@@ -283,8 +284,9 @@ func OnReqDeleted(vaultPath, reqRelPath string) []AffectedResult {
 	return affected
 }
 
-// createTaskForReq auto-creates a TASK file from a new requirement.
-func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
+// createTaskForReq 根据新需求自动创建 TASK 文件。
+// defaultAssignee（vault-map default_assignee）预写任务委派；为空保持旧行为。
+func createTaskForReq(vaultPath, reqRelPath, defaultAssignee string) *AffectedResult {
 	id, slug := ParseReqFilename(reqRelPath)
 	if id == "" || slug == "" {
 		return nil
@@ -357,6 +359,17 @@ func createTaskForReq(vaultPath, reqRelPath string) *AffectedResult {
 	}
 
 	now := time.Now().Format("2006-01-02T15:04:05-07:00")
+	// 模型委派：vault-map default_assignee 预写 assignee 使任务可直接调度；
+	// 为空则保持人工补填门禁。
+	assignee := defaultAssignee
+	assigneeStatus := "✅ 已委派（可改）"
+	assigneeNote := ""
+	if assignee == "" {
+		assigneeStatus = "🔴 必填（如 default / deepseek / gpt）"
+		assigneeNote = "> ⚠️ **任务已暂停在 blocked。** 请在 frontmatter 中补 `assignee` 后保存，daemon 自动进入 refining → maturity gate。"
+	} else {
+		assigneeNote = "> ✅ **任务已创建并默认委派 `" + assignee + "`**——daemon 下一轮 scan 自动解锁为 ready，进入 priority 评估 → refining → maturity gate。如需换模型，改 `assignee` 后保存即可。"
+	}
 
 	// Build task markdown
 	tags := ""
@@ -426,7 +439,7 @@ priority_recommendation: ""
 due_date: ""
 estimated_hours: 0
 actual_hours: 0
-assignee: ""
+assignee: "%s"
 reviewer: "%s"
 req_doc: %s
 author: "%s"
@@ -468,9 +481,9 @@ repository_description: ""
 | 字段 | 当前值 | 需要填？ |
 |------|--------|---------|
 | project | %s | %s |
-| assignee | （空） | 🔴 必填（deepseek / gpt） |
+| assignee | %s | %s |
 
-> ⚠️ **任务已暂停在 blocked。** 请在 frontmatter 中补齐必填字段后保存，daemon 自动进入 refining → maturity gate。
+%s
 
 ---
 
@@ -504,8 +517,8 @@ repository_description: ""
 ## 变更记录
 1. %s — 任务创建，status=blocked
 `, id, title, projName, projectID, now, now, priority, priorityAssessmentStatus,
-		reviewer, reqRelPath, author, tags, epic, stage, id, title, summary, ac, reqRelPath,
-		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""], "`"+now+"`")
+		assignee, reviewer, reqRelPath, author, tags, epic, stage, id, title, summary, ac, reqRelPath,
+		projName, map[bool]string{true: "✅", false: "🔴 必填"}[projName != ""], assignee, assigneeStatus, assigneeNote, "`"+now+"`")
 
 	targetPath := filepath.Join(tasksDir, targetName)
 	if err := os.WriteFile(targetPath, []byte(taskMD), 0644); err != nil {

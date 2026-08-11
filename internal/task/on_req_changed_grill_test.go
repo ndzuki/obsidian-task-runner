@@ -49,7 +49,7 @@ req_doc: Projects/001-test/Requirements/REQ-099-test-req
 		t.Fatalf("write task: %v", err)
 	}
 
-	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md")
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 affected result, got %d", len(results))
 	}
@@ -130,7 +130,7 @@ req_doc: Projects/001-test/Requirements/REQ-100-test-req
 		t.Fatalf("write task: %v", err)
 	}
 
-	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-100-test-req.md")
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-100-test-req.md", "")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 affected result, got %d", len(results))
 	}
@@ -173,7 +173,7 @@ req_doc: Projects/001-test/Requirements/REQ-099-old.md
 plan_approved: true
 `)
 
-	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-renamed.md")
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-renamed.md", "")
 	if len(results) != 1 || results[0].Action != "rename_req" {
 		t.Fatalf("results = %+v, want rename_req", results)
 	}

@@ -237,7 +237,7 @@ flowchart LR
   → 记录的"为什么"，防止六个月后重蹈覆辙
 
 📚 知识库（knowledge-base Skill）
-  45+ 篇本地文档，三层分级（core/extended/archived）
+  60+ 篇本地文档，三层分级（core/extended/archived）
   Round 1/2 按技术栈自动检索 → 注入已验证的最佳实践
   ADR/踩坑经验自动回流 → 越跑越准
 
@@ -255,7 +255,7 @@ flowchart LR
 ## Slide 12: 知识库技能 — 你的私人技术 Wiki [15][30] 🧑‍💻
 
 ```
-本地知识库（45+ 篇文档，三层分级）：
+本地知识库（60+ 篇文档，三层分级）：
 
 core/（高频）       extended/（偶尔）    archived/（备份）
 项目高频使用          偶尔用到              备份不检索

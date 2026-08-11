@@ -90,6 +90,30 @@ func TestExtractTaskKnowledgeIdempotent(t *testing.T) {
 	}
 }
 
+// TestExtractTaskKnowledgePartialFailureKeepsMarker 钉住失败语义：任何提取
+// 错误（此处：项目 ADR 目录缺失导致扫描出错）不得写入 knowledge_extracted
+// marker——daemon 补救扫描下一轮重试，而不是把失败运行当作已完成。
+func TestExtractTaskKnowledgePartialFailureKeepsMarker(t *testing.T) {
+	vault := t.TempDir()
+	project := "bench-project"
+	// 任务声明了 ADR-012 但项目没有 Notes/adr 目录——scanADRs 失败，
+	// 运行记录错误。
+	taskPath := writeTaskFile(t, vault, project, `"ADR-012"`)
+
+	result, err := ExtractTaskKnowledge(vault, project, taskPath)
+	if err != nil {
+		t.Fatalf("ExtractTaskKnowledge: %v", err)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("want extraction errors from missing ADR directory")
+	}
+	data, _ := os.ReadFile(taskPath)
+	fm, _ := yamlfrontmatter.Parse(data)
+	if fm.KnowledgeExtracted {
+		t.Fatal("failed extraction must NOT write the knowledge_extracted marker")
+	}
+}
+
 func TestExtractTaskKnowledgeShortADRRef(t *testing.T) {
 	vault := t.TempDir()
 	project := "bench-project"

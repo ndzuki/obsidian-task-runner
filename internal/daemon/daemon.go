@@ -267,7 +267,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					// manual config. Only on add/change — a delete must not
 					// register an empty project.
 					r.ensureProjectRegistered(reqRel)
-					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
+					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel, r.cfg.DefaultAssignee)
 				}
 				// A REQ detail update reactivates the project's paused
 				// decision list: the user rethinking the requirement is the
@@ -758,6 +758,7 @@ func (r *Runner) scanAndProcess() error {
 	r.validateDependencyRefs()
 	r.detectPlanFileOverlaps()
 	r.autoCloseStaleMergedTasks()
+	r.recoverUnExtractedKnowledge()
 	r.resolveBlockedDependencies()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
@@ -980,7 +981,7 @@ func (r *Runner) scanOrphanReqs() {
 					continue
 				}
 				r.ensureProjectRegistered(reqRel)
-				results := task.OnReqChanged(r.cfg.ObsidianVault, reqRel)
+				results := task.OnReqChanged(r.cfg.ObsidianVault, reqRel, r.cfg.DefaultAssignee)
 				for _, res := range results {
 					r.logger.Printf("scan: orphan REQ %s → %s (%s)", filepath.Base(abs), res.TaskID, res.Action)
 				}
