@@ -61,6 +61,36 @@ func TestValidateDependencyRefsSurfacesBrokenRefs(t *testing.T) {
 	}
 }
 
+// TestValidateDependencyRefsSkipsUnparsableRefs guards the transient-write
+// window: a blocked_by referencing a task whose file exists but currently
+// fails to parse must NOT be reported as a broken reference — OMP sessions
+// rewrite frontmatter in place, and a partial write can briefly produce
+// duplicate keys / invalid YAML (observed with refine_version). The check
+// defers to the next scan instead of firing a false "missing task" toast.
+func TestValidateDependencyRefsSkipsUnparsableRefs(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"068\"\n---\n# A\n")
+	// TASK-068 exists but its frontmatter is currently unparsable (duplicate
+	// mapping key) — the exact failure mode of an interrupted write-back.
+	writeHealthTask(t, tasksDir, "TASK-068-x.md", "---\nid: \"068\"\nrefine_version: 4\nrefine_version: 7\nstatus: ready\n---\n# X\n")
+
+	runner := healthRunner(t, vault)
+	runner.validateDependencyRefs()
+
+	notified := false
+	runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
+		if strings.Contains(key.(string), "blocked_by") {
+			notified = true
+		}
+		return true
+	})
+	if notified {
+		t.Fatal("ref to an unparsable-but-existing task must not be reported as broken")
+	}
+}
+
 // TestDetectPlanFileOverlapsWarnsOnce guards the merge-conflict early signal:
 // two implementing tasks planning the same file trigger one notification;
 // a second run stays quiet (one-shot per key).
