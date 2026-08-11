@@ -161,6 +161,120 @@ assignee: default
 	}
 }
 
+// TestParkedFactRecoveryKeepsDisputePark guards the TASK-068 loop: a
+// needs-grilling+parked task whose park is a DISPUTE (its conflicts escalated
+// into the project-level decision list, which still holds an unanswered
+// "来源任务: TASK-<id>" entry) must NOT un-park on blocked_by convergence —
+// its recovery gate is the list answers, consumed only by PM distribute. The
+// D-19 style prerequisite-gate park (no list entry sourcing the task) still
+// exits on facts.
+func TestParkedFactRecoveryKeepsDisputePark(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Upstream done + merged.
+	upstream := filepath.Join(tasksDir, "TASK-001-up.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "001"
+project: test
+status: done
+phase_error_code: ""
+assignee: default
+---
+# Up
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Dispute-parked task whose blocked_by all landed.
+	parked := filepath.Join(tasksDir, "TASK-002-dispute.md")
+	writeFile(t, parked, `---
+id: "002"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_done: true
+grill_resolution: replan
+blocked_by: ["TASK-001"]
+assignee: default
+---
+# DisputePark
+`)
+	// Decision list still holds an UNANSWERED entry sourced from TASK-002.
+	listPath := filepath.Join(notesDir, "Grilling-Decisions.md")
+	writeFile(t, listPath, `---
+id: "grilling-decisions"
+project: test
+status: open
+grill_continue: false
+---
+# Grilling Decisions
+
+## 决策点
+
+### D-88: REQ-068 — 幂等 scope 冲突
+- 来源任务: TASK-002
+- 冲突: 未决
+- 建议: org-inclusive
+- 决策: {用户填写}
+`)
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.parkedFactRecovery()
+
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "needs-grilling" || !fm.GrillParked {
+		t.Fatalf("dispute park must stay parked until list answered, got status=%s parked=%v", fm.Status, fm.GrillParked)
+	}
+
+	// Answer the list → recovery re-enters refining on next scan.
+	writeFile(t, listPath, `---
+id: "grilling-decisions"
+project: test
+status: answered
+grill_continue: true
+---
+# Grilling Decisions
+
+## 决策点
+
+### D-88: REQ-068 — 幂等 scope 冲突
+- 来源任务: TASK-002
+- 冲突: 未决
+- 建议: org-inclusive
+- 决策: 对齐 REQ-010 org:user:def 口径
+`)
+	runner.parkedFactRecovery()
+	data, _ = os.ReadFile(parked)
+	fm, _ = yamlfrontmatter.Parse(data)
+	if fm.Status != "refining" || fm.GrillParked {
+		t.Fatalf("answered dispute park should un-park to refining, got status=%s parked=%v", fm.Status, fm.GrillParked)
+	}
+}
+
+// writeFile is a small test helper writing a file at path.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPrerequisiteGateResumesOnFactChange guards the fact-based gate
 // recovery: a blocked task with PREREQUISITE_SMOKE_FAILED resumes ONLY when
 // every blocked_by upstream is done with a cleared phase error (PR merged).
