@@ -15,8 +15,11 @@ disableModelInvocation: true
 2. `merge_approved=true`。
 3. `pending_req=false`。
 4. 当前 REQ 完整 bytes SHA-256 等于 `plan_req_hash`。
-5. `target_branch` 存在。
-6. **目标仓库守卫**：repoDir 的 `origin` 必须与 vault-map 配置的 `git_remote` 指向同一仓库（URL 归一化比较）。不一致 → daemon 拒绝 push，写 `phase_error_code=REPO_MISMATCH` + `status=review` + `merge_approved=false`，通知人工处理（vault 回退项目应在 resolveRepo 提升为独立 checkout，见 docs/workflow.md §6.5；守卫是兜底）。
+7. **gh CLI 认证可用**：`gh auth status` 已登录（Merge Phase 的 push 经 `gh auth git-credential` 注入凭据，PR create/merge 也走 gh——统一使用 gh keyring token 身份）。gh 缺失或未登录 → daemon 拒绝远程操作。
+
+> **命令契约**：Merge Phase 所有远程操作统一走 **gh CLI 认证通道**——`git push` 由 daemon 注入 `-c credential.helper='!gh auth git-credential'`，PR 创建/合并用 `gh pr create` / `gh pr merge`。禁止裸 `git push`（无 ambient https 凭据的机器会以 `could not read Username` 烧光重试预算，TASK-004 教训）。
+>
+> **gh 未登录处理**：daemon 在远程操作前本地预检 `gh auth status`（无网络）。gh 缺失或未登录 → 不发起任何远程操作，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE`，`phase_error` 附 `gh auth login` 指引，并桌面通知提醒用户完成 GitHub CLI 认证；登录后重新设 `merge_approved=true` 继续。
 
 任一失败：
 

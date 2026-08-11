@@ -92,6 +92,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - **计划文件重叠预警**：同项目并发 implementing 任务的 `plan_files`（Round 1 写回）重叠 → 一次性通知——把合并冲突信号从 merge 阶段前置到调度阶段。
 - **项目健康诊断**：每轮输出 in-flight / stage 空 / merged-未收口 计数；超阈值（每日一次）通知——`merged 未收口 ≥5 且 in-flight ≥20` 提示跑 `project-rebaseline`；`stage 空 ≥5` 提示 `otg stage-plan init`；in-progress 阶段任务 >8 提示拆阶段。
 - **任务自动收口**（D4）：`merge_status=merged` + 非 done/closed + 无 `pending_req` 的任务自动转 `done`（PR 合入是确定性证据；pending_req 增量任务不误收口）+ 通知 + Roadmap 里程碑。
+- **知识提炼自动补救**（D5）：`knowledge_extracted` 标记仅在提炼**全成功**时写入；失败写 `knowledge_extract_error` + 通知（「知识提炼失败，自动重试中」）。每轮 scan 对 `done`+`merged`+未提炼+无 `pending_req` 的任务自动重新提炼——覆盖 daemon 强杀/异常退出截断提炼 goroutine 与部分失败场景（此前静默永久丢失）；提炼 goroutine 计入 `activeTasks`，优雅停机等待落地。
 - **决策归档兜底**（D3）：主决策清单 >50KB 且未答 ≤3 时，daemon 确定性归档已答决策点至 `Grilling-Decisions-archive.md`（PM Step 4.5 是主路径，此为无会话兜底，主清单永不膨胀）。
 - **阶段状态 daemon 翻转**（D2）：用户填「评审决策:」后，daemon 在 PM 分发**前**确定性翻转 Stage-Plan 状态机（continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）；PM 会话只做 REQ 标注与知识沉淀。
 
@@ -135,6 +136,7 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 - `stage` 字段是阶段归属的**权威判定**（TASK 从 REQ 继承，PM 拆分落地时写入），与 `Notes/Stage-Plan.md` 的 `### Phase N:` 块对应。
 - `stage_source`：阶段来源标记——`req`（REQ 继承，跟随 REQ stage 变更）、空（daemon 自动分组 / PM 手动分配，不跟随）。PM 手动改 TASK stage 时必须清空 `stage_source`（`otg update-status stage=... stage_source=`）。
 - `plan_files`：Round 1 计划产出的将修改文件清单（repo 相对路径），daemon 用于同项目并行实现的文件重叠预警。
+- `default_assignee`（vault-map.json 顶层）：新 REQ 自动创建 TASK 时预写 `assignee` 为指定 models key（如 `"default"`），任务直接可调度；**空值/缺省**恢复旧行为（blocked 等人工补 assignee）。
 
 ## Documentation（文档）
 完整规范和实现验收清单见 `docs/workflow.md`；字段参考见 `reference.md`。

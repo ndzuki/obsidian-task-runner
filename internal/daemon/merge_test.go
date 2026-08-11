@@ -777,3 +777,104 @@ exit 0
 		t.Fatal("git push must not run when the PR is already merged")
 	}
 }
+
+// TestMergePushUsesGHCredential 钉住 push 凭据契约：merge 流程的 git push
+// 必须经 gh CLI credential helper（`gh auth git-credential`）认证——与
+// 创建/合并 PR 使用同一身份。仅通过 gh keyring/SSH 认证的机器没有
+// ambient https 凭据，裸 push 会烧光重试预算（TASK-004：5/5 次重试
+// 全部失败 "could not read Username"）。
+func TestMergePushUsesGHCredential(t *testing.T) {
+	f := newMergeFixture(t)
+	argsMarker := filepath.Join(t.TempDir(), "git-args")
+	// 记录每次 git 调用，非 push 调用转发给真实 git。fixture 的 fake git
+	// 必须替换，才能观察 push 参数。
+	gitScript := "#!/bin/sh\n" +
+		"echo \"$@\" >> " + argsMarker + "\n" +
+		"if [ \"$1\" = \"-C\" ]; then\n" +
+		"  cd \"$2\" || exit 1\n" +
+		"  shift 2\n" +
+		"fi\n" +
+		"while [ \"$1\" = \"-c\" ]; do\n" +
+		"  shift 2\n" +
+		"done\n" +
+		"case \"$1\" in\n" +
+		"  push) exit 0 ;;\n" +
+		"esac\n" +
+		"exec /usr/bin/git \"$@\"\n"
+	binDir := strings.Split(os.Getenv("PATH"), ":")[0]
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(gitScript), 0o755); err != nil {
+		t.Fatalf("write recording fake git: %v", err)
+	}
+	ghScript := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  pr)
+    case "$2" in
+      list)
+        echo ''
+        ;;
+      view)
+        case "$5" in
+          state) echo 'OPEN' ;;
+          *) echo '{"headRefOid":"%s","mergeStateStatus":"CLEAN","url":"%s","statusCheckRollup":[]}' ;;
+        esac
+        ;;
+      create)
+        echo '%s'
+        ;;
+      merge)
+        exit 0
+        ;;
+    esac ;;
+esac
+exit 0
+`, f.head, mergeFixturePR, mergeFixturePR)
+	f.installFakeGH(t, ghScript)
+
+	if err := f.runner.processMergeTask(f.candidate, f.repo); err != nil {
+		t.Fatalf("processMergeTask: %v", err)
+	}
+	args, err := os.ReadFile(argsMarker)
+	if err != nil {
+		t.Fatalf("read git args marker: %v", err)
+	}
+	if !strings.Contains(string(args), "credential.helper=!gh auth git-credential") {
+		t.Fatalf("git invocations = %q, want push authenticated via gh credential helper", string(args))
+	}
+}
+
+// TestMergeRejectsLoggedOutGH 钉住认证预检：gh 已安装但未登录时，merge
+// 不得发起任何远程操作——撤销授权、写 review + phase_error（附精确补救
+// `gh auth login`）、通知用户，而不是在凭据提示上烧光重试预算。
+func TestMergeRejectsLoggedOutGH(t *testing.T) {
+	f := newMergeFixture(t)
+	// gh 二进制存在但 `gh auth status` 失败（未登录）；任何 PR 操作
+	// 都不应被触达。
+	f.installFakeGH(t, `#!/bin/sh
+case "$1" in
+  auth)
+    case "$2" in
+      status) echo 'not logged in' >&2; exit 1 ;;
+    esac ;;
+esac
+echo 'gh pr/list/view/create/merge must not run without authentication' >&2
+exit 1
+`)
+
+	err := f.runner.processMergeTask(f.candidate, f.repo)
+	if err == nil {
+		t.Fatal("processMergeTask: want error for logged-out gh")
+	}
+	if !strings.Contains(err.Error(), "gh auth login") {
+		t.Fatalf("error = %v, want gh auth login guidance", err)
+	}
+	fm := mustParse(t, f.taskPath)
+	if fm.Status != "review" || fm.MergeApproved {
+		t.Fatalf("status = %q merge_approved = %v, want review/false", fm.Status, fm.MergeApproved)
+	}
+	if fm.PhaseErrorCode != string(ErrGitHubUnavailable) {
+		t.Fatalf("phase_error_code = %q, want %q", fm.PhaseErrorCode, ErrGitHubUnavailable)
+	}
+	if !strings.Contains(fm.PhaseError, "gh auth login") {
+		t.Fatalf("phase_error = %q, want gh auth login guidance", fm.PhaseError)
+	}
+}

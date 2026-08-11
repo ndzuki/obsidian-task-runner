@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/spf13/cobra"
 )
@@ -27,9 +28,15 @@ marks mid-execution tasks as pending_req, or auto-creates a new TASK document.`,
 				reqRel = rel
 			}
 		}
-
 		fmt.Printf("需求文档变更: %s\n", reqRel)
-		affected := task.OnReqChanged(vaultPath, reqRel)
+
+		// default_assignee 取自 vault-map，预写新建 TASK 的模型委派；
+		// 为空则保持旧行为（blocked 等人工补填）。
+		cfg, err := config.Load(kbMapFile)
+		if err != nil {
+			return err
+		}
+		affected := task.OnReqChanged(vaultPath, reqRel, cfg.DefaultAssignee)
 		task.PrintAffected(affected)
 		return nil
 	},

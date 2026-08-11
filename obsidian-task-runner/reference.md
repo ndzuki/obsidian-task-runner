@@ -47,7 +47,7 @@ closed -- [终态，不可恢复]
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；硬失败回退（CI 拒绝/head 变更/gh 缺失）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；硬失败回退（CI 拒绝/head 变更/gh 缺失/**gh 未登录**）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `auto_approve` | 默认 false；完全自主任务声明 | true + 首次规划（plan_version==0）+ 非新项目 + 非 pending_req + **无 ADR 提议** → Round 1 直接写 `plan_approved=true`，跳过人工审计划；有 ADR 提议时强制人工 |
 | `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
@@ -64,7 +64,7 @@ closed -- [终态，不可恢复]
 | `id` | string | 项目内唯一；不同项目可重复 |
 | `title` | string | 任务标题 |
 | `project` | string | vault-map project key |
-| `assignee` | string | planning/Round 2/Merge 模型 key |
+| `assignee` | string | vault-map project key |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
 | `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
@@ -73,6 +73,8 @@ closed -- [终态，不可恢复]
 | `auto_approve` | bool | 完全自主任务声明：首次既有项目计划 + 非 pending_req + 无 ADR 提议时跳过 Plan Review（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
 | `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
+
+顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `gateway/gpt-5.4-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
 
 ### 4.2 Maturity Gate
 
@@ -133,8 +135,8 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时提醒整体抑制（需求未想好），REQ 更新自动激活回 `open` |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
-| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记，merge 后写） |
-
+| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失 |
+| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动重试中）」 |
 TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
 | `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
 | `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
@@ -157,6 +159,8 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `pr_url` | string | `""` | PR URL |
 
 `pending_req` 仅在新 planning 成功后清 false。
+
+**Merge 认证契约**：Merge Phase 所有远程操作统一走 **gh CLI 认证通道**——`git push` 由 daemon 注入 `-c credential.helper='!gh auth git-credential'`（`mergePushCommand`），PR 创建/复用与合并用 `gh pr create` / `gh pr merge`；禁止裸 `git push`（无 ambient https 凭据的机器会以 `could not read Username` 烧光重试预算，TASK-004 教训）。gh 缺失或未登录（`checkGHAuth` 预检）→ 拒绝远程操作，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE` + `phase_error` 附 `gh auth login` 指引 + 通知。
 
 #### 4.6.2 ADR（架构决策记录）
 

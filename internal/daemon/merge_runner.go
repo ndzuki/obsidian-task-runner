@@ -188,6 +188,22 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
 		return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
 	}
+	// gh 存在但可能未登录：push 走 gh credential helper，PR create/merge
+	// 也直接用 gh——未登录会阻塞全部远程步骤。先本地预检并把精确补救
+	// 指引（`gh auth login`）交给用户，而不是烧光重试预算（TASK-004：
+	// 5/5 次 push 重试全部失败 "could not read Username"）。预检是本地
+	// 操作（读 gh config/keyring，无网络）；写回撤销授权，daemon 扫描
+	// 保持安静，直到用户登录后重新批准。
+	if err := checkGHAuth(r.daemonCtx); err != nil {
+		_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"status": "review", "merge_approved": false,
+			"phase_error_code": string(ErrGitHubUnavailable), "phase_error": err.Error(),
+		})
+		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		notify.SendTaskAction(candidate.ID, candidate.Title, "🔑", "GitHub CLI 未登录",
+			"Merge 需要 GitHub 认证：请运行 `gh auth login` 完成登录，然后重新设置 merge_approved=true", r.cfg.Notifications.Desktop)
+		return fmt.Errorf("%s: %v", ErrGitHubUnavailable, err)
+	}
 
 	if err := ensureGitRemote(r.cfg, repoDir, candidate.Project); err != nil {
 		// A merge target mismatch is a permanent configuration defect, not a
@@ -209,10 +225,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// goroutine and every scan batch behind it. http.connectTimeout bounds
 	// the TCP connect phase, http.lowSpeed* aborts once the transfer makes
 	// no progress for 20s.
-	pushCmd, pushCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
-		"-c", "http.connectTimeout=15",
-		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
-		"push", "-u", "origin", fm.TargetBranch)
+	pushCmd, pushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		pushCancel()
 		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))
@@ -331,10 +344,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 					return updateErr
 				}
 				// Fix committed locally: push and re-evaluate checks.
-				fixPush, fixPushCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
-					"-c", "http.connectTimeout=15",
-					"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
-					"push", "-u", "origin", fm.TargetBranch)
+				fixPush, fixPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
 				output, pushErr := fixPush.CombinedOutput()
 				fixPushCancel()
 				if pushErr != nil {
@@ -402,10 +412,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 				return updateErr
 			}
 			// Resolution committed locally: push the new head and re-evaluate.
-			resPush, resPushCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
-				"-c", "http.connectTimeout=15",
-				"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
-				"push", "-u", "origin", fm.TargetBranch)
+			resPush, resPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
 			output, pushErr := resPush.CombinedOutput()
 			resPushCancel()
 			if pushErr != nil {
@@ -463,8 +470,14 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, prURL string) error {
 	}
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "合并成功",
 		fmt.Sprintf("PR %s 已合并，任务完成", prURL), r.cfg.Notifications.Desktop)
-	// Step 0: Extract this task's knowledge to the knowledge base (non-blocking)
-	go r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
+	// Step 0：把本任务知识提取到知识库（非阻塞，但计入 activeTasks——
+	// 优雅停机等待提取落盘而不是截断；此前被杀的提取会留下
+	// knowledge_extracted=false 且无重试路径，直到补救扫描落地）。
+	r.activeTasks.Add(1)
+	go func() {
+		defer r.activeTasks.Add(-1)
+		r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
+	}()
 	return nil
 }
 
@@ -589,6 +602,39 @@ func mergeCommand(parent context.Context, dir, name string, args ...string) (*ex
 	cmd.Dir = dir
 	return cmd, cancel
 }
+// mergePushCommand 构造 merge 流程的 git push 命令（带上下文超时）。
+// 凭据走 gh CLI 认证通道——credential.helper 调用 `gh auth git-credential`，
+// 与创建/合并 PR 使用同一 GitHub 身份，而不是依赖 ambient git 凭据。
+// 仅通过 gh keyring（或 SSH）认证的机器没有 https credential helper：
+// 裸 `git push` 到 https origin 会报 "could not read Username" 并烧光
+// 全部重试预算（实例：TASK-004 卡在 review，merge 重试 1/5..5/5 全部
+// 是 push 认证失败）。
+func (r *Runner) mergePushCommand(repoDir, branch string) (*exec.Cmd, context.CancelFunc) {
+	return mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
+		"-c", "credential.helper=!gh auth git-credential",
+		"-c", "http.connectTimeout=15",
+		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
+		"push", "-u", "origin", branch)
+}
+
+// checkGHAuth 验证 merge 流程所需的 gh CLI 认证（`gh auth status` 退出码 0）。
+// 全部远程步骤——push（gh credential helper）、PR 创建/复用、PR 合并——
+// 都依赖 gh 身份，因此未登录时无论 ambient git 凭据如何都无法合并。
+// 仅本地检查（gh config + keyring，无网络），超时 15s。
+func checkGHAuth(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "gh", "auth", "status").CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			detail = "gh auth status exited non-zero"
+		}
+		return fmt.Errorf("gh CLI not authenticated: run 'gh auth login' (%s)", detail)
+	}
+	return nil
+}
+
 
 // isMergeRetryable reports whether a merge failure is environmental — a
 // transient network or GitHub API error worth retrying with a short backoff —
@@ -613,6 +659,7 @@ func isMergeRetryable(err error) bool {
 		string(ErrInternal),
 		"merge already in progress",
 		"decode PR checks",
+		"gh CLI not authenticated",
 		"unknown merge decision",
 		"unexpected PR state",
 	} {
@@ -934,8 +981,33 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 
 	result, err := knowledge.ExtractTaskKnowledge(vaultDir, projectName, taskPath)
 	if err != nil {
+		// 硬失败（任务不可读/不可解析）：记录到任务上让丢失可见，
+		// 通知用户，保持 knowledge_extracted=false——补救扫描下一轮
+		// 重试，而不是静默丢弃教训。
+		msg := fmt.Sprintf("knowledge extraction failed: %v", err)
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": msg})
 		r.logger.Printf("knowledge-base Step 0 failed: project=%s task=%s error=%v", projectName, filepath.Base(taskPath), err)
+		if data, rerr := os.ReadFile(taskPath); rerr == nil {
+			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼失败（自动重试中）",
+					"任务知识未入库："+msg+"。daemon 每轮扫描自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
+			}
+		}
 		return
+	}
+	if len(result.Errors) > 0 {
+		// 部分失败：部分 ADR/踩坑已提取，其余出错。marker 保持 false，
+		// 下一轮 scan 重试剩余部分。
+		msg := "knowledge extraction partial failure: " + strings.Join(result.Errors, "; ")
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": msg})
+		if data, rerr := os.ReadFile(taskPath); rerr == nil {
+			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼部分失败（自动重试中）",
+					"部分任务知识未入库："+strings.Join(result.Errors, "; ")+"。daemon 每轮扫描自动重试。", r.cfg.Notifications.Desktop)
+			}
+		}
+	} else {
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": ""})
 	}
 	if result.ADRCount > 0 || result.NewRefs > 0 || result.UpdatedRefs > 0 {
 		r.logger.Printf("knowledge-base extracted: project=%s adrs=%d new=%d updated=%d",

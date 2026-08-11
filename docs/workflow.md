@@ -68,7 +68,7 @@ flowchart TD
 | # | 环节 | 触发 | daemon 动作 | 调用的 skill | 写回 TASK 字段 | 出口 |
 |---|------|------|-------------|---------------|----------------|------|
 | 1 | 需求变更 | fsnotify 监听 `Requirements/` 目录与项目根 `REQ-*` 文件 | `OnReqChanged` / `OnReqDeleted` 解析受影响任务；按 action（create_task / pending_req / reset_to_ready / req_missing…）发通知；新增/修改事件下未注册项目自动写入 vault-map.json（`ensureProjectRegistered`） | 无（纯 Go） | 新任务 `status=blocked`；既有任务按状态设 `pending_req` | 3s 后触发 scan |
-| 2 | 任务解锁 | 用户补齐 `project`+`assignee`、依赖满足 | `IsAutoUnblockable` 判定 → unblock | 无 | `status=ready`，清 phase_error | scan 拾取 |
+| 1.5 | 默认委派 | vault-map 顶层 `default_assignee`（如 `"default"`）非空 | `createTaskForReq` 将 TASK `assignee` 预写为对应 models key（`models` 映射到具体模型 ID）——新任务直接可调度，跳过人工补 assignee；**空值恢复旧行为**（blocked 等人工填 assignee） | 无（纯 Go） | TASK `assignee=<default_assignee>`、状态提醒显示已委派 | 创建即生效 |
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
 | 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；OMP 子进程（models.default，thinking low） | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
@@ -629,6 +629,8 @@ Merge Skill 必须在任何远程操作前确认：
 - `auto_merge: true`（默认）：Round 2 完成后 daemon 在下一轮 scan 自动设 `merge_approved=true`，直接进入 Merge Phase（push → PR → CI checks → merge）。用户无需操作。
 - `auto_merge: false`：保持人工 gate，用户确认后手动设 `merge_approved: true`。
 - Merge 失败回退（CI 失败 / head 变更 / gh 缺失）写 `status=review` + `merge_approved=false` + `phase_error`，通知用户处理；`phase_error_code` 非空时 daemon 不会自动重新授权。
+- **push 凭据契约**：Merge Phase 的 `git push` 一律通过 **gh CLI 认证通道**执行——daemon 构造 push 命令时注入 `-c credential.helper='!gh auth git-credential'`，与 `gh pr create` / `gh pr merge` 使用同一 GitHub 身份（keyring token）。前置条件：`gh auth status` 已登录（`exec.LookPath("gh")` 检查与 PR 操作共用）。**禁止**裸 `git push`——仅配置 gh keyring/SSH 认证的机器没有 ambient https 凭据，裸 push 会以 `could not read Username` 烧光全部重试预算（TASK-004 教训：5/5 重试全部 push 认证失败，任务卡在 review）。
+- **gh 未登录主动提醒**：merge 前 daemon 先做本地预检 `gh auth status`（读 config/keyring，无网络）。gh 缺失或未登录 → **不发起任何远程操作**，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE`，`phase_error` 附精确补救指引（`gh auth login`），桌面通知提醒用户完成 GitHub CLI 认证；登录后重新设 `merge_approved=true` 即可继续。不烧重试预算（TASK-004 教训：裸 push 的 credential prompt 在无 tty 环境下失败 5/5）。
 - 环境性失败自动重试：push / 网络 / 瞬时 GitHub API 错误（`GITHUB_UNAVAILABLE` 类）**不写回** `merge_approved`，`processMergeTaskWithRetry` 以 2 分钟退避独立重试（最多 5 次，daemonCtx 感知），不依赖下一轮 scan 批次——避免被同批长任务（最长 1h 的 Round 2）拖死。重试用尽后保持 `merge_approved=true`，下一轮 scan 继续。
 - 已合并收敛：`pr_url` 已知时先查 PR 状态，`MERGED`（手动合并或先前运行已合并）直接写 `done`，跳过 push/checks/merge，且不会重建 `gh pr merge --delete-branch` 已删除的远端分支。
 - 错误仓库守卫：push 前校验 origin 与 `git_remote` 一致（§8.2 前置条件 6）。vault 回退项目经 §6.5 提升后走独立 checkout，正常情况下不会触发；守卫是配置错乱（如 vault-map `path` 手工改回 vault 目录）时的兜底，`REPO_MISMATCH` 硬失败并保留现场供人工修正。
@@ -766,7 +768,10 @@ repository_url: "" # 远端仓库地址；非空时 ensureRemoteRepository 短�
 ```mermaid
 flowchart LR
     FAIL[阶段失败] -->|首次 错误码+阶段| SINK[AppendFailurePattern 自动沉淀]
-    MERGE[merge→done] -->|ExtractTaskKnowledge 按任务提取| EXTRACT[adr_written 的 ADR → 分类]
+    MERGE[merge→done] -->|"go 提炼 goroutine（activeTasks 托管，停机等待落地）"| EXTRACT[ExtractTaskKnowledge]
+    ADR["adr_written 的 ADR"] --> EXTRACT
+    ADRW[ADR 写入] -.->|watcher EnsureADRTags 自动打标| EXTRACT
+    PIT["## 踩坑记录"] --> EXTRACT
     EXTRACT -->|classifyADR 数据驱动| CLS{命中?}
     CLS -->|tag/多词/长精确词| REF[写入对应 References 文档]
     CLS -->|无匹配| UNC[自动归档 uncategorized/]
@@ -775,12 +780,14 @@ flowchart LR
     SINK --> KB[(References/)]
     REF --> KB
     UNC --> KB
-    ADR[ADR 写入] -->|watcher EnsureADRTags 自动打标| ADR
     KB -->|RebuildINDEX| IDX[(INDEX.md 摘要层)]
     IDX -->|Step -1 项目知识图谱| R1[Round 1]
     IDX -->|计划技术栈检索| R2[Round 2]
     R1 -->|知识缺口标注计划风险| PLAN
     R2 -->|踩坑经验写回| KB
+    EXTRACT -->|"任何失败：marker 不写"| ERR["knowledge_extract_error + 通知<br/>knowledge_extracted 保持 false"]
+    SWEEP["每轮 scan：done + merged + 未提炼 + 无 pending_req"] -->|recoverUnExtractedKnowledge 自动重新提炼| EXTRACT
+    ERR -.->|下一轮 scan 重试| SWEEP
 ```
 
 **触发点（代码实现）**：
@@ -788,10 +795,14 @@ flowchart LR
 1. `merge_runner.go` merge→done：`ExtractTaskKnowledge`（提取该任务 `adr_written` 引用的 ADR **和 TASK `## 踩坑记录`**，`knowledge_extracted` 幂等）→ ADR 走 `classifyADR`（知识库 topics/aliases/tags 数据驱动 + tag 优先 + 置信门槛）、踩坑走「相关文档」引用优先否则同样分类 → 命中写入对应 References 文件（ADR 追加实践经验、踩坑追加踩坑实践小节）、未命中自动归档 `References/uncategorized/` → `MarkVerified` → `ReclassifyUncategorized`（词表扩展后归档自动归位）→ `measureKnowledgeApplied`（Round 1 的 `knowledge_refs` 命中统计 → 写回 `knowledge_applied` hit/total）→ `RebuildINDEX`。
 2. `daemon.go` watcher：ADR 写入 → `EnsureADRTags` 自动打标（additive，用户可审查）；References 变更 → 失效分类索引缓存。
 3. `daemon.go` `handlePhaseFailure`：`AppendFailurePattern`（错误码映射表：API_KEY_UNAVAILABLE/PHASE_INTERRUPTED/MODEL_FAILED/PHASE_TIMEOUT/MODEL_QUOTA_EXHAUSTED；按 `错误码 — 阶段` 去重，知识库文件本身是去重存储）。
-4. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
-5. `otg kb absorb`（交互会话沉淀）：任务管道之外的日常会话经验（踩坑格式或 `--summary` 自由文本）→ 与 merge 相同的分类/归档/去重链路（`AbsorbKnowledge`），按「标题/失败方案」归一化去重，未命中归档 `References/uncategorized/`；重复遇到已记录教训时自动 bump 该文档 `hits`。
-6. 经验热度与 core 升级：`AppendApplicationRecord`（merge 命中 `knowledge_refs`）与 `AbsorbKnowledge`（duplicate）与 `otg kb hit` 均 `IncrementHits`（字段保序改写 `hits`，不破坏 KB v2 `updated` 格式，并原地更新进程内 ref 索引缓存避免全扫）；merge 后 `PromoteToCore`（hits≥3 的 extended/ 文档移入 core/ 同子目录，目标占用则跳过，基于缓存 O(候选数) 判断）。检索 `rank` 对 hits 加 0.02/次排序加成。
-7. 检索性能：`kb search` 走 SQLite 单库（`~/.local/share/otg/kb.sqlite`，vault 外；vault-map `kb_db` 可覆盖）——`SyncKnowledgeDB` 增量同步（文档 + FTS5 索引 + sqlite-vec 向量，按 content_hash 逐文档比对，增/改/删均行级事务，无全量重建、无指纹扫描；旧 `.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json` 首次同步自动清理）；**空扫描保护**：References/ 读为空（云同步间隙/错误 vault）时跳过删除，绝不批量清空索引；查询 `SearchKnowledgeDB`：FTS5 `bm25()`（取反恢复正分语义）+ vec0 余弦 KNN（`k = ?` 约束全量扫描，doc 级聚合）按历史公式融合；FTS5 中文检索靠预分词（`tokenize` bigram → 空格 join，unicode61 精确切分）；向量模型记录于 `kb_meta`，切换模型触发全量重建（`otg kb index`）；`archived/` 默认跳过（`--archived` 显式包含）；`IncrementHits` 同步更新 `kb_docs.hits`（排序 +0.02/次加成）；`openKB` 每次探测 FTS5——无 `-tags sqlite_fts5` 的构建在 kb 命令处立即报带构建提示的错误；`RebuildKnowledgeDB` 的 DROP 全部包在单事务内，失败回滚不留半状态库。
+4. **失败记录与自动补救（不静默丢失）**：
+   - `knowledge_extracted` 标记**仅在提炼全成功时写入**；任何错误（ADR 扫描/写入失败）保留 `false` 并写回 `knowledge_extract_error`（失败原因，用户可见）+ 桌面通知「知识提炼失败/部分失败（自动重试中）」。
+   - **自动补救扫描**（`recoverUnExtractedKnowledge`，每轮 scan 执行）：`status=done` + `merge_status=merged` + `knowledge_extracted=false` + `pending_req=false` 的任务——即 PR 已合入但提炼未落地的交付——自动重新提炼。覆盖强杀场景（daemon 在 merge 写回与提炼 goroutine 之间被 SIGKILL/断电，此前静默永久丢失）与部分失败场景。幂等：marker 短路 + ADR/踩坑整文件覆盖写。
+   - **优雅停机保障**：提炼 goroutine 计入 `activeTasks`，shutdown 等待其落地（`waitForScanExit` 窗口内），不再被停机截断。
+5. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
+6. `otg kb absorb`（交互会话沉淀）：任务管道之外的日常会话经验（踩坑格式或 `--summary` 自由文本）→ 与 merge 相同的分类/归档/去重链路（`AbsorbKnowledge`），按「标题/失败方案」归一化去重，未命中归档 `References/uncategorized/`；重复遇到已记录教训时自动 bump 该文档 `hits`。
+7. 经验热度与 core 升级：`AppendApplicationRecord`（merge 命中 `knowledge_refs`）与 `AbsorbKnowledge`（duplicate）与 `otg kb hit` 均 `IncrementHits`（字段保序改写 `hits`，不破坏 KB v2 `updated` 格式，并原地更新进程内 ref 索引缓存避免全扫）；merge 后 `PromoteToCore`（hits≥3 的 extended/ 文档移入 core/ 同子目录，目标占用则跳过，基于缓存 O(候选数) 判断）。检索 `rank` 对 hits 加 0.02/次排序加成。
+8. 检索性能：`kb search` 走 SQLite 单库（`~/.local/share/otg/kb.sqlite`，vault 外；vault-map `kb_db` 可覆盖）——`SyncKnowledgeDB` 增量同步（文档 + FTS5 索引 + sqlite-vec 向量，按 content_hash 逐文档比对，增/改/删均行级事务，无全量重建、无指纹扫描；旧 `.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json` 首次同步自动清理）；**空扫描保护**：References/ 读为空（云同步间隙/错误 vault）时跳过删除，绝不批量清空索引；查询 `SearchKnowledgeDB`：FTS5 `bm25()`（取反恢复正分语义）+ vec0 余弦 KNN（`k = ?` 约束全量扫描，doc 级聚合）按历史公式融合；FTS5 中文检索靠预分词（`tokenize` bigram → 空格 join，unicode61 精确切分）；向量模型记录于 `kb_meta`，切换模型触发全量重建（`otg kb index`）；`archived/` 默认跳过（`--archived` 显式包含）；`IncrementHits` 同步更新 `kb_docs.hits`（排序 +0.02/次加成）；`openKB` 每次探测 FTS5——无 `-tags sqlite_fts5` 的构建在 kb 命令处立即报带构建提示的错误；`RebuildKnowledgeDB` 的 DROP 全部包在单事务内，失败回滚不留半状态库。
 
 **检索路径（skill 指令）**：
 

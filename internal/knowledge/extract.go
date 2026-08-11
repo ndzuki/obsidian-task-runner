@@ -275,8 +275,15 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 		result.Touched = append(result.Touched, filepath.Join(refsDir, target))
 		result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, target))
 	}
-	if err := markTaskExtracted(taskPath); err != nil {
-		result.Errors = append(result.Errors, err.Error())
+	// marker 仅在全部成功时写入：任何错误保持 knowledge_extracted=false，
+	// daemon 的 done+merged 补救扫描（recoverUnExtractedKnowledge）会重试，
+	// 而不是静默丢失任务教训（此前 daemon 被杀/部分写入失败会烧掉 marker，
+	// 造成永久丢失）。重试安全：ADR/踩坑写入是整文件覆盖，
+	// 踩坑 sink 经 appendPitfallNote 去重。
+	if len(result.Errors) == 0 {
+		if err := markTaskExtracted(taskPath); err != nil {
+			result.Errors = append(result.Errors, err.Error())
+		}
 	}
 	return result, nil
 }

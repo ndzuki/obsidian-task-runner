@@ -58,11 +58,11 @@ func TestIsReadyForMerge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fm := &yamlfrontmatter.Frontmatter{
-				Assignee:      "gpt",
-				Status:        tt.status,
-				MergeApproved: tt.mergeApproved,
-				PendingReq:    tt.pendingReq,
-				AutoMerge:     tt.autoMerge,
+				Assignee:       "gpt",
+				Status:         tt.status,
+				MergeApproved:  tt.mergeApproved,
+				PendingReq:     tt.pendingReq,
+				AutoMerge:      tt.autoMerge,
 				PhaseErrorCode: tt.phaseError,
 			}
 			if got := IsReady(fm, t.TempDir()); got != tt.want {
@@ -372,7 +372,7 @@ Add a test feature.
 	}
 
 	reqRelPath := filepath.Join("Projects", projectName, "Requirements", "REQ-002-test-feature.md")
-	result := createTaskForReq(vaultPath, reqRelPath)
+	result := createTaskForReq(vaultPath, reqRelPath, "")
 
 	if result == nil {
 		t.Fatal("createTaskForReq returned nil")
@@ -414,6 +414,74 @@ Add a test feature.
 
 }
 
+// TestCreateTaskForReqDefaultAssignee 钉住 vault-map default_assignee 契约：
+// 非空默认值预写 TASK frontmatter（任务直接可调度）且提醒区显示委派；
+// 空默认值保持旧的人工门禁（assignee 空 + blocked 提醒）。
+func TestCreateTaskForReqDefaultAssignee(t *testing.T) {
+	dir := t.TempDir()
+	vaultPath := filepath.Join(dir, "vault")
+	projectName := "001-release-manager"
+	reqDir := filepath.Join(vaultPath, "Projects", projectName, "Requirements")
+	if err := os.MkdirAll(reqDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	reqContent := `---
+id: "005"
+title: "Delegated Feature"
+---
+
+# Delegated Feature
+
+## 要做什么
+Do the thing.
+`
+	reqRelPath := filepath.Join("Projects", projectName, "Requirements", "REQ-005-delegated.md")
+	if err := os.WriteFile(filepath.Join(reqDir, "REQ-005-delegated.md"), []byte(reqContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 非空默认值 → 预写 assignee，无 blocked 提醒。
+	result := createTaskForReq(vaultPath, reqRelPath, "default")
+	if result == nil {
+		t.Fatal("createTaskForReq returned nil")
+	}
+	taskPath := filepath.Join(vaultPath, "Projects", projectName, "Tasks", "TASK-005-delegated.md")
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read created task: %v", err)
+	}
+	taskStr := string(data)
+	if !strings.Contains(taskStr, `assignee: "default"`) {
+		t.Errorf("seeded task must carry assignee: \"default\", got:\n%s", taskStr)
+	}
+	if strings.Contains(taskStr, "任务已暂停在 blocked") {
+		t.Error("seeded task must not show the manual-assignee blocked notice")
+	}
+	if !strings.Contains(taskStr, "默认委派 `default`") {
+		t.Error("seeded task must show the delegation notice")
+	}
+
+	// 空默认值 → 保持旧门禁（assignee 空 + blocked 提醒）。
+	reqRelPath2 := filepath.Join("Projects", projectName, "Requirements", "REQ-006-ungated.md")
+	if err := os.WriteFile(filepath.Join(reqDir, "REQ-006-ungated.md"), []byte(reqContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if result := createTaskForReq(vaultPath, reqRelPath2, ""); result == nil {
+		t.Fatal("createTaskForReq returned nil")
+	}
+	data2, err := os.ReadFile(filepath.Join(vaultPath, "Projects", projectName, "Tasks", "TASK-006-ungated.md"))
+	if err != nil {
+		t.Fatalf("read created task: %v", err)
+	}
+	taskStr2 := string(data2)
+	if !strings.Contains(taskStr2, `assignee: ""`) {
+		t.Errorf("empty default must keep assignee empty, got:\n%s", taskStr2)
+	}
+	if !strings.Contains(taskStr2, "任务已暂停在 blocked") {
+		t.Error("empty default must keep the manual-assignee blocked notice")
+	}
+}
+
 func TestCreateTaskForReqWithVaultMap(t *testing.T) {
 	dir := t.TempDir()
 	vaultPath := filepath.Join(dir, "vault")
@@ -451,7 +519,7 @@ Test vault-map project matching.
 	}
 
 	reqRelPath := filepath.Join("Projects", projectName, "Requirements", "REQ-003-vault-map.md")
-	result := createTaskForReq(vaultPath, reqRelPath)
+	result := createTaskForReq(vaultPath, reqRelPath, "")
 
 	if result == nil {
 		t.Fatal("createTaskForReq returned nil")
@@ -493,7 +561,7 @@ Legacy flat structure.
 	}
 
 	reqRelPath := "Requirements/REQ-001-legacy.md"
-	result := createTaskForReq(vaultPath, reqRelPath)
+	result := createTaskForReq(vaultPath, reqRelPath, "")
 
 	if result == nil {
 		t.Fatal("createTaskForReq returned nil for old structure")
@@ -963,7 +1031,7 @@ func TestCreateTaskForReqWithoutPriorityStartsAssessment(t *testing.T) {
 		t.Fatalf("write requirement: %v", err)
 	}
 
-	result := createTaskForReq(vault, "Projects/001-test/Requirements/REQ-004-priority.md")
+	result := createTaskForReq(vault, "Projects/001-test/Requirements/REQ-004-priority.md", "")
 	if result == nil {
 		t.Fatal("expected TASK creation")
 	}

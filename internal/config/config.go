@@ -28,16 +28,17 @@ type Config struct {
 	Models                map[string]string `json:"models"`
 	FallbackModels        map[string]string `json:"fallback_models"`
 	OMPCmd                string            `json:"omp_cmd"`
+	DefaultAssignee       string            `json:"default_assignee"`
 	LogDir                string            `json:"log_dir,omitempty"`
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
-	ScanMinIntervalSeconds   int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
-	MaxAutoMergeFixes        int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
+	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
+	MaxAutoMergeFixes          int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
 	CompactOversizeThresholdKB int `json:"compact_oversize_threshold_kb"` // TASK docs above this size get history folding
 	GrillingConsolidationBatch int `json:"grilling_consolidation_batch"`  // PM sessions per scan
-	MergePollWaitTicks       int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
-	StageMinPerPhase         int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
-	StageMaxPhases           int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
+	MergePollWaitTicks         int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
+	StageMinPerPhase           int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
+	StageMaxPhases             int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
 
 	// Registries
 	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
@@ -184,28 +185,29 @@ func DefaultKBEmbedding() *KBEmbeddingConfig {
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		ConfigVersion:         1,
-		NewProjectRoot:        filepath.Join(home, "src"),
-		PollIntervalMin:       30,
-		MaxConcurrentTasks:    2,
-		PhaseConcurrency:      DefaultPhaseConcurrency(),
-		PhaseTimeoutMinutes:   map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
-		ShutdownGraceSeconds:  30,
-		OffPeakTimezone:       "Asia/Shanghai",
-		OffPeakWindows:        []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
-		StarvationWarningDays: map[string]int{"P3": 14, "P4": 30},
-		ScanMinIntervalSeconds:   10,
-		MaxAutoMergeFixes:        3,
+		ConfigVersion:              1,
+		NewProjectRoot:             filepath.Join(home, "src"),
+		PollIntervalMin:            30,
+		MaxConcurrentTasks:         2,
+		PhaseConcurrency:           DefaultPhaseConcurrency(),
+		PhaseTimeoutMinutes:        map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
+		ShutdownGraceSeconds:       30,
+		OffPeakTimezone:            "Asia/Shanghai",
+		OffPeakWindows:             []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
+		StarvationWarningDays:      map[string]int{"P3": 14, "P4": 30},
+		ScanMinIntervalSeconds:     10,
+		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
 		GrillingConsolidationBatch: 3,
-		MergePollWaitTicks:       20,
-		StageMinPerPhase:         3,
-		StageMaxPhases:           4,
-		SkillInstallDir:          filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
-		Models:                DefaultModels(),
-		FallbackModels:        DefaultFallbackModels(),
-		OMPCmd:                "omp",
-		Notifications:         NotifConfig{Desktop: true},
+		MergePollWaitTicks:         20,
+		StageMinPerPhase:           3,
+		StageMaxPhases:             4,
+		SkillInstallDir:            filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		Models:                     DefaultModels(),
+		FallbackModels:             DefaultFallbackModels(),
+		OMPCmd:                     "omp",
+		DefaultAssignee:            "",
+		Notifications:              NotifConfig{Desktop: true},
 	}
 }
 

@@ -72,9 +72,10 @@ type Frontmatter struct {
 	AdrApproved         bool   `yaml:"adr_approved"`
 	AdrProposed         any    `yaml:"adr_proposed"`
 	AdrWritten          any    `yaml:"adr_written"`
-	KnowledgeExtracted  bool   `yaml:"knowledge_extracted"`
-	KnowledgeRefs       []string `yaml:"knowledge_refs"`
-	KnowledgeApplied    string   `yaml:"knowledge_applied"`
+	KnowledgeExtracted   bool     `yaml:"knowledge_extracted"`
+	KnowledgeExtractErr  string   `yaml:"knowledge_extract_error"`
+	KnowledgeRefs        []string `yaml:"knowledge_refs"`
+	KnowledgeApplied     string   `yaml:"knowledge_applied"`
 	GrillOwner          string `yaml:"grill_owner"`
 	GrillStartedAt      string `yaml:"grill_started_at"`
 	GrillHeartbeatAt    string `yaml:"grill_heartbeat_at"`
@@ -318,7 +319,7 @@ var taskFieldOrder = []string{
 	"scaffold", "remote_create", "github_owner", "repository_name",
 	"repository_visibility", "repository_description", "repository_url",
 	// ADR bookkeeping.
-	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_refs", "knowledge_applied",
+	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_extract_error", "knowledge_refs", "knowledge_applied",
 	// Deprecated migration-only field.
 	"switch_settings",
 }
@@ -408,6 +409,7 @@ var taskFieldDefaults = map[string]interface{}{
 	"knowledge_extracted":            false,
 	"knowledge_refs":                 []interface{}{},
 	"knowledge_applied":              "",
+	"knowledge_extract_error":       "",
 }
 
 // fieldOrderIndex maps canonical key → position in taskFieldOrder.
