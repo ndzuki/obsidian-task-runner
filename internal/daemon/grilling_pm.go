@@ -552,6 +552,42 @@ func grillingDecisionPending(path string) int {
 	return pending
 }
 
+// grillingDecisionPendingForTask counts pending (unanswered) decision points
+// sourced from a specific task (their block carries "- 来源任务: TASK-<id>").
+// A dispute park — grill_parked=true because conflicts escalated into the
+// project-level list — must stay parked until PM distribute consumes the
+// answers. This is how parkedFactRecovery distinguishes a dispute park
+// (recovery gate = the decision list, answered only by PM distribute) from a
+// prerequisite-gate park (D-19 style, gate = blocked_by facts converging, no
+// list entry for the task). Without it TASK-068 un-parked every scan on its
+// landed blocked_by while D-88/89/90 stayed unanswered, looping refining.
+func grillingDecisionPendingForTask(path, taskID string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	content := string(data)
+	blocks := decisionBlockRE.FindAllStringIndex(content, -1)
+	pending := 0
+	ref := "- 来源任务: TASK-" + taskID
+	for i, loc := range blocks {
+		end := len(content)
+		if i+1 < len(blocks) {
+			end = blocks[i+1][0]
+		}
+		block := content[loc[0]:end]
+		if !strings.Contains(block, ref) {
+			continue
+		}
+		if m := decisionLineRE.FindStringSubmatch(block); m != nil {
+			if !decisionAnswered(m[1]) {
+				pending++
+			}
+		}
+	}
+	return pending
+}
+
 // grillingListPaused reports whether the decision list's frontmatter status
 // is paused/closed — the user's opt-out from reminder noise while a
 // requirement is still being thought through. Reminders (Kitty decision tab)

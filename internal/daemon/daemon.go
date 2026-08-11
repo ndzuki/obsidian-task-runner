@@ -1518,6 +1518,17 @@ func (r *Runner) parkedFactRecovery() {
 			if !r.prereqDepsSatisfied(projectsDir, projDir, fm) {
 				continue
 			}
+			// A dispute park — grill_parked=true because its conflicts were
+			// escalated into the project-level decision list — must NOT un-park
+			// here. Its recovery gate is the list answers, which only PM
+			// distribute consumes; blocked_by convergence is irrelevant to it.
+			// TASK-068 un-parked every scan on landed blocked_by while D-88/89/90
+			// stayed unanswered, looping refining. Only prerequisite-gate parks
+			// (D-19 style, no list entry sourcing this task) exit on facts.
+			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" &&
+				grillingDecisionPendingForTask(listPath, fm.ID) > 0 {
+				continue
+			}
 			r.logger.Printf("dependency: parked facts converged, un-parking TASK-%s (upstream all done+merged)", fm.ID)
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
 				"status":           "refining",
