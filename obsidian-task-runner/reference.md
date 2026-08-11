@@ -190,7 +190,7 @@ Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md
 - **Round 1**：计划中引入新领域术语时追加到 `## Language` 区域
 - **Round 2 + ADR**：ADR 引入新架构概念时追加到 `## Language` 区域
 
-append-only，不覆盖已有条目。`pipeline.EnsureContextMD` 在项目初始化时创建骨架模板。
+append-only，不覆盖已有条目。daemon 的 `ensureProjectContext`（`internal/daemon/context.go`）在新项目首轮 dispatch 时创建骨架模板，refining skill 通过 `otg ensure-context-term` 即时追加新术语。
 
 #### 4.6.5 Priority Assessment（优先级评定）
 
