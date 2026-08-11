@@ -169,8 +169,8 @@ otg install \
   "new_project_root": "/home/you/src",
   "models": {
     "deepseek": "deepseek/deepseek-v4-flash",
-    "gpt": "gateway/gpt-5.6-sol:xhigh",
-    "default": "deepseek/deepseek-v4-flash"
+    "gpt": "gateway/gpt-5.6-sol",
+    "default": "gateway/gpt-5.4-mini"
   },
   "fallback_models": {
     "gpt": "deepseek/deepseek-v4-flash",
@@ -404,6 +404,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 |------|------|
 | `otg install` | 安装 Skill、配置和 systemd |
 | `otg install --dry-run` | 预览安装动作 |
+| `otg install-systemd` | 重新生成并启用 systemd 单元（vault 迁移后或单元缺失时使用；vault/轮询间隔从 `vault-map.json` 读取） |
 | `otg daemon` | 常驻监听 Vault 并处理任务 |
 | `otg daemon --once` | 扫描一次后退出 |
 | `otg daemon --map-file <path>` | 使用指定的 `vault-map.json` |

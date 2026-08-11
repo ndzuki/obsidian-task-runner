@@ -32,8 +32,8 @@ func TestLoadReadsConcurrentTaskLimit(t *testing.T) {
 
 func TestDefaultModelsUsesDefaultAssignee(t *testing.T) {
 	models := DefaultModels()
-	if got := models["default"]; got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("default model = %q, want %q", got, "deepseek/deepseek-v4-flash")
+	if got := models["default"]; got != "gateway/gpt-5.4-mini" {
+		t.Fatalf("default model = %q, want %q", got, "gateway/gpt-5.4-mini")
 	}
 	if _, ok := models["flash"]; ok {
 		t.Fatal("legacy flash assignee must not be present")

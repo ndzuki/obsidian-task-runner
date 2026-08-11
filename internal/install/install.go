@@ -4,12 +4,12 @@ package install
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // Options holds installation configuration.
@@ -141,7 +141,7 @@ SORT project_id ASC
 
 	// 8. Configure systemd
 	if opts.SystemdEnabled {
-		if err := configureSystemd(opts); err != nil && !d {
+		if err := ConfigureSystemd(opts); err != nil && !d {
 			return fmt.Errorf("systemd: %w", err)
 		}
 	}
@@ -282,7 +282,7 @@ func generateVaultMap(opts Options) error {
 		"obsidian_vault":          opts.ObsidianVault,
 		"new_project_root":        opts.NewProjectRoot,
 		"projects":                []interface{}{},
-		"models":                  map[string]string{"default": "deepseek/deepseek-v4-flash"},
+		"models":                  map[string]string{"default": "gateway/gpt-5.4-mini"},
 		"fallback_models":         map[string]string{"gpt": "deepseek/deepseek-v4-flash", "default": "deepseek/deepseek-v4-flash", "deepseek": "deepseek/deepseek-v4-flash"},
 		"notifications":           map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes":   opts.PollIntervalMin,
@@ -290,7 +290,7 @@ func generateVaultMap(opts Options) error {
 		"phase_timeouts_minutes":  map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
 		"shutdown_grace_seconds":  30,
 		"off_peak_timezone":       "Asia/Shanghai",
-		"off_peak_windows": []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
+		"off_peak_windows":        []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
 		"starvation_warning_days": map[string]int{"P3": 14, "P4": 30},
 	}
 
@@ -479,7 +479,9 @@ func configureShell(opts Options) error {
 	return nil
 }
 
-func configureSystemd(opts Options) error {
+// ConfigureSystemd 将用户 systemd 单元写入 ~/.config/systemd/user 并启用，
+// 供 otg install 与 otg install-systemd 使用。
+func ConfigureSystemd(opts Options) error {
 	if opts.DryRun {
 		fmt.Println("[DRY RUN] Would configure systemd units")
 		return nil
@@ -491,14 +493,12 @@ func configureSystemd(opts Options) error {
 		return fmt.Errorf("create systemd user dir: %w", err)
 	}
 
-	// Build PATH
-	path := "/usr/local/bin:/usr/bin:/bin"
-	if d := filepath.Join(home, "go", "bin"); dirExists(d) {
-		path = d + ":" + path
-	}
-	if d := filepath.Join(home, ".local", "bin"); dirExists(d) {
-		path = d + ":" + path
-	}
+	// Build PATH for the units. Conventional user dirs first, then mise
+	// shims: omp is installed under ~/.local/share/mise/installs/... and
+	// exposed via the shims dir, so without it the daemon cannot exec omp
+	// (observed: "exec: omp: executable file not found in $PATH" every scan,
+	// starving every implementing task behind the failed slots).
+	path := buildSystemdPath(home)
 
 	// Write service files
 	services := map[string]string{
@@ -621,6 +621,23 @@ func installRegistry(opts Options) error {
 	}
 	fmt.Println("skill registry installed to", dest)
 	return nil
+}
+
+// buildSystemdPath assembles the PATH for systemd units: user bin dirs
+// (go/bin, .local/bin) and mise shims take precedence over system dirs.
+// Only existing directories are included, mirroring an interactive shell.
+func buildSystemdPath(home string) string {
+	path := "/usr/local/bin:/usr/bin:/bin"
+	for _, d := range []string{
+		filepath.Join(home, "go", "bin"),
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".local", "share", "mise", "shims"),
+	} {
+		if dirExists(d) {
+			path = d + ":" + path
+		}
+	}
+	return path
 }
 
 func dirExists(path string) bool {

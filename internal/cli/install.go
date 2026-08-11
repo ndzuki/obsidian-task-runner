@@ -41,28 +41,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
 	}
 
-	vault := installVault
-	if v := os.Getenv("OBSIDIAN_VAULT"); v != "" && vault == "" {
-		vault = v
-	}
-	if vault == "" {
-		// Prefer the existing vault-map.json config over the generic default:
-		// a reinstall must never silently redirect the daemon to a different
-		// vault (regression: `otg install` rewrote the systemd unit's
-		// OBSIDIAN_VAULT to ~/Documents/Obsidian/MainVault while the real
-		// vault is configured elsewhere).
-		if data, err := os.ReadFile(filepath.Join(skillDir, "config", "vault-map.json")); err == nil {
-			var existing struct {
-				ObsidianVault string `json:"obsidian_vault"`
-			}
-			if json.Unmarshal(data, &existing) == nil && existing.ObsidianVault != "" {
-				vault = existing.ObsidianVault
-			}
-		}
-	}
-	if vault == "" {
-		vault = filepath.Join(home, "Documents", "Obsidian", "MainVault")
-	}
+	vault := resolveInstallVault(skillDir, installVault)
 
 	newRoot := installNewRoot
 	if v := os.Getenv("NEW_PROJECT_ROOT"); v != "" && newRoot == "" {
@@ -95,6 +74,43 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	return install.Run(opts)
+}
+
+// readVaultMap 从已有 vault-map.json 提取用户的 vault 路径与轮询间隔。
+// 读取失败时忽略错误——安装流程不能因配置问题失败。
+func readVaultMap(skillDir string) (vault string, pollMin int) {
+	data, err := os.ReadFile(filepath.Join(skillDir, "config", "vault-map.json"))
+	if err != nil {
+		return "", 0
+	}
+	var existing struct {
+		ObsidianVault   string `json:"obsidian_vault"`
+		PollIntervalMin int    `json:"poll_interval_minutes"`
+	}
+	if json.Unmarshal(data, &existing) != nil {
+		return "", 0
+	}
+	return existing.ObsidianVault, existing.PollIntervalMin
+}
+
+// resolveInstallVault 确定 vault 路径，优先级：
+// flag > OBSIDIAN_VAULT 环境变量 > 已有 vault-map.json > 通用默认路径。
+// 优先采用已有配置而非默认值：重装绝不能悄悄把 daemon 指向不同的 vault
+// （回归教训：otg install 曾把 systemd 单元的 OBSIDIAN_VAULT 改写为
+// ~/Documents/Obsidian/MainVault，而真实 vault 配置在别处）。
+func resolveInstallVault(skillDir, vaultFlag string) string {
+	vault := vaultFlag
+	if v := os.Getenv("OBSIDIAN_VAULT"); v != "" && vault == "" {
+		vault = v
+	}
+	if vault == "" {
+		vault, _ = readVaultMap(skillDir)
+	}
+	if vault == "" {
+		home, _ := os.UserHomeDir()
+		vault = filepath.Join(home, "Documents", "Obsidian", "MainVault")
+	}
+	return vault
 }
 
 func init() {

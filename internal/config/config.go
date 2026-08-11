@@ -109,8 +109,8 @@ type NotifConfig struct {
 func DefaultModels() map[string]string {
 	return map[string]string{
 		"deepseek": "deepseek/deepseek-v4-flash",
-		"gpt":      "gateway/gpt-5.6-sol:xhigh",
-		"default":  "deepseek/deepseek-v4-flash",
+		"gpt":      "gateway/gpt-5.6-sol",
+		"default":  "gateway/gpt-5.4-mini",
 		"gemini":   "google/gemini-2.5-pro",
 		"claude":   "anthropic/claude-sonnet-4-20250514",
 		"minimax":  "minimax/minimax-m1",
@@ -158,7 +158,7 @@ func ModelReference() string {
 	fb := DefaultFallbackModels()
 	return fmt.Sprintf(`| key | 模型标识 | 用途 |
 |----------|---------|------|
-| default  | %s | refining、planning、round2 日常任务（0731 更新，Agent 能力大幅增强） |
+| default  | %s | refining、planning、round2 日常任务（gpt-5.4-mini，Agent 能力大幅增强） |
 | deepseek | %s | deepseek assignee 主模型 |
 | gpt      | %s | 高推理任务主力 |
 | gemini   | %s | 可选 |
