@@ -91,6 +91,7 @@ type Frontmatter struct {
 	AutoAccepted        string   `yaml:"auto_accepted"`
 	ReqRefineCount      int      `yaml:"req_refine_count"`
 	TaskSchemaVersion   int      `yaml:"task_schema_version"`
+	Round2StallUntil    string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
 
 	// Shared fields: daemon proposes, users may override.
 	Priority                    string `yaml:"priority"`
@@ -312,6 +313,7 @@ var taskFieldOrder = []string{
 	"refine_error", "plan_req_hash", "plan_version", "planning_retry_count",
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
+	"round2_stall_until",
 	// Blocking and failure state (daemon-maintained, least user-facing).
 	"blocked_phase", "phase_error", "phase_error_code", "phase_log",
 	"auto_resume_pending", "auto_resume_count",
@@ -390,6 +392,7 @@ var taskFieldDefaults = map[string]interface{}{
 	"target_branch":        "",
 	"pr_url":               "",
 	"completed":            "",
+	"round2_stall_until":   "",
 	"reopen_count":         0,
 	"task_schema_version":  1,
 	"auto_resume_pending":  false,

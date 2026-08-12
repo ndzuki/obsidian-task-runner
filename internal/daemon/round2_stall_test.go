@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // TestRound2StallCooldown guards the exponential no-progress cooldown used
@@ -35,8 +36,9 @@ func TestRound2StallCooldown(t *testing.T) {
 }
 
 // TestRecordRound2Completion guards the stall lifecycle: a no-progress
-// completion (still implementing, no checkpoint) raises the level, a
-// progressed completion (checkpoint written or status changed) resets it.
+// completion (still implementing, no checkpoint) raises the level and
+// persists the deadline to frontmatter, a progressed completion (checkpoint
+// written or status changed) resets both.
 func TestRecordRound2Completion(t *testing.T) {
 	dir := t.TempDir()
 	taskPath := filepath.Join(dir, "TASK-071.md")
@@ -47,17 +49,34 @@ func TestRecordRound2Completion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	readStallUntil := func() string {
+		t.Helper()
+		data, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			t.Fatal("parse task after record")
+		}
+		return fm.Round2StallUntil
+	}
 
 	runner := New(&config.Config{})
 	runner.logger = log.New(io.Discard, "", 0)
 
-	// First no-progress completion → level 0.
+	// First no-progress completion → level 0, deadline persisted.
 	writeTask("implementing", "")
 	runner.recordRound2Completion(taskPath, "071")
 	if got, ok := runner.round2Stalls.Load(taskPath); !ok {
 		t.Fatal("no stall recorded after no-progress completion")
 	} else if got.(round2Stall).level != 0 {
 		t.Fatalf("first no-progress level = %d, want 0", got.(round2Stall).level)
+	}
+	if until := readStallUntil(); until == "" {
+		t.Fatal("round2_stall_until not persisted")
+	} else if dl, err := time.Parse(time.RFC3339, until); err != nil || time.Until(dl) > 11*time.Minute {
+		t.Fatalf("persisted deadline %q not ~10m ahead: %v", until, err)
 	}
 
 	// Second no-progress completion → level 1 (cooldown doubles).
@@ -68,11 +87,22 @@ func TestRecordRound2Completion(t *testing.T) {
 		t.Fatalf("second no-progress level = %d, want 1", s.(round2Stall).level)
 	}
 
-	// Progress: checkpoint written → stall reset.
+	// Restart simulation: fresh runner (empty in-memory map) must still see
+	// the persisted deadline as active.
+	fresh := New(&config.Config{})
+	fresh.logger = log.New(io.Discard, "", 0)
+	if _, ok := fresh.round2StallActive(taskPath); !ok {
+		t.Fatal("persisted stall deadline not honored after restart")
+	}
+
+	// Progress: checkpoint written → stall reset (memory + frontmatter).
 	writeTask("implementing", "abc123")
 	runner.recordRound2Completion(taskPath, "071")
 	if _, ok := runner.round2Stalls.Load(taskPath); ok {
 		t.Fatal("stall not reset after checkpoint progress")
+	}
+	if until := readStallUntil(); until != "" {
+		t.Fatalf("round2_stall_until not cleared after progress: %q", until)
 	}
 
 	// Progress: status left implementing → stall reset.
