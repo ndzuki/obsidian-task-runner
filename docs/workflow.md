@@ -102,6 +102,7 @@ flowchart TD
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 修复预算内可重复**：`merge_retry_count < max_auto_merge_fixes` 时失败回退自动重授权并再次触发 AI 修复；`merge_status=conflict-resolve-attempted` 标记预算耗尽，交还用户。
 - **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退在 REQ 未变 + 预算未耗尽时**自动重新授权**（TASK-051/059：旧版要求空 phase_error_code，导致 auto_merge 任务永久卡 conflict）。批次入口同步放宽：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）——其余失败回退可进入批次，由 `canAutoApproveMerge` 做精确的 REQ-hash/预算判定。
+- **Round 2 空转冷却**：`implementing` 任务的 Round 2 会话完成后若任务仍 `implementing` 且 `checkpoint_commit` 未写（入口门禁复验类空转——TASK-071：一天 20+ 轮相同 gate-check 会话），daemon 记录无进展完成并进入指数退避冷却（10m → 20m → … → 上限 ~10.7h），冷却期内不重新派发、无通知；`checkpoint_commit` 写入、状态离开 implementing 或 plan 版本变化即重置冷却。人工 `/obsidian-task-runner-round2` 不经 daemon 派发，不受冷却限制。
 - **阶段化确定性分组取代 PM 手工分阶段**：早期阶段规划由 PM 会话完成（release-manager 首轮分阶段耗数小时 LLM 轮次且不可靠）；现由 daemon `processAutoStaging` 秒级确定性拓扑分组（幂等、增量追加），PM 只保留语义层（目标描述、边界调整、新需求归入/建议增阶段）与阶段评审。阶段归属以 `stage` 字段为权威（TASK 从 REQ 继承），不依赖 Stage-Plan 的 tasks 列表。
 - **阶段完成=任务全部 done+merged**：done 但 `merge_status != merged`（stale PR）不计入；由 PR 闭环先收敛再评审。阶段评审产出 `Notes/Stage-Review.md`，用户填「评审决策:」后 PM distribute 分发（continue/supplement/end），end 路径后续阶段任务 close——功能满足即结束，不维护积压。
 

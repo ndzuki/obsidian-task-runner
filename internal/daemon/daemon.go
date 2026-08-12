@@ -52,6 +52,7 @@ type Runner struct {
 	phaseGates         map[string]*phaseGate // phase → concurrency gate (nil/absent = unlimited)
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
+	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
@@ -2087,12 +2088,70 @@ func (r *Runner) ensureReqHash(taskPath, reqDoc string) {
 	if err != nil || fm == nil {
 		return
 	}
-	if fm.RefineReqHash == hash {
-		return
-	}
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"refine_req_hash": hash}); err != nil {
 		r.logger.Printf("task %s: precompute req hash: %v", filepath.Base(taskPath), err)
 	}
+}
+
+// round2Stall tracks consecutive no-progress Round 2 completions for one
+// task. A no-progress completion leaves the task implementing with the same
+// checkpoint_commit — the entry-gate re-verification rounds that produce no
+// code change (TASK-071: P15 gate check re-ran 20+ times/day against a stale
+// upstream, each round a full LLM session). Every such completion raises the
+// cooldown level; real progress (checkpoint written, status changed, plan
+// version bumped) resets it. State is in-memory: a daemon restart re-arms
+// from level 0, which is acceptable because restarts are rare and the first
+// no-progress round re-establishes the cooldown.
+type round2Stall struct {
+	lastFinish time.Time
+	checkpoint string
+	level      int
+}
+
+const (
+	// round2StallBaseCooldown is the cooldown after the first no-progress
+	// Round 2 completion; each further no-progress completion doubles it
+	// (10m → 20m → 40m → 80m → 160m → 320m → 640m ≈ 10.7h ceiling).
+	round2StallBaseCooldown = 10 * time.Minute
+	round2StallMaxLevel     = 6
+)
+
+func round2StallCooldown(level int) time.Duration {
+	if level < 0 {
+		level = 0
+	}
+	if level > round2StallMaxLevel {
+		level = round2StallMaxLevel
+	}
+	return round2StallBaseCooldown << uint(level)
+}
+
+// recordRound2Completion updates the no-progress stall state after a Round 2
+// session. Sessions that advanced the task (checkpoint_commit written, or the
+// task left implementing) reset the cooldown; sessions that left the task
+// implementing without a checkpoint raise it.
+func (r *Runner) recordRound2Completion(taskPath, taskID string) {
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return
+	}
+	if fm.Status != "implementing" || fm.CheckpointCommit != "" {
+		r.round2Stalls.Delete(taskPath)
+		return
+	}
+	level := 0
+	if old, ok := r.round2Stalls.Load(taskPath); ok {
+		level = old.(round2Stall).level + 1
+		if level > round2StallMaxLevel {
+			level = round2StallMaxLevel
+		}
+	}
+	r.round2Stalls.Store(taskPath, round2Stall{lastFinish: time.Now(), checkpoint: fm.CheckpointCommit, level: level})
+	r.logger.Printf("task %s: round2 no-progress completion recorded (cooldown level %d)", taskID, level)
 }
 
 func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {
@@ -2265,7 +2324,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		case t.Status == "planning":
 			phase = "planning"
 			skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
-			r.logger.Printf("task %s: plan generation (model=%s)", t.ID, model)
 		case t.Status == "plan-review" || t.Status == "implementing":
 			phase = "round2"
 			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
@@ -2278,6 +2336,19 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				// Resumed sessions (daemon restarts) must not re-spam the
 				// "OMP 正在执行" notification on every scan.
 				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
+			} else if stall, ok := r.round2Stalls.Load(taskPath); ok {
+				// No-progress cooldown: a Round 2 session that finished
+				// without advancing the task (entry-gate re-verification
+				// with no code change — TASK-071: 20+ identical gate-check
+				// rounds per day) must not re-dispatch immediately. The
+				// cooldown doubles per consecutive no-progress completion
+				// so a genuinely stalled task degrades to one cheap retry
+				// every ~10h instead of burning LLM sessions every scan.
+				s := stall.(round2Stall)
+				if wait := round2StallCooldown(s.level); time.Since(s.lastFinish) < wait {
+					r.logger.Printf("task %s: round2 no-progress cooldown (level %d, retry in %v)", t.ID, s.level, (wait - time.Since(s.lastFinish)).Round(time.Minute))
+					continue
+				}
 			}
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
@@ -2558,6 +2629,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							r.clearPhaseRetry(taskPath, phase)
 							r.clearPhaseError(taskPath, t.ID)
 							r.clearMergeRepairBudget(taskPath, phase)
+							if phase == "round2" {
+								r.recordRound2Completion(taskPath, t.ID)
+							}
 						}
 					}
 				}
@@ -2589,6 +2663,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.clearPhaseRetry(taskPath, phase)
 			r.clearPhaseError(taskPath, t.ID)
 			r.clearMergeRepairBudget(taskPath, phase)
+			if phase == "round2" {
+				r.recordRound2Completion(taskPath, t.ID)
+			}
 		}
 		if f != nil {
 			if err := f.Close(); err != nil {

@@ -84,6 +84,8 @@ disableModelInvocation: true
 3. 恢复由 daemon 自动完成：每轮 scan 检查 `blocked_by` 依赖**事实**（上游 `status=done` 且 `phase_error_code` 为空 = 上游 PR 已合入），事实变化后自动 `resume_approved=true`，无需用户干预、无需重新 grilling。
 4. 恢复后重新执行门禁；通过才进入 Step 2–9。未通过则再次 blocked（不消耗 grilling/refining 预算）。
 
+> **陈旧 upstream frontmatter 陷阱（TASK-071 教训）**：上游任务 frontmatter 显示 `done`+`merged` 但实际 PR 从未合入（TASK-018：旧 PR #16 标记 merged，v6 工作从未 push）时，转 blocked 会被 daemon 的 `prereqDepsSatisfied`（仅看 frontmatter）**每轮误恢复** → blocked→implementing→复验→blocked 模式 8 循环。此时**按计划批准路径保持 `implementing` 不转 blocked**——daemon 空转冷却接管：无进展完成（仍 implementing + 无 `checkpoint_commit`）进入指数退避冷却（10m→…→~10.7h），不每轮重派、不烧 token；恢复由事实变化或人工 `/obsidian-task-runner-round2` 驱动。
+
 ## Pending Requirement Handoff（pending_req安全交接）
 
 AC 完成后若 `pending_req=true`：
