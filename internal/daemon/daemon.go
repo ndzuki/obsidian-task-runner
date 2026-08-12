@@ -772,6 +772,7 @@ func (r *Runner) compactOversizedTasks() {
 func (r *Runner) scanAndProcess() error {
 	r.scanMu.Lock()
 	r.syncTaskSchemaDefaults()
+	r.syncReqSchemaDefaults()
 	r.syncStageInheritance()
 	r.syncDependencyInheritance()
 	r.validateDependencyRefs()
@@ -1447,6 +1448,50 @@ func (r *Runner) syncTaskSchemaDefaults() {
 	}
 	if normalized > 0 {
 		r.logger.Printf("schema defaults: normalized %d task document(s) (backfilled/reordered schema fields)", normalized)
+	}
+}
+
+// syncReqSchemaDefaults backfills frontmatter fields added by newer daemon
+// versions into old REQ documents, mirroring syncTaskSchemaDefaults. REQ
+// documents were historically never normalized, so a REQ created before a
+// field existed (stage, depends_on, project, ...) silently misses it forever
+// — the daemon's consumers (stage inheritance, dependency inheritance,
+// createTaskForReq) degrade to fallbacks instead of failing loudly, and a
+// broken frontmatter leaves the REQ invisible to OnReqChanged entirely.
+// Runs at the start of every scan under scanMu, like its TASK counterpart.
+func (r *Runner) syncReqSchemaDefaults() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	normalized := 0
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		reqsDir := filepath.Join(projectsDir, project.Name(), "Requirements")
+		entries, err := os.ReadDir(reqsDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "REQ-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(reqsDir, entry.Name())
+			updated, err := yamlfrontmatter.NormalizeReqFrontmatter(path)
+			if err != nil {
+				r.logger.Printf("req %s: schema defaults sync failed: %v", strings.TrimPrefix(entry.Name(), "REQ-"), err)
+				continue
+			}
+			if updated {
+				normalized++
+			}
+		}
+	}
+	if normalized > 0 {
+		r.logger.Printf("schema defaults: normalized %d requirement document(s) (backfilled/reordered schema fields)", normalized)
 	}
 }
 

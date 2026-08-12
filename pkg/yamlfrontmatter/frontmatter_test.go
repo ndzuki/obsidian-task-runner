@@ -1125,6 +1125,136 @@ grill_prev_status: ""
 	}
 }
 
+func TestNormalizeReqFrontmatter(t *testing.T) {
+	t.Run("backfills missing stable fields and reorders", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "REQ-009-old.md")
+		// A legacy REQ created before the schema grew: only id/title exist.
+		content := `---
+id: "009"
+title: Legacy Requirement
+---
+# Legacy
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := NormalizeReqFrontmatter(path)
+		if err != nil {
+			t.Fatalf("normalize: %v", err)
+		}
+		if !updated {
+			t.Fatal("expected rewrite for legacy REQ")
+		}
+		data, _ := os.ReadFile(path)
+		fm, err := Parse(data)
+		if err != nil {
+			t.Fatalf("parse after normalize: %v", err)
+		}
+		if fm.ID != "009" || fm.Title != "Legacy Requirement" {
+			t.Fatalf("identity lost: id=%q title=%q", fm.ID, fm.Title)
+		}
+		if fm.Created == "" {
+			t.Error("created not backfilled")
+		}
+		if fm.Updated == "" {
+			t.Error("updated not backfilled")
+		}
+		// tags backfills to empty list per reqFieldDefaults.
+		if fm.Tags == nil {
+			t.Error("tags not backfilled")
+		}
+		// Optional decision fields must NOT be fabricated.
+		if fm.Stage != "" || fm.Priority != "" || strings.Contains(string(data), "depends_on") {
+			t.Errorf("optional fields fabricated: stage=%q priority=%q depends_on present=%v", fm.Stage, fm.Priority, strings.Contains(string(data), "depends_on"))
+		}
+		// Key order: id before title before created/updated.
+		if !strings.Contains(string(data), "id:") || !strings.Contains(string(data), "created:") {
+			t.Errorf("canonical order missing:\n%s", data)
+		}
+	})
+
+	t.Run("does not overwrite existing values", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "REQ-010-kept.md")
+		content := `---
+id: "010"
+title: Kept
+priority: P1
+stage: P2
+created: "2026-01-01T00:00:00+08:00"
+updated: "2026-01-02T00:00:00+08:00"
+---
+# Kept
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := NormalizeReqFrontmatter(path)
+		if err != nil {
+			t.Fatalf("normalize: %v", err)
+		}
+		// updated refreshes on rewrite (matching TASK semantics); the second
+		// pass must converge. Existing user values are never altered.
+		data, _ := os.ReadFile(path)
+		if !strings.Contains(string(data), "priority: P1") || !strings.Contains(string(data), "stage: P2") {
+			t.Errorf("existing values altered:\n%s", data)
+		}
+		if !strings.Contains(string(data), `created: "2026-01-01T00:00:00+08:00"`) {
+			t.Errorf("created timestamp altered:\n%s", data)
+		}
+		if !updated {
+			t.Fatal("expected rewrite to refresh updated")
+		}
+		updated, err = NormalizeReqFrontmatter(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated {
+			t.Fatal("second normalize pass must be a no-op")
+		}
+	})
+
+	t.Run("idempotent second pass", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "REQ-011-idem.md")
+		content := `---
+id: "011"
+title: Idem
+---
+# Idem
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NormalizeReqFrontmatter(path); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := NormalizeReqFrontmatter(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated {
+			t.Fatal("second normalize pass must be a no-op")
+		}
+	})
+
+	t.Run("no frontmatter left alone", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "REQ-012-nofm.md")
+		if err := os.WriteFile(path, []byte("# No frontmatter\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := NormalizeReqFrontmatter(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated {
+			t.Fatal("document without frontmatter must not be rewritten")
+		}
+	})
+}
+
 func TestParseFrontmatterMap(t *testing.T) {
 	tests := []struct {
 		name    string

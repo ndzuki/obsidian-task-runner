@@ -138,7 +138,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 ## Frontmatter 字段规范
 
-TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` 的 `taskFieldOrder`）：用户关注的字段（身份、priority、Gate、推荐 metadata）在前，daemon 维护字段在后。daemon 每轮 scan 自动 Normalize（补齐缺失字段 + 按规范序重排，不覆盖已有值）；模板与 snippet 必须与规范序一致，避免新任务文档被反复改写。
+TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` 的 `taskFieldOrder`）：用户关注的字段（身份、priority、Gate、推荐 metadata）在前，daemon 维护字段在后。daemon 每轮 scan 自动 Normalize（补齐缺失字段 + 按规范序重排，不覆盖已有值）；模板与 snippet 必须与规范序一致，避免新任务文档被反复改写。**REQ frontmatter 同样每轮 Normalize**（`reqFieldOrder`，`syncReqSchemaDefaults`）：旧 REQ 自动补齐演进新增的稳定字段（created/updated/tags），必填身份字段（id/title/project_id）与可选决策字段（priority/stage/depends_on/project/...）**不伪造**——缺失时走系统兜底（auto-staging / priority 评估 / resolveProjectField），避免字段缺失静默导致依赖继承断裂或任务停止自动化（迭代快 + 旧文档重拾场景）。
 
 - **弃用字段**：`switch_settings`（迁移专用，新代码/新文档必须用 `assignee`）、REQ 的 `domain`/`parent_req`/`task_size`（不再被解析）。模板与文档不得再写入；存量文档由 `otg migrate-tasks <path> --write` 或手工清理。
 - `stage` 字段是阶段归属的**权威判定**（TASK 从 REQ 继承，PM 拆分落地时写入），与 `Notes/Stage-Plan.md` 的 `### Phase N:` 块对应。
