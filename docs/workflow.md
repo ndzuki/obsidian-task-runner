@@ -82,7 +82,7 @@ flowchart TD
 
 > **auto_approve（默认开启，全自动）**：`auto_approve` 缺失或为 true 时（frontmatter 解析默认 true、模板已写入），plan-review 任务由 daemon scan 自动批准——`plan_approved=true` 并直接转 implementing，**Grilling 是唯一人工关卡**（全自动链路：ready → refining → planning → implementing → review → 自动合并 → done）。显式 `auto_approve: false` 恢复人工审计划。**ADR 护栏**：`adr_proposed` 非空时 `adr_approved=false` 保持（架构决策由人工批准），不阻断实现自动进入。
 | 8 | plan-review | auto_approve（默认 true）或 `plan_approved=true`（人工） | `nextLocalTransition` → implementing；auto_approve 路径自动 `plan_approved=true`、`adr_approved=<adr_proposed 为空>`；预热 worktree | 无 | `status=implementing` | Round 2 |
-| 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时） | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining |
+| 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时）；**无进展完成（仍 implementing + 无 `checkpoint_commit`）→ 指数退避冷却（10m→…→~10.7h）不重派** | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining；无进展 → implementing（冷却中） |
 | 10 | 自动合并 | `status=review` + auto_merge（默认 true） | daemon 自动设 `merge_approved=true`；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + `merge_retry_count < max_auto_merge_fixes` + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch/**origin==git_remote 目标仓库守卫，REPO_MISMATCH 硬失败**）→ 在任务 worktree 上 sync（祖先关系分流：fast-forward / 三路 merge / 文件级覆盖确认后 `--force-with-lease`）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` ...
 | 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（breaking 需求变更则回 refining 新一轮交付） |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
@@ -102,7 +102,7 @@ flowchart TD
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 修复预算内可重复**：`merge_retry_count < max_auto_merge_fixes` 时失败回退自动重授权并再次触发 AI 修复；`merge_status=conflict-resolve-attempted` 标记预算耗尽，交还用户。
 - **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退在 REQ 未变 + 预算未耗尽时**自动重新授权**（TASK-051/059：旧版要求空 phase_error_code，导致 auto_merge 任务永久卡 conflict）。批次入口同步放宽：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）——其余失败回退可进入批次，由 `canAutoApproveMerge` 做精确的 REQ-hash/预算判定。
-- **Round 2 空转冷却**：`implementing` 任务的 Round 2 会话完成后若任务仍 `implementing` 且 `checkpoint_commit` 未写（入口门禁复验类空转——TASK-071：一天 20+ 轮相同 gate-check 会话），daemon 记录无进展完成并进入指数退避冷却（10m → 20m → … → 上限 ~10.7h），冷却期内不重新派发、无通知；`checkpoint_commit` 写入、状态离开 implementing 或 plan 版本变化即重置冷却。人工 `/obsidian-task-runner-round2` 不经 daemon 派发，不受冷却限制。
+- **Round 2 空转冷却**：`implementing` 任务的 Round 2 会话完成后若任务仍 `implementing` 且 `checkpoint_commit` 未写（入口门禁复验类空转——TASK-071：一天 20+ 轮相同 gate-check 会话），daemon 记录无进展完成并进入指数退避冷却（10m → 20m → … → 上限 ~10.7h），冷却期内不重新派发、无通知；`checkpoint_commit` 写入或状态离开 implementing 即重置冷却（重置点 = `recordRound2Completion`）。人工 `/obsidian-task-runner-round2` 不经 daemon 派发，不受冷却限制。
 - **阶段化确定性分组取代 PM 手工分阶段**：早期阶段规划由 PM 会话完成（release-manager 首轮分阶段耗数小时 LLM 轮次且不可靠）；现由 daemon `processAutoStaging` 秒级确定性拓扑分组（幂等、增量追加），PM 只保留语义层（目标描述、边界调整、新需求归入/建议增阶段）与阶段评审。阶段归属以 `stage` 字段为权威（TASK 从 REQ 继承），不依赖 Stage-Plan 的 tasks 列表。
 - **阶段完成=任务全部 done+merged**：done 但 `merge_status != merged`（stale PR）不计入；由 PR 闭环先收敛再评审。阶段评审产出 `Notes/Stage-Review.md`，用户填「评审决策:」后 PM distribute 分发（continue/supplement/end），end 路径后续阶段任务 close——功能满足即结束，不维护积压。
 
@@ -208,6 +208,7 @@ stateDiagram-v2
     implementing --> refining: pending_req，在当前 AC 完成并 checkpoint 后
     implementing --> blocked: 阶段失败（自动恢复 2 次后停止）
     implementing --> review: 全部 AC、测试和验收完成
+    implementing --> implementing: 无进展完成（仍 implementing + 无 checkpoint_commit）→ 指数退避冷却 10m→…→~10.7h，冷却期不重派
 
     review --> done: auto_merge 自动授权 (merge_approved=true) and pending_req=false (含 checks 等待)
     review --> conflict: Merge 冲突（AI 自动修复，预算内多次自动重试，耗尽后人工决策）
@@ -948,6 +949,7 @@ flowchart LR
 - [ ] 初次成熟需求：ready → refining → planning → plan-review。
 - [ ] 不成熟需求：ready → refining → needs-grilling → refining → planning。
 - [ ] 真实 Round 2：implementing → review。
+- [ ] Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）→ 指数退避冷却，冷却期不重派、无通知；checkpoint/status/plan 变化重置（TASK-071 回归）。
 - [ ] 真实 Merge：review → done。
 - [ ] auto_merge 默认 true：review 自动授权并进入 Merge Phase。
 - [ ] auto_merge=false：review 保持人工 merge gate。

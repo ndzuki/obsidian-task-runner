@@ -21,6 +21,7 @@ needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
 implementing -- prototype FAIL → needs-grilling（带原型证据）
+implementing -- 无进展完成（仍 implementing + 无 checkpoint_commit）→ 冷却自环（指数退避 10m→…→~10.7h，不重派不通知；有进展即重置）
 review -- merge conflict --> conflict -- AI 预算内自动修复+自动重授权，耗尽后人工 --> done
 plan-review -- close_approved --> closed
 review -- close_approved --> closed
@@ -36,7 +37,7 @@ closed -- [终态，不可恢复]
 | `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
-| `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
+| `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派；checkpoint_commit 写入或状态离开 implementing 即重置 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
 | `review` | 本地实现已提交；auto_merge=true 时自动授权合并，否则等待人工 | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
 | `conflict` | Merge 冲突；auto_merge 任务在 REQ 未变 + 预算未耗尽时 daemon 自动重授权重试，预算耗尽（conflict-resolve-attempted）/ 永久缺陷交还人工 | daemon（AI 预算内）+ 人工 | `done` / `refining` |
