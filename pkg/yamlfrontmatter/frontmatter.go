@@ -693,7 +693,12 @@ func normalizeFrontmatter(path string, order []string, defaults map[string]inter
 	if _, err := Parse([]byte(newDoc)); err != nil {
 		return false, fmt.Errorf("normalize would produce invalid frontmatter: %w", err)
 	}
-	if err := atomicWrite(cleanPath, []byte(newDoc)); err != nil {
+	// Normalization is an idempotent repair: a lost write (power failure
+	// before rename durability) is simply re-applied on the next scan, so
+	// the per-file fsync cost (1-10ms; seconds for thousands of documents)
+	// is not worth paying. Update() keeps its fsync — OMP state changes are
+	// transactional and must not be lost.
+	if err := atomicWriteNoSync(cleanPath, []byte(newDoc)); err != nil {
 		return false, err
 	}
 	// Post-write validation: confirm the persisted document still parses, so
@@ -855,7 +860,22 @@ func AtomicWrite(path string, data []byte) error {
 }
 
 // atomicWrite is the unexported implementation shared within the package.
+// It fsyncs the temp file before rename: OMP state changes via Update are
+// transactional and must survive a crash.
 func atomicWrite(path string, data []byte) error {
+	return atomicWriteImpl(path, data, true)
+}
+
+// atomicWriteNoSync is atomicWrite without the file fsync, used by the
+// normalization backfill path. Normalization is idempotent: a lost write is
+// re-applied on the next scan, so skipping fsync saves 1-10ms per document
+// (seconds to minutes across thousands of documents) with no correctness
+// loss — the worst case is a field that gets backfilled one scan later.
+func atomicWriteNoSync(path string, data []byte) error {
+	return atomicWriteImpl(path, data, false)
+}
+
+func atomicWriteImpl(path string, data []byte, sync bool) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
@@ -872,12 +892,14 @@ func atomicWrite(path string, data []byte) error {
 		}
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
-		closeErr := tmp.Close()
-		if closeErr != nil {
-			return fmt.Errorf("fsync temp: %w (close: %v)", err, closeErr)
+	if sync {
+		if err := tmp.Sync(); err != nil {
+			closeErr := tmp.Close()
+			if closeErr != nil {
+				return fmt.Errorf("fsync temp: %w (close: %v)", err, closeErr)
+			}
+			return fmt.Errorf("fsync temp: %w", err)
 		}
-		return fmt.Errorf("fsync temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
