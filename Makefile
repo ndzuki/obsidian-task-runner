@@ -66,6 +66,10 @@ sync-docs:
 	@echo "=== Syncing skill docs to ~/.omp/ ==="
 	cp -r obsidian-task-runner/*.md $(HOME)/.omp/skills/obsidian-task-runner/
 	cp -r obsidian-task-runner/skills/ $(HOME)/.omp/skills/obsidian-task-runner/
+	@# docs/workflow.md is the canonical full spec (SKILL.md/reference.md link
+	@# to it); keep the installed copy in lockstep so no tool reads a stale
+	@# version from ~/.omp.
+	cp docs/workflow.md $(HOME)/.omp/skills/obsidian-task-runner/workflow.md
 	@# knowledge-base is an external skill; the repo copy is the versioned
 	@# source for rollback. Only overwrite the installed file, never the
 	@# vault data it reads.
