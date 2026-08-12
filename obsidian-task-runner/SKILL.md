@@ -67,6 +67,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 15. `IsReady()` MUST explicitly handle every status value in the status routing table.
 16. **done 任务仅 breaking（含未标注）变更重开**；additive/cosmetic 不重开已交付终态；重开必须代际重置（reopen_count+1 + 清旧 PR/分支/merge 事实），禁止复用已 MERGED 的旧 PR（会让新交付永远合不进去）。
 17. **merge AI 修复预算（`merge_retry_count`）仅在 merge 成功或新一轮 planning 完成时清零**；replan 不继承旧交付耗尽；预算耗尽后 review 走 `rework_resolution=replan`、conflict 走 REQ 追加歧义裁决自动转 refining，均无需手动解冲突。
+18. **Round 2 无进展完成 MUST 进入冷却**：会话结束后仍 `implementing` 且无 `checkpoint_commit`（入口门禁复验类空转）→ daemon 指数退避冷却（10m→…→~10.7h 上限）内不重派、不通知；`checkpoint_commit` 写入或状态离开 implementing 即重置（重置点 = `recordRound2Completion` 判定：`Status != "implementing" || CheckpointCommit != ""`）。人工派发不受冷却限制（TASK-071：一天 20+ 轮相同 gate-check 会话的教训）。
 
 ## IDs & Dependencies（ID与依赖）
 - 数字 ID 项目内唯一。
