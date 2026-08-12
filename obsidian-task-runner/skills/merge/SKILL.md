@@ -68,7 +68,7 @@ completed: {local ISO8601}
 `auto_merge=true` 任务的 merge 授权由 daemon 自动恢复，无需人工干预：
 
 - **merge 失败回退自动重授权**：`review`/`conflict` + `merge_approved=false` + `phase_error_code` 非空时，daemon 每轮 scan 判定 `canAutoApproveMerge`——REQ 未变（当前 hash == `plan_req_hash`）、非永久环境缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 除外）、`merge_retry_count < max_auto_merge_fixes` → 自动写 `merge_approved=true` 重新进入 Merge Phase（TASK-051/059 教训：旧版 `BASE_COMMIT_MISMATCH` 写回后 gate 要求空 phase_error_code，导致 auto_merge 任务永久卡在 conflict）。
-- **批次入口同放宽**：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）即可进入调度批次——失败回退不会因 `phase_error_code` 非空而停留在批次外，精确的 REQ-hash/预算判定由 `canAutoApproveMerge` 在批次内完成。
+- **批次入口同放宽**：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）即可进入调度批次——失败回退不会因 `phase_error_code` 非空而停留在批次外，精确的 REQ-hash/预算判定由 `canAutoApproveMerge` 在批次内完成；可自动重授权的任务在 `prepareBatch` 走 lock-free 路径（与已授权 merge 同），防止 repo 写锁被长任务占用时在调度入口饿死（TASK-051/059 第三层死锁）。
 - **停机/超时中断**：push 被 daemon 停机中断 → 保持 `merge_approved=true`，重启后自动恢复合并，不写 conflict（与 Step 0 第 6 条同语义）。
 - **保持人工门禁**：REQ hash 变更（走 OnReqChanged → refining）、gh 不可用、仓库目标不匹配、预算耗尽（`conflict-resolve-attempted`）仍交还用户。
 

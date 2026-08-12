@@ -47,7 +47,7 @@ closed -- [终态，不可恢复]
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。可自动重授权的未授权任务与已授权 merge 同走 lock-free 调度路径（`prepareBatch` 锁判定与 gate 对齐，防调度入口饿死）。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `auto_approve` | 默认 true；计划自动批准 | 缺失即 true（解析兼容 + 模板写入）；plan-review 时 daemon 自动 `plan_approved=true` 转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划 |
 | `close_approved` | 显式关闭授权 | 仅 `plan-review`/`review` 有效；还必须同时提供合法 `closure_reason` 与非空 `closure_note`（`duplicate` 还需 `replacement_task`），否则 daemon 不转 closed |
