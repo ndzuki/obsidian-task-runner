@@ -53,6 +53,7 @@ type Runner struct {
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
+	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
@@ -1401,12 +1402,22 @@ func (r *Runner) taskLogDir() string {
 // auto-approve a persistently failing upstream before requiring manual resume.
 const maxAutoResumeAttempts = 2
 
+// normStamp records the mtime+size of a document after its last
+// normalization pass. Documents whose stamp is unchanged are skipped on
+// subsequent scans — with thousands of TASK/REQ documents the pass degrades
+// from read+parse-everything to stat-everything.
+type normStamp struct {
+	mtime int64
+	size  int64
+}
+
 // syncTaskSchemaDefaults backfills frontmatter fields added by newer daemon
 // versions into old task documents, so lifecycle judgement never depends on
 // keys the document never declared. Runs at the start of every scan;
 // documents that are already complete are left untouched (no writes, so no
-// scan feedback loop). Runs under scanMu: the writes are flock-protected
-// against concurrent OMP frontmatter updates.
+// scan feedback loop). Documents whose mtime+size did not change since the
+// last pass are skipped entirely (normCache). Runs under scanMu: the writes
+// are flock-protected against concurrent OMP frontmatter updates.
 func (r *Runner) syncTaskSchemaDefaults() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -1428,11 +1439,15 @@ func (r *Runner) syncTaskSchemaDefaults() {
 				continue
 			}
 			path := filepath.Join(tasksDir, entry.Name())
+			if r.normUnchanged(path, entry) {
+				continue
+			}
 			updated, err := yamlfrontmatter.NormalizeTaskFrontmatter(path)
 			if err != nil {
 				r.logger.Printf("task %s: schema defaults sync failed: %v", strings.TrimPrefix(entry.Name(), "TASK-"), err)
 				continue
 			}
+			r.normRemember(path)
 			if !updated {
 				continue
 			}
@@ -1448,6 +1463,30 @@ func (r *Runner) syncTaskSchemaDefaults() {
 	}
 	if normalized > 0 {
 		r.logger.Printf("schema defaults: normalized %d task document(s) (backfilled/reordered schema fields)", normalized)
+	}
+}
+
+// normUnchanged reports whether the document's mtime+size match the last
+// normalization pass. It never stores: the caller records the post-
+// normalization stamp via normRemember, which re-stats after any rewrite —
+// storing the pre-write stamp here would make the cache miss forever after a
+// rewrite (new mtime != cached stamp) and the document would be re-normalized
+// every scan.
+func (r *Runner) normUnchanged(path string, entry os.DirEntry) bool {
+	info, err := entry.Info()
+	if err != nil {
+		return false
+	}
+	stamp := normStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}
+	last, ok := r.normCache.Load(path)
+	return ok && last.(normStamp) == stamp
+}
+
+// normRemember records the post-normalization stamp of a document (re-stats
+// to capture any rewrite's new mtime) so the next scan skips it.
+func (r *Runner) normRemember(path string) {
+	if info, err := os.Stat(path); err == nil {
+		r.normCache.Store(path, normStamp{mtime: info.ModTime().UnixNano(), size: info.Size()})
 	}
 }
 
@@ -1480,11 +1519,15 @@ func (r *Runner) syncReqSchemaDefaults() {
 				continue
 			}
 			path := filepath.Join(reqsDir, entry.Name())
+			if r.normUnchanged(path, entry) {
+				continue
+			}
 			updated, err := yamlfrontmatter.NormalizeReqFrontmatter(path)
 			if err != nil {
 				r.logger.Printf("req %s: schema defaults sync failed: %v", strings.TrimPrefix(entry.Name(), "REQ-"), err)
 				continue
 			}
+			r.normRemember(path)
 			if updated {
 				normalized++
 			}
