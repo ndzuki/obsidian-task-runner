@@ -173,7 +173,7 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 交互会话结束（用户 Ctrl+D / `session_stop` 事件）时，**若会话含可复用经验，自动提炼入库**——把"一次性对话"变成"可检索资产"，同一经验不被下次会话重新踩：
 
 **触发**：
-- **自动**：`.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`（主会话停止钩子，task/subagent 会话不触发），满足条件（会话有实质工作 + 达到长度阈值）时 `continue` 并注入提炼指令。安装：复制到 `~/.omp/agent/extensions/`（用户级，全项目生效）。
+- **自动**：`.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`（主会话停止钩子，task/subagent 会话不触发），满足条件（会话有实质工作 + 达到长度阈值）时 `continue` 并注入提炼指令。**每个有实质工作的主会话都触发一次**（不再做「同日一次」的跨会话去重——多轮 `/new` 会话各自沉淀，重复内容由 `otg kb absorb` 内置归一化去重兜底）。安装：复制到 `~/.omp/agent/extensions/`（用户级，全项目生效）。
 - **手动**：用户说"提炼本次会话"/"沉淀经验"时立即执行；会话中途经验显著时也可即时执行（不必等结束）。
 
 **执行流程（收到提炼指令后）**：

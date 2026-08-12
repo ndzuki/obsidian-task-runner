@@ -12,40 +12,15 @@
  *
  * 频率控制（防退出延迟与重复提炼）：
  * - 同会话只触发一次（session entry 内写 custom 标记，branch 可查）
- * - 同一天只触发一次（状态文件 ~/.local/share/otg/kb-distill-state.json）
+ * - 每个有实质工作的主会话都触发一次——不再做「同日一次」的跨会话去重：
+ *   用户多轮 /new 会话各自沉淀（TASK-071 教训：同日只触发一次导致后续会话
+ *   的修复经验全部丢失）；重复内容由 `otg kb absorb` 内置归一化去重兜底，
+ *   INDEX 不会膨胀。
  * - 兜底：session_stop 的 continue 有 8 次上限且仅主会话触发
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
 
 const DISTILL_MARK = "com.otg.kb-distilled";
-
-function distillStatePath(): string {
-  return join(homedir(), ".local", "share", "otg", "kb-distill-state.json");
-}
-
-// lastDistillDate reads the persisted date of the last triggered distillation
-// ("" when never / unreadable).
-function lastDistillDate(): string {
-  try {
-    const raw = readFileSync(distillStatePath(), "utf8");
-    return (JSON.parse(raw) as { date?: string }).date ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function markDistilled(date: string): void {
-  try {
-    const p = distillStatePath();
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify({ date }), "utf8");
-  } catch {
-    // state persistence is best-effort; the in-session mark still dedupes
-  }
-}
 
 export default function (pi: ExtensionAPI) {
   pi.setLabel("KB Session Distill");
@@ -76,21 +51,20 @@ export default function (pi: ExtensionAPI) {
     }
     if (userMsgs < 3) return;
 
-    // 同日已触发过（跨会话）→ 跳过。
-    const today = new Date().toISOString().slice(0, 10);
-    if (lastDistillDate() === today) return;
-
-    // 持久化标记（会话内 + 跨会话）后再 continue。
-    pi.appendEntry(DISTILL_MARK, { date: today });
-    markDistilled(today);
+    // 会话内标记（不写跨会话状态文件——每个会话独立沉淀）。
+    pi.appendEntry(DISTILL_MARK, { at: new Date().toISOString() });
 
     return {
       continue: true,
       additionalContext:
-        "[会话知识提炼] 本次交互会话已结束。请委派 subagent 读取本会话转录（history://），" +
-        "分析其中的踩坑经验（现象/失败方案/根因/成功方案）、验证结论（实测数据）与架构决策；" +
-        "有可复用知识则按 knowledge-base Step 0.7 流程入库（踩坑用 `otg kb absorb`，新主题新建 References 文档 + `otg kb rebuild-index`）；" +
-        "无可复用知识则回复「无可提炼」并结束。完成后正常结束，不要继续无关工作。",
+        "[会话知识提炼] 本次交互会话已结束。请按 knowledge-base SKILL.md Step 0.7 执行：\n" +
+        "1. 委派 subagent（task）读取本会话转录（history://<id>），分析踩坑经验" +
+        "（现象/失败方案/根因/成功方案）、验证结论（实测数据）与架构决策；\n" +
+        "2. 入库前先 `otg kb search` 检索知识库去重——已有文档则追加小节/更新记录，" +
+        "新主题才新建 References 文档（标准 6 字段 frontmatter）；踩坑经验统一用" +
+        " `otg kb absorb`（内置归一化去重）；\n" +
+        "3. 无可复用知识则回复「无可提炼」并结束，不硬造知识。\n" +
+        "完成后正常结束，不要继续无关工作。",
     };
   });
 }
