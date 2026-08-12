@@ -1190,12 +1190,17 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		switch {
 		case isRound2(t):
 			lockMode = repoLockNone
-		case (t.Status == "review" || t.Status == "conflict") && t.MergeApproved:
+		case (t.Status == "review" || t.Status == "conflict") &&
+			(t.MergeApproved || canAutoApproveMerge(t, r.reqHash(t.ReqDoc), r.cfg.MaxAutoMergeFixes)):
 			// Merge pushes and merges via git/gh on the main checkout; it
 			// never touches worktrees. Blocking on the repo write lock would
 			// stall merges behind every planning/refining read lock (up to
 			// 30-60min), freezing authorized merges. Worktree OMP sessions
 			// already run lock-free for the same isolation reason.
+			// Auto-reauthorizable fallbacks (TASK-051/059: conflict +
+			// auto_merge + REQ 未变 + 预算未耗尽) take the same lock-free
+			// path — otherwise a busy repo write lock starves them before
+			// the canAutoApproveMerge gate inside runTask ever runs.
 			lockMode = repoLockNone
 		}
 		prepared := preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode}
