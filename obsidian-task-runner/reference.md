@@ -21,7 +21,7 @@ needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
 implementing -- prototype FAIL → needs-grilling（带原型证据）
-review -- merge conflict --> conflict -- AI 自动解决一次，失败后人工重授权 --> done
+review -- merge conflict --> conflict -- AI 预算内自动修复+自动重授权，耗尽后人工 --> done
 plan-review -- close_approved --> closed
 review -- close_approved --> closed
 closed -- [终态，不可恢复]
@@ -39,7 +39,7 @@ closed -- [终态，不可恢复]
 | `implementing` | 执行已批准计划 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
 | `review` | 本地实现已提交；auto_merge=true 时自动授权合并，否则等待人工 | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
-| `conflict` | Merge 冲突；AI 自动解决一次失败后交还人工 | daemon（AI 一次）+ 人工 | `done` / `refining` |
+| `conflict` | Merge 冲突；auto_merge 任务在 REQ 未变 + 预算未耗尽时 daemon 自动重授权重试，预算耗尽（conflict-resolve-attempted）/ 永久缺陷交还人工 | daemon（AI 预算内）+ 人工 | `done` / `refining` |
 | `done` | 已合并推送；breaking 变更重开（代际重置）或 additive/cosmetic 保持终态 | — | `refining`（breaking）或结束 |
 
 ## 3. 人工 Gate

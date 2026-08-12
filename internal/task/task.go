@@ -362,9 +362,15 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 	case "review":
 		// Fresh review (Round 2 completed, no failure) with auto_merge is
 		// ready so the daemon auto-approves and merges without a manual gate.
-		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && fm.PhaseErrorCode == "")
+		// Merge-failure fallbacks with repair budget left also enter the
+		// batch so the daemon's canAutoApproveMerge re-authorizes them
+		// (TASK-051/059: a strict empty-phase-error requirement stranded
+		// auto_merge tasks forever). Permanent defects (gh unavailable,
+		// wrong remote) and exhausted budgets are coarse-filtered here; the
+		// gate makes the precise REQ-hash/budget decision.
+		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && !isPermanentMergeDefect(fm.PhaseErrorCode))
 	case "conflict":
-		return fm.PendingReq || fm.MergeApproved
+		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && !isPermanentMergeDefect(fm.PhaseErrorCode))
 	case "done":
 		// Done with an unmerged PR (merge_status != merged + PR/branch
 		// exists) reopens the merge flow: the task previously stalled in
@@ -376,6 +382,15 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 	default:
 		return false
 	}
+}
+
+// isPermanentMergeDefect reports whether a merge failure code is a permanent
+// environment/config defect that no retry can fix (gh CLI unavailable or the
+// origin remote points at the wrong repository). Both require a human action
+// (gh auth login / config fix); everything else — conflicts, CI failures,
+// base-commit drift — is re-attemptable while the repair budget lasts.
+func isPermanentMergeDefect(phaseErrorCode string) bool {
+	return phaseErrorCode == "GITHUB_UNAVAILABLE" || phaseErrorCode == "REPO_MISMATCH"
 }
 
 // OffPeakFn is the off-peak evaluator used by readiness checks. The daemon

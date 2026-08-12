@@ -50,9 +50,13 @@ func TestIsReadyForMerge(t *testing.T) {
 		{name: "review pending requirement", status: "review", pendingReq: true, want: true},
 		{name: "review auto-merge", status: "review", autoMerge: true, want: true},
 		{name: "review auto-merge disabled", status: "review", autoMerge: false, want: false},
-		{name: "review auto-merge with failure", status: "review", autoMerge: true, phaseError: "checks failed", want: false},
+		{name: "review auto-merge with re-attemptable failure", status: "review", autoMerge: true, phaseError: "GIT_CONFLICT", want: true},
+		{name: "review auto-merge with permanent gh defect", status: "review", autoMerge: true, phaseError: "GITHUB_UNAVAILABLE", want: false},
+		{name: "review auto-merge with permanent repo defect", status: "review", autoMerge: true, phaseError: "REPO_MISMATCH", want: false},
 		{name: "review auto-merge with pending req", status: "review", autoMerge: true, pendingReq: true, want: true},
-		{name: "conflict never auto-merge", status: "conflict", autoMerge: true, want: false},
+		{name: "conflict auto-merge re-attemptable", status: "conflict", autoMerge: true, phaseError: "BASE_COMMIT_MISMATCH", want: true},
+		{name: "conflict auto-merge permanent defect", status: "conflict", autoMerge: true, phaseError: "GITHUB_UNAVAILABLE", want: false},
+		{name: "conflict manual stays manual", status: "conflict", autoMerge: false, want: false},
 	}
 
 	for _, tt := range tests {
