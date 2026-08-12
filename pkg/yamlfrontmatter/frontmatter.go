@@ -332,6 +332,31 @@ var taskFieldOrder = []string{
 	"switch_settings",
 }
 
+// reqFieldOrder is the canonical REQ frontmatter key order, mirroring
+// templates/REQ-000-template.md. REQ documents are much smaller than TASK
+// documents; the order keeps identity/status first, then decision fields,
+// then timestamps.
+var reqFieldOrder = []string{
+	// Identity (required, human-owned).
+	"id", "title", "project_id", "project",
+	// Decision / metadata (template optional fields, user-owned).
+	"priority", "stage", "appetite", "type", "depends_on",
+	"author", "reviewer", "tags", "no_gos",
+	// Timestamps.
+	"created", "updated",
+}
+
+// reqFieldDefaults maps backfillable REQ keys to their template defaults.
+// Required identity fields (id/title/project_id) and optional decision
+// fields (priority/stage/depends_on/...) are deliberately absent: a missing
+// required field marks an incomplete document that must not be silently
+// fabricated, and optional fields carry system fallbacks (auto-staging,
+// priority assessment, resolveProjectField) — fabricating them would mask
+// the author's omission.
+var reqFieldDefaults = map[string]interface{}{
+	"tags": []string{},
+}
+
 // taskFieldDefaults maps backfillable keys to their template default values.
 // Required human fields (id/title/project/project_id/req_doc/assignee) are
 // deliberately absent: a missing required field marks an unready task and
@@ -437,13 +462,22 @@ var fieldOrderIndex = func() map[string]int {
 // semantics: it derives from whether priority was set. Returns nil when
 // nothing is missing.
 func missingDefaults(doc *yaml.Node, fm *Frontmatter) []FieldDefault {
+	return missingDefaultsWith(doc, fm, taskFieldOrder, taskFieldDefaults)
+}
+
+// missingDefaultsWith is missingDefaults parameterized by the canonical
+// field order and backfill table (TASK documents vs REQ documents).
+func missingDefaultsWith(doc *yaml.Node, fm *Frontmatter, order []string, defaults map[string]interface{}) []FieldDefault {
 	var missing []FieldDefault
-	for _, key := range taskFieldOrder {
-		if def, ok := taskFieldDefaults[key]; ok && !hasFrontmatterKey(doc, key) {
+	for _, key := range order {
+		if def, ok := defaults[key]; ok && !hasFrontmatterKey(doc, key) {
 			missing = append(missing, FieldDefault{Key: key, Value: def})
 		}
 	}
-	if !hasFrontmatterKey(doc, "priority_assessment_status") {
+	// priority_assessment_status follows Parse's compatibility semantics: it
+	// derives from whether priority was set (TASK documents only — REQ order
+	// does not declare it).
+	if !hasFrontmatterKey(doc, "priority_assessment_status") && indexOfKey(order, "priority_assessment_status") >= 0 {
 		value := "pending"
 		if fm.Priority != "" {
 			value = "completed"
@@ -454,6 +488,16 @@ func missingDefaults(doc *yaml.Node, fm *Frontmatter) []FieldDefault {
 		return nil
 	}
 	return missing
+}
+
+// indexOfKey returns the position of key in order, or -1.
+func indexOfKey(order []string, key string) int {
+	for i, k := range order {
+		if k == key {
+			return i
+		}
+	}
+	return -1
 }
 
 // MissingDefaults returns the ordered list of frontmatter keys absent from
@@ -485,17 +529,22 @@ func MissingDefaults(data []byte) ([]FieldDefault, error) {
 }
 
 // buildCanonicalMapping returns the frontmatter mapping content reordered to
-// taskFieldOrder: existing key nodes are reused verbatim (comments and styles
-// preserved), absent backfillable keys are inserted at their canonical
-// position, and unknown keys keep their relative order appended at the end.
-// Returns the new content and whether its key sequence differs from the
-// input.
-func buildCanonicalMapping(mapping *yaml.Node, missing []FieldDefault) ([]*yaml.Node, bool) {
+// the given canonical field order (taskFieldOrder for TASK documents,
+// reqFieldOrder for REQ documents): existing key nodes are reused verbatim
+// (comments and styles preserved), absent backfillable keys are inserted at
+// their canonical position, and unknown keys keep their relative order
+// appended at the end. Returns the new content and whether its key sequence
+// differs from the input.
+func buildCanonicalMapping(mapping *yaml.Node, missing []FieldDefault, order []string) ([]*yaml.Node, bool) {
 	existing := make(map[string][2]*yaml.Node, len(mapping.Content)/2)
+	orderIndex := make(map[string]int, len(order))
+	for i, key := range order {
+		orderIndex[key] = i
+	}
 	var unknown []*yaml.Node
 	for i := 0; i < len(mapping.Content); i += 2 {
 		key := mapping.Content[i].Value
-		if _, known := fieldOrderIndex[key]; known {
+		if _, known := orderIndex[key]; known {
 			existing[key] = [2]*yaml.Node{mapping.Content[i], mapping.Content[i+1]}
 		} else {
 			unknown = append(unknown, mapping.Content[i], mapping.Content[i+1])
@@ -507,7 +556,7 @@ func buildCanonicalMapping(mapping *yaml.Node, missing []FieldDefault) ([]*yaml.
 	}
 
 	newContent := make([]*yaml.Node, 0, len(mapping.Content)+2*len(missing))
-	for _, key := range taskFieldOrder {
+	for _, key := range order {
 		if pair, ok := existing[key]; ok {
 			newContent = append(newContent, pair[0], pair[1])
 			continue
@@ -545,16 +594,28 @@ func buildCanonicalMapping(mapping *yaml.Node, missing []FieldDefault) ([]*yaml.
 // overwritten; created is backfilled once when absent and updated refreshes,
 // matching Update's timestamp semantics.
 func NormalizeTaskFrontmatter(path string) (bool, error) {
+	return normalizeFrontmatter(path, taskFieldOrder, taskFieldDefaults)
+}
+
+// NormalizeReqFrontmatter backfills missing REQ schema fields and reorders
+// the frontmatter to the canonical reqFieldOrder. Required human fields
+// (id/title) and optional decision fields (priority/stage/depends_on/...) are
+// deliberately not fabricated: a missing required field must surface as an
+// unready document, and optional fields carry system fallbacks. Returns true
+// when the document was rewritten.
+func NormalizeReqFrontmatter(path string) (bool, error) {
+	return normalizeFrontmatter(path, reqFieldOrder, reqFieldDefaults)
+}
+
+// normalizeFrontmatter is the shared TASK/REQ frontmatter normalizer: reads
+// the document, backfills missing schema fields per the given order/defaults,
+// reorders keys canonically (unknown keys keep relative order, appended),
+// and rewrites atomically. Existing values are never overwritten.
+func normalizeFrontmatter(path string, order []string, defaults map[string]interface{}) (bool, error) {
 	cleanPath, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return false, fmt.Errorf("resolve task path: %w", err)
 	}
-	unlock, err := acquireTaskLock(cleanPath)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", cleanPath, err)
@@ -599,7 +660,7 @@ func NormalizeTaskFrontmatter(path string) (bool, error) {
 		return false, fmt.Errorf("parse frontmatter: %w", err)
 	}
 	now := time.Now().Format("2006-01-02T15:04:05-07:00")
-	missing := missingDefaults(&doc, &fm)
+	missing := missingDefaultsWith(&doc, &fm, order, defaults)
 	if created := extractFieldRaw(fmText, "created"); created == "" || created == `""` {
 		missing = append(missing, FieldDefault{Key: "created", Value: now})
 	}
@@ -608,7 +669,7 @@ func NormalizeTaskFrontmatter(path string) (bool, error) {
 	// appending it at the tail, so a single normalization pass converges.
 	missing = append(missing, FieldDefault{Key: "updated", Value: now})
 
-	newContent, changed := buildCanonicalMapping(mapping, missing)
+	newContent, changed := buildCanonicalMapping(mapping, missing, order)
 	if !changed {
 		return false, nil
 	}
