@@ -38,16 +38,18 @@ flowchart TD
     PLAN --> PR[plan-review]
     PR -->|plan_approved=true| R2[implementing<br/>/obsidian-task-runner-round2 + worktree]
     R2 -->|全部 AC 完成| RV[review]
-    RV -->|auto_merge 默认自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>push → PR → CI checks]
+    RV -->|auto_merge 自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>worktree sync → push → PR → CI checks]
     MERGE -->|SUCCESS| DONE[done<br/>+ 知识库提取]
     MERGE -.->|环境性失败：2min 退避自动重试 ×5| MERGE
     MERGE -->|REPO_MISMATCH 目标仓库不符<br/>硬失败不重试| RV
-    MERGE -->|CONFLICTING| AI[AI 自动解决一次<br/>/obsidian-task-runner-merge]
+    MERGE -->|CONFLICTING| AI[AI 自动解决<br/>/obsidian-task-runner-merge 预算内多次]
     AI -->|本地解决 + 测试通过| MERGE
     AI -->|失败| CF[conflict<br/>critical 通知]
-    CF -->|人工解决 + merge_approved=true| MERGE
+    CF -.->|auto_merge + REQ 未变 + 预算未耗尽<br/>自动重授权（canAutoApproveMerge）| MERGE
+    CF -->|预算耗尽 / 永久缺陷| 人工[清 merge_retry_count 重授权 或 replan]
+    人工 --> MERGE
     MERGE -->|FAILURE / head 变更| RV
-    RV -->|人工处理后重授权| MERGE
+    RV -.->|auto_merge + REQ 未变 + 预算未耗尽<br/>自动重授权| MERGE
     RV -->|gh 缺失 / REQ 变更| REFINE
     DONE -->|pending_req=true| REFINE
     DONE -->|最终验收产品| ACCEPT[验收通过 / 改 REQ 重新规划]
@@ -99,7 +101,7 @@ flowchart TD
 - **scan 首步 Normalize frontmatter**：每轮 scan 自动补齐任务文档缺失的 schema 字段（默认值，不覆盖已有值、必填字段不补），并按规范序维护字段顺序（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 修复预算内可重复**：`merge_retry_count < max_auto_merge_fixes` 时失败回退自动重授权并再次触发 AI 修复；`merge_status=conflict-resolve-attempted` 标记预算耗尽，交还用户。
-- **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退在 REQ 未变 + 预算未耗尽时**自动重新授权**（TASK-051/059：旧版要求空 phase_error_code，导致 auto_merge 任务永久卡 conflict）。
+- **自动合并门禁**：`pending_req=true` 时任何路径禁止合并（绝对门禁）；失败回退在 REQ 未变 + 预算未耗尽时**自动重新授权**（TASK-051/059：旧版要求空 phase_error_code，导致 auto_merge 任务永久卡 conflict）。批次入口同步放宽：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）——其余失败回退可进入批次，由 `canAutoApproveMerge` 做精确的 REQ-hash/预算判定。
 - **阶段化确定性分组取代 PM 手工分阶段**：早期阶段规划由 PM 会话完成（release-manager 首轮分阶段耗数小时 LLM 轮次且不可靠）；现由 daemon `processAutoStaging` 秒级确定性拓扑分组（幂等、增量追加），PM 只保留语义层（目标描述、边界调整、新需求归入/建议增阶段）与阶段评审。阶段归属以 `stage` 字段为权威（TASK 从 REQ 继承），不依赖 Stage-Plan 的 tasks 列表。
 - **阶段完成=任务全部 done+merged**：done 但 `merge_status != merged`（stale PR）不计入；由 PR 闭环先收敛再评审。阶段评审产出 `Notes/Stage-Review.md`，用户填「评审决策:」后 PM distribute 分发（continue/supplement/end），end 路径后续阶段任务 close——功能满足即结束，不维护积压。
 
@@ -206,14 +208,14 @@ stateDiagram-v2
     implementing --> blocked: 阶段失败（自动恢复 2 次后停止）
     implementing --> review: 全部 AC、测试和验收完成
 
-    review --> refining: pending_req=true or rework_resolution=replan
-    review --> implementing: rework_resolution=resume
     review --> done: auto_merge 自动授权 (merge_approved=true) and pending_req=false (含 checks 等待)
     review --> conflict: Merge 冲突（AI 自动修复，预算内多次自动重试，耗尽后人工决策）
+    review --> review: 失败回退自动重授权（auto_merge + REQ 未变 + 预算未耗尽）
     review --> closed: [*] rework_resolution=close + close_approved=true + closure_reason/note 完整（duplicate 还需 replacement_task）
 
     conflict --> refining: pending_req=true，取消旧 Merge
-    conflict --> done: merge_approved=true and pending_req=false
+    conflict --> done: auto_merge 自动重授权（REQ 未变 + 预算未耗尽）and pending_req=false
+    conflict --> conflict: 预算内失败回退自动重授权（canAutoApproveMerge）
 
     done --> refining: breaking REQ 变更（代际重置）
     done --> [*]: 终态 / additive / cosmetic
