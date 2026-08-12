@@ -77,7 +77,21 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 		urgency = "normal"
 		icon = "emblem-system"
 		title = fmt.Sprintf("⏳ T%s %s: 仍在执行中", fm.ID, fm.Title)
-		body = "任务未正常结束（可能进程中断）"
+		if fm.PhaseErrorCode != "" {
+			// A phase actually failed/interrupted — surface the cause, not a
+			// generic "may have crashed" guess.
+			urgency = "critical"
+			icon = "dialog-error"
+			title = fmt.Sprintf("⚠️ T%s %s: 实现会话异常", fm.ID, fm.Title)
+			body = fmt.Sprintf("阶段错误：%s（%s）", fm.PhaseError, fm.PhaseErrorCode)
+		} else {
+			// Normal completion that left the task implementing (e.g. an
+			// entry-gate re-verification round): the session ended fine; the
+			// task is waiting on an upstream fact. The old copy ("任务未正常
+			// 结束（可能进程中断）") was misleading — it fired on every
+			// completed implementing session, not only on crashes.
+			body = "实现会话正常结束，等待上游依赖/门禁（daemon 冷却后自动复验）"
+		}
 	case "error", "failed":
 		urgency = "critical"
 		icon = "dialog-error"

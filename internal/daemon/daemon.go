@@ -2186,12 +2186,13 @@ func (r *Runner) ensureReqHash(taskPath, reqDoc string) {
 // checkpoint_commit — the entry-gate re-verification rounds that produce no
 // code change (TASK-071: P15 gate check re-ran 20+ times/day against a stale
 // upstream, each round a full LLM session). Every such completion raises the
-// cooldown level; real progress (checkpoint written, status changed, plan
-// version bumped) resets it. State is in-memory: a daemon restart re-arms
-// from level 0, which is acceptable because restarts are rare and the first
-// no-progress round re-establishes the cooldown.
+// cooldown level; real progress (checkpoint written, status changed) resets
+// it. The deadline is persisted in the task frontmatter (round2_stall_until)
+// so a daemon restart does not re-arm the cooldown — TASK-071 showed
+// restarts were frequent enough that a purely in-memory stall state let the
+// loop re-dispatch immediately after every restart.
 type round2Stall struct {
-	lastFinish time.Time
+	until      time.Time
 	checkpoint string
 	level      int
 }
@@ -2214,10 +2215,61 @@ func round2StallCooldown(level int) time.Duration {
 	return round2StallBaseCooldown << uint(level)
 }
 
+// round2StallDeadline loads the persisted no-progress deadline for a task
+// ("" when none or not parseable). The in-memory stall map is the live
+// source; the frontmatter value covers daemon restarts.
+func round2StallDeadline(fm *yamlfrontmatter.Frontmatter) (time.Time, bool) {
+	if fm.Round2StallUntil == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, fm.Round2StallUntil)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// round2StallActive returns the active no-progress cooldown deadline for a
+// task, or false when none applies. In-memory state wins; the persisted
+// frontmatter deadline is consulted as a fallback (daemon restarted since
+// the stall was recorded) and hydrated into memory. Expired deadlines are
+// dropped from both sources.
+func (r *Runner) round2StallActive(taskPath string) (time.Time, bool) {
+	if stall, ok := r.round2Stalls.Load(taskPath); ok {
+		s := stall.(round2Stall)
+		if time.Now().Before(s.until) {
+			return s.until, true
+		}
+		r.round2Stalls.Delete(taskPath)
+		return time.Time{}, false
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return time.Time{}, false
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return time.Time{}, false
+	}
+	until, ok := round2StallDeadline(fm)
+	if !ok {
+		return time.Time{}, false
+	}
+	if time.Now().Before(until) {
+		// Hydrate so later scans use the in-memory path.
+		r.round2Stalls.Store(taskPath, round2Stall{until: until})
+		return until, true
+	}
+	// Expired persisted deadline: clear it.
+	_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"round2_stall_until": ""})
+	return time.Time{}, false
+}
+
 // recordRound2Completion updates the no-progress stall state after a Round 2
 // session. Sessions that advanced the task (checkpoint_commit written, or the
 // task left implementing) reset the cooldown; sessions that left the task
-// implementing without a checkpoint raise it.
+// implementing without a checkpoint raise it. The new deadline is persisted
+// to frontmatter round2_stall_until (RFC3339).
 func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 	data, err := os.ReadFile(taskPath)
 	if err != nil {
@@ -2229,6 +2281,7 @@ func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 	}
 	if fm.Status != "implementing" || fm.CheckpointCommit != "" {
 		r.round2Stalls.Delete(taskPath)
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"round2_stall_until": ""})
 		return
 	}
 	level := 0
@@ -2238,8 +2291,12 @@ func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 			level = round2StallMaxLevel
 		}
 	}
-	r.round2Stalls.Store(taskPath, round2Stall{lastFinish: time.Now(), checkpoint: fm.CheckpointCommit, level: level})
-	r.logger.Printf("task %s: round2 no-progress completion recorded (cooldown level %d)", taskID, level)
+	until := time.Now().Add(round2StallCooldown(level))
+	r.round2Stalls.Store(taskPath, round2Stall{until: until, checkpoint: fm.CheckpointCommit, level: level})
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"round2_stall_until": until.Format(time.RFC3339)}); err != nil {
+		r.logger.Printf("task %s: persist round2 stall deadline: %v", taskID, err)
+	}
+	r.logger.Printf("task %s: round2 no-progress completion recorded (cooldown level %d, retry after %s)", taskID, level, until.Format("15:04:05"))
 }
 
 func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) int {
@@ -2424,7 +2481,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				// Resumed sessions (daemon restarts) must not re-spam the
 				// "OMP 正在执行" notification on every scan.
 				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
-			} else if stall, ok := r.round2Stalls.Load(taskPath); ok {
+			} else if stallDeadline, stalled := r.round2StallActive(taskPath); stalled {
 				// No-progress cooldown: a Round 2 session that finished
 				// without advancing the task (entry-gate re-verification
 				// with no code change — TASK-071: 20+ identical gate-check
@@ -2432,11 +2489,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				// cooldown doubles per consecutive no-progress completion
 				// so a genuinely stalled task degrades to one cheap retry
 				// every ~10h instead of burning LLM sessions every scan.
-				s := stall.(round2Stall)
-				if wait := round2StallCooldown(s.level); time.Since(s.lastFinish) < wait {
-					r.logger.Printf("task %s: round2 no-progress cooldown (level %d, retry in %v)", t.ID, s.level, (wait - time.Since(s.lastFinish)).Round(time.Minute))
-					continue
-				}
+				// The deadline is persisted (round2_stall_until) so daemon
+				// restarts do not re-arm the loop.
+				r.logger.Printf("task %s: round2 no-progress cooldown (retry in %v)", t.ID, time.Until(stallDeadline).Round(time.Minute))
+				continue
 			}
 		default:
 			r.logger.Printf("task %s: unknown dispatch status=%s", t.ID, t.Status)
@@ -2711,15 +2767,20 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 							}
 							r.compactPlanHistory(taskPath, phase)
 							r.validateChangedDocs(repoDir, t.ID, phase)
-							if _, statErr := os.Stat(taskPath); statErr == nil {
-								notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+							fbNotify := true
+							if phase == "round2" {
+								r.recordRound2Completion(taskPath, t.ID)
+								_, fbStalledNow := r.round2StallActive(taskPath)
+								fbNotify = !fbStalledNow
+							}
+							if fbNotify {
+								if _, statErr := os.Stat(taskPath); statErr == nil {
+									notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+								}
 							}
 							r.clearPhaseRetry(taskPath, phase)
 							r.clearPhaseError(taskPath, t.ID)
 							r.clearMergeRepairBudget(taskPath, phase)
-							if phase == "round2" {
-								r.recordRound2Completion(taskPath, t.ID)
-							}
 						}
 					}
 				}
@@ -2745,15 +2806,28 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					}
 				}
 			}
-			if _, statErr := os.Stat(taskPath); statErr == nil {
-				notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+			// A no-progress Round 2 completion (entry-gate re-verification)
+			// enters the cooldown; suppress the status notification for it —
+			// the user already knows the task waits on an upstream fact, and
+			// the cooldown log records the retry window. Notify only when
+			// the session was not round2 or made progress (the task left
+			// implementing or wrote a checkpoint).
+			doNotify := true
+			if phase == "round2" {
+				r.recordRound2Completion(taskPath, t.ID)
+				// A no-progress completion re-enters the cooldown; a
+				// progressed completion (checkpoint/status change) does not.
+				_, stalledNow := r.round2StallActive(taskPath)
+				doNotify = !stalledNow
+			}
+			if doNotify {
+				if _, statErr := os.Stat(taskPath); statErr == nil {
+					notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+				}
 			}
 			r.clearPhaseRetry(taskPath, phase)
 			r.clearPhaseError(taskPath, t.ID)
 			r.clearMergeRepairBudget(taskPath, phase)
-			if phase == "round2" {
-				r.recordRound2Completion(taskPath, t.ID)
-			}
 		}
 		if f != nil {
 			if err := f.Close(); err != nil {
