@@ -49,47 +49,48 @@ type Frontmatter struct {
 	CloseApproved  bool     `yaml:"close_approved"`
 
 	// System-owned lifecycle fields.
-	Status              string `yaml:"status"`
-	Maturity            string `yaml:"maturity"`
-	RefineVersion       int    `yaml:"refine_version"`
-	RefineReqHash       string `yaml:"refine_req_hash"`
-	RefineRetryCount    int    `yaml:"refine_retry_count"`
-	AutoResumeCount     int    `yaml:"auto_resume_count"`
-	AutoResumePending   bool   `yaml:"auto_resume_pending"`
-	RefineError         string `yaml:"refine_error"`
-	PlanReqHash         string `yaml:"plan_req_hash"`
-	PlanVersion         int    `yaml:"plan_version"`
-	PlanningRetryCount  int    `yaml:"planning_retry_count"`
-	PhaseError          string `yaml:"phase_error"`
-	PhaseErrorCode      string `yaml:"phase_error_code"`
-	PhaseLog            string `yaml:"phase_log"`
-	BlockedPhase        string `yaml:"blocked_phase"`
-	PendingReq          bool   `yaml:"pending_req"`
-	CheckpointCommit    string `yaml:"checkpoint_commit"`
-	TargetBranch        string `yaml:"target_branch"`
-	PRURL               string `yaml:"pr_url"`
-	Completed           string `yaml:"completed"`
-	AdrApproved         bool   `yaml:"adr_approved"`
-	AdrProposed         any    `yaml:"adr_proposed"`
-	AdrWritten          any    `yaml:"adr_written"`
-	KnowledgeExtracted   bool     `yaml:"knowledge_extracted"`
-	KnowledgeExtractErr  string   `yaml:"knowledge_extract_error"`
-	KnowledgeRefs        []string `yaml:"knowledge_refs"`
-	KnowledgeApplied     string   `yaml:"knowledge_applied"`
-	GrillOwner          string `yaml:"grill_owner"`
-	GrillStartedAt      string `yaml:"grill_started_at"`
-	GrillHeartbeatAt    string `yaml:"grill_heartbeat_at"`
-	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
-	GrillDone           bool   `yaml:"grill_done"`
-	GrillResolution     string `yaml:"grill_resolution"`
+	Status              string   `yaml:"status"`
+	Maturity            string   `yaml:"maturity"`
+	RefineVersion       int      `yaml:"refine_version"`
+	RefineReqHash       string   `yaml:"refine_req_hash"`
+	RefineRetryCount    int      `yaml:"refine_retry_count"`
+	AutoResumeCount     int      `yaml:"auto_resume_count"`
+	AutoResumePending   bool     `yaml:"auto_resume_pending"`
+	RefineError         string   `yaml:"refine_error"`
+	PlanReqHash         string   `yaml:"plan_req_hash"`
+	PlanVersion         int      `yaml:"plan_version"`
+	PlanningRetryCount  int      `yaml:"planning_retry_count"`
+	PhaseError          string   `yaml:"phase_error"`
+	PhaseErrorCode      string   `yaml:"phase_error_code"`
+	PhaseLog            string   `yaml:"phase_log"`
+	BlockedPhase        string   `yaml:"blocked_phase"`
+	PendingReq          bool     `yaml:"pending_req"`
+	CheckpointCommit    string   `yaml:"checkpoint_commit"`
+	TargetBranch        string   `yaml:"target_branch"`
+	PRURL               string   `yaml:"pr_url"`
+	Completed           string   `yaml:"completed"`
+	ReopenCount         int      `yaml:"reopen_count"`
+	AdrApproved         bool     `yaml:"adr_approved"`
+	AdrProposed         any      `yaml:"adr_proposed"`
+	AdrWritten          any      `yaml:"adr_written"`
+	KnowledgeExtracted  bool     `yaml:"knowledge_extracted"`
+	KnowledgeExtractErr string   `yaml:"knowledge_extract_error"`
+	KnowledgeRefs       []string `yaml:"knowledge_refs"`
+	KnowledgeApplied    string   `yaml:"knowledge_applied"`
+	GrillOwner          string   `yaml:"grill_owner"`
+	GrillStartedAt      string   `yaml:"grill_started_at"`
+	GrillHeartbeatAt    string   `yaml:"grill_heartbeat_at"`
+	GrillTimeoutMinutes int      `yaml:"grill_timeout_minutes"`
+	GrillDone           bool     `yaml:"grill_done"`
+	GrillResolution     string   `yaml:"grill_resolution"`
 	GrillContext        string   `yaml:"grill_context"`
-	GrillContinue       bool   `yaml:"grill_continue"`
-	GrillPrevStatus     string `yaml:"grill_prev_status"`
-	GrillParked         bool   `yaml:"grill_parked"`
-	GrillRepeat         int    `yaml:"grill_repeat"`
-	AutoAccepted        string `yaml:"auto_accepted"`
-	ReqRefineCount      int    `yaml:"req_refine_count"`
-	TaskSchemaVersion   int    `yaml:"task_schema_version"`
+	GrillContinue       bool     `yaml:"grill_continue"`
+	GrillPrevStatus     string   `yaml:"grill_prev_status"`
+	GrillParked         bool     `yaml:"grill_parked"`
+	GrillRepeat         int      `yaml:"grill_repeat"`
+	AutoAccepted        string   `yaml:"auto_accepted"`
+	ReqRefineCount      int      `yaml:"req_refine_count"`
+	TaskSchemaVersion   int      `yaml:"task_schema_version"`
 
 	// Shared fields: daemon proposes, users may override.
 	Priority                    string `yaml:"priority"`
@@ -252,6 +253,13 @@ func Parse(data []byte) (*Frontmatter, error) {
 	if !hasFrontmatterKey(&doc, "auto_merge") {
 		fm.AutoMerge = true
 	}
+	// auto_approve defaults to true (symmetric with auto_merge): a fresh plan
+	// counts as approved and plan-review moves straight to implementing —
+	// Grilling is the only manual gate. Tasks opting out set auto_approve:
+	// false explicitly in frontmatter.
+	if !hasFrontmatterKey(&doc, "auto_approve") {
+		fm.AutoApprove = true
+	}
 	applyCompatibilityDefaults(&fm)
 	return &fm, nil
 }
@@ -302,8 +310,8 @@ var taskFieldOrder = []string{
 	// Lifecycle (daemon-maintained).
 	"maturity", "refine_version", "refine_req_hash", "refine_retry_count",
 	"refine_error", "plan_req_hash", "plan_version", "planning_retry_count",
-	"checkpoint_commit", "target_branch", "pr_url", "completed",
-	"merge_status", "approved_head", "task_schema_version", "req_refine_count",
+	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
+	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
 	// Blocking and failure state (daemon-maintained, least user-facing).
 	"blocked_phase", "phase_error", "phase_error_code", "phase_log",
 	"auto_resume_pending", "auto_resume_count",
@@ -331,6 +339,7 @@ var taskFieldOrder = []string{
 var taskFieldDefaults = map[string]interface{}{
 	// Gate fields (template 🔵 section).
 	"plan_approved":   false,
+	"auto_approve":    true,
 	"auto_merge":      true,
 	"merge_approved":  false,
 	"adr_approved":    false,
@@ -356,13 +365,15 @@ var taskFieldDefaults = map[string]interface{}{
 	"target_branch":        "",
 	"pr_url":               "",
 	"completed":            "",
+	"reopen_count":         0,
 	"task_schema_version":  1,
 	"auto_resume_pending":  false,
 	"auto_resume_count":    0,
 
 	// Merge loop fields.
-	"merge_status":  "",
-	"approved_head": "",
+	"merge_status":      "",
+	"approved_head":     "",
+	"merge_retry_count": 0,
 
 	// Grilling lease fields.
 	"grill_owner":           "",
@@ -409,7 +420,7 @@ var taskFieldDefaults = map[string]interface{}{
 	"knowledge_extracted":            false,
 	"knowledge_refs":                 []interface{}{},
 	"knowledge_applied":              "",
-	"knowledge_extract_error":       "",
+	"knowledge_extract_error":        "",
 }
 
 // fieldOrderIndex maps canonical key → position in taskFieldOrder.

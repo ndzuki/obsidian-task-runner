@@ -61,6 +61,17 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 			if fm.Status == "done" || fm.Status == "closed" || fm.PendingReq {
 				continue
 			}
+			// A task that re-entered the planning lifecycle after its baseline
+			// PR merged (incremental replan: plan_version >= 2) still owes a new
+			// delivery — the historical merge_status=merged is the baseline's
+			// evidence, not the increment's. Auto-closing it would silently drop
+			// the pending increment (observed: TASK-068 — plan v3 was written to
+			// plan-review and closed the next scan once Round 1 cleared
+			// pending_req). plan_version < 2 keeps the original stale-closure
+			// semantics (single delivery whose PR merged).
+			if fm.PlanVersion >= 2 {
+				continue
+			}
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{"status": "done"}); err != nil {
 				r.logger.Printf("auto-close %s: %v", entry.Name(), err)
 				continue
@@ -146,7 +157,7 @@ func (r *Runner) validateDependencyRefs() {
 		}
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
 		tasksDir := filepath.Join(projDir, "Tasks")
-		taskIDs, unparsable, err := r.depIDs(tasksDir)
+		taskIDs, taskStatus, closedReason, closedReplacement, unparsable, err := r.depIDs(tasksDir)
 		if err != nil {
 			continue
 		}
@@ -174,6 +185,18 @@ func (r *Runner) validateDependencyRefs() {
 				}
 				id := strings.TrimPrefix(ref, "TASK-")
 				if taskIDs[id] {
+					// Only non-terminal tasks can be starved by a closed
+					// upstream. already-implemented closures delivered their
+					// work, and duplicates with a replacement resolve through
+					// the replacement; neither is a permanent dependency risk.
+					if fm.Status != "done" && fm.Status != "closed" && closedNeverSatisfiable(taskStatus[id], closedReason[id], closedReplacement[id]) {
+						key := projectEntry.Name() + "|blocked_by_closed|" + fm.ID + "->" + id
+						if !r.diagNotified(key) {
+							r.logger.Printf("health %s: TASK-%s blocked_by references closed TASK-%s (never satisfiable)", projectEntry.Name(), fm.ID, id)
+							r.notifyDiag(projectEntry.Name(), "依赖引用已关闭任务",
+								"TASK-"+fm.ID+" 的 blocked_by 引用了已关闭的 TASK-"+id+"（closed 为终态且无已交付替代，依赖永不满足）；请修正引用或重新打开该任务（otg update-status blocked_by=...）")
+						}
+					}
 					continue
 				}
 				if unparsable[id] {
@@ -195,18 +218,37 @@ func (r *Runner) validateDependencyRefs() {
 	}
 }
 
-// depIDs returns the set of task ids present in a project's Tasks dir, plus
-// the set of ids whose file exists but failed to parse (keyed by the id
-// embedded in the filename). A task file being written back by an OMP session
-// can transiently fail to parse; treating that as "missing" would fire false
-// broken-reference notifications, so callers must consult unparsable before
-// declaring a reference dangling.
-func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, unparsable map[string]bool, err error) {
+// closedNeverSatisfiable reports whether a closed upstream blocks its
+// downstream forever. Closure reasons accept both the documented hyphenated
+// form and the legacy underscored form.
+func closedNeverSatisfiable(status, reason, replacement string) bool {
+	if status != "closed" {
+		return false
+	}
+	normalized := strings.ReplaceAll(reason, "-", "_")
+	switch normalized {
+	case "already_implemented":
+		return false
+	case "duplicate":
+		return replacement == ""
+	default:
+		return true
+	}
+}
+
+// depIDs returns parseable task identities and lifecycle metadata, plus ids
+// whose files exist but are temporarily unparsable. The closure metadata lets
+// dependency diagnostics distinguish delivered already-implemented closures
+// from genuinely unsatisfiable cancelled/wont-fix closures.
+func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, statusByID, closedReason, closedReplacement map[string]string, unparsable map[string]bool, err error) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	ids = make(map[string]bool, len(entries))
+	statusByID = make(map[string]string, len(entries))
+	closedReason = make(map[string]string, len(entries))
+	closedReplacement = make(map[string]string, len(entries))
 	unparsable = make(map[string]bool)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
@@ -230,11 +272,12 @@ func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, unparsable map[st
 			continue
 		}
 		ids[fm.ID] = true
+		statusByID[fm.ID] = fm.Status
+		closedReason[fm.ID] = fm.ClosureReason
+		closedReplacement[fm.ID] = fm.ReplacementTask
 	}
-	return ids, unparsable, nil
+	return ids, statusByID, closedReason, closedReplacement, unparsable, nil
 }
-
-
 
 // detectPlanFileOverlaps warns when two concurrently implementing tasks of
 // the same project plan to modify the same file (Round 1 writes plan_files).

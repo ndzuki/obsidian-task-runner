@@ -109,7 +109,7 @@ func TestApplyStageDecisionEnd(t *testing.T) {
 		return path
 	}
 	ph1 := writeTask("001", "P1", "done")
-	ph2 := writeTask("002", "P2", "implementing")
+	ph2 := writeTask("002", "P2", "ready")
 
 	runner := flipRunner(t, vault)
 	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", projDir, "test")
@@ -129,6 +129,36 @@ func TestApplyStageDecisionEnd(t *testing.T) {
 	data, _ = os.ReadFile(ph2)
 	if !strings.Contains(string(data), "status: closed") || !strings.Contains(string(data), "closure_reason: cancelled") {
 		t.Fatalf("phase-2 task not closed:\n%s", data)
+	}
+}
+
+func TestApplyStageDecisionEndRejectsActiveLaterTask(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(tasksDir, "TASK-002-active.md")
+	if err := os.WriteFile(active, []byte("---\nid: \"002\"\nstatus: implementing\nstage: \"P2\"\nplan_version: 1\ntarget_branch: task/002-active\n---\n# T\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := flipRunner(t, vault)
+	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", projDir, "test")
+	if flipped || out != flipPlanTemplate {
+		t.Fatalf("end with active later task must not flip: flipped=%v summary=%q", flipped, summary)
+	}
+	if !strings.Contains(summary, "TASK-002 (implementing)") {
+		t.Fatalf("summary = %q, want active task evidence", summary)
+	}
+	data, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "status: closed") {
+		t.Fatalf("active task must not be closed:\n%s", data)
 	}
 }
 
@@ -154,6 +184,13 @@ func TestFlipStageReviewDecisionIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(notesDir, "Stage-Plan.md"), []byte(flipPlanTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-002-ready.md"), []byte("---\nid: \"002\"\nstatus: ready\nstage: \"P2\"\n---\n# T\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeReview := func(decision string) {

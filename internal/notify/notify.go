@@ -87,7 +87,19 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 		urgency = "normal"
 		icon = "dialog-warning"
 		title = fmt.Sprintf("⏸️ T%s %s: 已被阻塞", fm.ID, fm.Title)
-		body = "缺少必填字段或被依赖阻塞，请检查 blocked_by 和必填字段"
+		switch fm.PhaseErrorCode {
+		case "PREREQUISITE_SMOKE_FAILED":
+			// Entry gate: the blocker is an upstream fact (dependency PR
+			// merged / task done), which the daemon re-checks every scan —
+			// no user action needed beyond merging the upstream PR.
+			body = "前置门禁未通过：上游依赖事实未收敛（PR 未合入/依赖未 done），daemon 按事实自动恢复中，无需人工"
+		case "PHASE_INTERRUPTED":
+			body = "阶段被 daemon 重启中断，重启后自动恢复"
+		case "MODEL_FAILED", "MODEL_QUOTA_EXHAUSTED", "PHASE_TIMEOUT":
+			body = "阶段执行失败（" + fm.PhaseErrorCode + "），daemon 自动重试中"
+		default:
+			body = "缺少必填字段或被依赖阻塞，请检查 blocked_by 和必填字段"
+		}
 	case "refining":
 		urgency = "low"
 		icon = "emblem-system"
@@ -230,6 +242,19 @@ func kittyAvailable() bool {
 	return err == nil
 }
 
+// ompExecPath resolves the absolute path of the omp binary so tabs launched
+// via kitty @ launch survive the kitty server's own environment: launched
+// children inherit the kitty instance's PATH (not the daemon's), which often
+// lacks omp. Falls back to the bare name when omp is not resolvable here.
+func ompExecPath() string {
+	path, err := exec.LookPath("omp")
+	if err != nil {
+		log.Printf("grilling tab: omp not in daemon PATH: %v (falling back to bare omp)", err)
+		return "omp"
+	}
+	return path
+}
+
 // kittyLaunchEnv returns the environment for kitty control commands,
 // auto-detecting the socket when KITTY_LISTEN_ON is unset (systemd services
 // lack it).
@@ -306,16 +331,11 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 	lsCmd.Env = kittyEnv
 	lsOutput, err := lsCmd.Output()
 	if err != nil {
-		// kitty @ ls failed — fall back to per-task debounce as dedup authority.
-		// If debounce was written within the last interval, treat tab as alive.
-		if data, rdErr := os.ReadFile(kittyDebounceFile(taskID)); rdErr == nil {
-			if t, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); parseErr == nil {
-				if time.Since(t) < kittyDebounceInterval {
-					log.Printf("grilling tab: kitty @ ls failed, treating as dedup via debounce for %s", taskID)
-					return true
-				}
-			}
-		}
+		// kitty @ ls failed — the debounce timestamp was just written by this
+		// call, so the old dedup check here was always fresh and silently
+		// swallowed ls failures (no tab, no desktop fallback). Report and let
+		// the caller fall back to a desktop notification; the daemon's
+		// in-memory reminder debounce still limits frequency.
 		log.Printf("grilling tab: kitty @ ls failed: %v", err)
 		return false
 	}
@@ -359,14 +379,18 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec omp %s`, tid, ttl, rd, fmt.Sprintf("%q", prompt))
+exec "%s" %s`, tid, ttl, rd, ompExecPath(), fmt.Sprintf("%q", prompt))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
 		"bash", "-c", script,
 	)
 	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
-	return cmd.Run() == nil
+	if err := cmd.Run(); err != nil {
+		log.Printf("grilling tab: kitty @ launch failed for %s: %v", taskID, err)
+		return false
+	}
+	return true
 }
 
 // TryKittyDecisionTab opens a Kitty tab with an interactive OMP session that
@@ -416,6 +440,8 @@ func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
 			log.Printf("decision tab: existing tab for %s, skipping", project)
 			return true
 		}
+	} else {
+		log.Printf("decision tab: kitty @ ls failed for %s: %v", project, lsErr)
 	}
 
 	prompt := fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点。
@@ -436,14 +462,18 @@ func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec omp %s`, project, listPath, fmt.Sprintf("%q", prompt))
+exec "%s" %s`, project, listPath, ompExecPath(), fmt.Sprintf("%q", prompt))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
 		"bash", "-c", script,
 	)
 	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
-	return cmd.Run() == nil
+	if err := cmd.Run(); err != nil {
+		log.Printf("decision tab: kitty @ launch failed for %s: %v", project, err)
+		return false
+	}
+	return true
 }
 
 type kittyOSWindow struct {

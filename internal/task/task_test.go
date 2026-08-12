@@ -1059,7 +1059,7 @@ func TestClosedBlockerSatisfaction(t *testing.T) {
 id: "010"
 project: 001-test
 status: closed
-closure_reason: already_implemented
+closure_reason: already-implemented
 `)
 	if !AreBlockersDone(vault, "001-test", []string{"TASK-010"}) {
 		t.Fatal("already_implemented closed blocker should satisfy dependency")

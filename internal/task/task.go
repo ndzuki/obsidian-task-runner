@@ -55,6 +55,7 @@ type ReadyTask struct {
 	GrillTimeoutMinutes      int    `json:"grill_timeout_minutes,omitempty"`
 	RefineReqHash            string `json:"refine_req_hash,omitempty"`
 	PlanReqHash              string `json:"plan_req_hash,omitempty"`
+	MergeRetryCount          int    `json:"merge_retry_count,omitempty"`
 	Maturity                 string `json:"maturity,omitempty"`
 }
 
@@ -225,7 +226,11 @@ func blockerSatisfiedWith(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName
 	if fm.Status != "closed" {
 		return false
 	}
-	switch fm.ClosureReason {
+	// closure_reason is written with hyphens in task documents (SKILL
+	// spec: already-implemented / not-bet / wont-fix) but older code and
+	// some tests use underscores. Normalize so both forms compare equal.
+	reason := strings.ReplaceAll(fm.ClosureReason, "-", "_")
+	switch reason {
 	case "already_implemented":
 		return true
 	case "duplicate":
@@ -481,6 +486,7 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 		GrillTimeoutMinutes:      fm.GrillTimeoutMinutes,
 		RefineReqHash:            fm.RefineReqHash,
 		PlanReqHash:              fm.PlanReqHash,
+		MergeRetryCount:          fm.MergeRetryCount,
 		Maturity:                 fm.Maturity,
 	}
 	return rt, nil

@@ -51,7 +51,7 @@ new_project: false
 # author: ""
 # template: ""  # 旧脚手架提示字段，已由 scaffold 取代；保留向后兼容
 # off_peak_only: false
-# auto_approve: true  # 完全自主任务：首次规划自动 plan_approved，跳过人工审计划（有 ADR 提议时仍强制人工）
+auto_approve: true  # 默认自动批准：grilling 后全自动（计划直接进入实现）；设 false 恢复人工审计划
 
 # 时间戳（系统维护）
 created: ""
@@ -70,8 +70,10 @@ checkpoint_commit: ""
 target_branch: ""
 pr_url: ""
 completed: ""
+reopen_count: 0  # 交付轮次：breaking 需求变更重开 done 任务时 +1；0 = 首次交付
 merge_status: ""
 approved_head: ""
+merge_retry_count: 0  # AI 合并修复预算（冲突/CI 失败共享；merge 成功或新一轮 planning 完成时清零）
 task_schema_version: 1
 req_refine_count: 0  # 需求缺口循环计数：≥3 时 Agent 主动交互，全部 AC 通过后清零
 blocked_phase: ""

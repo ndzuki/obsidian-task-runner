@@ -33,6 +33,8 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - 正确构建：`make build` / `make install-force`；判断已装二进制是否缺 tag：跑 `otg kb search "x"`，报 `no such module: fts5` 即缺 tag，重跑 `make install-force`。
 - 本 repo 的 `go build`/`go test`/CI 全部走 `-tags sqlite_fts5`；新增构建入口（脚本、workflow、容器镜像）必须同样携带，否则知识库功能静默不可用。
 
+**代码注释用英文**（本项目为开源仓库，代码注释与 commit 均遵循英文惯例，对齐 AGENTS.md 例外条款）：任何由本任务体系（refining / round1 / round2 / merge / daemon 自身开发）新增或修改的代码注释一律英文；仅函数签名、导出符号声明等结构性注释可双语。
+
 ## Status Routing（状态路由）
 | status | 行为 |
 |--------|------|
@@ -42,11 +44,11 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | `needs-refining` | 旧版遗留状态；scan 拾起后自动迁移为 needs-grilling（`nextLocalTransition`），随后走正常 Grilling 路径（Kitty tab、提醒、lease） |
 | `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 OMP 会话逐项提问，答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
-| `plan-review` | 等待 plan_approved→Round 2；或 close_approved→closed |
-| `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate |
-| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；rework=close→closed；否则 `review` 状态 auto_merge=true 时 daemon 自动授权合并（conflict 需人工重设 merge_approved） |
-| `done` | pending_req=true 时回 refining；`merge_status != merged` 且有 PR/分支（任务 done 但 PR 从未合入）→ 自动重开 `review` 走 merge 闭环（auto_merge 自动授权）；否则终态 |
-| `closed` | 无需交付终态（Bets, Not Backlogs）。closure_reason: not-bet（评估后不下注）/ already-implemented / duplicate / cancelled / wont-fix。不可自动恢复。重要需求会以新 REQ 形式回来——不维护积压。 |
+| `plan-review` | auto_approve 默认 true（缺失即 true，模板已写入）→ daemon 自动 `plan_approved=true` 转 implementing；显式 `auto_approve: false` 时等待人工 `plan_approved=true`；关闭必须同时满足 `rework_resolution=close` + `close_approved=true` + 合法 `closure_reason` + 非空 `closure_note`（duplicate 还需 `replacement_task`）。**Grilling 是唯一常规人工关卡** |
+| `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate；不会自动转 closed |
+| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；关闭门禁仅对 `review` 生效（conflict 不关闭——先解决合并冲突）；否则 auto_merge=true 时 daemon 自动授权合并——**merge 失败回退（REQ 未变 + 预算未耗尽）同样自动重授权**（`canAutoApproveMerge`：非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷即重试），停机/超时中断保持授权重启自动恢复。AI 修复预算（`merge_retry_count`，上限 `max_auto_merge_fixes`）耗尽后交还用户：① 清计数重授权继续 AI 修复；② replan（review 设 `rework_resolution=replan`；conflict 在 REQ 追加歧义裁决保存→自动转 refining）——详见 `skill://obsidian-task-runner-merge`「预算恢复」 |
+| `done` | REQ 变更按类型路由：`breaking`（含未标注，保守）→ pending_req=true 回 refining，代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted，新一轮交付新 PR）；`additive`（纯增量向后兼容）→ 保持 done，通知建议新建 TASK 承接；`cosmetic`（措辞/格式）→ 忽略；`merge_status != merged` 且有 PR/分支（任务 done 但 PR 从未合入）→ 自动重开 `review` 走 merge 闭环（auto_merge 自动授权）；否则终态；不会自动转 closed |
+| `closed` | 无需交付终态（Bets, Not Backlogs）。仅两条入口：① plan-review/review 的显式关闭门禁（用户批准 + 原因 + 备注）；② Stage-Review 用户决策 `end` 关闭**尚未开始交付**的后续阶段任务。已有计划/分支/PR/checkpoint/merge 状态或处于 planning/implementing/review/conflict 的任务会阻断整次 stage end，禁止自动关闭。closure_reason: not-bet / already-implemented / duplicate / cancelled / wont-fix。不可自动恢复 |
 ## Core Invariants（核心不变量）
 1. MUST route initial tasks through `ready → refining`；REQ 变更按当前状态设置 pending_req 并安全回 refining。
 2. Maturity Gate MUST be fully_mature to enter planning；其他进入 Grilling。
@@ -63,6 +65,8 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 13. **MUST audit code against skill docs on every skill change** — 每次修改本 SKILL.md 或任何阶段 skill 文档时，必须同时审查 Go 代码（`internal/`、`pkg/`）是否实现了文档描述的能力。发现文档超前于代码的缺口，在计划中标注为"代码追赶项"并阻塞 plan-review。
 14. Frontmatter struct (`pkg/yamlfrontmatter/frontmatter.go`) MUST declare all fields referenced in TASK frontmatter schema.
 15. `IsReady()` MUST explicitly handle every status value in the status routing table.
+16. **done 任务仅 breaking（含未标注）变更重开**；additive/cosmetic 不重开已交付终态；重开必须代际重置（reopen_count+1 + 清旧 PR/分支/merge 事实），禁止复用已 MERGED 的旧 PR（会让新交付永远合不进去）。
+17. **merge AI 修复预算（`merge_retry_count`）仅在 merge 成功或新一轮 planning 完成时清零**；replan 不继承旧交付耗尽；预算耗尽后 review 走 `rework_resolution=replan`、conflict 走 REQ 追加歧义裁决自动转 refining，均无需手动解冲突。
 
 ## IDs & Dependencies（ID与依赖）
 - 数字 ID 项目内唯一。
@@ -88,7 +92,8 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 每轮 scan 自动执行，防"任务静默饿死/冲突延迟暴露/队列虚胖"：
 
-- **依赖引用校验**：`blocked_by`/REQ `depends_on` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）；**目标文件存在但 frontmatter 暂解析失败（OMP 会话写回瞬时窗口，如重复 YAML 键）→ 只记 deferring 日志跳过本轮，下一轮自动重查，不误报**。
+- **依赖引用校验**：`blocked_by`/REQ `depends_on` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）；**目标文件存在但 frontmatter 暂解析失败（OMP 会话写回瞬时窗口，如重复 YAML 键）→ 只记 deferring 日志跳过本轮，下一轮自动重查，不误报**；closed 上游按 `closure_reason` 判定：`already-implemented` 视为已交付，`duplicate` 通过 `replacement_task` 解析，均不报警/不阻塞；仅 `cancelled`/`wont-fix`/`not-bet`/空原因等无交付关闭才对非终态下游发一次性「依赖永不满足」通知；done/closed 下游的历史引用不诊断（legacy 噪音）。
+- **依赖链自动恢复**（`resolveBlockedDependencies`）：**任一非终态任务**（blocked/ready/refining/planning/implementing/review 等）的 `blocked_by` 上游若为阶段失败 blocked（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED/空错误码）→ 自动 `resume_approved=true`（上限 2 次、防循环）；此前只扫描 blocked 下游，refining/ready 下游的阻塞上游无人解析（TASK-019 教训）。前置门禁（`PREREQUISITE_SMOKE_FAILED`）仅对 blocked 任务按事实变化恢复。
 - **计划文件重叠预警**：同项目并发 implementing 任务的 `plan_files`（Round 1 写回）重叠 → 一次性通知——把合并冲突信号从 merge 阶段前置到调度阶段。
 - **项目健康诊断**：每轮输出 in-flight / stage 空 / merged-未收口 计数；超阈值（每日一次）通知——`merged 未收口 ≥5 且 in-flight ≥20` 提示跑 `project-rebaseline`；`stage 空 ≥5` 提示 `otg stage-plan init`；in-progress 阶段任务 >8 提示拆阶段。
 - **任务自动收口**（D4）：`merge_status=merged` + 非 done/closed + 无 `pending_req` 的任务自动转 `done`（PR 合入是确定性证据；pending_req 增量任务不误收口）+ 通知 + Roadmap 里程碑。
@@ -107,7 +112,9 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - needs-grilling + active owner：只设 pending_req，不清 owner、不重开 Kitty。
 - plan-review：撤销批准，转 refining。
 - implementing：当前 AC 后 checkpoint → refining。
-- review/conflict/done：清 Merge 授权，转 refining。
+- review/conflict：清 Merge 授权，转 refining。
+- done：按 REQ 变更类型路由——breaking/未标注：清 Merge 授权转 refining + 代际重置（reopen_count+1，清 target_branch/pr_url/merge_status/completed/knowledge_extracted，round2 完成后写新分支/新 PR）；additive：保持终态，通知「建议新建 TASK 承接增量或手动重开」；cosmetic：忽略。类型取 REQ 最新一条变更记录 `> 变更类型:` 行（修改者保存前写入）。
+- **已吸收变更去重**：任务 `refine_req_hash` 已等于 REQ 当前内容 hash 时跳过处理——refining/PM 写回自身的审计记录不重复打回、不重复通知。
 - 新自动创建 TASK：pending_req=false。
 
 ## Daemon 重启与中断恢复
@@ -136,6 +143,7 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 - `stage` 字段是阶段归属的**权威判定**（TASK 从 REQ 继承，PM 拆分落地时写入），与 `Notes/Stage-Plan.md` 的 `### Phase N:` 块对应。
 - `stage_source`：阶段来源标记——`req`（REQ 继承，跟随 REQ stage 变更）、空（daemon 自动分组 / PM 手动分配，不跟随）。PM 手动改 TASK stage 时必须清空 `stage_source`（`otg update-status stage=... stage_source=`）。
 - `plan_files`：Round 1 计划产出的将修改文件清单（repo 相对路径），daemon 用于同项目并行实现的文件重叠预警。
+- `reopen_count`：交付轮次（daemon 维护）——done 任务因 breaking 需求变更重开时 +1；0 = 首次交付。第二次 merge 后任务仍为 1，标识已二次交付（审计用）。
 - `default_assignee`（vault-map.json 顶层）：新 REQ 自动创建 TASK 时预写 `assignee` 为指定 models key（如 `"default"`），任务直接可调度；**空值/缺省**恢复旧行为（blocked 等人工补 assignee）。
 
 ## Documentation（文档）

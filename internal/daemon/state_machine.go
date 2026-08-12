@@ -62,10 +62,10 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 				return transition, true
 			}
 		case "close":
-			if (fm.Status == "plan-review" || fm.Status == "review") && fm.CloseApproved {
+			if (fm.Status == "plan-review" || fm.Status == "review") && fm.CloseApproved && validClosureRequest(fm) {
 				return localTransition{
 					Status: "closed",
-					Reason: "close gate approved",
+					Reason: "close gate approved with closure evidence",
 					Updates: map[string]interface{}{
 						"status":            "closed",
 						"completed":         time.Now().Format(time.RFC3339),
@@ -111,12 +111,13 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 			}, true
 		}
 		if fm.AutoApprove {
-			// User opted in to skip the plan-review gate (symmetry with
-			// auto_merge): a freshly produced plan counts as approved and
-			// the task moves straight to implementing. Plan quality is the
-			// user's trade-off — the flag is explicit per task. The caller
-			// (prepareBatch) notifies on the "auto_approve" reason marker so
-			// this function stays side-effect free.
+			// auto_approve defaults to true (frontmatter Parse compatibility,
+			// symmetric with auto_merge): a freshly produced plan counts as
+			// approved and the task moves straight to implementing — Grilling
+			// is the only manual gate. Tasks opting out set auto_approve:
+			// false explicitly. The caller (prepareBatch) notifies on the
+			// "auto_approve" reason marker so this function stays
+			// side-effect free.
 			return localTransition{
 				Status:   "implementing",
 				Dispatch: true,
@@ -195,6 +196,21 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 	}
 
 	return localTransition{}, false
+}
+
+func validClosureRequest(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || strings.TrimSpace(fm.ClosureNote) == "" {
+		return false
+	}
+	reason := strings.ReplaceAll(strings.TrimSpace(fm.ClosureReason), "-", "_")
+	switch reason {
+	case "not_bet", "already_implemented", "cancelled", "wont_fix":
+		return true
+	case "duplicate":
+		return strings.TrimSpace(fm.ReplacementTask) != ""
+	default:
+		return false
+	}
 }
 
 func transitionToRefining(reason string) localTransition {

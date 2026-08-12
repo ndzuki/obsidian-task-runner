@@ -232,20 +232,7 @@ Step -1 知识图谱与 core/ 检索命中的知识文档，**必须写入 TASK 
 
 ## Step 6: Gate Update（Gate更新）
 
-先计算 autoApproveEligible：
-
-```text
-auto_approve=true
-AND plan_version before this run == 0
-AND new_project=false
-AND pending_req=false
-AND adr_proposed 为空（无架构决策）
-```
-
-> **ADR 护栏**：有 ADR 提议的任务即使 `auto_approve=true` 也必须 `plan_approved=false`——
-> 架构决策（ADR 提议列表）随计划一起人工审阅，审过计划才算看过决策。
-> "完全自主任务" = 无 ADR 提议 + 上述条件全部满足。
-> `adr_proposed` 的空值形态以 `""` 或 `[]` 为准——两者均视为空（无架构决策）。
+`auto_approve` 默认 true（frontmatter 缺失即视为 true；模板已写入 `auto_approve: true`）：计划批准由 daemon 统一接管——scan 时 plan-review 直接转 implementing 并通知，**Round 1 不计算批准资格**。仅当任务显式 `auto_approve: false` 时，计划停在 plan-review 等待人工 `plan_approved=true`。
 
 原子更新：
 
@@ -254,7 +241,7 @@ status: plan-review
 plan_version: \<old+1\>
 pending_req: false
 merge_approved: false
-plan_approved: \<autoApproveEligible\>
+plan_approved: false # daemon 按 auto_approve（默认 true）决定是否自动批准
 planning_retry_count: 0
 phase_error: ""
 phase_log: ""
@@ -262,18 +249,17 @@ blocked_phase: ""
 resume_approved: false
 ```
 
-若 `autoApproveEligible=true`（自动批准），在 TASK 变更记录追加一行，标注来源以便事后区分自动/人工批准：
+> **ADR 护栏**：`adr_proposed` 非空时保持 `adr_approved=false`——架构决策由人工批准（`otg update-status adr_approved=true`），不阻断实现自动进入（auto_approve 默认开启时 Round 2 照常开始）。
+> `adr_proposed` 的空值形态以 `""` 或 `[]` 为准——两者均视为空（无架构决策）。
 
-```
-<N+1>. {ISO8601} — plan_approved 自动批准（auto_approve，首规划且无 ADR 提议）
-```
+新项目与 replan 同样适用：`new_project` 仅影响目录创建时机（Round 2 才创建），不阻断自动批准。
 
 ## Step 7: Frontmatter Safety（安全规范）
 
 - **NEVER edit YAML frontmatter directly.** Use `otg update-status` for every field update.
 - After writing the task, run `otg validate-doc <task_path>` to verify structural integrity.
 
-新项目和所有 replan 必须 `plan_approved=false`。
+新项目与 replan 的写回同样 `plan_approved=false`（批准统一由 daemon 按 auto_approve 决定，见 Step 6）。
 
 ## 失败语义
 

@@ -40,18 +40,18 @@ closed -- [终态，不可恢复]
 | `review` | 本地实现已提交；auto_merge=true 时自动授权合并，否则等待人工 | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
 | `conflict` | Merge 冲突；AI 自动解决一次失败后交还人工 | daemon（AI 一次）+ 人工 | `done` / `refining` |
-| `done` | 已合并推送；pending_req=false 时终态 | — | `refining` 或结束 |
+| `done` | 已合并推送；breaking 变更重开（代际重置）或 additive/cosmetic 保持终态 | — | `refining`（breaking）或结束 |
 
 ## 3. 人工 Gate
 
 | 字段 | 人工操作 | 约束 |
 |------|----------|------|
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；硬失败回退（CI 拒绝/head 变更/gh 缺失/**gh 未登录**）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
-| `auto_approve` | 默认 false；完全自主任务声明 | true + 首次规划（plan_version==0）+ 非新项目 + 非 pending_req + **无 ADR 提议** → Round 1 直接写 `plan_approved=true`，跳过人工审计划；有 ADR 提议时强制人工 |
-| `close_approved` | 审阅后设 true，关闭任务 | 仅 `plan-review`/`review` 有效 |
-| `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining；`resume` 恢复原阶段；空值保持等待 |
+| `auto_approve` | 默认 true；计划自动批准 | 缺失即 true（解析兼容 + 模板写入）；plan-review 时 daemon 自动 `plan_approved=true` 转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划 |
+| `close_approved` | 显式关闭授权 | 仅 `plan-review`/`review` 有效；还必须同时提供合法 `closure_reason` 与非空 `closure_note`（`duplicate` 还需 `replacement_task`），否则 daemon 不转 closed |
+| `rework_resolution` | 关闭前人工判定重做方向 | `replan` 转 refining（仅 `plan-review`/`review` 有效；`conflict` 需走 REQ 变更触发）；`resume` 恢复原阶段；`close` 仅在完整关闭证据下生效；空值保持等待 |
 | `review_feedback` | review 阶段人工反馈摘要 | free text，`review` 状态下有效 |
 | `adr_approved` | 系统自动管理 | daemon 在 plan-review→implementing 时自动设为 true；Round 2 写 ADR 后清 false |
 
@@ -70,7 +70,7 @@ closed -- [终态，不可恢复]
 | `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
 | `scaffold` | object | 新项目脚手架意图（`kind`/`capabilities`/`preferences`/`notes`），供 Round 1 / project-scaffold 消费 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
-| `auto_approve` | bool | 完全自主任务声明：首次既有项目计划 + 非 pending_req + 无 ADR 提议时跳过 Plan Review（完整语义见上表 Gate 字段） |
+| `auto_approve` | bool | 默认 true（缺失即 true）；plan-review 由 daemon 自动批准转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
 | `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
 
@@ -155,10 +155,12 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `pending_req` | bool | `false` | 新 REQ 尚未被新计划完整吸收 |
 | `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效；review 进入时按 auto_merge 自动置 true |
 | `auto_merge` | bool | `true` | 进入 review 自动授权合并；false 恢复人工 gate |
-| `target_branch` | string | `""` | Round 2 分支 |
-| `pr_url` | string | `""` | PR URL |
+| `target_branch` | string | `""` | Round 2 分支；done 重开时清空，round2 完成后 daemon 写新分支 |
+| `pr_url` | string | `""` | PR URL；done 重开时清空，新交付创建新 PR |
+| `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
+| `merge_retry_count` | int | `0` | AI 合并修复预算（冲突/CI 失败共享，上限见 vault-map `max_auto_merge_fixes`）；仅在 merge 成功或**新一轮 planning 完成**时清零——replan 不继承旧交付耗尽（TASK-067 教训）；同一计划内重复授权不重置（防无限循环） |
 
-`pending_req` 仅在新 planning 成功后清 false。
+`pending_req` 仅在新 planning 成功后清 false。**done 重开代际重置**：breaking 变更（含未标注）打回 done 任务时清 `target_branch`/`pr_url`/`merge_status`/`completed` 并置 `knowledge_extracted=false`——旧 PR 已 MERGED 时 merge 流程会提前收敛为 done，不清则新交付永远合不进去（TASK-018 实测）。
 
 **Merge 认证契约**：Merge Phase 所有远程操作统一走 **gh CLI 认证通道**——`git push` 由 daemon 注入 `-c credential.helper='!gh auth git-credential'`（`mergePushCommand`），PR 创建/复用与合并用 `gh pr create` / `gh pr merge`；禁止裸 `git push`（无 ambient https 凭据的机器会以 `could not read Username` 烧光重试预算，TASK-004 教训）。gh 缺失或未登录（`checkGHAuth` 预检）→ 拒绝远程操作，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE` + `phase_error` 附 `gh auth login` 指引 + 通知。
 
@@ -224,7 +226,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 | `closure_note` | string | `""` | 关闭备注 |
 | `replacement_task` | string | `""` | 替代任务 ID（`project:TASK-NNN` 格式） |
 
-`closed` 是终态，不可恢复。`closure_reason` 提供审计追溯。
+`closed` 是终态，不可恢复。普通入口必须有人工关闭授权、合法原因与备注；Stage-Review `end` 仅关闭尚未开始交付的未来任务——已有计划/分支/PR/checkpoint/merge 状态或处于 planning/implementing/review/conflict 的任务会阻断整次 end，避免自动关闭正在交付的工作。`closure_reason` 提供审计追溯。
 
 #### 4.6.7 Scaffold Intent（脚手架意图）
 
@@ -264,7 +266,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 ### 4.7 Daemon 上下文注入
 
-Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。
+Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段与 **merge 冲突/CI 修复会话**时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。merge 会话注入目的：AI 按需求意图裁决语义冲突（结合 Merge Skill 的强制需求溯源），而非纯代码结构判断。
 
 注入格式（技能命令后追加）：
 
@@ -334,7 +336,9 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 - needs-grilling + active owner：不中断会话，只设 pending_req=true。
 - plan-review：撤销 plan approval，转 refining。
 - implementing：当前 AC 后 checkpoint → refining。
-- review/conflict/done：清 merge approval，直接 refining。
+- review/conflict：清 merge approval，直接 refining（未合并交付必须在吸收变更后合入）。
+- done：按 REQ 最新变更记录 `> 变更类型:` 路由——`breaking`/未标注：清 merge approval 转 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted）；`additive`：保持 done 终态 + 通知（建议新建 TASK 承接增量或手动重开）；`cosmetic`：忽略。
+- **已吸收去重**：任务 `refine_req_hash` == REQ 当前 hash 时跳过（refining/PM 写回自身记录不重复触发）。
 - 新自动创建 TASK：pending_req=false。
 
 ### review / conflict / done
