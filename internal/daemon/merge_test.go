@@ -272,6 +272,7 @@ target_branch: %s
 		"done\n" +
 		"case \"$1\" in\n" +
 		"  push) exit 0 ;;\n" +
+		"  fetch) exit 0 ;;\n" + // rebase pre-push fetch against a fake origin: no remote branch
 		"esac\n" +
 		"exec /usr/bin/git \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(gitScript), 0o755); err != nil {
@@ -538,6 +539,8 @@ func TestIsMergeRetryable(t *testing.T) {
 	}{
 		{name: "nil", err: nil, want: false},
 		{name: "push network failure", err: fmt.Errorf("push feature branch: exit status 128: fatal: unable to access"), want: true},
+		{name: "sync fetch network failure", err: fmt.Errorf("fetch merge branch: exit status 128: fatal: unable to access"), want: true},
+		{name: "sync merge conflict", err: fmt.Errorf("%s: merge onto remote branch: CONFLICT (content)", ErrGitConflict), want: false},
 		{name: "create PR unavailable", err: fmt.Errorf("%s: create PR: exit status 1: could not resolve host", ErrGitHubUnavailable), want: true},
 		{name: "inspect PR checks unavailable", err: fmt.Errorf("%s: inspect PR checks: exit status 1: network error", ErrGitHubUnavailable), want: true},
 		{name: "merge PR unavailable", err: fmt.Errorf("%s: merge PR: exit status 1: rate limited", ErrGitHubUnavailable), want: true},
@@ -799,6 +802,7 @@ func TestMergePushUsesGHCredential(t *testing.T) {
 		"done\n" +
 		"case \"$1\" in\n" +
 		"  push) exit 0 ;;\n" +
+		"  fetch) exit 0 ;;\n" + // rebase pre-push fetch against a fake origin: no remote branch
 		"esac\n" +
 		"exec /usr/bin/git \"$@\"\n"
 	binDir := strings.Split(os.Getenv("PATH"), ":")[0]
@@ -839,6 +843,208 @@ exit 0
 	}
 	if !strings.Contains(string(args), "credential.helper=!gh auth git-credential") {
 		t.Fatalf("git invocations = %q, want push authenticated via gh credential helper", string(args))
+	}
+}
+
+// TestSyncMergeBranch guards the pre-push sync: a local branch behind its
+// remote counterpart must be merged so the push is a fast-forward (TASK-067:
+// non-fast-forward rejections burned all 5 retries); a rewritten local
+// history whose stale remote head is absorbed into main force-pushes
+// (TASK-051/059: remote held the old WIP snapshot while local carried the
+// v4 re-implementation); a stale MERGE_HEAD from a failed run is aborted
+// before any new merge. First-push (no remote branch) and already-in-sync
+// cases are no-ops; conflicting merges surface as ErrGitConflict with the
+// conflict state preserved for the AI auto-fix session.
+func TestSyncMergeBranch(t *testing.T) {
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		args = append([]string{"-C", dir}, args...)
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	dir := t.TempDir()
+	origin := filepath.Join(dir, "origin.git")
+	work := filepath.Join(dir, "work")
+	if out, err := exec.Command("git", "init", "--bare", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
+		t.Fatalf("init work: %v: %s", err, out)
+	}
+	git(work, "config", "user.email", "t@t")
+	git(work, "config", "user.name", "t")
+	git(work, "config", "commit.gpgsign", "false")
+	git(work, "remote", "add", "origin", origin)
+	writeFile := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(msg string) {
+		t.Helper()
+		git(work, "add", "-A")
+		git(work, "commit", "-m", msg)
+	}
+	ctx := context.Background()
+
+	// First push: no remote branch yet — sync is a no-op, no force.
+	writeFile("a.txt", "a\n")
+	commit("base")
+	git(work, "branch", "-M", "task/foo")
+	git(work, "push", "-u", "origin", "task/foo")
+	force, err := syncMergeBranch(ctx, work, "task/foo")
+	if err != nil {
+		t.Fatalf("first-push sync: %v", err)
+	}
+	if force {
+		t.Fatal("first push must not force")
+	}
+
+	// Remote ahead of local (local is an ancestor): three-way merge brings
+	// the remote head in, no force.
+	writeFile("b.txt", "b\n")
+	commit("local change")
+	git(work, "push", "origin", "task/foo")
+	other := filepath.Join(dir, "other")
+	if out, err := exec.Command("git", "clone", origin, other).CombinedOutput(); err != nil {
+		t.Fatalf("clone other: %v: %s", err, out)
+	}
+	git(other, "config", "user.email", "o@o")
+	git(other, "config", "user.name", "o")
+	git(other, "config", "commit.gpgsign", "false")
+	git(other, "checkout", "-b", "task/foo", "origin/task/foo")
+	if err := os.WriteFile(filepath.Join(other, "a.txt"), []byte("a\nremote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(other, "add", "-A")
+	git(other, "commit", "-m", "remote change")
+	git(other, "push", "origin", "task/foo")
+	// Local worktree is now one commit behind the remote.
+	force, err = syncMergeBranch(ctx, work, "task/foo")
+	if err != nil {
+		t.Fatalf("sync onto remote: %v", err)
+	}
+	if force {
+		t.Fatal("merge-onto-remote sync must not force")
+	}
+	if got := git(work, "log", "--oneline", "-5"); !strings.Contains(got, "remote change") {
+		t.Fatalf("remote commit not in local history after sync:\n%s", got)
+	}
+	if got := git(work, "log", "--oneline", "-5"); !strings.Contains(got, "local change") {
+	}
+	git(work, "push", "origin", "task/foo")
+
+	// Conflicting / diverged history scenarios on a separate branch.
+	git(work, "checkout", "-b", "task/conflict")
+	if err := os.WriteFile(filepath.Join(work, "c.txt"), []byte("same\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "conflict base")
+	git(work, "push", "-u", "origin", "task/conflict")
+	// Local edits the line but does not push yet.
+	if err := os.WriteFile(filepath.Join(work, "c.txt"), []byte("same\nlocal-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "local same line")
+	// Remote diverges on the same line from the shared base.
+	git(other, "fetch", "origin")
+	git(other, "checkout", "-b", "task/conflict", "origin/task/conflict")
+	if err := os.WriteFile(filepath.Join(other, "c.txt"), []byte("same\nremote-edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(other, "add", "-A")
+	git(other, "commit", "-m", "remote same line")
+	git(other, "push", "origin", "task/conflict")
+	// Diverged history where the local branch re-implements every file the
+	// remote head changed exclusively → the local rewrite supersedes the
+	// stale remote work, force-push.
+	force, err = syncMergeBranch(ctx, work, "task/conflict")
+	if err != nil {
+		t.Fatalf("diverged-covered sync: %v", err)
+	}
+	if !force {
+		t.Fatal("diverged history with remote changes re-implemented locally must force")
+	}
+
+	// A stale in-progress merge (left by a failed AI session) is aborted by
+	// the next sync before any new merge runs. Manufacture the state by
+	// attempting the conflicting merge directly.
+	if out, err := exec.Command("git", "-C", work, "merge", "origin/task/conflict").CombinedOutput(); err == nil {
+		t.Fatalf("expected conflicting merge, got success: %s", out)
+	}
+	if !mergeInProgress(work) {
+		t.Fatal("mergeInProgress must report the in-progress merge")
+	}
+	// Sync a different, in-sync branch: the stale MERGE_HEAD must be
+	// aborted first and the sync must proceed cleanly.
+	force, err = syncMergeBranch(ctx, work, "task/foo")
+	if err != nil {
+		t.Fatalf("sync with stale MERGE_HEAD: %v", err)
+	}
+	if force {
+		t.Fatal("clean sync must not force")
+	}
+	if mergeInProgress(work) {
+		t.Fatal("stale MERGE_HEAD not cleared by sync")
+	}
+
+	// Rewritten history: the stale remote head's exclusive file changes are
+	// re-implemented by the local branch → force-push.
+	baseSHA := git(work, "rev-parse", "HEAD~4")
+	git(work, "checkout", "-b", "task/rewrite", baseSHA)
+	if err := os.WriteFile(filepath.Join(work, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "stale wip")
+	git(work, "push", "-u", "origin", "task/rewrite")
+	// Fresh implementation rewrites the branch from the same base: it
+	// re-implements wip.txt (the stale remote's only exclusive change) and
+	// adds its own files, so the stale head is fully superseded.
+	git(work, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(work, "wip.txt"), []byte("wip\nv4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "v4.txt"), []byte("v4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "v4 rewrite")
+	force, err = syncMergeBranch(ctx, work, "task/rewrite")
+	if err != nil {
+		t.Fatalf("rewritten-history sync: %v", err)
+	}
+	if !force {
+		t.Fatal("rewritten history with remote changes re-implemented locally must force")
+	}
+
+	// Guard: when the remote head touches a file the local rewrite never
+	// changed, the force is refused — never drop unknown remote work.
+	git(work, "checkout", "-b", "task/guard", baseSHA)
+	if err := os.WriteFile(filepath.Join(work, "remote-only.txt"), []byte("r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "remote-only work")
+	git(work, "push", "-u", "origin", "task/guard")
+	git(work, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(work, "local.txt"), []byte("l\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(work, "add", "-A")
+	git(work, "commit", "-m", "local rewrite")
+	force, err = syncMergeBranch(ctx, work, "task/guard")
+	if err == nil || !strings.Contains(err.Error(), string(ErrGitConflict)) {
+		t.Fatalf("uncovered remote work sync = %v, want ErrGitConflict", err)
+	}
+	if force {
+		t.Fatal("uncovered remote work must not force")
 	}
 }
 

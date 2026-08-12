@@ -77,9 +77,10 @@ func TestPendingReqLeavesParkedTasksAlone(t *testing.T) {
 	}
 }
 
-// TestAutoApproveSkipsPlanReviewGate guards the opt-in plan automation: a
-// plan-review task with auto_approve=true moves straight to implementing
-// (plan_approved set), symmetric with auto_merge. Manual tasks still wait.
+// TestAutoApproveSkipsPlanReviewGate guards the plan automation: a
+// plan-review task with auto_approve=true (the default when the field is
+// absent) moves straight to implementing (plan_approved set), symmetric
+// with auto_merge. Explicit auto_approve: false tasks still wait.
 func TestAutoApproveSkipsPlanReviewGate(t *testing.T) {
 	auto := &yamlfrontmatter.Frontmatter{
 		Status:      "plan-review",
@@ -108,6 +109,39 @@ func TestAutoApproveSkipsPlanReviewGate(t *testing.T) {
 	}
 }
 
+func TestCloseRequiresAuditableEvidence(t *testing.T) {
+	base := yamlfrontmatter.Frontmatter{
+		Status:           "review",
+		ReworkResolution: "close",
+		CloseApproved:    true,
+	}
+	if transition, ok := nextLocalTransition(&base); ok {
+		t.Fatalf("close without closure evidence produced transition %q", transition.Status)
+	}
+
+	base.ClosureReason = "cancelled"
+	if transition, ok := nextLocalTransition(&base); ok {
+		t.Fatalf("close without closure_note produced transition %q", transition.Status)
+	}
+
+	base.ClosureNote = "user cancelled after review"
+	transition, ok := nextLocalTransition(&base)
+	if !ok || transition.Status != "closed" {
+		t.Fatalf("auditable close = (%q, %v), want closed", transition.Status, ok)
+	}
+
+	duplicate := base
+	duplicate.ClosureReason = "duplicate"
+	duplicate.ReplacementTask = ""
+	if transition, ok := nextLocalTransition(&duplicate); ok {
+		t.Fatalf("duplicate close without replacement produced transition %q", transition.Status)
+	}
+	duplicate.ReplacementTask = "TASK-012"
+	if transition, ok := nextLocalTransition(&duplicate); !ok || transition.Status != "closed" {
+		t.Fatalf("duplicate close with replacement = (%q, %v), want closed", transition.Status, ok)
+	}
+}
+
 // TestParkedBlocksStaleReplan guards the no-op replan loop (TASK-066: 17
 // rounds zero convergence): a parked task carrying a stale
 // grill_done+grill_resolution=replan from before parking must NEVER
@@ -115,11 +149,11 @@ func TestAutoApproveSkipsPlanReviewGate(t *testing.T) {
 // unchanged REQ. Only PM distribute explicitly resets parked tasks.
 func TestParkedBlocksStaleReplan(t *testing.T) {
 	stale := &yamlfrontmatter.Frontmatter{
-		Status:         "needs-grilling",
-		GrillParked:    true,
-		GrillDone:      true,
+		Status:          "needs-grilling",
+		GrillParked:     true,
+		GrillDone:       true,
 		GrillResolution: "replan",
-		PlanVersion:    17,
+		PlanVersion:     17,
 	}
 	if transition, ok := nextLocalTransition(stale); ok {
 		t.Fatalf("parked task with stale replan produced transition %q (%s), want none", transition.Status, transition.Reason)
@@ -134,11 +168,11 @@ func TestParkedBlocksStaleReplan(t *testing.T) {
 // automatically; manual-gate tasks get merge_approved=false.
 func TestDoneWithUnmergedPRReopensMerge(t *testing.T) {
 	autoMerge := &yamlfrontmatter.Frontmatter{
-		Status:        "done",
-		MergeStatus:   "conflict-resolve-attempted",
-		PRURL:         "https://github.com/ndzuki/release-manager/pull/51",
-		TargetBranch:  "task/067-operation-creation-workflow",
-		AutoMerge:     true,
+		Status:         "done",
+		MergeStatus:    "conflict-resolve-attempted",
+		PRURL:          "https://github.com/ndzuki/release-manager/pull/51",
+		TargetBranch:   "task/067-operation-creation-workflow",
+		AutoMerge:      true,
 		PhaseErrorCode: "BASE_COMMIT_MISMATCH",
 	}
 	transition, ok := nextLocalTransition(autoMerge)

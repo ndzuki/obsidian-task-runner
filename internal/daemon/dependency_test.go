@@ -379,6 +379,62 @@ assignee: default
 	}
 }
 
+// TestDownstreamDoesNotAutoResumePrereqGate guards the TASK-019 loop: a
+// refining/ready downstream referencing a PREREQUISITE_SMOKE_FAILED upstream
+// must NOT re-approve its resume through the generic upstream-unblock path —
+// the entry gate opens only when the gated task's own blocked_by facts
+// converge (upstream done + cleared phase error). Before this guard, 066/069
+// re-resumed 019 every scan while PR #51 was still OPEN.
+func TestDownstreamDoesNotAutoResumePrereqGate(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upstream: entry-gate blocked (PR #51 still OPEN in the real world).
+	upstream := filepath.Join(tasksDir, "TASK-019-gated.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "019"
+title: Gated Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+blocked_by: ["TASK-067"]
+phase_error_code: PREREQUISITE_SMOKE_FAILED
+resume_approved: false
+assignee: default
+---
+# Gated Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Downstream: refining, blocked_by the gated upstream.
+	downstream := filepath.Join(tasksDir, "TASK-066-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "066"
+title: Refining Downstream
+project: test
+status: refining
+blocked_by: ["TASK-019"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	fm := mustParse(t, upstream)
+	if fm.ResumeApproved {
+		t.Fatal("refining downstream must NOT auto-resume a PREREQUISITE_SMOKE_FAILED upstream")
+	}
+}
+
 // TestPrerequisiteGateMissingUpstreamStaysBlocked guards the unknown-upstream
 // case: a blocked_by reference that resolves to nothing must keep the gate
 // shut rather than optimistically resuming.
@@ -757,6 +813,57 @@ assignee: default
 	}
 	if task.IsReady(fm, vault) {
 		t.Fatal("downstream must remain gated while upstream is blocked")
+	}
+}
+
+// TestResolveBlockedDependenciesRefiningDownstreamResumesUpstream guards the
+// TASK-019 lesson: a refining (non-blocked, non-terminal) downstream whose
+// upstream is legacy phase-failure blocked must trigger the upstream
+// auto-resume — the resolver previously only scanned blocked downstreams,
+// so a refining task stalled behind a blocked upstream had no resolver.
+func TestResolveBlockedDependenciesRefiningDownstreamResumesUpstream(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := filepath.Join(tasksDir, "TASK-019-upstream.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "019"
+title: Upstream
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: ""
+resume_approved: false
+assignee: default
+---
+# Upstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downstream := filepath.Join(tasksDir, "TASK-066-downstream.md")
+	if err := os.WriteFile(downstream, []byte(`---
+id: "066"
+title: Downstream
+project: test
+status: refining
+blocked_by: ["TASK-019"]
+assignee: default
+---
+# Downstream
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	if !mustParse(t, upstream).ResumeApproved {
+		t.Fatal("refining downstream must auto-resume its phase-failure blocked upstream")
 	}
 }
 

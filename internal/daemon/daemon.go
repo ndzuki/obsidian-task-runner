@@ -44,26 +44,27 @@ type Runner struct {
 	scanGateMu         sync.Mutex // serializes scan cycles; see requestScan
 	scanActive         bool
 	scanPending        bool
-	lastScanAt         time.Time // last scan cycle start; throttles watcher bursts
-	scanTimer          *time.Timer // deferred scan after minScanInterval (nil = none pending)
+	lastScanAt         time.Time     // last scan cycle start; throttles watcher bursts
+	scanTimer          *time.Timer   // deferred scan after minScanInterval (nil = none pending)
 	scanMinInterval    time.Duration // watcher scan throttle; 0 disables (tests)
-	worktreeCache      sync.Map   // taskRunKey → worktreePath (parallel warmup)
+	worktreeCache      sync.Map      // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
 	phaseGates         map[string]*phaseGate // phase → concurrency gate (nil/absent = unlimited)
-	daemonCtx          context.Context // bound to daemon lifecycle; cancelled on shutdown
-	phaseFailures      sync.Map   // taskPath → time.Time (cooldown after phase failure)
-	grillNotified      sync.Map   // taskID → time.Time (last grilling notification)
-	keyNotifyAt        sync.Map   // "key" → time.Time (API-key-unavailable toast debounce)
-	refNotifyAt        sync.Map   // refPath → time.Time (knowledge intake validation toast debounce)
-	refIndexRebuiltAt  sync.Map   // "last" → time.Time (References INDEX rebuild debounce)
-	kbSyncAt           sync.Map   // "last" → time.Time (knowledge retrieval-store sync debounce)
-	kbSyncRunning      atomic.Bool // true while a retrieval-store sync goroutine is in flight
-	consolidatedAt     sync.Map   // reqDoc → time.Time (last PM consolidate dispatch per group)
-	pmInFlight         sync.Map   // "distribute:<listPath>" / "consolidate:<taskPaths>" → true (PM session in flight)
-	diagNotifyAt       sync.Map   // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
-	activeTasks        atomic.Int32 // dispatched task goroutines still running (shutdown drain)
-	taskIdx            *task.Index  // frontmatter cache: watcher events invalidate, scans reuse
-	gatedLogged        map[string]bool // task paths whose dependency-gate log was emitted
+	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
+	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
+	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
+	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
+	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
+	refIndexRebuiltAt  sync.Map              // "last" → time.Time (References INDEX rebuild debounce)
+	kbSyncAt           sync.Map              // "last" → time.Time (knowledge retrieval-store sync debounce)
+	kbSyncRunning      atomic.Bool           // true while a retrieval-store sync goroutine is in flight
+	consolidatedAt     sync.Map              // reqDoc → time.Time (last PM consolidate dispatch per group)
+	pmInFlight         sync.Map              // "distribute:<listPath>" / "consolidate:<taskPaths>" → true (PM session in flight)
+	diagNotifyAt       sync.Map              // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
+	lastReqHash        sync.Map              // reqRelPath → sha256 (skip watcher re-events for unchanged REQ content)
+	activeTasks        atomic.Int32          // dispatched task goroutines still running (shutdown drain)
+	taskIdx            *task.Index           // frontmatter cache: watcher events invalidate, scans reuse
+	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -260,6 +261,19 @@ func (r *Runner) Run(ctx context.Context) error {
 				if _, statErr := os.Stat(evt.Path); os.IsNotExist(statErr) {
 					results = task.OnReqDeleted(r.cfg.ObsidianVault, reqRel)
 				} else {
+					// Same-content re-saves (editor autosave, Obsidian
+					// rewriting the file) must not re-run OnReqChanged: the
+					// task-level refine_req_hash comparison inside it only
+					// catches absorbed changes, not repeated saves before
+					// refining runs. Track the last processed hash here.
+					if data, err := os.ReadFile(evt.Path); err == nil {
+						sum := sha256.Sum256(data)
+						curHash := "sha256:" + hex.EncodeToString(sum[:])
+						if last, ok := r.lastReqHash.Load(reqRel); ok && last == curHash {
+							continue
+						}
+						r.lastReqHash.Store(reqRel, curHash)
+					}
 					// A requirement under an unlisted project directory
 					// auto-registers the project (name/path/project_id
 					// derived from conventions) so the brand-new project
@@ -293,6 +307,9 @@ func (r *Runner) Run(ctx context.Context) error {
 						notify.SendTaskAction(result.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划", r.cfg.Notifications.Desktop)
 					case "create_task":
 						notify.SendTaskAction(result.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段", r.cfg.Notifications.Desktop)
+					case "req_additive":
+						notify.SendTaskAction(result.TaskID, "", "📌", "需求增量变更",
+							"已交付任务保持完成状态；如需交付增量，请新建 TASK 承接或手动重开该任务", r.cfg.Notifications.Desktop)
 					case "req_missing":
 						notify.SendTaskAction(result.TaskID, "", "🚫", "需求文件缺失", "TASK 已阻塞，恢复 REQ 后重试", r.cfg.Notifications.Desktop)
 					case "warn_only":
@@ -706,6 +723,7 @@ func toStringSlice(raw interface{}) []string {
 	}
 	return nil
 }
+
 // compactOversizedTasks folds plan/prototype history for TASK docs above
 // the oversize threshold (config compact_oversize_threshold_kb). Runs on
 // every scan so bloated documents converge regardless of which path appended
@@ -1040,11 +1058,11 @@ func (r *Runner) runTask(p preparedTask) {
 		if err := r.ensureRemoteRepository(p.task.FilePath, p.repoDir); err != nil {
 			r.logger.Printf("task %s: remote repo creation failed: %v", p.task.ID, err)
 			if uerr := yamlfrontmatter.Update(p.task.FilePath, map[string]interface{}{
-				"status":            "blocked",
-				"blocked_phase":     "implementing",
-				"phase_error_code":  string(ErrRemotePartialCreate),
-				"phase_error":       "GitHub remote creation failed: " + err.Error(),
-				"resume_approved":   false,
+				"status":           "blocked",
+				"blocked_phase":    "implementing",
+				"phase_error_code": string(ErrRemotePartialCreate),
+				"phase_error":      "GitHub remote creation failed: " + err.Error(),
+				"resume_approved":  false,
 			}); uerr != nil {
 				r.logger.Printf("task %s: record remote-create failure: %v", p.task.ID, uerr)
 			}
@@ -1082,10 +1100,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				continue
 			}
 			if strings.Contains(transition.Reason, "auto_approve") {
-				// Opt-in plan automation: tell the user the plan gate was
-				// skipped (they may want to review the plan anyway).
+				// Default plan automation (auto_approve defaults true, so
+				// Grilling is the only manual gate): tell the user the plan
+				// gate was skipped — they can still review the plan or opt
+				// out per task.
 				notify.SendTaskAction(t.ID, t.Title, "⚡", "计划已自动批准",
-					fmt.Sprintf("auto_approve 任务：v%d 计划直接进入实现（如需审阅请设 auto_approve: false）", fm.PlanVersion), r.cfg.Notifications.Desktop)
+					fmt.Sprintf("auto_approve 默认开启：v%d 计划直接进入实现（如需人工审阅请设 auto_approve: false）", fm.PlanVersion), r.cfg.Notifications.Desktop)
 			}
 			t.Status = transition.Status
 			t.PlanApproved = false
@@ -1445,11 +1465,16 @@ func (r *Runner) resolveBlockedDependencies() {
 			}
 			taskPath := filepath.Join(tasksDir, entry.Name())
 			data, err := os.ReadFile(taskPath)
-			if err != nil {
-				continue
-			}
 			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil || fm.Status != "blocked" {
+			if err != nil || fm == nil || fm.Status == "done" || fm.Status == "closed" {
+				// Terminal states need no upstream unblocking: done/closed
+				// tasks are finished regardless of their historical
+				// dependencies. Every other status (blocked / ready /
+				// refining / planning / implementing / review / ...) may be
+				// starved by a blocked upstream, so its blocked_by
+				// references participate in auto-resume (TASK-019 lesson:
+				// refining downstream of a legacy-blocked upstream sat
+				// stalled with no resolver).
 				continue
 			}
 			projDir := filepath.Join(projectsDir, projectEntry.Name())
@@ -1457,12 +1482,13 @@ func (r *Runner) resolveBlockedDependencies() {
 			// ONLY when their blocked_by facts changed: every upstream task
 			// is done AND carries no unresolved phase error (a stale
 			// BASE_COMMIT_MISMATCH means the upstream PR never merged, so the
-			// gate stays shut until the PR-closure loop fixes it).
-			if fm.PhaseErrorCode == string(ErrPrerequisiteSmokeFailed) && !fm.ResumeApproved && len(fm.BlockedBy) > 0 {
+			// gate stays shut until the PR-closure loop fixes it). Limited to
+			// blocked tasks — the entry gate is a blocked-state condition.
+			if fm.Status == "blocked" && fm.PhaseErrorCode == string(ErrPrerequisiteSmokeFailed) && !fm.ResumeApproved && len(fm.BlockedBy) > 0 {
 				if r.prereqDepsSatisfied(projectsDir, projDir, fm) {
 					r.logger.Printf("dependency: prerequisite facts changed, resuming TASK-%s (blocked_phase=%s)", fm.ID, fm.BlockedPhase)
 					if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-						"resume_approved":   true,
+						"resume_approved":     true,
 						"auto_resume_pending": true,
 					}); err != nil {
 						r.logger.Printf("dependency: FAILED to resume gated TASK-%s: %v", fm.ID, err)
@@ -1531,11 +1557,11 @@ func (r *Runner) parkedFactRecovery() {
 			}
 			r.logger.Printf("dependency: parked facts converged, un-parking TASK-%s (upstream all done+merged)", fm.ID)
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
-				"status":           "refining",
-				"grill_parked":     false,
-				"grill_done":       false,
-				"grill_resolution": "",
-				"grill_context":    "",
+				"status":            "refining",
+				"grill_parked":      false,
+				"grill_done":        false,
+				"grill_resolution":  "",
+				"grill_context":     "",
 				"grill_prev_status": "",
 			}); err != nil {
 				r.logger.Printf("dependency: FAILED to un-park TASK-%s: %v", fm.ID, err)
@@ -1612,14 +1638,18 @@ func (r *Runner) findTaskByRef(projectsDir, projDir, ref string) (*yamlfrontmatt
 // isAutoResumableError reports whether a phase_error_code represents a genuine
 // transient phase failure that is safe to auto-resume. REQ_MISSING and other
 // content/validation errors require human intervention.
+//
+// PREREQUISITE_SMOKE_FAILED is deliberately NOT here: an entry gate opens only
+// through the dedicated fact-checked branch in resolveBlockedDependencies
+// (every blocked_by upstream done AND phase_error cleared — i.e. the PR really
+// merged), never through a downstream task's generic upstream-unblock request.
+// Otherwise a refining/ready downstream re-approves the gate every scan and
+// the gated task round-trips implementing→blocked forever (TASK-019 loop:
+// 066/069 blocked_by 019 re-resumed it 6+ times in one hour while PR #51 was
+// still OPEN).
 func isAutoResumableError(code string) bool {
 	switch code {
-	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted),
-		string(ErrPrerequisiteSmokeFailed):
-		// Prerequisite smoke failures are resume-safe: the blocker is an
-		// upstream fact (dependency PR merged / dependency task done), which
-		// resolveBlockedDependencies verifies before approving the resume —
-		// no user decision is being bypassed.
+	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted):
 		return true
 	default:
 		// Empty code (legacy phase-failure blocks) is treated as resumable.
@@ -2164,13 +2194,23 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 		// Auto-merge gate: a fresh review (Round 2 completed, no failure) with
 		// auto_merge=true is approved without a manual gate. Merge-failure
-		// fallbacks carry phase_error_code, so they stay manual.
-		if t.Status == "review" && !t.MergeApproved && t.AutoMerge && !t.PendingReq && t.PhaseErrorCode == "" {
+		// fallbacks carry phase_error_code; those that are REQ-stable and have
+		// repair budget left re-authorize automatically (a failed merge attempt
+		// — push rejected, sync conflict, interrupted session — is an execution
+		// problem, not a new human decision; TASK-051/059 lesson: a
+		// BASE_COMMIT_MISMATCH written by validateMergeAuthorization used to
+		// strand auto_merge tasks in conflict forever because the gate required
+		// an empty phase_error_code). Permanent/conditional defects stay
+		// manual: gh unavailable (GITHUB_UNAVAILABLE), wrong remote
+		// (REPO_MISMATCH), a changed REQ (hash mismatch → OnReqChanged routes
+		// to refining), or an exhausted repair budget (conflict-resolve-
+		// attempted hands back to the user by design).
+		if canAutoApproveMerge(t, r.reqHash(t.ReqDoc), r.cfg.MaxAutoMergeFixes) {
 			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"merge_approved": true}); err != nil {
 				r.logger.Printf("task %s: auto-approve merge failed: %v", t.ID, err)
 			} else {
 				t.MergeApproved = true
-				r.logger.Printf("task %s: auto-approve merge (auto_merge=true)", t.ID)
+				r.logger.Printf("task %s: auto-approve merge (auto_merge=true, phase_error=%s)", t.ID, t.PhaseErrorCode)
 			}
 		}
 
@@ -2443,77 +2483,78 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
 						fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
 
-				fallbackArgs := []string{"--model", fallbackModel}
-				fallbackArgs = append(fallbackArgs, args[2:]...)
-				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
-				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
-				retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
-				retryCmd.WaitDelay = 30 * time.Second
-				retryCmd.Dir = repoDir
-				if f != nil {
-					retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
-					retryCmd.Stderr = io.MultiWriter(f, os.Stderr)
-				} else {
-					retryCmd.Stdout = os.Stderr
-					retryCmd.Stderr = os.Stderr
-				}
-				fbTailDone := make(chan struct{})
-				go tailOMPLog(ompLogPath, f, fbTailDone)
-				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
-					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
-					fbShutdown := r.daemonCtx.Err() != nil
-					fbCancel()
-					close(fbTailDone)
-					if !fbShutdown {
-						fellback = true
+					fallbackArgs := []string{"--model", fallbackModel}
+					fallbackArgs = append(fallbackArgs, args[2:]...)
+					fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
+					retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
+					retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
+					retryCmd.WaitDelay = 30 * time.Second
+					retryCmd.Dir = repoDir
+					if f != nil {
+						retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
+						retryCmd.Stderr = io.MultiWriter(f, os.Stderr)
 					} else {
-						// Shutdown raced the fallback start: keep status, auto-resume later.
-						r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
+						retryCmd.Stdout = os.Stderr
+						retryCmd.Stderr = os.Stderr
 					}
-				} else {
-					if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
-						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
-					}
-					retryErr := retryCmd.Wait()
-					fbShutdown := r.daemonCtx.Err() != nil
-					fbCancel()
-					close(fbTailDone)
-					if retryErr != nil {
-						if fbShutdown {
-							// Shutdown interrupted the running fallback: keep status.
-							r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
-							if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-								"phase_error_code": string(ErrPhaseInterrupted),
-								"phase_error":      "daemon 重启中断，等待自动恢复",
-								"phase_log":        logPath,
-							}); err != nil {
-								r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+					fbTailDone := make(chan struct{})
+					go tailOMPLog(ompLogPath, f, fbTailDone)
+					if fbStartErr := retryCmd.Start(); fbStartErr != nil {
+						r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
+						fbShutdown := r.daemonCtx.Err() != nil
+						fbCancel()
+						close(fbTailDone)
+						if !fbShutdown {
+							fellback = true
+						} else {
+							// Shutdown raced the fallback start: keep status, auto-resume later.
+							r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
+						}
+					} else {
+						if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
+							r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
+						}
+						retryErr := retryCmd.Wait()
+						fbShutdown := r.daemonCtx.Err() != nil
+						fbCancel()
+						close(fbTailDone)
+						if retryErr != nil {
+							if fbShutdown {
+								// Shutdown interrupted the running fallback: keep status.
+								r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
+								if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+									"phase_error_code": string(ErrPhaseInterrupted),
+									"phase_error":      "daemon 重启中断，等待自动恢复",
+									"phase_log":        logPath,
+								}); err != nil {
+									r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+								}
+							} else {
+								fbReason := "异常退出"
+								if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
+									fbReason = "超时"
+									failureCode = ErrPhaseTimeout
+								}
+								r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
+								notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
+									fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
+								fellback = true
 							}
 						} else {
-							fbReason := "异常退出"
-							if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
-								fbReason = "超时"
-								failureCode = ErrPhaseTimeout
+							r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
+							if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
+								r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
 							}
-							r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
-							notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
-								fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
-							fellback = true
+							r.compactPlanHistory(taskPath, phase)
+							r.validateChangedDocs(repoDir, t.ID, phase)
+							if _, statErr := os.Stat(taskPath); statErr == nil {
+								notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+							}
+							r.clearPhaseRetry(taskPath, phase)
+							r.clearPhaseError(taskPath, t.ID)
+							r.clearMergeRepairBudget(taskPath, phase)
 						}
-					} else {
-						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
-						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
-							r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
-						}
-						r.compactPlanHistory(taskPath, phase)
-						r.validateChangedDocs(repoDir, t.ID, phase)
-						if _, statErr := os.Stat(taskPath); statErr == nil {
-							notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
-						}
-						r.clearPhaseRetry(taskPath, phase)
-						r.clearPhaseError(taskPath, t.ID)
 					}
-				}
 				}
 			}
 			noFallback := r.cfg.FallbackModelFor(t.Assignee) == "" || r.cfg.FallbackModelFor(t.Assignee) == model
@@ -2542,6 +2583,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			r.clearPhaseRetry(taskPath, phase)
 			r.clearPhaseError(taskPath, t.ID)
+			r.clearMergeRepairBudget(taskPath, phase)
 		}
 		if f != nil {
 			if err := f.Close(); err != nil {
@@ -2551,6 +2593,29 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		processed++
 	}
 	return processed
+}
+
+// canAutoApproveMerge decides whether an auto_merge task may be re-authorized
+// without a human gate. Fresh reviews (no phase error) always qualify;
+// merge-failure fallbacks qualify when the REQ is unchanged, the failure is
+// not a permanent environment defect, and AI repair budget remains.
+func canAutoApproveMerge(t task.ReadyTask, currentReqHash string, maxAutoMergeFixes int) bool {
+	if t.Status != "review" && t.Status != "conflict" {
+		return false
+	}
+	if t.MergeApproved || !t.AutoMerge || t.PendingReq {
+		return false
+	}
+	if t.PhaseErrorCode == "" {
+		return true
+	}
+	if t.PhaseErrorCode == string(ErrGitHubUnavailable) || t.PhaseErrorCode == string(ErrRepoMismatch) {
+		return false
+	}
+	if t.PlanReqHash == "" || currentReqHash != t.PlanReqHash {
+		return false
+	}
+	return t.MergeRetryCount < maxAutoMergeFixes
 }
 
 // restoreBlockedPhase applies the shared resume updates for a blocked task
@@ -2722,6 +2787,21 @@ func (r *Runner) clearPhaseError(taskPath, taskID string) {
 		"phase_log":        "",
 	}); err != nil {
 		r.logger.Printf("task %s: clear phase error: %v", taskID, err)
+	}
+}
+
+// clearMergeRepairBudget resets the AI merge-repair budget after a successful
+// planning round. A new plan is a fresh delivery intent: a task that replanned
+// after budget exhaustion (TASK-067: v3 spent all 3 repairs on an 18-file
+// rebase) must not inherit the previous delivery's exhaustion for its new
+// merge. Within one delivery the budget stays bounded — merge success is the
+// only other reset — preserving the anti-loop guarantee.
+func (r *Runner) clearMergeRepairBudget(taskPath, phase string) {
+	if phase != "planning" {
+		return
+	}
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"merge_retry_count": 0}); err != nil {
+		r.logger.Printf("task %s: clear merge repair budget: %v", filepath.Base(taskPath), err)
 	}
 }
 
@@ -2902,7 +2982,8 @@ func (r *Runner) notifyKeyUnavailable() {
 
 // checkAPIKeyUnavailable scans the OMP log for missing API key errors.
 // Returns a human-readable message if found, empty string otherwise.
-func checkAPIKeyUnavailable(logPath string) string {	f, err := os.Open(logPath)
+func checkAPIKeyUnavailable(logPath string) string {
+	f, err := os.Open(logPath)
 	if err != nil {
 		return ""
 	}

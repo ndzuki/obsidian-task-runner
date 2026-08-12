@@ -117,6 +117,12 @@ func (r *Runner) applyStageDecision(content, decision string, projDir, project s
 	nextIdx := currentIdx + 1
 	hasNext := nextIdx < len(phases)
 
+	if strings.EqualFold(decision, "end") {
+		if blockers := r.stageEndBlockers(projDir, phases, nextIdx); len(blockers) > 0 {
+			return content, false, "end blocked by active later-stage tasks: " + strings.Join(blockers, ", ")
+		}
+	}
+
 	// continue | supplement | end all deliver the current phase.
 	out, ok := flipStageStatus(content, current.Name, "delivered")
 	if !ok {
@@ -153,6 +159,53 @@ func (r *Runner) applyStageDecision(content, decision string, projDir, project s
 		summary += "; project completed"
 	}
 	return out, true, summary
+}
+
+func (r *Runner) stageEndBlockers(projDir string, phases []stagePhase, startIdx int) []string {
+	if projDir == "" || startIdx >= len(phases) {
+		return nil
+	}
+	stageIDs := make(map[string]bool)
+	for i := startIdx; i < len(phases); i++ {
+		if id := stageIDFor(phases[i].Name); id != "" {
+			stageIDs[id] = true
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(projDir, "Tasks"))
+	if err != nil {
+		return []string{"task scan failed"}
+	}
+	var blockers []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(projDir, "Tasks", entry.Name()))
+		if err != nil {
+			blockers = append(blockers, entry.Name()+" (unreadable)")
+			continue
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			blockers = append(blockers, entry.Name()+" (unparsable)")
+			continue
+		}
+		if !stageIDs[fm.Stage] || fm.Status == "done" || fm.Status == "closed" {
+			continue
+		}
+		if fm.PlanVersion > 0 || fm.TargetBranch != "" || fm.PRURL != "" || fm.MergeStatus != "" || fm.CheckpointCommit != "" {
+			blockers = append(blockers, "TASK-"+fm.ID+" ("+fm.Status+")")
+			continue
+		}
+		switch fm.Status {
+		case "ready", "blocked", "needs-grilling", "needs-refining":
+			// No delivery has started: a user-approved stage end may close it.
+			continue
+		default:
+			blockers = append(blockers, "TASK-"+fm.ID+" ("+fm.Status+")")
+		}
+	}
+	return blockers
 }
 
 // closePhaseTasks closes every task belonging to phases from startIdx on.

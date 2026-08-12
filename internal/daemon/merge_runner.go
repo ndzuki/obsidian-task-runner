@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -219,15 +219,59 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		}
 		return err
 	}
+	// Merge runs on the task's worktree (round2 worktrees already checkout
+	// the target branch): syncMergeBranch's three-way merge must execute on
+	// the target branch — running it on the main checkout while another
+	// branch is checked out merges remote feature history into the wrong
+	// branch and corrupts both (TASK-051/059: the main checkout sat on
+	// task/067; sync merged origin/task/051 into it, a 14-file conflict, and
+	// budget exhaustion then left a stale MERGE_HEAD polluting later runs).
+	if wd, wdErr := ensureTaskWorktree(repoDir, candidate.ID, fm.TargetBranch); wdErr != nil {
+		r.logger.Printf("task %s: merge worktree unavailable (%v), falling back to main checkout", candidate.ID, wdErr)
+	} else {
+		repoDir = wd
+	}
 	fresh := false
+	// The remote feature branch may be ahead of this worktree snapshot (an
+	// earlier merge attempt pushed an AI conflict fix, or a concurrent run
+	// updated it), or the local history may have been rewritten by a fresh
+	// implementation. Pushing without syncing then fails with a
+	// non-fast-forward rejection, which the retry loop burns all 5 attempts
+	// on (TASK-067: local behind remote by 1 commit, 6+ rejected pushes).
+	// syncMergeBranch reconciles by ancestry: fast-forward when the remote
+	// is an ancestor, three-way merge when the local is an ancestor (the
+	// conflict is resolved in-place by the AI auto-fix session, same budget
+	// as PR conflicts), force-push when the local rewritten history
+	// supersedes a remote head that is fully absorbed into main.
+	forcePush, err := syncMergeBranch(r.daemonCtx, repoDir, fm.TargetBranch)
+	if err != nil {
+		if strings.Contains(err.Error(), string(ErrGitConflict)) {
+			if autoErr := r.autoResolveMergeConflict(candidate, repoDir, fm, err.Error()); autoErr != nil {
+				return autoErr
+			}
+			// Conflict resolved and pushed: continue to PR reuse/checks with
+			// the new head.
+		} else {
+			return err
+		}
+	}
 	// Fail fast on a stalled network: git's default connect retry can burn
 	// 2+ minutes per push when github.com is unreachable, stalling the merge
 	// goroutine and every scan batch behind it. http.connectTimeout bounds
 	// the TCP connect phase, http.lowSpeed* aborts once the transfer makes
 	// no progress for 20s.
-	pushCmd, pushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
+	pushCmd, pushCancel := r.mergePushCommand(repoDir, fm.TargetBranch, forcePush)
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		pushCancel()
+		// Daemon shutdown raced the push (SIGTERM kills the git child via
+		// mergeCommand's context): keep the merge authorized so it resumes
+		// after restart instead of stranding the task in conflict with the
+		// authorization revoked (TASK-059: a shutdown-killed push burned the
+		// retry budget and ended with merge_approved=false forever).
+		if r.daemonCtx.Err() != nil {
+			r.logger.Printf("task %s: push interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
+			return errConflictResolutionInterrupted
+		}
 		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	pushCancel()
@@ -284,9 +328,12 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	}
 
 	// Automatic repair budget (conflicts + CI failures) is bounded per merge
-	// authorization by merge_retry_count; re-approval by the user does not
-	// silently re-spend the budget forever. The count is cleared only when
-	// the merge succeeds or a fresh authorization starts (merge_status="").
+	// authorization by merge_retry_count. The count is cleared only when the
+	// merge succeeds OR a new planning round completes (fresh delivery intent
+	// — see clearMergeRepairBudget); user re-approval does not re-spend the
+	// budget, and replanning does not inherit the previous delivery's
+	// exhaustion (TASK-067: v3 budget spent on a large rebase left v4 without
+	// AI repair).
 	// CI polling budget: while checks are pending the merge waits in this
 	// goroutine (30s per tick) instead of returning and depending on an
 	// external watcher/timer scan to re-evaluate once CI settles. After the
@@ -344,7 +391,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 					return updateErr
 				}
 				// Fix committed locally: push and re-evaluate checks.
-				fixPush, fixPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
+				fixPush, fixPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch, false)
 				output, pushErr := fixPush.CombinedOutput()
 				fixPushCancel()
 				if pushErr != nil {
@@ -361,70 +408,23 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 				if approvedHead == "" {
 					return fmt.Errorf("%s: target branch head unavailable", ErrBaseCommitMismatch)
 				}
-				waitTicks = 0 // fresh head: give CI a full polling budget
-				continue
 			}
 			updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 				"status": "review", "merge_approved": false, "merge_status": "",
-				"phase_error_code": string(decision.ErrorCode), "phase_error": decision.Reason,
+				"phase_error_code": string(decision.ErrorCode), "phase_error": decision.Reason +
+					"; 自动修复已达上限（" + fmt.Sprint(r.cfg.MaxAutoMergeFixes) + " 次）。继续 AI 修复：清 merge_retry_count 后重设 merge_approved=true；大范围冲突/失败建议 replan（REQ 变更或 rework_resolution=replan）由 Round 2 重做，无需手动解决",
 			})
 			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
 			notify.SendTaskAction(candidate.ID, candidate.Title, "❌", "合并被拒绝",
-				decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次），解决后重新设置 merge_approved=true 即可重试", r.cfg.Notifications.Desktop)
+				decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 大范围改动建议重出计划（rework_resolution=replan）由 Round 2 重做", r.cfg.Notifications.Desktop)
 			return updateErr
 		case mergeActionConflict:
-			if fm.MergeRetryCount >= r.cfg.MaxAutoMergeFixes {
-				// Auto-repair budget exhausted: hand back to the user. The
-				// conflict-resolve-attempted marker tells the user AI repair
-				// was tried; re-approval no longer re-spends the budget.
-				updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-					"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
-					"phase_error_code": string(ErrGitConflict), "phase_error": decision.Reason,
-				})
-				notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-				notify.SendTaskAction(candidate.ID, candidate.Title, "⚠️", "合并冲突待处理",
-					decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次），手动解决后重新设置 merge_approved=true 即可重试", r.cfg.Notifications.Desktop)
-				return updateErr
-			}
-			r.logger.Printf("task %s: PR has merge conflicts, starting AI auto-resolution (%d/%d)", candidate.ID, fm.MergeRetryCount+1, r.cfg.MaxAutoMergeFixes)
-			fm.MergeRetryCount++
-			if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-				"merge_retry_count": fm.MergeRetryCount,
-				"merge_status":      "auto-fix-conflict",
-			}); err != nil {
+			if err := r.autoResolveMergeConflict(candidate, repoDir, fm, decision.Reason); err != nil {
 				return err
 			}
-			if err := r.resolveMergeConflict(candidate, repoDir); err != nil {
-				if errors.Is(err, errConflictResolutionInterrupted) {
-					// Daemon shutdown aborted the AI session: keep review +
-					// merge_approved so the merge resumes after restart. No
-					// conflict write-back, no user notification.
-					r.logger.Printf("task %s: conflict auto-resolution interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
-					return nil
-				}
-				r.logger.Printf("task %s: conflict auto-resolution failed: %v", candidate.ID, err)
-				updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-					"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
-					"phase_error_code": string(ErrGitConflict),
-					"phase_error":      decision.Reason + "; AI auto-resolution failed: " + err.Error(),
-				})
-				notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-				return updateErr
-			}
-			// Resolution committed locally: push the new head and re-evaluate.
-			resPush, resPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch)
-			output, pushErr := resPush.CombinedOutput()
-			resPushCancel()
-			if pushErr != nil {
-				r.logger.Printf("task %s: push conflict resolution failed: %v", candidate.ID, pushErr)
-				updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-					"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
-					"phase_error_code": string(ErrGitConflict),
-					"phase_error":      decision.Reason + "; push resolution failed: " + strings.TrimSpace(string(output)),
-				})
-				notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-				return updateErr
-			}
+			// Resolution committed and pushed: re-evaluate checks with the
+			// new head. An interrupted session returns nil with review +
+			// merge_approved kept, so the merge resumes after restart.
 			approvedHead = gitCurrentHead(repoDir, fm.TargetBranch)
 			if approvedHead == "" {
 				return fmt.Errorf("%s: target branch head unavailable", ErrBaseCommitMismatch)
@@ -602,19 +602,187 @@ func mergeCommand(parent context.Context, dir, name string, args ...string) (*ex
 	cmd.Dir = dir
 	return cmd, cancel
 }
-// mergePushCommand 构造 merge 流程的 git push 命令（带上下文超时）。
+
 // 凭据走 gh CLI 认证通道——credential.helper 调用 `gh auth git-credential`，
 // 与创建/合并 PR 使用同一 GitHub 身份，而不是依赖 ambient git 凭据。
 // 仅通过 gh keyring（或 SSH）认证的机器没有 https credential helper：
 // 裸 `git push` 到 https origin 会报 "could not read Username" 并烧光
 // 全部重试预算（实例：TASK-004 卡在 review，merge 重试 1/5..5/5 全部
-// 是 push 认证失败）。
-func (r *Runner) mergePushCommand(repoDir, branch string) (*exec.Cmd, context.CancelFunc) {
-	return mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
+// syncMergeBranch brings the local worktree branch up to date with the
+// remote feature branch before push. Returns forcePush=true when the local
+// branch was rewritten (fresh Round 2 implementation / rebase) and the stale
+// remote head's exclusive changes are all re-implemented locally — a plain
+// push would be rejected as non-fast-forward and three-way-merging the stale
+// head back would resurrect discarded WIP (TASK-051/059: remote head was the
+// old WIP snapshot, local was the v4 re-implementation).
+// Conflicts surface as ErrGitConflict with the conflict state preserved so
+// the caller can route straight into auto-fix-conflict.
+func syncMergeBranch(ctx context.Context, repoDir, branch string) (bool, error) {
+	if branch == "" {
+		return false, nil
+	}
+	// A stale in-progress merge from an earlier failed run (AI session
+	// failure, budget exhaustion) must be rolled back before any new merge:
+	// merging onto an unresolved MERGE_HEAD would stack conflict state and
+	// pollute the branch (TASK-051/059: the main checkout carried a stale
+	// MERGE_HEAD for a day, corrupting every sync that ran on it).
+	if mergeInProgress(repoDir) {
+		if out, err := exec.Command("git", "-C", repoDir, "merge", "--abort").CombinedOutput(); err != nil {
+			return false, fmt.Errorf("abort stale merge: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	// Fail fast on a stalled network, mirroring mergePushCommand: without
+	// http.connectTimeout/lowSpeed the fetch can hang the full 60s merge
+	// command budget on an unreachable github.com, stalling the merge
+	// goroutine (and its scan batch) behind it.
+	fetchCmd, fetchCancel := mergeCommand(ctx, repoDir, "git", "-C", repoDir,
+		"-c", "http.connectTimeout=15", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+		"fetch", "origin", branch+":refs/remotes/origin/"+branch)
+	out, err := fetchCmd.CombinedOutput()
+	fetchCancel()
+	if err != nil {
+		msg := string(out)
+		// No remote branch yet — first push, nothing to sync with.
+		if strings.Contains(msg, "couldn't find remote ref") || strings.Contains(msg, "not our ref") {
+			return false, nil
+		}
+		return false, fmt.Errorf("fetch merge branch: %w: %s", err, strings.TrimSpace(msg))
+	}
+	local := gitCurrentHead(repoDir, branch)
+	remote := gitCurrentHead(repoDir, "origin/"+branch)
+	if local == "" || remote == "" || local == remote {
+		return false, nil
+	}
+	// Ancestry decides merge vs force-push:
+	// - remote is an ancestor of local → local ahead, push fast-forwards.
+	// - local is an ancestor of remote → remote ahead (an earlier AI-fix
+	//   push), three-way merge the remote head in.
+	// - neither (history rewritten by the new implementation): force-push
+	//   when the stale remote head's exclusive changes are all re-implemented
+	//   by the local branch (TASK-051/059: the remote WIP snapshot predates
+	//   the v4 plan; three-way merging it back would resurrect discarded
+	//   code). The file-level check protects genuine remote-only work (an
+	//   AI-fix commit touching files the local branch never changed) — never
+	//   guess about clobbering changes local does not own.
+	if isAncestor(ctx, repoDir, "origin/"+branch, branch) {
+		return false, nil
+	}
+	if isAncestor(ctx, repoDir, branch, "origin/"+branch) {
+		mergeCmd, mergeCancel := mergeCommand(ctx, repoDir, "git", "-C", repoDir, "merge", "origin/"+branch)
+		out, err = mergeCmd.CombinedOutput()
+		mergeCancel()
+		if err != nil {
+			// Keep the in-progress merge conflict state (unresolved markers +
+			// .git/MERGE_HEAD) for the AI auto-fix session; the caller resolves
+			// it in the same processMergeTask run.
+			return false, fmt.Errorf("%s: merge onto remote branch: %w: %s", ErrGitConflict, err, strings.TrimSpace(string(out)))
+		}
+		return false, nil
+	}
+	// Diverged: remote-only changes must be a subset of the local branch's
+	// changes relative to the shared base, otherwise the force would drop
+	// work the local implementation does not know about.
+	if remoteChangesCovered(ctx, repoDir, branch, "origin/"+branch) {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s: local branch %s diverged from remote %s and the remote head carries changes the local branch does not re-implement — refusing to force-push (resolve manually or force deliberately)", ErrGitConflict, branch, remote)
+}
+
+// remoteChangesCovered reports whether every file changed exclusively on the
+// remote branch (shared-base..remote) is also changed by the local branch
+// (shared-base..local). Equal coverage means the local re-implementation
+// supersedes the stale remote work file by file.
+func remoteChangesCovered(ctx context.Context, repoDir, localBranch, remoteRef string) bool {
+	mergeBase := gitMergeBase(ctx, repoDir, localBranch, remoteRef)
+	if mergeBase == "" {
+		return false
+	}
+	remoteFiles := gitDiffNames(ctx, repoDir, mergeBase+".."+remoteRef)
+	localFiles := gitDiffNames(ctx, repoDir, mergeBase+".."+localBranch)
+	if len(remoteFiles) == 0 {
+		// No exclusive remote changes (pure history divergence, e.g. a
+		// rebase with identical content): the local rewrite owns the branch.
+		return true
+	}
+	covered := make(map[string]struct{}, len(localFiles))
+	for _, f := range localFiles {
+		covered[f] = struct{}{}
+	}
+	for _, f := range remoteFiles {
+		if _, ok := covered[f]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func gitMergeBase(ctx context.Context, repoDir, a, b string) string {
+	cmd, cancel := mergeCommand(ctx, repoDir, "git", "-C", repoDir, "merge-base", a, b)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitDiffNames(ctx context.Context, repoDir, rangeSpec string) []string {
+	cmd, cancel := mergeCommand(ctx, repoDir, "git", "-C", repoDir, "diff", "--name-only", rangeSpec)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	names := lines[:0]
+	for _, l := range lines {
+		if l != "" {
+			names = append(names, l)
+		}
+	}
+	return names
+}
+
+// mergeInProgress reports whether the repository is mid-merge — a stale
+// MERGE_HEAD left by an earlier failed sync or conflict auto-fix.
+func mergeInProgress(repoDir string) bool {
+	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--git-path", "MERGE_HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(repoDir, path)
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+// isAncestor reports whether commit A is an ancestor of commit B
+// (`git merge-base --is-ancestor A B`, exit 0 = ancestor).
+func isAncestor(ctx context.Context, repoDir, a, b string) bool {
+	cmd, cancel := mergeCommand(ctx, repoDir, "git", "-C", repoDir, "merge-base", "--is-ancestor", a, b)
+	defer cancel()
+	return cmd.Run() == nil
+}
+
+func (r *Runner) mergePushCommand(repoDir, branch string, force bool) (*exec.Cmd, context.CancelFunc) {
+	args := []string{"-C", repoDir,
 		"-c", "credential.helper=!gh auth git-credential",
 		"-c", "http.connectTimeout=15",
 		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
-		"push", "-u", "origin", branch)
+		"push", "-u", "origin", branch}
+	if force {
+		// force-with-lease: only overwrite the remote ref if it still points
+		// at the head syncMergeBranch fetched — never clobber a concurrent
+		// push (e.g. another daemon's AI-fix push).
+		args = append(args, "--force-with-lease")
+	}
+	return mergeCommand(r.daemonCtx, repoDir, "git", args...)
 }
 
 // checkGHAuth 验证 merge 流程所需的 gh CLI 认证（`gh auth status` 退出码 0）。
@@ -634,7 +802,6 @@ func checkGHAuth(parent context.Context) error {
 	}
 	return nil
 }
-
 
 // isMergeRetryable reports whether a merge failure is environmental — a
 // transient network or GitHub API error worth retrying with a short backoff —
@@ -668,16 +835,20 @@ func isMergeRetryable(err error) bool {
 		}
 	}
 	// ErrGitHubUnavailable is an ErrorCode string constant, not an error
-	// value, so match its rendered prefix instead of errors.Is.
+	// value, so match its rendered prefix instead of errors.Is. The pre-push
+	// sync fetch (syncMergeBranch) fails with "fetch merge branch" on the
+	// same transient network conditions as the push — it must keep the
+	// backoff retry instead of falling through to the next scan.
 	return strings.Contains(msg, string(ErrGitHubUnavailable)) ||
-		strings.Contains(msg, "push feature branch")
+		strings.Contains(msg, "push feature branch") ||
+		strings.Contains(msg, "fetch merge branch")
 }
 
 // Merge retry parameters are package-level so tests can shorten the backoff
 // without waiting real time.
 var (
-	mergeRetryBackoff    = 2 * time.Minute
-	mergeMaxRetries      = 5
+	mergeRetryBackoff = 2 * time.Minute
+	mergeMaxRetries   = 5
 )
 
 // processMergeTaskWithRetry runs processMergeTask and retries environmental
@@ -740,6 +911,67 @@ func (r *Runner) mergePIDFileGuard(candidate task.ReadyTask) error {
 	return nil
 }
 
+// autoResolveMergeConflict runs the bounded AI conflict-repair cycle shared
+// by PR conflicts and pre-push sync (merge) conflicts: budget check →
+// auto-fix-conflict marker → AI session → push resolved head. Returns nil
+// when the conflict is resolved and pushed (caller continues), or an error
+func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir string, fm *yamlfrontmatter.Frontmatter, reason string) error {
+	if fm.MergeRetryCount >= r.cfg.MaxAutoMergeFixes {
+		// Auto-repair budget exhausted: hand back to the user. The
+		// conflict-resolve-attempted marker tells the user AI repair
+		// was tried; re-approval no longer re-spends the budget.
+		updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+			"phase_error_code": string(ErrGitConflict), "phase_error": reason +
+				"; 自动修复已达上限（" + fmt.Sprint(r.cfg.MaxAutoMergeFixes) + " 次）。继续 AI 修复：清 merge_retry_count 后重设 merge_approved=true；连续修复失败多为需求歧义——在 REQ 文档中追加歧义裁决记录并保存（可含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重审需求后重新出计划，无需手动解决",
+		})
+		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		notify.SendTaskAction(candidate.ID, candidate.Title, "⚠️", "合并冲突待处理",
+			reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 连续失败多为需求歧义：在 REQ 文档中追加歧义裁决并保存（建议含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重出计划——仅需修改需求文档，无需手动改任务状态", r.cfg.Notifications.Desktop)
+		return updateErr
+	}
+	r.logger.Printf("task %s: merge conflicts (%s), starting AI auto-resolution (%d/%d)", candidate.ID, reason, fm.MergeRetryCount+1, r.cfg.MaxAutoMergeFixes)
+	fm.MergeRetryCount++
+	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+		"merge_retry_count": fm.MergeRetryCount,
+		"merge_status":      "auto-fix-conflict",
+	}); err != nil {
+		return err
+	}
+	if err := r.resolveMergeConflict(candidate, repoDir); err != nil {
+		if errors.Is(err, errConflictResolutionInterrupted) {
+			// Daemon shutdown aborted the AI session: keep review +
+			// merge_approved so the merge resumes after restart. No
+			// conflict write-back, no user notification.
+			r.logger.Printf("task %s: conflict auto-resolution interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
+			return nil
+		}
+		r.logger.Printf("task %s: conflict auto-resolution failed: %v", candidate.ID, err)
+		updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+			"phase_error_code": string(ErrGitConflict),
+			"phase_error":      reason + "; AI auto-resolution failed: " + err.Error(),
+		})
+		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		return updateErr
+	}
+	// Resolution committed locally: push the new head.
+	resPush, resPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch, false)
+	output, pushErr := resPush.CombinedOutput()
+	resPushCancel()
+	if pushErr != nil {
+		r.logger.Printf("task %s: push conflict resolution failed: %v", candidate.ID, pushErr)
+		updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+			"phase_error_code": string(ErrGitConflict),
+			"phase_error":      reason + "; push resolution failed: " + strings.TrimSpace(string(output)),
+		})
+		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		return updateErr
+	}
+	return nil
+}
+
 // errConflictResolutionInterrupted marks an AI conflict-resolution session
 // aborted by daemon shutdown. Unlike a resolution failure, it must NOT
 // downgrade the task to conflict: the merge stays authorized and resumes on
@@ -778,8 +1010,19 @@ func (r *Runner) resolveMergeChecksFailure(candidate task.ReadyTask, repoDir str
 func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mode mergeFixMode) error {
 	model := r.selectModel(candidate.Assignee)
 	skillPrompt := fmt.Sprintf("/obsidian-task-runner-merge %s %s", candidate.FilePath, mode)
+	// Inject the same project context (constraints / domain terms / ADRs)
+	// that refining/planning sessions get: conflict and CI-fix resolution
+	// must reason from the requirement's intent, not raw code structure
+	// (TASK-067: 18-file semantic merges failed 3 repair rounds because the
+	// session lacked the domain/ADR picture).
+	if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, candidate.Project); projDir != "" {
+		reqPath := filepath.Join(r.cfg.ObsidianVault, candidate.ReqDoc)
+		if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
+			skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入，配合 skill://knowledge-base 交叉引用 References）\n项目: %s\n\n%s\n</project_context>", skillPrompt, candidate.Project, ctx)
+			r.logger.Printf("task %s: merge fix session %s: injected project context (%d bytes)", candidate.ID, mode, len(ctx))
+		}
+	}
 	args := []string{"--model", model, "--auto-approve", "-p", skillPrompt, "--thinking", "high"}
-
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()

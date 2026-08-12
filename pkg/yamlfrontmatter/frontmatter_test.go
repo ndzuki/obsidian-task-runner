@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 )
+
 func TestParse(t *testing.T) {
 	t.Run("valid frontmatter", func(t *testing.T) {
 		content := []byte(`---
@@ -677,6 +678,38 @@ auto_merge: false
 	}
 }
 
+func TestParseAutoApproveDefault(t *testing.T) {
+	// Absent auto_approve defaults to true (symmetric with auto_merge):
+	// plan-review moves straight to implementing, so Grilling is the only
+	// manual gate.
+	fm, err := Parse([]byte(`---
+id: "001"
+status: blocked
+---
+`))
+
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !fm.AutoApprove {
+		t.Fatalf("AutoApprove = false, want default true")
+	}
+
+	// Explicit opt-out is honored.
+	fm, err = Parse([]byte(`---
+id: "002"
+status: blocked
+auto_approve: false
+---
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fm.AutoApprove {
+		t.Fatalf("AutoApprove = true, want explicit false")
+	}
+}
+
 func TestParseLegacyTaskWithPriorityDoesNotReassess(t *testing.T) {
 	fm, err := Parse([]byte(`---
 id: "002"
@@ -759,12 +792,15 @@ status: review
 			t.Fatal("expected missing fields, got nil")
 		}
 		for _, key := range []string{
-			"auto_merge", "merge_approved", "plan_approved", "pending_req",
+			"auto_approve", "auto_merge", "merge_approved", "plan_approved", "pending_req",
 			"task_schema_version", "target_branch", "pr_url", "phase_error_code",
 		} {
 			if _, ok := find(missing, key); !ok {
 				t.Fatalf("missing %q not reported", key)
 			}
+		}
+		if v, _ := find(missing, "auto_approve"); v != true {
+			t.Fatalf("auto_approve default = %v, want true", v)
 		}
 		if v, _ := find(missing, "auto_merge"); v != true {
 			t.Fatalf("auto_merge default = %v, want true", v)

@@ -13,8 +13,9 @@ import (
 
 // TestAutoCloseStaleMergedTasks guards the deterministic closure loop: a
 // merged PR with no pending_req flips the task to done; pending_req
-// (requirement delta) and closed tasks stay untouched; already-done tasks
-// are no-ops.
+// (requirement delta), closed tasks, already-done tasks and tasks that
+// re-entered planning (plan_version >= 2, incremental replan after the
+// baseline PR merged) stay untouched; unmerged tasks are no-ops.
 func TestAutoCloseStaleMergedTasks(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -22,9 +23,9 @@ func TestAutoCloseStaleMergedTasks(t *testing.T) {
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeTask := func(id, status, merge, pending string) string {
+	writeTask := func(id, status, merge, pending, planVersion string) string {
 		t.Helper()
-		content := "---\nid: \"" + id + "\"\ntitle: T" + id + "\nstatus: " + status + "\nmerge_status: " + merge + "\npending_req: " + pending + "\n---\n# T\n"
+		content := "---\nid: \"" + id + "\"\ntitle: T" + id + "\nstatus: " + status + "\nmerge_status: " + merge + "\npending_req: " + pending + "\nplan_version: " + planVersion + "\n---\n# T\n"
 		path := filepath.Join(tasksDir, "TASK-"+id+"-t.md")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -44,11 +45,13 @@ func TestAutoCloseStaleMergedTasks(t *testing.T) {
 		return fm.Status
 	}
 
-	stale := writeTask("001", "implementing", "merged", "false")  // should close
-	delta := writeTask("002", "refining", "merged", "true")       // pending_req: keep
-	closed := writeTask("003", "closed", "merged", "false")       // terminal: keep
-	already := writeTask("004", "done", "merged", "false")        // no-op
-	unmerged := writeTask("005", "implementing", "", "false")     // no PR: keep
+	stale := writeTask("001", "implementing", "merged", "false", "1")       // single delivery, PR merged: close
+	delta := writeTask("002", "refining", "merged", "true", "1")            // pending_req: keep
+	closed := writeTask("003", "closed", "merged", "false", "1")            // terminal: keep
+	already := writeTask("004", "done", "merged", "false", "1")             // no-op
+	unmerged := writeTask("005", "implementing", "", "false", "1")          // no PR: keep
+	replanned := writeTask("006", "implementing", "merged", "false", "2")   // baseline merged, increment in flight: keep
+	replanReview := writeTask("007", "plan-review", "merged", "false", "3") // increment plan awaiting approval: keep
 
 	runner := New(&config.Config{ObsidianVault: vault})
 	runner.logger = log.New(io.Discard, "", 0)
@@ -71,13 +74,18 @@ func TestAutoCloseStaleMergedTasks(t *testing.T) {
 	if got := statusOf(unmerged); got != "implementing" {
 		t.Fatalf("unmerged task = %q, want implementing (untouched)", got)
 	}
+	if got := statusOf(replanned); got != "implementing" {
+		t.Fatalf("replanned task = %q, want implementing (untouched)", got)
+	}
+	if got := statusOf(replanReview); got != "plan-review" {
+		t.Fatalf("replanned plan-review task = %q, want plan-review (untouched)", got)
+	}
 
 	// Idempotent: second run closes nothing new.
 	if n := runner.autoCloseStaleMergedTasks(); n != 0 {
 		t.Fatalf("second run auto-closed %d, want 0 (idempotent)", n)
 	}
 }
-
 
 // TestRecoverUnExtractedKnowledge 钉住知识提取补救扫描的契约：已交付任务
 // （done + merged）的 knowledge_extracted marker 未落盘——daemon 在 merge
@@ -113,9 +121,9 @@ func TestRecoverUnExtractedKnowledge(t *testing.T) {
 		return fm.KnowledgeExtracted
 	}
 
-	lost := writeTask("001", "done", "merged", "false")    // 应重新提取
-	marked := writeTask("002", "done", "merged", "true")   // 已提取：不动
-	unmerged := writeTask("003", "done", "", "false")      // 无 PR：不动
+	lost := writeTask("001", "done", "merged", "false")     // 应重新提取
+	marked := writeTask("002", "done", "merged", "true")    // 已提取：不动
+	unmerged := writeTask("003", "done", "", "false")       // 无 PR：不动
 	undone := writeTask("004", "review", "merged", "false") // 未交付：不动
 
 	runner := New(&config.Config{ObsidianVault: vault})

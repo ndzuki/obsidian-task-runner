@@ -158,6 +158,42 @@ exit 1
 	}
 }
 
+// TestTryKittyTab_LsFailureFallsBackToDesktop pins the behavior of the
+// removed always-fresh dedup branch: when kitty @ ls itself fails (exit != 0),
+// tryKittyTab must report false so the caller can fall back to a desktop
+// notification — and must not launch a tab that would flash-close unseen.
+func TestTryKittyTab_LsFailureFallsBackToDesktop(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "launch-called")
+	kittyPath := filepath.Join(binDir, "kitty")
+	script := `#!/bin/sh
+if [ "$2" = "ls" ]; then
+	exit 1
+fi
+if [ "$2" = "launch" ]; then
+	: > "$KITTY_LAUNCH_MARKER"
+	exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(kittyPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake kitty: %v", err)
+	}
+
+	t.Setenv("PATH", binDir)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("USER", "notify-ls-failure-test")
+	t.Setenv("KITTY_LISTEN_ON", "unix:test")
+	t.Setenv("KITTY_LAUNCH_MARKER", marker)
+
+	if handled := tryKittyTab("066", "分阶段端到端测试", "", ""); handled {
+		t.Fatal("tryKittyTab() = true, want false so desktop fallback remains available")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("kitty launch marker exists or stat failed unexpectedly: %v", err)
+	}
+}
+
 func kittyLSOutput(t *testing.T, osWindows []kittyOSWindow) []byte {
 	t.Helper()
 	output, err := json.Marshal(osWindows)

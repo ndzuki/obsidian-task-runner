@@ -91,6 +91,46 @@ func TestValidateDependencyRefsSkipsUnparsableRefs(t *testing.T) {
 	}
 }
 
+// TestValidateDependencyRefsFlagsClosedRefs guards the closed-reference
+// signal: a blocked_by referencing a closed task can never be satisfied
+// (closed is a terminal state), so it must be reported once instead of
+// starving the gated task silently (TASK-069 blocked_by 011/070 lesson).
+func TestValidateDependencyRefsFlagsClosedRefs(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeHealthTask(t, tasksDir, "TASK-069-x.md", "---\nid: \"069\"\nstatus: refining\nblocked_by:\n  - \"011\"\n  - \"052\"\n  - \"070\"\n---\n# X\n")
+	writeHealthTask(t, tasksDir, "TASK-011-a.md", "---\nid: \"011\"\nstatus: closed\nclosure_reason: cancelled\n---\n# A\n")
+	writeHealthTask(t, tasksDir, "TASK-052-delivered.md", "---\nid: \"052\"\nstatus: closed\nclosure_reason: already-implemented\nmerge_status: merged\n---\n# Delivered\n")
+	writeHealthTask(t, tasksDir, "TASK-070-b.md", "---\nid: \"070\"\nstatus: done\n---\n# B\n")
+
+	runner := healthRunner(t, vault)
+	runner.validateDependencyRefs()
+
+	cancelled, delivered, done := false, false, false
+	runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
+		if strings.Contains(key.(string), "blocked_by_closed|069->011") {
+			cancelled = true
+		}
+		if strings.Contains(key.(string), "blocked_by_closed|069->052") {
+			delivered = true
+		}
+		if strings.Contains(key.(string), "blocked_by_closed|069->070") {
+			done = true
+		}
+		return true
+	})
+	if !cancelled {
+		t.Fatal("blocked_by ref to a cancelled closed task must be flagged once")
+	}
+	if delivered {
+		t.Fatal("already-implemented closed blocker must not be flagged")
+	}
+	if done {
+		t.Fatal("blocked_by ref to a done task must not be flagged as closed")
+	}
+}
+
 // TestDetectPlanFileOverlapsWarnsOnce guards the merge-conflict early signal:
 // two implementing tasks planning the same file trigger one notification;
 // a second run stays quiet (one-shot per key).

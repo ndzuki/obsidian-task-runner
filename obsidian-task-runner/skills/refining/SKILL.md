@@ -119,6 +119,11 @@ Do NOT dump every failed item on the user. Classify each failed check first:
   > [事实修正]: {证据来源} — 由 refining 自动修正，{ISO8601}
   > [采纳建议 auto]: {采纳的建议 + 理由} — refining 自动采纳，用户可推翻后重跑，{ISO8601}
   ```
+- **每次修改 REQ 必须在改动处附近追加 `> 变更类型: breaking|additive|cosmetic`**（daemon 依据最新一条路由已交付任务）：
+  - 修改/删除已交付 AC、破坏 API/状态机/数据模型 → `breaking`（已交付任务将自动重开新一轮交付）。
+  - 纯新增 AC/字段、向后兼容 → `additive`（已交付任务保持 done，增量建议新建 TASK 承接）。
+  - 措辞/格式/历史回填等无契约影响 → `cosmetic`（daemon 忽略）。
+  - 无法判断 → 不写本行（daemon 按 breaking 保守处理）。
 - 每条处置记录追加到 TASK frontmatter `auto_accepted`（用 `otg update-status`，以 `; ` 分隔追加）：
   ```
   auto_accepted="{现有内容}; {refine_version} {ISO8601}: [事实修正|采纳建议 auto] {一句话摘要}"

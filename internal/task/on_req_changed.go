@@ -1,6 +1,8 @@
 package task
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +14,40 @@ import (
 	project_pkg "github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
+
+// REQ change types, annotated by the modifier (user/PM/refining session) in
+// the requirement's change record (`> 变更类型:` line). The daemon routes
+// already-delivered (done) tasks accordingly: breaking reopens the task,
+// additive keeps it terminal and suggests a new TASK, cosmetic is ignored.
+// An unannotated change defaults to breaking (conservative).
+const (
+	ReqChangeBreaking = "breaking"
+	ReqChangeAdditive = "additive"
+	ReqChangeCosmetic = "cosmetic"
+)
+
+// ActionReqAdditive marks a requirement delta that left a done task terminal.
+const ActionReqAdditive = "req_additive"
+
+// reqChangeTypeRE matches `> 变更类型:` lines in requirement change records.
+var reqChangeTypeRE = regexp.MustCompile(`(?m)^>\s*变更类型:\s*(breaking|additive|cosmetic)`)
+
+// reqChangeInfo reads the requirement once and returns its current SHA-256
+// hash and the change type annotated on the LATEST change record. A read
+// failure returns empty values so the caller falls back to conservative
+// (breaking) handling.
+func reqChangeInfo(vaultPath, reqRelPath string) (hash, changeType string) {
+	data, err := os.ReadFile(filepath.Join(vaultPath, reqRelPath))
+	if err != nil {
+		return "", ""
+	}
+	sum := sha256.Sum256(data)
+	hash = "sha256:" + hex.EncodeToString(sum[:])
+	if m := reqChangeTypeRE.FindAllSubmatch(data, -1); len(m) > 0 {
+		changeType = string(m[len(m)-1][1])
+	}
+	return hash, changeType
+}
 
 // REQFilenameRE matches REQ-<id>-<slug>.md
 var reqFilenameRE = regexp.MustCompile(`^REQ-(?P<id>\d+)-(?P<slug>.+)\.md$`)
@@ -53,7 +89,14 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 	}
 
 	reqID, _ := ParseReqFilename(reqRelPath)
+	// 一次读取：当前 REQ hash（供已吸收变更去重）+ 最近变更记录标注的类型。
+	reqHash, reqChangeType := reqChangeInfo(vaultPath, reqRelPath)
 	var affected []AffectedResult
+	// True when any task's req_doc matched this REQ — guards the create
+	// fallback: cosmetic/absorbed changes produce no results, and a task
+	// whose filename does not match the canonical derivation must not be
+	// duplicated by a new TASK.
+	matchedAny := false
 	projEntries, _ := os.ReadDir(projectsDir)
 	for _, proj := range projEntries {
 		if !proj.IsDir() {
@@ -84,6 +127,15 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 			if fm.ID == reqID && sameProjectRequirementPath(fm.ReqDoc, reqRelPath) && normalizePath(fm.ReqDoc) != normalizePath(reqRelPath) {
 				updates := requirementChangeUpdates(fm.Status)
 				updates["req_doc"] = normalizeReqDoc(reqRelPath)
+				if fm.Status == "done" {
+					// Renaming the REQ reopens a delivered task just like a
+					// breaking change: without the generation reset the
+					// already-MERGED old PR would short-circuit the next
+					// merge (generationResetUpdates rationale).
+					for key, value := range generationResetUpdates(fm) {
+						updates[key] = value
+					}
+				}
 				if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 					fmt.Fprintf(os.Stderr, "Error renaming requirement on %s: %v\n", taskPath, err)
 					continue
@@ -95,6 +147,15 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 			taskReq := normalizePath(fm.ReqDoc)
 			reqPath := normalizePath(reqRelPath)
 			if !pathsMatch(taskReq, reqPath) {
+				continue
+			}
+			matchedAny = true
+
+			// The current REQ content already matches the task's last audit
+			// hash — the change was absorbed by refining (or the write is a
+			// refining/PM session writing back its own audit records). Skip
+			// so those self-writes do not re-open tasks or re-notify.
+			if reqHash != "" && fm.RefineReqHash != "" && fm.RefineReqHash == reqHash {
 				continue
 			}
 
@@ -171,12 +232,38 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 					TaskID: fm.ID, File: entry.Name(),
 					Action: "pending_req", OldStatus: fm.Status,
 				})
-			case "review", "conflict", "done":
+			case "review", "conflict":
 				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 					"status":         "refining",
 					"pending_req":    true,
 					"merge_approved": false,
 				}); err != nil {
+					fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: fm.ID, File: entry.Name(),
+					Action: "pending_req", OldStatus: fm.Status,
+				})
+			case "done":
+				// 已交付终态任务的 REQ 变更按类型路由：breaking/未标注 →
+				// 重开新一轮交付；additive → 保持终态，提示新建 TASK 承接
+				// 增量；cosmetic → 忽略（不改契约，不打扰）。
+				switch reqChangeType {
+				case ReqChangeAdditive:
+					affected = append(affected, AffectedResult{
+						TaskID: fm.ID, File: entry.Name(),
+						Action: ActionReqAdditive, OldStatus: fm.Status,
+					})
+					continue
+				case ReqChangeCosmetic:
+					continue
+				}
+				updates := map[string]interface{}{"status": "refining", "pending_req": true}
+				for key, value := range generationResetUpdates(fm) {
+					updates[key] = value
+				}
+				if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 					fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
 					continue
 				}
@@ -200,7 +287,7 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 	}
 
 	// Fallback: auto-create task if no existing task matched
-	if len(affected) == 0 {
+	if len(affected) == 0 && !matchedAny {
 		created := createTaskForReq(vaultPath, reqRelPath, defaultAssignee)
 		if created != nil {
 			affected = append(affected, *created)
@@ -246,6 +333,25 @@ func requirementChangeUpdates(status string) map[string]interface{} {
 		updates["merge_approved"] = false
 	}
 	return updates
+}
+
+// generationResetUpdates returns the frontmatter updates that reset a
+// delivered task's generation facts when a breaking requirement change (or a
+// REQ rename) reopens it for a new delivery round. The old PR/branch facts
+// must not be reused: an already-MERGED old PR makes the merge flow converge
+// to done immediately, so the new delivery could never be merged (TASK-018
+// lesson). Round 2 writes the new branch afterwards and the merge flow
+// creates a fresh PR.
+func generationResetUpdates(fm *yamlfrontmatter.Frontmatter) map[string]interface{} {
+	return map[string]interface{}{
+		"merge_approved":      false,
+		"reopen_count":        fm.ReopenCount + 1,
+		"target_branch":       "",
+		"pr_url":              "",
+		"merge_status":        "",
+		"completed":           "",
+		"knowledge_extracted": false,
+	}
 }
 
 func OnReqDeleted(vaultPath, reqRelPath string) []AffectedResult {
@@ -418,7 +524,8 @@ grill_resolution: ""
 grill_context: ""
 grill_prev_status: ""
 req_refine_count: 0
-auto_approve: false
+auto_approve: true
+auto_merge: true
 off_peak_only: false
 created: "%s"
 updated: "%s"
@@ -450,6 +557,10 @@ parent: ""
 blocked_by: []
 target_branch: ""
 pr_url: ""
+reopen_count: 0
+merge_status: ""
+approved_head: ""
+merge_retry_count: 0
 target_env: staging
 stage: "%s"
 review_feedback: ""
