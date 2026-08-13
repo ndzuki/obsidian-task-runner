@@ -65,6 +65,9 @@ flowchart TD
     REFINE -.->|进程级失败| FB[fallback_models 兜底重启<br/>或 handlePhaseFailure]
     PLAN -.->|进程级失败| FB
     R2 -.->|进程级失败| FB
+    REFINE -.->|空响应×2（10min 窗口）| FB
+    PLAN -.->|空响应×2（10min 窗口）| FB
+    R2 -.->|空响应×2（10min 窗口）| FB
     FB -->|可恢复| REFINE
     FB -->|不可恢复| BLK[blocked + resume 门禁]
 ```
@@ -88,7 +91,7 @@ flowchart TD
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时）；**无进展完成（仍 implementing + 无 `checkpoint_commit`）→ 指数退避冷却（10m→…→~10.7h）不重派** | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining；无进展 → implementing（冷却中） |
 | 10 | 完成审计与自动合并 | `status=review` + auto_merge（默认 true） | **① 完成审计**（§7.4）：`merge_approved=false` + `audit_status!=passed` 时先跑独立只读审计会话（受限工具面 read/grep/bash，无写工具；assignee 模型 / `audit.model` 覆盖；任务 worktree 内逐条 AC 复核原始证据）——pass 写 `audit_status=passed` 继续；fail implementation → `AUDIT_FAILED` 转 implementing（round2 自动修复，连续 `audit.max_fixes` 次升级 grilling 决策）；fail requirement → 直接 needs-grilling 决策；会话失败保持 review 待重试。**② 合并授权**：审计通过或人工已授权后 daemon 自动设 `merge_approved=true`；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + `merge_retry_count < max_auto_merge_fixes` + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用；失败回退保持 `audit_status=passed`，不重复审计）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch/**origin==git_remote 目标仓库守卫，REPO_MISMATCH 硬失败**）→ 在任务 worktree 上 sync（祖先关系分流：fast-forward / 三路 merge / 文件级覆盖确认后 `--force-with-lease`）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` ...
 | 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（breaking 需求变更则回 refining 新一轮交付） |
-| 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
+| 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 / **空响应×2（10min 窗口，`watchEmptyStops`）** | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
 | 13 | 阶段评审 | 某阶段全部任务 done+merged（`merge_status=merged`）或剩余全 blocked/closed | `processStageReviews` 检测（每轮 ≤1）→ PM stage-review 四维评分写 `Notes/Stage-Review.md`；用户填「评审决策:」后 **daemon 先确定性翻转 Stage-Plan 状态机**（`flipStageReviewDecision`：continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）→ PM distribute 只做 REQ 标注/知识沉淀并写 answered | `/obsidian-task-runner-pm stage-review` / distribute | `Notes/Stage-Review.md`、Stage-Plan 阶段状态（delivered/ended/completed/in-progress） | continue → 下一阶段 in-progress；supplement:{建议} → 追加下一阶段；end → 后续阶段 ended + 任务 close（不维护积压） |
 
 ### 0.3 时序事实（与历史文档的差异说明）
@@ -96,12 +99,12 @@ flowchart TD
 - **旧版 `needs-refining` 状态自动迁移**：早期 daemon 使用 `needs-refining`，当前状态机已改名 `needs-grilling`。遗留任务文档中的 `needs-refining` 会被 scan 拾起（`IsReady` 视为可调度）并经 `nextLocalTransition` 同轮迁移为 `needs-grilling`——之后正常创建 Grilling tab、发送提醒并按 lease 语义处理。
 - **阶段顺序调度**：`Index.Scan` 排序键 = 项目内 stage 升序（数字序，P10 在 P2 后）→ priority → created；跨项目回到 created 公平（stage 是项目级语义，不做全局比较）；stage 空的任务排最后（当轮 auto-staging 归组后次轮生效）。低阶段任务优先消耗 `max_concurrent_tasks` 容量，P1 未收敛前 P2+ 实现任务不抢容量（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
 - **阶段评审防卡死放宽**：`stageTasksState` 三态——landed（全部 done+merged）/ reviewable（landed 或剩余全部 blocked/closed）/ unreviewable（存在可推进任务）。blocked-only 阶段触发 stage-review，PM 给「继续/收窄/拆出」建议；closed 任务不阻塞评审；无任务阶段不评审。
-- **依赖卫生与健康诊断**（每轮 scan）：① blocked_by / REQ depends_on 引用存在性校验（坏引用日志 + 一次性通知；**目标文件存在但 frontmatter 暂解析失败——如 OMP 会话写回瞬时窗口——跳过本轮 defer，下一轮重查，不误报**）；② 同项目 implementing 任务 `plan_files` 重叠预警（合并冲突前置）；③ 项目健康摘要（in-flight / stage 空 / merged 未收口）超阈值每日一次通知（rebaseline / stage-plan init / 拆阶段提示）。
-- **任务自动收口**（`autoCloseStaleMergedTasks`）：`merge_status=merged` 且非 done/closed 且无 `pending_req` → 自动 `status=done`（PR 合入 = 确定性证据；pending_req 增量任务受保护）+ 通知 + Roadmap 里程碑。
+- **依赖卫生与健康诊断**（每轮 scan）：① blocked_by / REQ depends_on 引用存在性校验（坏引用日志 + 一次性通知；**目标文件存在但 frontmatter 暂解析失败——如 OMP 会话写回瞬时窗口——跳过本轮 defer，下一轮重查，不误报**）；② 同 repo implementing 任务 `plan_files` 重叠**自动串行**（`overlapBlocked` 延迟派发排序靠后的任务，实现会话结束即释放，`max_overlap_wait_minutes` 默认 720 超限放行防饿死；无 plan_files 信息时退化为仅预警通知）；③ 项目健康摘要（in-flight / stage 空 / merged 未收口）超阈值每日一次通知（rebaseline / stage-plan init / 拆阶段提示）。
+- **任务自动收口**（`autoCloseStaleMergedTasks`）：`merge_status=merged` 且非 done/closed 且无 `pending_req` → 自动 `status=done`（PR 合入 = 确定性证据；pending_req 增量任务受保护）+ 通知 + Roadmap 里程碑。**反向防锁**（`detectStaleDoneReopens`，autoClose 之后同轮执行）：done + `plan_version≥2` + `checkpoint_commit` 非空且**非本地 `origin/main` 祖先**（`git merge-base --is-ancestor`，不 fetch）→ 未交付增量被假终态锁死（TASK-018：外部 frontmatter 写回基线 done，v6 checkpoint `d65af54b` 未合入，下游 TASK-071 被依赖门禁饿死）→ 自动按 breaking 语义重开 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted）+ 通知 + Roadmap 里程碑。**保守边界**：repo 不可解析 / git 检查不确定（ref 缺失、invalid object）→ 视为已合入不动，绝不误伤正常交付；与 autoClose 无回环（重开时 merge_status 清空 → autoClose 的 `MergeStatus != "merged"` 跳过）。
 - **决策归档兜底**（`autoArchiveDecisions`）：主清单 >50KB 且未答 ≤3 → 已答 D-n 块移入 `Grilling-Decisions-archive.md`、主清单重写为 frontmatter+指针+未答、`distributed_answers_hash` 刷新防 changed 误分发；consolidation 前执行。
 - **Roadmap 自动维护**（`updateRoadmap`）：阶段评审触发/阶段决策/任务收口/决策归档事件点确定性追加里程碑（幂等按日期+标题，自动建目录/模板）。
 - **scan 单轮调度、任务事件驱动下一轮**：`processBatch` 只 dispatch 不等待——任务在独立 `runTask` goroutine 执行，完成后触发下一轮 scan（coalesce）。旧表述「批次同步等待 + 自适应轮询重查」已废弃：一个长 Round 2 不再冻结 scan 循环，plan-review transition / merge 重试 / REQ 变更实时响应；shutdown 等待在跑任务落盘后退出。
-- **scan 首步 Normalize frontmatter**：每轮 scan 自动补齐任务文档缺失的 schema 字段（默认值，不覆盖已有值、必填字段不补），并按规范序维护字段顺序（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ 文档同等待遇**（`syncReqSchemaDefaults` + `NormalizeReqFrontmatter`）：迭代新增的稳定字段自动回填到旧 REQ，必填身份与可选决策字段不伪造（系统兜底：auto-staging / priority 评估 / resolveProjectField / 依赖继承跳过），防止字段缺失导致旧 REQ 被重拾时依赖继承断裂或任务静默停止自动化。
+- **scan 首步 Normalize frontmatter**：每轮 scan 自动补齐任务文档缺失的 schema 字段（默认值，不覆盖已有值、必填字段不补），并按规范序维护字段顺序（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ 文档同等待遇**（`syncReqSchemaDefaults` + `NormalizeReqFrontmatter`）：迭代新增的稳定字段自动回填到旧 REQ，必填身份与可选决策字段不伪造（系统兜底：auto-staging / priority 评估 / resolveProjectField / 依赖继承跳过），防止字段缺失导致旧 REQ 被重拾时依赖继承断裂或任务静默停止自动化。**REQ 写回仅补 frontmatter 元数据（tags/created/updated/字段序），不改需求实质——写回后同步刷新关联任务的 `refine_req_hash`/`plan_req_hash`**（仅 hash 匹配写回前字节的任务；更旧的 hash 是真实未吸收变更，保留），否则 `OnReqChanged` 把 daemon 自己的 Normalize 误判为需求变更而批量重开任务（2026-08-12：一次 backfill 重开 19 个任务，含 15 个已 done 的代际重置）。
 - **Normalize 性能（万级文档）**：① **mtime+size 短路**（`normCache`）——文档自上次处理后未变则跳过读/解析/写，后续轮从「全量读+解析」降为「全量 stat」；写回后记录新 stamp 保证收敛，外部编辑下轮自动拾起。② **写回去 fsync**（`atomicWriteNoSync`）——Normalize 是幂等修复（丢写下次重补），不承担事务性 fsync 成本；`Update`（OMP 状态变更）保持 fsync。数万文档时首轮一次性成本可接受，后续轮接近零开销。
 - **priority assessment 与 refining 并行**：评估在 scan 末尾执行（每轮 ≤2 个），不阻塞 ready→refining。旧表述「首次调度前有界等待 priority_assessment」已废弃；unblock（blocked→ready）也不依赖 priority 完成。
 - **冲突 AI 修复预算内可重复**：`merge_retry_count < max_auto_merge_fixes` 时失败回退自动重授权并再次触发 AI 修复；`merge_status=conflict-resolve-attempted` 标记预算耗尽，交还用户。
@@ -228,6 +231,8 @@ stateDiagram-v2
     conflict --> conflict: 预算内失败回退自动重授权（canAutoApproveMerge）
 
     done --> refining: breaking REQ 变更（代际重置）
+    done --> refining: 陈旧终态检测（merge_status=merged 前置；plan≥2 + checkpoint 非 origin/main 祖先 → 未交付增量自动重开）
+    done --> review: merge_status != merged 且有 PR/分支（stale PR，merge 闭环）
     done --> [*]: 终态 / additive / cosmetic
 
     closed --> [*]: 终态
@@ -246,7 +251,7 @@ stateDiagram-v2
 | `implementing` | 在任务 worktree 执行已批准计划（含 Prototype Gate） | Round 2 Skill | `review`、`refining` 或 `needs-grilling` |
 | `review` | 本地实现已提交；auto_merge=true 时先过**独立完成审计**（§7.4：只读会话逐条 AC 复核原始证据），通过后 daemon 自动授权合并；人工 `merge_approved=true` 跳过审计直接授权；审计 fail 按类型转 implementing 修复或 needs-grilling 决策 | daemon 自动 / 人工 Gate | `done`、`conflict`、`refining`、`implementing`、`needs-grilling` 或 `closed` |
 | `conflict` | Merge 冲突；AI 预算内自动修复并重授权，预算耗尽（conflict-resolve-attempted）交还人工 | daemon（AI 预算内）+ 人工 | `done` 或 `refining` |
-| `done` | 已合并并推送；breaking 需求变更（含未标注）重开并代际重置，additive/cosmetic 保持终态 | — | `refining`（breaking）或终止 |
+| `done` | 已合并并推送；breaking 需求变更（含未标注）重开并代际重置，additive/cosmetic 保持终态；**陈旧终态检测**（done + plan_version≥2 + checkpoint 非 origin/main 祖先）自动重开 refining；`merge_status != merged` 且有 PR/分支 → 自动重开 `review` 走 merge 闭环 | daemon（自动收口/检测）/ 人工 Gate | `refining`（breaking / 陈旧终态）、`review`（stale PR）或终止 |
 | `closed` | 无需交付（已实现/重复/取消/不予处理） | 人工 Gate | 终态，不可恢复 |
 
 ### 3.1 提前审批
@@ -543,7 +548,7 @@ resume_approved: false
 | `review` / `conflict` | 设 pending_req=true，清 merge_approved，转 refining（未合并交付必须吸收变更后合入） |
 | `done` | 按 REQ 最新变更记录 `> 变更类型:` 路由：`breaking`/未标注 → 清 merge_approved 转 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted，round2 完成后写新分支/新 PR）；`additive` → 保持终态，通知「建议新建 TASK 承接增量或手动重开」；`cosmetic` → 忽略 |
 
-**已吸收去重**：任务 `refine_req_hash` 已等于 REQ 当前内容 hash 时跳过处理——refining/PM 写回自身审计记录不重复打回、不重复通知（watcher 事件级另有同内容 hash 去重）。变更类型由修改者（用户/PM/refining 会话）在保存前写入 `> 变更类型:` 行（breaking/additive/cosmetic），未标注按 breaking 保守处理。
+**已吸收去重**：任务 `refine_req_hash` 已等于 REQ 当前内容 hash 时跳过处理——refining/PM 写回自身审计记录不重复打回、不重复通知（watcher 事件级另有同内容 hash 去重）。**例外（TASK-018）**：任务处于陈旧终态（done + `plan_version≥2` + `checkpoint_commit` 非空）时不跳过——吸收会锁死未交付增量，改走 done 分支按类型路由（breaking 重开 / additive 保持终态并提示 / cosmetic 忽略）。变更类型由修改者（用户/PM/refining 会话）在保存前写入 `> 变更类型:` 行（breaking/additive/cosmetic），未标注按 breaking 保守处理。
 
 新建 REQ 自动创建的新 TASK 使用 `pending_req=false`：初始 REQ 是基线，不是“待并入变更”。
 
@@ -634,7 +639,7 @@ Round 2 实现会话应保证验收记录可被独立复现（每条 AC 标注�
 - 禁止任何 push、PR 创建或 merge。
 - 直接转 `refining`。
 
-`done` 例外：REQ 变更按类型路由（§6.7）——`breaking`（含未标注）才设 `pending_req=true` 并转 refining（代际重置）；`additive`/`cosmetic` 保持终态，不设 `pending_req`。
+`done` 例外：REQ 变更按类型路由（§6.7）——`breaking`（含未标注）才设 `pending_req=true` 并转 refining（代际重置）；`additive`/`cosmetic` 保持终态，不设 `pending_req`。**陈旧终态另设例外**：done + `plan_version≥2` + checkpoint 非 origin/main 祖先时，`detectStaleDoneReopens` 每轮 scan 自动按 breaking 重开（§0.3 任务自动收口反向防锁），不受本门禁限制。
 
 用户重新把 `merge_approved=true` 也不能绕过该门禁。
 
@@ -727,7 +732,7 @@ refining/planning 的 retry count 在以下时机清零：
 
 ### 10.4 blocked_by 依赖自动恢复
 
-每次扫描 daemon 执行 `resolveBlockedDependencies`：遍历 `blocked` 任务，解析其 `blocked_by` 上游引用（同项目 `TASK-010` 或跨项目 `project-key:TASK-010`），若上游处于**阶段失败阻塞**（`blocked_phase` 非空 + `MODEL_FAILED`/`PHASE_TIMEOUT`/`PHASE_INTERRUPTED`/`MODEL_QUOTA_EXHAUSTED` 或空错误码）且未批准 resume，则自动设 `resume_approved=true` 并标记 `auto_resume_pending=true`。
+每次扫描 daemon 执行 `resolveBlockedDependencies`：遍历 `blocked` 任务，解析其 `blocked_by` 上游引用（同项目 `TASK-010` 或跨项目 `project-key:TASK-010`），若上游处于**阶段失败阻塞**（`blocked_phase` 非空 + `MODEL_FAILED`/`PHASE_TIMEOUT`/`PHASE_INTERRUPTED`/`MODEL_QUOTA_EXHAUSTED`；空错误码仅当上游自身无 `blocked_by` 的 legacy 阶段失败）且未批准 resume，则自动设 `resume_approved=true` 并标记 `auto_resume_pending=true`。**空错误码 + 上游自身 `blocked_by` 非空的 blocked 是入口门禁形态（round2 写回丢码），不自动恢复**——scan 先由 `fixBlockedGateErrorCodes` 补记 `PREREQUISITE_SMOKE_FAILED` 归入门禁事实恢复分支（TASK-019 8/11：空码 blocked 被误恢复成 completed→blocked→resume 死循环）。
 
 重试预算（`auto_resume_count`）：
 
@@ -766,6 +771,22 @@ flowchart TD
 - **机制**：调度循环对每个待调度任务按阶段 tryAcquire 非阻塞槽位（`phaseGate`）；满员任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度，与 implementationGate 同语义。
 - **范围**：`refining`/`planning` 按任务状态映射；`merge` 映射到 review/conflict + merge_approved（同步执行的 merge 流程也占槽）；`priority` 映射到 ready+priority pending；`pm` 为 PM consolidate/stage-review（scan 末尾同步段，每轮 ≤1 已有预算，跨轮叠加也受限）；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）。`needs-grilling`（Kitty 交互）不限。
 - **配置**：key 置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks` 控制；修改后重启 daemon 生效。
+
+### 10.7 模型兜底与空响应切换
+
+三层兜底按失效形态分工：
+
+| 层 | 失效形态 | 机制 | 归属 |
+| --- | --- | --- | --- |
+| 会话内 | API 错误/限流/超时（HTTP 层） | omp `config.yml` `retry.fallbackChains`（按 role 匹配） | OMP |
+| 进程级 | OMP exit / 阶段超时 / quota / key 缺失 | daemon 按 `fallback_models`（vault-map 顶层）重启会话 | daemon |
+| **空响应** | provider 返回 `stop` 但零内容（第三方 gateway 抖动形态） | **daemon `watchEmptyStops`**：OMP 日志 `empty-stop-handled` 10 分钟窗口内 2 次 → 取消当前会话（SIGTERM，OMP 保存 session）→ 走进程级 `fallback_models` 重启 + 「🔄 模型切换」通知 | daemon |
+
+关键边界：
+
+- daemon 以 `--model <裸模型 ID>` 启动的会话**不匹配任何 role**，OMP 的 fallbackChains 对它们不生效（子代理有链、主会话无链——2026-08-13 实证：gateway/gpt-5.6-sol 两次空响应均同模型重试，各耗 5+ 分钟）——**空响应兜底因此放在 daemon 层**。
+- 单次空响应或窗口外（>10min）偶发不触发，防浪费兜底预算；触发后 `runErr` 走 `context.Canceled`（非外部信号），自动进入现有 fallback 路径，无新状态机。
+- 配置建议：免费渠道（如 gateway 别名）作 `models.<assignee>` 主模型 + 官方直连（如 `deepseek/deepseek-v4-flash`）作 `fallback_models.<assignee>`——免费优先、抖动自动切官方。
 
 ## 11. TASK 流程控制字段
 
@@ -926,6 +947,8 @@ flowchart LR
 ### AC-08 Merge 安全
 
 - [ ] review/conflict + pending_req 自动转 refining；done 按变更类型路由（breaking 重开 + 代际重置，additive/cosmetic 保持终态）。
+- [ ] **陈旧终态自动重开**（`detectStaleDoneReopens`）：done + plan_version≥2 + checkpoint 非 origin/main 祖先 → 自动转 refining + 代际重置 + 通知；checkpoint 已合入 / plan<2 / 无 checkpoint / 无 merged PR / repo 不可解析 → 不动；幂等（重开后不再触发）（TASK-018/071 回归）。
+- [ ] **已吸收去重例外**：refine_req_hash == REQ hash 时正常跳过，但陈旧终态（done + plan≥2 + checkpoint 非空）不跳过，走 done 分支类型路由。
 - [ ] pending_req 时绝对禁止 Merge。
 - [ ] Merge 前复核当前 REQ hash 与 plan_req_hash。
 - [ ] conflict 需求变更取消旧 Merge。
@@ -982,7 +1005,7 @@ flowchart LR
 - [ ] auto_merge=false：review 保持人工 merge gate。
 - [ ] merge 失败回退（REQ 未变 + 预算未耗尽）自动重授权；预算耗尽/REQ 变更/永久缺陷不自动授权（TASK-051/059 回归）。
 - [ ] 冲突：AI 预算内自动修复（`merge_retry_count < max_auto_merge_fixes`），预算耗尽 → conflict + 人工（merge_status=conflict-resolve-attempted 不再自动重复）。
-- [ ] pending_req 在 implementing/review/conflict 的三条路径 + done 的类型路由（breaking 重开清旧 PR/分支；additive/cosmetic 终态）。
+- [ ] pending_req 在 implementing/review/conflict 的三条路径 + done 的类型路由（breaking 重开清旧 PR/分支；additive/cosmetic 终态）+ 陈旧终态检测重开（done + plan≥2 + checkpoint 未合入 → refining + 代际重置，TASK-018/071 回归）。
 - [ ] done 重开后 merge 走新 PR（旧 MERGED PR 不复用），reopen_count 递增。
 - [ ] auto_approve 允许与禁止场景。
 - [ ] phase retry/resume。

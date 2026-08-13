@@ -640,6 +640,121 @@ func TestProcessBatchLimitsImplementingTasksAcrossConcurrentBatches(t *testing.T
 	waitForTasksIdle(t, runner)
 }
 
+// TestProcessBatchSerializesOverlappingPlanFiles guards the plan-file overlap
+// serialization: two implementing tasks of the same repository planning the
+// same file dispatch one at a time — the second stays deferred while the
+// first runs, and dispatches only after the first's implementation session
+// finishes (the registration window is the session, not the delivery
+// lifecycle, so a merge-stalled upstream never starves its downstream).
+func TestProcessBatchSerializesOverlappingPlanFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	files := []string{"internal/foo.go"}
+	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: files, Assignee: "default"}
+	two := task.ReadyTask{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "implementing", PlanFiles: files, Assignee: "default"}
+
+	// Both candidates overlap: only the first in dispatch order runs.
+	firstDone := runBatch(runner, []task.ReadyTask{one, two})
+	waitForStartCount(t, startDir, 1)
+	if got := waitForBatch(t, firstDone); got != 1 {
+		t.Fatalf("first batch dispatched = %d, want 1 (overlap serialized)", got)
+	}
+
+	// While task one is still running, re-scanning task two stays deferred.
+	secondDone := runBatch(runner, []task.ReadyTask{two})
+	if got := waitForBatch(t, secondDone); got != 0 {
+		t.Fatalf("second batch dispatched = %d, want 0 (overlap still active)", got)
+	}
+	assertStartCount(t, startDir, 1)
+
+	// Task one finishes: its plan_files registration is released, and task
+	// two dispatches on the next round.
+	releaseBarrier(t, releaseFile)
+	waitForTasksIdle(t, runner)
+	thirdDone := runBatch(runner, []task.ReadyTask{two})
+	waitForStartCount(t, startDir, 2)
+	if got := waitForBatch(t, thirdDone); got != 1 {
+		t.Fatalf("third batch dispatched = %d, want 1 (overlap cleared)", got)
+	}
+	releaseBarrier(t, releaseFile)
+	waitForTasksIdle(t, runner)
+}
+
+// TestProcessBatchOverlapWaitLimitExceeded guards the anti-starvation bound:
+// a task deferred past max_overlap_wait_minutes dispatches concurrently even
+// though the overlap persists — merge conflict resolution stays the fallback
+// instead of blocking the queue forever behind a stalled session.
+func TestProcessBatchOverlapWaitLimitExceeded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner.cfg.MaxOverlapWaitMinutes = 120
+	files := []string{"internal/foo.go"}
+	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: files, Assignee: "default"}
+	two := task.ReadyTask{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "implementing", PlanFiles: files, Assignee: "default"}
+
+	firstDone := runBatch(runner, []task.ReadyTask{one, two})
+	waitForStartCount(t, startDir, 1)
+	if got := waitForBatch(t, firstDone); got != 1 {
+		t.Fatalf("first batch dispatched = %d, want 1 (overlap serialized)", got)
+	}
+
+	// Simulate the wait having started long ago: past the 2h limit the
+	// deferred task must dispatch concurrently (merge flow is the fallback).
+	runner.overlapWaits.Store(taskTwo, time.Now().Add(-3*time.Hour))
+	secondDone := runBatch(runner, []task.ReadyTask{two})
+	waitForStartCount(t, startDir, 2)
+	if got := waitForBatch(t, secondDone); got != 1 {
+		t.Fatalf("overlimit batch dispatched = %d, want 1 (wait limit exceeded)", got)
+	}
+	releaseBarrier(t, releaseFile)
+	waitForTasksIdle(t, runner)
+}
+
+// TestProcessBatchDifferentPlanFilesNotSerialized guards the false-positive
+// path: tasks planning disjoint file sets dispatch concurrently even in the
+// same repository.
+func TestProcessBatchDifferentPlanFilesNotSerialized(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
+	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: []string{"internal/foo.go"}, Assignee: "default"}
+	two := task.ReadyTask{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "implementing", PlanFiles: []string{"internal/bar.go"}, Assignee: "default"}
+
+	done := runBatch(runner, []task.ReadyTask{one, two})
+	waitForStartCount(t, startDir, 2)
+	if got := waitForBatch(t, done); got != 2 {
+		t.Fatalf("batch dispatched = %d, want 2 (disjoint plan files)", got)
+	}
+	releaseBarrier(t, releaseFile)
+	waitForTasksIdle(t, runner)
+}
+
 func TestPlanningTaskDoesNotConsumeImplementationSlot(t *testing.T) {
 	dir := t.TempDir()
 	implementationRepo := filepath.Join(dir, "implementation-repo")

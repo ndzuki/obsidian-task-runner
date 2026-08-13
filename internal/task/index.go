@@ -273,5 +273,6 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 		Maturity:                 fm.Maturity,
 		ReviewFeedback:           fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
 		ClosureReason: fm.ClosureReason,
+		PlanFiles:                fm.PlanFiles,
 	}
 }

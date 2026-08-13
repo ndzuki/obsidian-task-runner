@@ -33,6 +33,7 @@ type Config struct {
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
 	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
+	MaxOverlapWaitMinutes      int `json:"max_overlap_wait_minutes"`      // plan-file overlap deferral cap before concurrent dispatch (merge conflict resolution is the fallback)
 	MaxAutoMergeFixes          int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
 	CompactOversizeThresholdKB int `json:"compact_oversize_threshold_kb"` // TASK docs above this size get history folding
 	GrillingConsolidationBatch int `json:"grilling_consolidation_batch"`  // PM sessions per scan
@@ -285,7 +286,11 @@ func Defaults() *Config {
 		OffPeakWindows:             []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
 		StarvationWarningDays:      map[string]int{"P3": 14, "P4": 30},
 		ScanMinIntervalSeconds:     10,
-		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
+		// Overlap deferral cap: 12h exceeds the round2 no-progress cooldown
+		// ceiling (~10.7h), so a stalled upstream stops being re-dispatched
+		// before the deferred task is released to run concurrently.
+		MaxOverlapWaitMinutes: 720,
+		Audit:                 &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
 		GrillingConsolidationBatch: 3,
@@ -435,6 +440,9 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.ScanMinIntervalSeconds <= 0 {
 		cfg.ScanMinIntervalSeconds = defaults.ScanMinIntervalSeconds
+	}
+	if cfg.MaxOverlapWaitMinutes <= 0 {
+		cfg.MaxOverlapWaitMinutes = defaults.MaxOverlapWaitMinutes
 	}
 	if cfg.MaxAutoMergeFixes <= 0 {
 		cfg.MaxAutoMergeFixes = defaults.MaxAutoMergeFixes

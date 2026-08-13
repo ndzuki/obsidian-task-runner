@@ -32,6 +32,7 @@
     "top_n": 20
   },
   "max_concurrent_tasks": 2,
+  "max_overlap_wait_minutes": 720,
   "models": {
     "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
     "deepseek": "deepseek/deepseek-v4-flash",

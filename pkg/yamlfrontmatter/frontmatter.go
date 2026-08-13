@@ -153,8 +153,9 @@ type Frontmatter struct {
 	// auto-staging or PM manual assignment (does NOT follow REQ changes).
 	StageSource string `yaml:"stage_source"`
 	// PlanFiles lists repo-relative files the current plan intends to modify.
-	// Round 1 writes it; the daemon detects overlaps across concurrently
-	// implementing tasks of the same project to warn before merge conflicts.
+	// Round 1 writes it; the daemon serializes dispatch of same-repository
+	// implementing tasks whose plans overlap, preventing merge conflicts at
+	// scheduling time (a bounded wait, then the merge flow is the fallback).
 	PlanFiles []string `yaml:"plan_files"`
 
 	// Deprecated migration-only field. New code must use Assignee.

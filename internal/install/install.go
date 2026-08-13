@@ -91,6 +91,10 @@ func Run(opts Options) error {
 				strings.Join(missing, ", "), strings.Join(missing, " "))
 		}
 	}
+	// 5f. Register every top-level skill in the agent discovery layer
+	if err := linkTopLevelSkills(opts); err != nil && !d {
+		return fmt.Errorf("top-level skill links: %w", err)
+	}
 	// 6. Configure shell environment
 	if err := configureShell(opts); err != nil && !d {
 		return fmt.Errorf("shell config: %w", err)
@@ -425,6 +429,48 @@ func installPhaseSkills(opts Options) error {
 			return fmt.Errorf("symlink %s → %s: %w", link, destDir, err)
 		}
 		fmt.Printf("phase skill installed: %s\n", phase.name)
+	}
+	return nil
+}
+
+// linkTopLevelSkills registers every top-level skill under
+// ~/.omp/skills/ in the omp agent discovery layer (~/.omp/agent/skills/).
+// installPhaseSkills only links the bundled phase skills; dependency skills
+// shipped alongside them (knowledge-base, grilling, wayfinder, ...) were
+// never registered, so skill://<name> resolution failed in agent sessions
+// (unknown skill) while skill-doctor still found them — the round1/round2
+// knowledge-base retrieval chain silently dead-ended. Idempotent: existing
+// entries (links or real dirs) are preserved, only missing names are added.
+func linkTopLevelSkills(opts Options) error {
+	home, _ := os.UserHomeDir()
+	skillRoot := filepath.Join(home, ".omp", "skills")
+	agentDir := filepath.Join(home, ".omp", "agent", "skills")
+	entries, err := os.ReadDir(skillRoot)
+	if err != nil {
+		return fmt.Errorf("read skill root: %w", err)
+	}
+	if !opts.DryRun {
+		if err := os.MkdirAll(agentDir, 0o755); err != nil {
+			return fmt.Errorf("create agent skill dir: %w", err)
+		}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		link := filepath.Join(agentDir, name)
+		if _, err := os.Lstat(link); err == nil {
+			continue // existing link/dir preserved
+		}
+		if opts.DryRun {
+			fmt.Printf("[DRY RUN] Would link %s\n", link)
+			continue
+		}
+		if err := os.Symlink(filepath.Join(skillRoot, name), link); err != nil {
+			return fmt.Errorf("symlink %s: %w", link, err)
+		}
+		fmt.Printf("top-level skill linked: %s\n", name)
 	}
 	return nil
 }

@@ -60,6 +60,7 @@ type ReadyTask struct {
 	AuditFailCount           int    `json:"audit_fail_count,omitempty"`
 	AuditLog                 string `json:"audit_log,omitempty"`
 	Maturity                 string `json:"maturity,omitempty"`
+	PlanFiles                []string `json:"plan_files,omitempty"`
 }
 
 // priorityOrder maps P0-P4 to sortable int.

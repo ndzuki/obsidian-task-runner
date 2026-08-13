@@ -416,6 +416,13 @@ func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 	if processed := waitForBatch(t, done); processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
+	// processBatch is dispatch-only: the runTask goroutine (audit session,
+	// merge authorization write-backs) is still running when the batch
+	// returns. Wait for it before TempDir cleanup, otherwise the async
+	// frontmatter write races removeAll — Go 1.26 TempDir numbers
+	// subdirectories (/tmp/<test><rand>/001), and the race re-creates the
+	// task file after removal, leaving the dir non-empty (cleanup error).
+	waitForTasksIdle(t, runner)
 	fm := mustParse(t, taskPath)
 	if fm.AuditStatus != "passed" {
 		t.Fatalf("audit_status = %q, want passed (audit must run before auto-approval)", fm.AuditStatus)

@@ -154,9 +154,15 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 			// The current REQ content already matches the task's last audit
 			// hash — the change was absorbed by refining (or the write is a
 			// refining/PM session writing back its own audit records). Skip
-			// so those self-writes do not re-open tasks or re-notify.
+			// so those self-writes do not re-open tasks or re-notify —
+			// unless the task is frozen in a stale terminal (done + newer
+			// plan + unmerged checkpoint, TASK-018): absorbing would keep
+			// the undelivered increment locked forever, so route it through
+			// the done branch (breaking reopen) instead.
 			if reqHash != "" && fm.RefineReqHash != "" && fm.RefineReqHash == reqHash {
-				continue
+				if fm.Status != "done" || fm.PlanVersion < 2 || fm.CheckpointCommit == "" {
+					continue
+				}
 			}
 
 			switch fm.Status {

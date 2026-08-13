@@ -338,3 +338,124 @@ func readTaskFM(t *testing.T, taskPath string) *yamlfrontmatter.Frontmatter {
 	}
 	return fm
 }
+
+// writeReqTaskAt is writeReqTask with an explicit filename, letting one vault
+// host several TASKs bound to the same REQ.
+func writeReqTaskAt(t *testing.T, vault, reqBody string, taskYAML map[string]string, filename, id string) (taskPath string) {
+	t.Helper()
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	reqsDir := filepath.Join(projDir, "Requirements")
+	if err := os.MkdirAll(reqsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	reqPath := filepath.Join(reqsDir, "REQ-099-test-req.md")
+	if err := os.WriteFile(reqPath, []byte(reqBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fm := "---\nid: \"" + id + "\"\ntitle: Test Task\nproject: test\nassignee: default\nreq_doc: Projects/001-test/Requirements/REQ-099-test-req.md\n"
+	for k, v := range taskYAML {
+		fm += k + ": " + v + "\n"
+	}
+	fm += "---\n# TASK-" + id + "\n"
+	taskPath = filepath.Join(tasksDir, filename)
+	if err := os.WriteFile(taskPath, []byte(fm), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return taskPath
+}
+
+// TestOnReqChanged_AbsorbedSkipsExceptStaleDone guards the absorb-skip
+// branch: a REQ whose hash matches the task's refine_req_hash is normally
+// skipped (refining/PM self-writes must not re-open tasks) — EXCEPT when the
+// task is frozen in a stale terminal (done + plan_version>=2 + unmerged
+// checkpoint, TASK-018 lesson): absorbing would keep the undelivered
+// increment locked, so the done branch (breaking reopen) must run.
+func TestOnReqChanged_AbsorbedSkipsExceptStaleDone(t *testing.T) {
+	reqBody, reqHash := reqContentWithType("")
+	// absorbed: task already auditing this exact REQ content
+	absorbed := map[string]string{
+		"status":          "refining",
+		"pending_req":     "true",
+		"refine_req_hash": reqHash,
+	}
+	// absorbed + stale terminal: must NOT skip; must reopen via done branch
+	staleDone := map[string]string{
+		"status":            "done",
+		"pending_req":       "false",
+		"refine_req_hash":   reqHash,
+		"plan_version":      "6",
+		"checkpoint_commit": "deadbeef",
+		"merge_status":      "merged",
+		"pr_url":            "https://github.com/x/y/pull/9",
+		"completed":         "2026-07-16T18:20:16+08:00",
+		"reopen_count":      "1",
+	}
+	// absorbed + done without a newer plan: genuine delivery, keep skipping
+	legacyDone := map[string]string{
+		"status":          "done",
+		"pending_req":     "false",
+		"refine_req_hash": reqHash,
+		"plan_version":    "1",
+	}
+
+	vault, absorbedPath := writeReqTask(t, reqBody, absorbed)
+	stalePath := writeReqTaskAt(t, vault, reqBody, staleDone, "TASK-099-test-req-stale.md", "099")
+	legacyPath := writeReqTaskAt(t, vault, reqBody, legacyDone, "TASK-099-test-req-legacy.md", "099")
+
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
+	// absorbed refining task: untouched; stale done: reopened; legacy done: untouched.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 affected result (stale done), got %d: %+v", len(results), results)
+	}
+	if results[0].Action != "pending_req" {
+		t.Fatalf("result = %+v, want pending_req", results[0])
+	}
+
+	fm := readTaskFM(t, absorbedPath)
+	if fm.Status != "refining" {
+		t.Fatalf("absorbed refining task must stay refining, got %q", fm.Status)
+	}
+	fm = readTaskFM(t, stalePath)
+	if fm.Status != "refining" || !fm.PendingReq || fm.ReopenCount != 2 || fm.MergeStatus != "" {
+		t.Fatalf("stale done must reopen with generation reset: status=%q pending_req=%v reopen_count=%d merge_status=%q",
+			fm.Status, fm.PendingReq, fm.ReopenCount, fm.MergeStatus)
+	}
+	fm = readTaskFM(t, legacyPath)
+	if fm.Status != "done" {
+		t.Fatalf("legacy done (plan v1) must stay done, got %q", fm.Status)
+	}
+}
+
+// TestOnReqChanged_AbsorbedStaleDoneAdditiveStaysTerminal guards the
+// additive sub-branch of the stale-done absorb exception: a stale terminal
+// (done + plan_version>=2 + checkpoint) hit by an ADDITIVE REQ change is NOT
+// skipped by absorb-dedup, but the done branch keeps it terminal (additive
+// never reopens) — the absorb exception only routes into the done branch,
+// whose type routing still applies.
+func TestOnReqChanged_AbsorbedStaleDoneAdditiveStaysTerminal(t *testing.T) {
+	reqBody, reqHash := reqContentWithType(ReqChangeAdditive)
+	staleDone := map[string]string{
+		"status":            "done",
+		"pending_req":       "false",
+		"refine_req_hash":   reqHash,
+		"plan_version":      "6",
+		"checkpoint_commit": "deadbeef",
+		"merge_status":      "merged",
+	}
+	vault, taskPath := writeReqTask(t, reqBody, staleDone)
+
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
+	// additive: no frontmatter mutation, only the suggestion result.
+	if len(results) != 1 || results[0].Action != ActionReqAdditive {
+		t.Fatalf("result = %+v, want req_additive", results)
+	}
+	fm := readTaskFM(t, taskPath)
+	if fm.Status != "done" || fm.PendingReq || fm.MergeStatus != "merged" {
+		t.Fatalf("additive must keep stale done terminal: status=%q pending_req=%v merge_status=%q",
+			fm.Status, fm.PendingReq, fm.MergeStatus)
+	}
+}
