@@ -53,7 +53,16 @@
     "planning": 2,
     "merge": 1,
     "priority": 1,
-    "pm": 1
+    "pm": 1,
+    "audit": 1
+  },
+  "audit": {
+    "_comment": "完成审计（独立验证）：auto_merge 的 review 任务在合并授权前，由受限只读 OMP 会话（read/grep/bash，无写工具）逐条 AC 复核原始证据；implementation 类失败带审计报告转回 implementing 自动修复（连续 max_fixes 次升级 grilling 决策），requirement 类失败直接转 grilling 决策，均不硬性阻塞。enabled=false 可关闭。",
+    "enabled": true,
+    "max_fixes": 2,
+    "timeout_minutes": 15,
+    "concurrency": 1,
+    "model": ""
   },
   "poll_interval_minutes": 30,
   "projects": [

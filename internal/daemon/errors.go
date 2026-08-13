@@ -31,6 +31,7 @@ const (
 	ErrDependencyCycle          ErrorCode = "DEPENDENCY_CYCLE"
 	ErrPrerequisiteSmokeFailed  ErrorCode = "PREREQUISITE_SMOKE_FAILED"
 	ErrInternal                 ErrorCode = "INTERNAL"
+	ErrAuditFailed              ErrorCode = "AUDIT_FAILED"
 )
 
 var stableErrorCodes = []ErrorCode{
@@ -59,6 +60,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrBranchOwnershipConflict,
 	ErrDependencyCycle,
 	ErrPrerequisiteSmokeFailed,
+	ErrAuditFailed,
 	ErrInternal,
 }
 

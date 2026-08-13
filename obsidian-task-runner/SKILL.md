@@ -36,8 +36,9 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 **代码注释用英文**（本项目为开源仓库，代码注释与 commit 均遵循英文惯例，对齐 AGENTS.md 例外条款）：任何由本任务体系（refining / round1 / round2 / merge / daemon 自身开发）新增或修改的代码注释一律英文；仅函数签名、导出符号声明等结构性注释可双语。
 
 ## Status Routing（状态路由）
+
 | status | 行为 |
-|--------|------|
+| -------- | ------ |
 | `blocked` | 五类：① 缺字段/依赖——补齐后自动 `ready`/`plan-review`；② 阶段失败——`resume_approved=true` 后恢复 `blocked_phase`；③ `API_KEY_UNAVAILABLE`——daemon 每轮探测 key，可用即自动恢复（无需 resume）；④ 人工暂停——`blocked_phase` 非空 + `REQ_MISSING` 等非瞬时错误码，保持阻塞直到手动 resume；⑤ **前置门禁失败**（`PREREQUISITE_SMOKE_FAILED`）——round2 入口门禁（如 AC-066-17）未通过时由 round2 转 blocked，daemon 每轮按 `blocked_by` **事实**（上游 `done` 且 `phase_error_code` 空 = PR 已合入）自动恢复，无用户干预；门禁失败禁止 replan 循环 |
 | `ready` | daemon 转 `refining`；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
 | `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先加载 skill://wayfinder 生成 Wayfinder Map 决策地图，作为 Grilling 焦点；failed 项三分类收敛——fact 自修正 REQ、auto 采纳建议留 `auto_accepted` 审计（可推翻）、仅 dispute 进 grilling；重复争议（grill_repeat≥2）park 升级到项目级清单 |
@@ -46,10 +47,12 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
 | `plan-review` | auto_approve 默认 true（缺失即 true，模板已写入）→ daemon 自动 `plan_approved=true` 转 implementing；显式 `auto_approve: false` 时等待人工 `plan_approved=true`；关闭必须同时满足 `rework_resolution=close` + `close_approved=true` + 合法 `closure_reason` + 非空 `closure_note`（duplicate 还需 `replacement_task`）。**Grilling 是唯一常规人工关卡** |
 | `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate；**空转冷却**：会话完成后仍 implementing 且无 `checkpoint_commit`（入口门禁复验类）→ 指数退避冷却（10m→…→~10.7h 上限）不重派；有进展即重置。不会自动转 closed |
-| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；关闭门禁仅对 `review` 生效（conflict 不关闭——先解决合并冲突）；否则 auto_merge=true 时 daemon 自动授权合并——**merge 失败回退（REQ 未变 + 预算未耗尽）同样自动重授权**（`canAutoApproveMerge`：非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷即重试），停机/超时中断保持授权重启自动恢复。AI 修复预算（`merge_retry_count`，上限 `max_auto_merge_fixes`）耗尽后交还用户：① 清计数重授权继续 AI 修复；② replan（review 设 `rework_resolution=replan`；conflict 在 REQ 追加歧义裁决保存→自动转 refining）——详见 `skill://obsidian-task-runner-merge`「预算恢复」 |
+| `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；关闭门禁仅对 `review` 生效（conflict 不关闭——先解决合并冲突）；**auto_merge 完成审计门禁**：进入 review 且 `merge_approved=false` 时先跑独立只读审计会话（受限工具面 read/grep/bash，无写工具）逐条 AC 复核原始证据——pass 才自动授权合并；fail 按失败类型分路：`implementation`（代码/测试缺陷）带审计报告转回 implementing 自动修复（round2 加载 diagnosing-bugs 消费 `phase_error`/`audit_log`），连续 `audit.max_fixes` 次仍失败升级为 **grilling 决策**（resume→继续修复重置预算 / replan→refining）；`requirement`（AC 歧义/矛盾/不可验证）直接转 needs-grilling 决策；人工已 `merge_approved=true` 的任务跳过审计。**merge 失败回退（REQ 未变 + 预算未耗尽）同样自动重授权**（`canAutoApproveMerge`：非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷即重试），停机/超时中断保持授权重启自动恢复。AI 修复预算（`merge_retry_count`，上限 `max_auto_merge_fixes`）耗尽后交还用户：① 清计数重授权继续 AI 修复；② replan（review 设 `rework_resolution=replan`；conflict 在 REQ 追加歧义裁决保存→自动转 refining）——详见 `skill://obsidian-task-runner-merge`「预算恢复」 |
 | `done` | REQ 变更按类型路由：`breaking`（含未标注，保守）→ pending_req=true 回 refining，代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted，新一轮交付新 PR）；`additive`（纯增量向后兼容）→ 保持 done，通知建议新建 TASK 承接；`cosmetic`（措辞/格式）→ 忽略；`merge_status != merged` 且有 PR/分支（任务 done 但 PR 从未合入）→ 自动重开 `review` 走 merge 闭环（auto_merge 自动授权）；否则终态；不会自动转 closed |
 | `closed` | 无需交付终态（Bets, Not Backlogs）。仅两条入口：① plan-review/review 的显式关闭门禁（用户批准 + 原因 + 备注）；② Stage-Review 用户决策 `end` 关闭**尚未开始交付**的后续阶段任务。已有计划/分支/PR/checkpoint/merge 状态或处于 planning/implementing/review/conflict 的任务会阻断整次 stage end，禁止自动关闭。closure_reason: not-bet / already-implemented / duplicate / cancelled / wont-fix。不可自动恢复 |
+
 ## Core Invariants（核心不变量）
+
 1. MUST route initial tasks through `ready → refining`；REQ 变更按当前状态设置 pending_req 并安全回 refining。
 2. Maturity Gate MUST be fully_mature to enter planning；其他进入 Grilling。
 3. 需求细化 Grilling MUST return to refining after completion；实现阻塞按 grill_resolution 恢复或重规划。
@@ -68,8 +71,10 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 16. **done 任务仅 breaking（含未标注）变更重开**；additive/cosmetic 不重开已交付终态；重开必须代际重置（reopen_count+1 + 清旧 PR/分支/merge 事实），禁止复用已 MERGED 的旧 PR（会让新交付永远合不进去）。
 17. **merge AI 修复预算（`merge_retry_count`）仅在 merge 成功或新一轮 planning 完成时清零**；replan 不继承旧交付耗尽；预算耗尽后 review 走 `rework_resolution=replan`、conflict 走 REQ 追加歧义裁决自动转 refining，均无需手动解冲突。
 18. **Round 2 无进展完成 MUST 进入冷却**：会话结束后仍 `implementing` 且无 `checkpoint_commit`（入口门禁复验类空转）→ daemon 指数退避冷却（10m→…→~10.7h 上限）内不重派、不通知；**截止时间持久化 `round2_stall_until`（RFC3339）——daemon 重启不清零**（TASK-071 二修：纯内存冷却在频繁重启下每次重启即重派）；`checkpoint_commit` 写入或状态离开 implementing 即重置（重置点 = `recordRound2Completion` 判定：`Status != "implementing" || CheckpointCommit != ""`，同时清 frontmatter 字段）。人工派发不受冷却限制。无进展完成的 implementing 会话不发状态通知（`StatusNotify` 的 implementing 分支仅在 `phase_error_code` 非空时报「实现会话异常 + 原因」，正常完成等待门禁静默）。
+19. **auto_merge 完成审计门禁**：`auto_merge: true` 的 review 任务 MUST 通过**独立只读审计**（`audit_status=passed`，受限工具面 read/grep/bash 逐条 AC 复核原始证据）才自动授权合并——实现者不能自证完成；`merge_approved=true`（人工门禁优先）或 `audit.enabled=false` 跳过。fail implementation → 转 implementing 自动修复（`AUDIT_FAILED`，round2 消费 `phase_error`/`audit_log`），连续 `audit.max_fixes`（默认 2）次升级 **grilling 决策**（resume 重置预算 / replan 回 refining）；fail requirement → 直接 needs-grilling，不消耗修复预算。会话失败保持 review + `audit_status=pending` 下一轮重试（进程级失败 2min 冷却防烧 token）；API key 不可用无冷却（key 恢复即重试）。不惩罚实现。
 
 ## IDs & Dependencies（ID与依赖）
+
 - 数字 ID 项目内唯一。
 - 同项目依赖：`TASK-010`。
 - 跨项目依赖：`project-key:TASK-010`。
@@ -107,6 +112,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 `Notes/Roadmap.md`：项目发展历史总览（里程碑时间线 + 当前状态），**daemon 在交付事件点确定性追加**（阶段评审触发/阶段决策/任务自动收口/决策归档，幂等按日期+标题），PM 在阶段评审/阶段化时补充语义。用户可随时查看项目走到哪、经历过什么；与 `Stage-Plan.md`（前瞻规划）互补。细化阶段产物（路线图/领域索引类 REQ）归档见 `Notes/legacy-requirements.md`。
 
 ## OnReqChanged（需求变更联动）
+
 - blocked：保持 blocked，pending_req=true。
 - ready：保持 ready，pending_req=true。
 - refining/planning：只设 pending_req，不中断 live phase。
@@ -127,6 +133,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - 依赖链自动恢复（`resolveBlockedDependencies`）识别 `PHASE_INTERRUPTED` 为可恢复错误码（同 `MODEL_FAILED`/`PHASE_TIMEOUT`）。
 
 ## Notifications（通知）
+
 - `notifications.desktop` 只控制 notify-send。
 - Kitty Grilling tab 始终尝试创建，不受 desktop 开关控制。
 - 同一 TASK 只允许一个活跃 Grilling tab；创建前按 task ID 检查 Kitty tab/window title，并以 per-task flock + debounce 防止并发和重启重复创建。
@@ -149,6 +156,7 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 - `default_assignee`（vault-map.json 顶层）：新 REQ 自动创建 TASK 时预写 `assignee` 为指定 models key（如 `"default"`），任务直接可调度；**空值/缺省**恢复旧行为（blocked 等人工补 assignee）。
 
 ## Documentation（文档）
+
 完整规范和实现验收清单见 `docs/workflow.md`；字段参考见 `reference.md`。
 
 ## 知识库 KB v2 格式规范（References/）

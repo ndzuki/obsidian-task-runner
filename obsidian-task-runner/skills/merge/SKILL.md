@@ -12,10 +12,10 @@ disableModelInvocation: true
 以下门禁由 daemon 在任何远程操作（`git push` / `gh pr create` / `gh pr merge`）前自动校验。本 Skill 会话仅执行本地冲突解决，不发起任何远程操作：
 
 1. `status` 是 `review` 或 `conflict`。
-2. `merge_approved=true`。
+2. `merge_approved=true`（`auto_merge` 任务由 daemon 在**完成审计通过后**自动写入——独立只读会话逐条 AC 复核原始证据，见 daemon 文档 audit 配置；人工设 true 跳过审计，人工门禁优先）。
 3. `pending_req=false`。
 4. 当前 REQ 完整 bytes SHA-256 等于 `plan_req_hash`。
-7. **gh CLI 认证可用**：`gh auth status` 已登录（Merge Phase 的 push 经 `gh auth git-credential` 注入凭据，PR create/merge 也走 gh——统一使用 gh keyring token 身份）。gh 缺失或未登录 → daemon 拒绝远程操作。
+5. **gh CLI 认证可用**：`gh auth status` 已登录（Merge Phase 的 push 经 `gh auth git-credential` 注入凭据，PR create/merge 也走 gh——统一使用 gh keyring token 身份）。gh 缺失或未登录 → daemon 拒绝远程操作。
 
 > **命令契约**：Merge Phase 所有远程操作统一走 **gh CLI 认证通道**——`git push` 由 daemon 注入 `-c credential.helper='!gh auth git-credential'`，PR 创建/合并用 `gh pr create` / `gh pr merge`。禁止裸 `git push`（无 ambient https 凭据的机器会以 `could not read Username` 烧光重试预算，TASK-004 教训）。
 >
@@ -36,6 +36,7 @@ disableModelInvocation: true
 PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动 OMP 会话自动修复。每个计划/交付周期最多 **`max_auto_merge_fixes`** 次自动修复（vault-map 配置，默认 3；daemon 以 `merge_retry_count` 计数），全部失败后交还用户选择：继续 AI 修复（清计数）或 replan（见下方「预算恢复」）。
 
 模式由 prompt 第二参数决定：
+
 - `{task} conflicts` — 冲突解决（默认，兼容旧调用）：
   1. 加载 `skill://resolving-merge-conflicts`。
   2. **需求溯源（必须）**：读取 TASK frontmatter 的 `req_doc`，用 `grep`/`read` 定位 REQ 文档中与冲突代码对应的契约章节（输入/输出契约、错误模型、状态机、验收标准 AC）。每个冲突侧先回答「它对应哪个需求意图/AC」，再判断代码归属。
@@ -45,8 +46,8 @@ PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动 OM
   1. 读取失败 checks（`gh pr checks` 只读查询 PR URL，其余禁止远程操作）。
   2. 在 feature 分支上修复失败测试/代码的根因（加载 `skill://diagnosing-bugs` 定位，**同样先做需求溯源**：失败测试断言的需求依据在 REQ 哪个 AC，修复必须保持契约一致），运行项目测试直到 PASS。
   3. PASS → 本地 commit（如 `fix(ci): repair failing checks for TASK-{id}`）并正常退出；无法修复 → 保留证据，非零退出。
-5. **本地模式铁律：禁止 push / pr create / pr merge 及任何远程操作**（`gh pr checks` 只读查询除外）。daemon 负责 push 新 head 并重新评估 CI checks，通过后才合并。
-6. **会话被 daemon 停机中断**：任务保持 `review + merge_approved=true`，重启后自动恢复合并，不会写 conflict——不要做任何收尾写回。
+1. **本地模式铁律：禁止 push / pr create / pr merge 及任何远程操作**（`gh pr checks` 只读查询除外）。daemon 负责 push 新 head 并重新评估 CI checks，通过后才合并。
+2. **会话被 daemon 停机中断**：任务保持 `review + merge_approved=true`，重启后自动恢复合并，不会写 conflict——不要做任何收尾写回。
 
 ### 1. Standard Merge（daemon 执行，本会话不涉及）
 
@@ -67,7 +68,7 @@ completed: {local ISO8601}
 
 `auto_merge=true` 任务的 merge 授权由 daemon 自动恢复，无需人工干预：
 
-- **merge 失败回退自动重授权**：`review`/`conflict` + `merge_approved=false` + `phase_error_code` 非空时，daemon 每轮 scan 判定 `canAutoApproveMerge`——REQ 未变（当前 hash == `plan_req_hash`）、非永久环境缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 除外）、`merge_retry_count < max_auto_merge_fixes` → 自动写 `merge_approved=true` 重新进入 Merge Phase（TASK-051/059 教训：旧版 `BASE_COMMIT_MISMATCH` 写回后 gate 要求空 phase_error_code，导致 auto_merge 任务永久卡在 conflict）。
+- **merge 失败回退自动重授权**：`review`/`conflict` + `merge_approved=false` + `phase_error_code` 非空时，daemon 每轮 scan 判定 `canAutoApproveMerge`——REQ 未变（当前 hash == `plan_req_hash`）、非永久环境缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 除外）、`merge_retry_count < max_auto_merge_fixes` → 自动写 `merge_approved=true` 重新进入 Merge Phase（TASK-051/059 教训：旧版 `BASE_COMMIT_MISMATCH` 写回后 gate 要求空 phase_error_code，导致 auto_merge 任务永久卡在 conflict）。**失败回退不重复审计**：`audit_status=passed` 在 merge 失败回退后保持，`canAutoApproveMerge` 直接恢复授权；仅实现被审计打回（`AUDIT_FAILED`）重新转 review 时才触发新一轮审计。
 - **批次入口同放宽**：`IsReady` 对 review/conflict 的 auto_merge 任务仅粗筛永久缺陷（`GITHUB_UNAVAILABLE`/`REPO_MISMATCH`）即可进入调度批次——失败回退不会因 `phase_error_code` 非空而停留在批次外，精确的 REQ-hash/预算判定由 `canAutoApproveMerge` 在批次内完成；可自动重授权的任务在 `prepareBatch` 走 lock-free 路径（与已授权 merge 同），防止 repo 写锁被长任务占用时在调度入口饿死（TASK-051/059 第三层死锁）。
 - **停机/超时中断**：push 被 daemon 停机中断 → 保持 `merge_approved=true`，重启后自动恢复合并，不写 conflict（与 Step 0 第 6 条同语义）。
 - **保持人工门禁**：REQ hash 变更（走 OnReqChanged → refining）、gh 不可用、仓库目标不匹配、预算耗尽（`conflict-resolve-attempted`）仍交还用户。

@@ -29,8 +29,9 @@ closed -- [终态，不可恢复]
 ```
 
 ## 2. 状态定义
+
 | 状态 | 含义 | 执行者 | 下一步 |
-|------|------|--------|--------|
+| ------ | ------ | -------- | -------- |
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
 | `ready` | 可开始 priority assessment + maturity gate；**`blocked_by` 上游未 done 时不调度**（依赖门禁前置，防无效重规划） | daemon | `refining` |
 | `refining` | Headless 检查需求规格成熟度；**同样受依赖门禁约束** | `models.default` | `planning` / `needs-grilling` / `blocked` |
@@ -38,7 +39,7 @@ closed -- [终态，不可恢复]
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派；checkpoint_commit 写入或状态离开 implementing 即重置 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
-| `review` | 本地实现已提交；auto_merge=true 时自动授权合并，否则等待人工 | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `closed` |
+| `review` | 本地实现已提交；auto_merge=true 时先过**独立完成审计**（只读会话逐条 AC 复核原始证据，见 §4.6.10），通过后自动授权合并；人工 `merge_approved=true` 跳过审计；审计 fail 按类型转 implementing 或 needs-grilling | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `implementing` / `needs-grilling` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
 | `conflict` | Merge 冲突；auto_merge 任务在 REQ 未变 + 预算未耗尽时 daemon 自动重授权重试，预算耗尽（conflict-resolve-attempted）/ 永久缺陷交还人工 | daemon（AI 预算内）+ 人工 | `done` / `refining` |
 | `done` | 已合并推送；breaking 变更重开（代际重置）或 additive/cosmetic 保持终态 | — | `refining`（breaking）或结束 |
@@ -46,9 +47,9 @@ closed -- [终态，不可恢复]
 ## 3. 人工 Gate
 
 | 字段 | 人工操作 | 约束 |
-|------|----------|------|
+| ------ | ---------- | ------ |
 | `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
-| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 自动置 true；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。可自动重授权的未授权任务与已授权 merge 同走 lock-free 调度路径（`prepareBatch` 锁判定与 gate 对齐，防调度入口饿死）。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
+| `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 在**完成审计通过后**自动置 true（人工设 true 跳过审计——人工门禁优先；审计 fail 清授权）；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。可自动重授权的未授权任务与已授权 merge 同走 lock-free 调度路径（`prepareBatch` 锁判定与 gate 对齐，防调度入口饿死）。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `auto_approve` | 默认 true；计划自动批准 | 缺失即 true（解析兼容 + 模板写入）；plan-review 时 daemon 自动 `plan_approved=true` 转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划 |
 | `close_approved` | 显式关闭授权 | 仅 `plan-review`/`review` 有效；还必须同时提供合法 `closure_reason` 与非空 `closure_note`（`duplicate` 还需 `replacement_task`），否则 daemon 不转 closed |
@@ -61,7 +62,7 @@ closed -- [终态，不可恢复]
 ### 4.1 身份与人工填写
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `id` | string | 项目内唯一；不同项目可重复 |
 | `title` | string | 任务标题 |
 | `project` | string | vault-map project key |
@@ -80,7 +81,7 @@ closed -- [终态，不可恢复]
 ### 4.2 Maturity Gate
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `maturity` | enum/string | `""` | `fully_mature` / `mostly_mature` / `immature` |
 | `refine_version` | int | `0` | maturity gate 审计版本 |
 | `refine_req_hash` | string | `""` | refining 开始时完整 REQ bytes SHA-256 |
@@ -92,19 +93,20 @@ Refining 必须同时维护 TASK 的 `## 需求成熟度评估` section，保存
 ### 4.3 Planning
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `plan_req_hash` | string | `""` | planning 使用的 REQ hash |
 | `plan_version` | int | `0` | 每次 planning 成功 +1 |
 | `planning_retry_count` | int | `0` | planning 自动恢复次数 |
 | `plan_approved` | bool | `false` | Round 2 Gate |
 | `checkpoint_commit` | string | `""` | pending_req 前的 WIP checkpoint |
+| `round2_stall_until` | string | `""` | Round 2 无进展冷却截止（RFC3339，daemon 维护、重启不清零）；冷却期内不重派、不通知；`checkpoint_commit` 写入或状态离开 implementing 即清 |
 
 Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得写入/批准计划，返回 refining。
 
 ### 4.4 阶段恢复
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `blocked_phase` | string | `""` | `refining`、`planning` 或 `implementing` |
 | `phase_error` | string | `""` | 阶段失败原因 |
 | `phase_error_code` | string | `""` | 阶段失败机器可读错误码 |
@@ -124,7 +126,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 ### 4.5 Grilling 所有权
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `grill_owner` | string | `""` | 当前交互会话 owner |
 | `grill_started_at` | ISO8601 | `""` | owner 获取时间 |
 | `grill_timeout_minutes` | int | `30` | 可配置 lease 超时 |
@@ -135,7 +137,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不开 tab/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
-| `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
+| `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`;` 分隔追加），用户可推翻后重跑 |
 | `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失 |
 | `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动重试中）」 |
 TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
@@ -152,10 +154,13 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 #### 4.6.1 需求变更与 Merge
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `pending_req` | bool | `false` | 新 REQ 尚未被新计划完整吸收 |
-| `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效；review 进入时按 auto_merge 自动置 true |
-| `auto_merge` | bool | `true` | 进入 review 自动授权合并；false 恢复人工 gate |
+| `merge_approved` | bool | `false` | Merge Gate；pending_req=true 时绝对无效；review 进入时按 auto_merge 在**完成审计通过后**自动置 true（人工设 true 跳过审计——人工门禁优先；审计 fail 清授权） |
+| `auto_merge` | bool | `true` | 进入 review 自动授权合并（先过完成审计）；false 恢复人工 gate |
+| `audit_status` | string | `""` | 完成审计状态：`""`（未审计 / 失败路由后清空待重审）/ `pending`（审计中或会话失败待重试）/ `passed`（已通过）；auto_merge 任务仅 `passed` 或人工 `merge_approved=true` 可进入合并授权；merge 失败回退保持 `passed` 不重复审计 |
+| `audit_fail_count` | int | `0` | 连续审计失败次数（implementation 类）；达 `audit.max_fixes`（默认 2）升级 grilling 决策时清零（resume 重置预算，防止已决策方向被旧计数立即再限流） |
+| `audit_log` | string | `""` | 最近一次审计会话原始输出日志路径（`~/.omp/logs/tasks/TASK-<id>-audit-<ts>.log`），round2 修复时消费 |
 | `target_branch` | string | `""` | Round 2 分支；done 重开时清空，round2 完成后 daemon 写新分支 |
 | `pr_url` | string | `""` | PR URL；done 重开时清空，新交付创建新 PR |
 | `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
@@ -168,21 +173,23 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 #### 4.6.2 ADR（架构决策记录）
 
 ADR 是项目的架构宪法。三个原则：
+
 1. **决策前读 ADR** — Round 1 规划的第一步是读全部已有 ADR，新计划不能与已确立决策冲突。
 2. **实现前写 ADR** — Round 2 在写代码之前把架构决策文档化，ADR 和代码在同一 commit 中。
 3. **ADR 是活的** — 决策可以被 supersede，但必须有新 ADR 说明理由。
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `adr_proposed` | list | `[]` | Round 1 提议的 ADR 标题列表 |
 | `adr_approved` | bool | `false` | daemon 在 plan-review→implementing 时自动设为 true |
 | `adr_written` | list | `[]` | 已写入 `Notes/adr/` 的 ADR 文件名列表 |
 
 ADR 生命周期：Round 1 读取已有 ADR → 检测新架构决策 → 写入 `adr_proposed` → daemon 自动授权 `adr_approved=true` → Round 2 在实现前写入 ADR 文件 → 全部 AC 完成后更新 `adr_written` 并清 `adr_proposed`/`adr_approved`。
+
 #### 4.6.3 文档校验（CLI 命令）
 
 | 命令 | 覆盖 |
-|------|------|
+| ------ | ------ |
 | `otg validate-doc` | 自动识别 TASK/REQ/ADR，校验 frontmatter 必填字段 + body `<tag>` 扫描 |
 | `otg repair-doc` | 修复 frontmatter + 自动转义 body `<tag>` → `\<tag\>` |
 | `otg write-adr` | 原子写 ADR + fsync + validate |
@@ -202,7 +209,7 @@ append-only，不覆盖已有条目。daemon 的 `ensureProjectContext`（`inter
 #### 4.6.5 Priority Assessment（优先级评定）
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `priority` | string | `""` | 优先级标签，人工或自动填写 |
 | `priority_assessment_status` | string | `""` | `pending` / `running` / `completed` / `failed` |
 | `priority_impact` | string | `""` | 影响范围描述 |
@@ -222,7 +229,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 #### 4.6.6 Closed 终态字段
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `closure_reason` | string | `""` | 关闭原因：`not-bet`（评估后不下注）/ `already-implemented`（已实现）/ `duplicate`（重复）/ `cancelled`（取消）/ `wont-fix`（不予处理）。`already-implemented` 与 `duplicate` 满足 `blocked_by` 依赖，`cancelled` 不满足 |
 | `closure_note` | string | `""` | 关闭备注 |
 | `replacement_task` | string | `""` | 替代任务 ID（`project:TASK-NNN` 格式） |
@@ -240,7 +247,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `remote_create` | bool | `false` | 是否在 GitHub 创建远程仓库 |
 | `github_owner` | string | `""` | GitHub owner（用户或组织名） |
 | `repository_name` | string | `""` | 仓库名 |
@@ -264,6 +271,18 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 | `task_schema_version` | int | `1` | TASK frontmatter schema 版本号，用于迁移和兼容性校验 |
 
 `otg validate-doc` 读取 `task_schema_version` 决定校验规则集。版本升级时 `otg repair-doc` 可自动迁移字段。
+
+#### 4.6.10 完成审计（独立验证门禁）
+
+`auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 运行**独立只读审计会话**（受限工具面 `read`/`grep`/`bash`，无写工具——实现者不能自证完成）。完整语义见 `docs/workflow.md` §7.4；要点：
+
+- **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`；人工已授权或 `audit.enabled=false` 跳过。
+- **会话**：assignee 模型（`audit.model` 覆盖）、`--thinking off`、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
+- **pass** → `audit_status=passed`、清 `audit_fail_count`，继续合并授权流程。
+- **fail + implementation** → `phase_error_code=AUDIT_FAILED` + 审计摘要，转 implementing 自动修复（round2 加载 `skill://diagnosing-bugs` 消费 `phase_error`/`audit_log`）；连续 `audit.max_fixes` 次 → 升级 **needs-grilling 决策**（`grill_prev_status=implementing`；resume 回 implementing 重置预算 / replan 回 refining），非 blocked。
+- **fail + requirement**（AC 歧义/矛盾/不可验证）→ 直接转 needs-grilling 决策，不消耗修复预算。
+- **会话失败/中断**（模型崩溃、API key 不可用、daemon 重启）→ 保持 `review` + `audit_status=pending`，下一轮 scan 重试；进程级失败 2 分钟冷却防烧 token。
+- **并发**：受 `phase_concurrency["audit"]`（默认 1）限制，满员留待下一轮 scan。
 
 ### 4.7 Daemon 上下文注入
 
@@ -298,7 +317,7 @@ Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-rev
 **核心文件与字段**：
 
 | 对象 | 说明 |
-|------|------|
+| ------ | ------ |
 | `Notes/Stage-Plan.md` | 阶段权威定义。固定格式：`### Phase N: {名称}` 块 + `- 目标:` / `- tasks:` / `- status:` 行（daemon 解析契约；只由 `stageplan` 包写入，PM/agent 不得自行追加阶段块） |
 | `Notes/Stage-Review.md` | PM 阶段评审产出：四维评分（完成度/质量/一致性/用户可体验性）+ 建议 + 「评审决策: continue / supplement:{建议} / end」 |
 | `stage` 字段（TASK/REQ frontmatter） | 阶段归属**权威判定**（`P{N}`）。创建 TASK 时从 REQ 继承；PM 拆分落地时写入；daemon 阶段完成检测按字段聚合，不依赖 Stage-Plan 的 tasks 列表（字段跟随任务移动，永不过期） |
@@ -376,7 +395,7 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 - 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ frontmatter 同样每轮 Normalize**（`NormalizeReqFrontmatter` / `syncReqSchemaDefaults`）：稳定字段（created/updated/tags）回填，必填身份与可选决策字段不伪造——旧 REQ 被重拾（done 任务 breaking 重开）时字段演进不静默断链。
 - **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
-- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks` 只限制 implementing。其它启动 OMP 会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1`）——防止一轮 scan 同时拉起 20+ 个 OMP 会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由 `max_concurrent_tasks` 控制。修改后重启 daemon 生效。
+- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks` 只限制 implementing。其它启动 OMP 会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 OMP 会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由 `max_concurrent_tasks` 控制。修改后重启 daemon 生效。
 
 ### 8.1 Thinking Mode
 
@@ -388,6 +407,7 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 | refining | `low` |
 | planning | `high` |
 | round2 | `max` |
+| audit（完成审计会话） | `off` |
 
 模型标识不含 `:xhigh` 等推理后缀，强度完全由 `--thinking` 控制。
 

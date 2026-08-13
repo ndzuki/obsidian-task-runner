@@ -92,6 +92,10 @@ type Frontmatter struct {
 	ReqRefineCount      int      `yaml:"req_refine_count"`
 	TaskSchemaVersion   int      `yaml:"task_schema_version"`
 	Round2StallUntil    string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
+	// Completion audit (independent verification, daemon-maintained).
+	AuditStatus    string `yaml:"audit_status"`     // "" | "pending" | "passed"
+	AuditFailCount int    `yaml:"audit_fail_count"` // consecutive failed audits before block
+	AuditLog       string `yaml:"audit_log"`        // last audit session log path
 
 	// Shared fields: daemon proposes, users may override.
 	Priority                    string `yaml:"priority"`
@@ -314,6 +318,7 @@ var taskFieldOrder = []string{
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
 	"round2_stall_until",
+	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
 	"blocked_phase", "phase_error", "phase_error_code", "phase_log",
 	"auto_resume_pending", "auto_resume_count",

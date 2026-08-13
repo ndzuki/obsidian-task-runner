@@ -57,6 +57,8 @@ type Config struct {
 	// Retrieval store path override (default: ~/.local/share/otg/kb.sqlite).
 	// Keep it outside the vault when the vault is cloud-synced.
 	KBDb string `json:"kb_db,omitempty"`
+	// Completion audit (independent verification before auto-merge).
+	Audit *AuditConfig `json:"audit,omitempty"`
 
 	// Skill install dir (not persisted)
 	SkillInstallDir string `json:"-"`
@@ -120,6 +122,28 @@ type KBChatConfig struct {
 	Temperature float64 `json:"temperature,omitempty"`
 }
 
+// AuditConfig configures the independent completion audit for auto-merge
+// review tasks: a restricted read-only OMP session re-verifies each AC with
+// raw evidence before merge authorization (implementation and verification
+// run in separate sessions so the implementer cannot rubber-stamp its own
+// completion).
+type AuditConfig struct {
+	// Enabled turns the audit gate on (default true). Disable to restore the
+	// previous self-verified completion flow.
+	Enabled bool `json:"enabled"`
+	// MaxFixes bounds consecutive failed audits before the task is handed
+	// to a grilling decision (resume resets the budget / replan routes to
+	// refining) instead of looping implementing→review.
+	MaxFixes int `json:"max_fixes"`
+	// TimeoutMinutes bounds one audit session (default 15).
+	TimeoutMinutes int `json:"timeout_minutes"`
+	// Concurrency caps simultaneous audit sessions (default 1).
+	Concurrency int `json:"concurrency"`
+	// Model overrides the audit session model; empty uses the task assignee's
+	// model (same model as the implementation session for verification parity).
+	Model string `json:"model"`
+}
+
 type TimeWindow struct {
 	Start string `json:"start"`
 	End   string `json:"end"`
@@ -157,9 +181,9 @@ func DefaultModels() map[string]string {
 }
 
 // DefaultPhaseConcurrency returns the per-phase OMP concurrency ceilings.
-// Keys are phase names (refining/planning/merge/priority/pm); a missing key
-// or 0 means unlimited. round2 is governed by max_concurrent_tasks (kept for
-// backward compatibility). These caps bound simultaneous OMP sessions to
+// Keys are phase names (refining/planning/merge/priority/pm/audit); a missing
+// key or 0 means unlimited. round2 is governed by max_concurrent_tasks (kept
+// for backward compatibility). These caps bound simultaneous OMP sessions to
 // protect API rate limits, token spend, and local CPU/memory.
 func DefaultPhaseConcurrency() map[string]int {
 	return map[string]int{
@@ -168,6 +192,7 @@ func DefaultPhaseConcurrency() map[string]int {
 		"merge":    1,
 		"priority": 1,
 		"pm":       1,
+		"audit":    1,
 	}
 }
 
@@ -260,6 +285,7 @@ func Defaults() *Config {
 		OffPeakWindows:             []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
 		StarvationWarningDays:      map[string]int{"P3": 14, "P4": 30},
 		ScanMinIntervalSeconds:     10,
+		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
 		GrillingConsolidationBatch: 3,
@@ -427,6 +453,19 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.StageMaxPhases <= 0 {
 		cfg.StageMaxPhases = defaults.StageMaxPhases
+	}
+	if cfg.Audit == nil {
+		cfg.Audit = defaults.Audit
+	} else {
+		if cfg.Audit.MaxFixes == 0 {
+			cfg.Audit.MaxFixes = defaults.Audit.MaxFixes
+		}
+		if cfg.Audit.TimeoutMinutes == 0 {
+			cfg.Audit.TimeoutMinutes = defaults.Audit.TimeoutMinutes
+		}
+		if cfg.Audit.Concurrency == 0 {
+			cfg.Audit.Concurrency = defaults.Audit.Concurrency
+		}
 	}
 }
 
