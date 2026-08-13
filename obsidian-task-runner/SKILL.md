@@ -42,7 +42,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | `ready` | daemon 转 `refining`；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
 | `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先加载 skill://wayfinder 生成 Wayfinder Map 决策地图，作为 Grilling 焦点；failed 项三分类收敛——fact 自修正 REQ、auto 采纳建议留 `auto_accepted` 审计（可推翻）、仅 dispute 进 grilling；重复争议（grill_repeat≥2）park 升级到项目级清单 |
 | `needs-refining` | 旧版遗留状态；scan 拾起后自动迁移为 needs-grilling（`nextLocalTransition`），随后走正常 Grilling 路径（Kitty tab、提醒、lease） |
-| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 OMP 会话逐项提问，答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
+| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；**清单 `status=paused` 时该项目 grilling 流程整体暂停**——不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 不解除；恢复靠用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 OMP 会话逐项提问，答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
 | `plan-review` | auto_approve 默认 true（缺失即 true，模板已写入）→ daemon 自动 `plan_approved=true` 转 implementing；显式 `auto_approve: false` 时等待人工 `plan_approved=true`；关闭必须同时满足 `rework_resolution=close` + `close_approved=true` + 合法 `closure_reason` + 非空 `closure_note`（duplicate 还需 `replacement_task`）。**Grilling 是唯一常规人工关卡** |
 | `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate；**空转冷却**：会话完成后仍 implementing 且无 `checkpoint_commit`（入口门禁复验类）→ 指数退避冷却（10m→…→~10.7h 上限）不重派；有进展即重置。不会自动转 closed |
@@ -153,3 +153,9 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 ## 知识库 KB v2 格式规范（References/）
 
 知识库文件格式的完整规范（frontmatter 6 字段、摘要前置、目录强制、要点化、噪音零容忍、verified 语义、交互经验归类规则、分类体系）见 `skill://knowledge-base` 的「知识库文件格式 — 强制要求」「分类体系」与「交互经验归类规则」章节——本文件不重复定义，仅在本 Skill 检索/入库时遵循该规范。
+
+## 知识库检索与问答（能力入口）
+
+- **自动化主路径（agent）**：`otg kb search`（BM25 + 可选 embedding 混合，语义命中优先）→ `read` 原文 → 引用路径；未命中才 web_search/Context7。检索链路与 skill 指令见 `docs/workflow.md` §12 与 `skill://knowledge-base` Step 1。
+- **交互问答（人类/会话入口）**：`otg kb ask "<问题>"`（vault-map 配 `kb_chat`）——混合检索 + chat 流式生成，附确定性「参考资料」列表；`kb_rerank` 可选 cross-encoder 精排。**定位边界**：ask 用于用户提问与交互会话，agent 计划引用禁止用 ask 替代原文检索（转述有信息损耗）。
+- **配置**：`kb_embedding`（后端/模型/混合权重/chunk 截断/批量/KNN 候选）、`kb_rerank`（精排）、`kb_chat`（生成）——字段说明与部署见 README「知识库语义检索」「检索精排」「知识库问答」及 `obsidian-task-runner/config/vault-map.example.json`。

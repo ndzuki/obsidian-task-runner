@@ -2,7 +2,9 @@ package knowledge
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"unicode"
@@ -131,7 +133,21 @@ func rankBM25(hits []bm25Hit, limit int) []SearchResult {
 // hybridRank blends BM25 scores with embedding cosine — the exact historical
 // SearchHybrid formula (cosine × weight + normalized BM25 × (1-weight);
 // BM25-only documents keep a scaled score; the best chunk heading is kept).
+//
+// Two bounded candidate paths feed the cosine side:
+//  1. BM25 top-N chunks scored in-process (N = knn_candidates, 100 default).
+//     vec0's MATCH has no filter push-down (KNN always scans the full
+//     table), so reading only the candidates' blobs and scoring them here
+//     is cheaper once the corpus outgrows the candidate set.
+//  2. A global vec0 KNN capped at k = max(limit×3, 30) rows — this keeps
+//     the historical vector-only recall (documents BM25 never matched can
+//     still surface, e.g. 「状态机」 → state-machine) with bounded rows.
 func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *EmbeddingClient, weight float64) ([]SearchResult, error) {
+	// BM25 top-N candidates — the in-process cosine set is bounded.
+	sort.SliceStable(hits, func(a, b int) bool { return hits[a].Score > hits[b].Score })
+	if n := client.knnCandidates(); len(hits) > n {
+		hits = hits[:n]
+	}
 	bm25Scores := make(map[string]float64, len(hits))
 	maxBm25 := 0.0
 	for _, h := range hits {
@@ -144,43 +160,87 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 	if err != nil {
 		return rankBM25(hits, limit), nil // embedding unavailable → pure BM25
 	}
+	qn := normalize(qvec)
+	if qn == nil {
+		return rankBM25(hits, limit), nil // zero vector — no semantic signal
+	}
+
+	// bestCos tracks the strongest cosine per path across both paths.
+	bestCos := make(map[string]float64)
+	bestChunk := make(map[string]string)
+	bestText := make(map[string]string)
+	merge := func(path, heading, text string, cos float64) {
+		if cos <= 0 { // cosine ≤ 0 — historical cut
+			return
+		}
+		prev, ok := bestCos[path]
+		// Tie-break on equal cosine: a named section beats the preamble
+		// chunk (empty heading — low information density).
+		if !ok || cos > prev || (cos == prev && heading != "" && bestChunk[path] == "") {
+			bestCos[path] = cos
+			bestChunk[path] = heading
+			bestText[path] = text
+		}
+	}
+
+	// Path 1: in-process cosine over BM25 candidates' chunks.
+	if len(hits) > 0 {
+		ph := strings.Repeat("?,", len(hits))
+		ph = ph[:len(ph)-1]
+		args := make([]any, len(hits))
+		for i, h := range hits {
+			args[i] = h.Path
+		}
+		rows, err := db.Query(`SELECT d.path, c.heading, c.text, v.embedding
+			FROM kb_vec v
+			JOIN kb_chunks c ON c.chunk_id = v.rowid
+			JOIN kb_docs d ON d.rowid = c.doc_id
+			WHERE d.path IN (`+ph+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("candidate vectors: %w", err)
+		}
+		for rows.Next() {
+			var path, heading, text string
+			var blob []byte
+			if err := rows.Scan(&path, &heading, &text, &blob); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			merge(path, heading, text, cosine(qn, decodeFloat32(blob)))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+
+	// Path 2: bounded global KNN — vector-only recall with capped rows.
 	qb, err := sqlite_vec.SerializeFloat32(toFloat32(qvec))
 	if err != nil {
 		return rankBM25(hits, limit), nil
 	}
-
-	// KNN over every vector (full scan, like the historical in-memory walk;
-	// vec0 requires an explicit LIMIT); join doc paths so no second lookup
-	// is needed.
-	var nChunks int
-	if err := db.QueryRow(`SELECT count(*) FROM kb_chunks`).Scan(&nChunks); err != nil {
-		return nil, fmt.Errorf("count chunks: %w", err)
+	k := limit * 3
+	if k < 30 {
+		k = 30
 	}
-	rows, err := db.Query(`SELECT d.path, c.heading, v.distance
+	rows, err := db.Query(`SELECT d.path, c.heading, c.text, COALESCE(v.distance, 1) AS distance
 		FROM kb_vec v
 		JOIN kb_chunks c ON c.chunk_id = v.rowid
 		JOIN kb_docs d ON d.rowid = c.doc_id
 		WHERE v.embedding MATCH ? AND k = ?
-		ORDER BY v.distance`, qb, nChunks)
+		ORDER BY v.distance`, qb, k)
 	if err != nil {
 		return nil, fmt.Errorf("knn query: %w", err)
 	}
 	defer rows.Close()
-	bestCos := make(map[string]float64)
-	bestChunk := make(map[string]string)
 	for rows.Next() {
-		var path, heading string
+		var path, heading, text string
 		var dist float64
-		if err := rows.Scan(&path, &heading, &dist); err != nil {
+		if err := rows.Scan(&path, &heading, &text, &dist); err != nil {
 			return nil, err
 		}
-		if dist >= 1 { // cosine ≤ 0 — historical cut
-			continue
-		}
-		if c, ok := bestCos[path]; !ok || 1-dist > c {
-			bestCos[path] = 1 - dist
-			bestChunk[path] = heading
-		}
+		merge(path, heading, text, 1-dist)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -207,8 +267,8 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 	if len(paths) > limit {
 		paths = paths[:limit]
 	}
-	// Metadata for every blended path — including vector-only documents that
-	// never appeared in the BM25 hits (they have no bm25Hit entry).
+	// Metadata for every blended path — including vector-only documents
+	// that never appeared in the BM25 hits (they have no bm25Hit entry).
 	meta := make(map[string]bm25Hit, len(paths))
 	if len(paths) > 0 {
 		ph := strings.Repeat("?,", len(paths))
@@ -236,7 +296,7 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 		m := meta[p]
 		results = append(results, SearchResult{
 			Path: m.Path, Title: m.Title, Summary: m.Summary,
-			Score: blend[p], Chunk: bestChunk[p],
+			Score: blend[p], Chunk: bestChunk[p], ChunkText: bestText[p],
 		})
 	}
 	return results, nil
@@ -250,6 +310,54 @@ func toFloat32(v []float64) []float32 {
 	return out
 }
 
+// normalize returns the L2-normalized copy of v, or nil when v is the
+// zero vector (no semantic signal — callers fall back to BM25 ranking).
+func normalize(v []float64) []float64 {
+	var norm float64
+	for _, f := range v {
+		norm += f * f
+	}
+	norm = math.Sqrt(norm)
+	if norm == 0 {
+		return nil
+	}
+	out := make([]float64, len(v))
+	for i, f := range v {
+		out[i] = f / norm
+	}
+	return out
+}
+
+// cosine returns the cosine similarity between a normalized query vector
+// and a raw chunk vector (normalized on the fly — vectors are stored
+// unnormalized).
+func cosine(qn []float64, v []float32) float64 {
+	var dot, norm float64
+	n := len(qn)
+	if len(v) < n {
+		n = len(v)
+	}
+	for i := range n {
+		f := float64(v[i])
+		dot += f * qn[i]
+		norm += f * f
+	}
+	if norm == 0 {
+		return 0
+	}
+	return dot / math.Sqrt(norm)
+}
+
+// decodeFloat32 decodes a sqlite-vec float32 BLOB (SerializeFloat32 output:
+// a raw little-endian float32 array).
+func decodeFloat32(b []byte) []float32 {
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return out
+}
+
 // SearchResult is one ranked hit.
 type SearchResult struct {
 	Path    string
@@ -257,6 +365,10 @@ type SearchResult struct {
 	Summary string
 	Score   float64
 	Chunk   string // best-matching section heading ("" when unknown)
+	// ChunkText is the embedded chunk text of the best-matching section
+	// ("" on the BM25-only path) — used by `kb ask` reference blocks and
+	// the rerank stage.
+	ChunkText string
 }
 
 // tokenize splits text into lowercase terms: ASCII word runs and CJK

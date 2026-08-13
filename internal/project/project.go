@@ -5,17 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
 )
 
-// registerMu serializes read-modify-write of vault-map.json registries so
-// concurrent new-project registrations cannot race on project_id or
-// scaffold/template entries.
+// registerMu serializes read-modify-write of vault-map.json so concurrent
+// new-project registrations cannot race on project_id.
 var registerMu sync.Mutex
 
 // ResolveResult is the output of resolving a project name.
@@ -25,80 +24,15 @@ type ResolveResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// RegisterScaffoldFromProject grows scaffold_registry from delivered project
-// experience: each classified topic that has no matching capability (by key or
-// alias) is appended as a new capability, so the registry accumulates proven
-// patterns without manual maintenance. Matching topics are left untouched.
-// Caller passes classifyADR's matched topics (extraction result).
-func RegisterScaffoldFromProject(mapFile, projectName string, topics []string) error {
-	if len(topics) == 0 {
-		return nil
-	}
-	registerMu.Lock()
-	defer registerMu.Unlock()
-
-	data, err := os.ReadFile(mapFile)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", mapFile, err)
-	}
-	obj, err := parseOrderedJSON(data)
-	if err != nil {
-		return fmt.Errorf("parse %s: %w", mapFile, err)
-	}
-
-	registry, _ := obj.get("scaffold_registry")
-	reg, _ := registry.(*orderedJSON)
-	if reg == nil {
-		reg = &orderedJSON{}
-	}
-	changed := false
-	// Lowercased key+alias set for matching.
-	known := make(map[string]bool)
-	for _, f := range reg.fields {
-		known[strings.ToLower(f.key)] = true
-		if cap, ok := f.value.(*orderedJSON); ok {
-			if aliases, ok := cap.get("aliases"); ok {
-				if arr, ok := aliases.([]any); ok {
-					for _, a := range arr {
-						known[strings.ToLower(fmt.Sprint(a))] = true
-					}
-				}
-			}
-		}
-	}
-	// Deterministic order for idempotent-ish writes.
-	sorted := append([]string{}, topics...)
-	sort.Strings(sorted)
-	for _, topic := range sorted {
-		key := strings.ToLower(strings.TrimSpace(topic))
-		if key == "" || known[key] {
-			continue
-		}
-		cap := &orderedJSON{}
-		cap.set("aliases", []any{topic})
-		cap.set("conflicts", []any{})
-		cap.set("description", "Auto-derived from "+projectName+" (project experience)")
-		cap.set("requires", []any{})
-		reg.set(key, cap)
-		known[key] = true
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	obj.set("scaffold_registry", reg)
-	return writeVaultMap(mapFile, obj, false)
-}
-
 // nextProjectID computes the next project_id (%03d, max existing + 1).
 func nextProjectID(projects []any) string {
 	maxID := 0
 	for _, p := range projects {
-		proj, ok := p.(*orderedJSON)
+		proj, ok := p.(*jsonorder.OrderedJSON)
 		if !ok {
 			continue
 		}
-		if v, ok := proj.get("project_id"); ok {
+		if v, ok := proj.Get("project_id"); ok {
 			if s, ok := v.(string); ok {
 				if n, err := strconv.Atoi(s); err == nil && n > maxID {
 					maxID = n
@@ -251,7 +185,7 @@ func MatchVaultDir(mapFile, vaultDir string) string {
 }
 
 // RegisterProject adds or updates a project entry in vault-map.json while
-// preserving the hand-curated top-level field order (see orderedJSON).
+// preserving the hand-curated top-level field order (see jsonorder).
 // project_id is preserved on update and auto-assigned (%03d, max+1) on append.
 // Missing top-level defaults are backfilled; the result is format-validated
 // before the atomic write. Set dryRun to preview without writing.
@@ -262,12 +196,12 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", mapFile, err)
 	}
-	obj, err := parseOrderedJSON(data)
+	obj, err := jsonorder.Parse(data)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", mapFile, err)
 	}
 
-	projects, _ := obj.get("projects")
+	projects, _ := obj.Get("projects")
 	list, _ := projects.([]any)
 	if list == nil {
 		list = []any{}
@@ -276,18 +210,18 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 	// Update or append
 	updated := false
 	for i, p := range list {
-		proj, ok := p.(*orderedJSON)
+		proj, ok := p.(*jsonorder.OrderedJSON)
 		if !ok {
 			continue
 		}
 		if projectNameOf(proj) == name {
-			entry := &orderedJSON{}
-			entry.set("name", name)
-			entry.set("path", path)
-			entry.set("git_remote", gitRemote)
+			entry := &jsonorder.OrderedJSON{}
+			entry.Set("name", name)
+			entry.Set("path", path)
+			entry.Set("git_remote", gitRemote)
 			// Preserve the existing project_id on update.
-			if id, ok := proj.get("project_id"); ok {
-				entry.set("project_id", id)
+			if id, ok := proj.Get("project_id"); ok {
+				entry.Set("project_id", id)
 			}
 			list[i] = entry
 			updated = true
@@ -295,20 +229,20 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 		}
 	}
 	if !updated {
-		entry := &orderedJSON{}
-		entry.set("name", name)
-		entry.set("path", path)
-		entry.set("git_remote", gitRemote)
-		entry.set("project_id", nextProjectID(list))
+		entry := &jsonorder.OrderedJSON{}
+		entry.Set("name", name)
+		entry.Set("path", path)
+		entry.Set("git_remote", gitRemote)
+		entry.Set("project_id", nextProjectID(list))
 		list = append(list, entry)
 	}
-	obj.set("projects", list)
+	obj.Set("projects", list)
 	return writeVaultMap(mapFile, obj, dryRun)
 }
 
 // projectNameOf returns the "name" field of an ordered project entry.
-func projectNameOf(proj *orderedJSON) string {
-	if v, ok := proj.get("name"); ok {
+func projectNameOf(proj *jsonorder.OrderedJSON) string {
+	if v, ok := proj.Get("name"); ok {
 		if s, ok := v.(string); ok {
 			return s
 		}
@@ -318,9 +252,9 @@ func projectNameOf(proj *orderedJSON) string {
 
 // writeVaultMap backfills missing top-level defaults, marshals preserving
 // field order, format-validates, and atomically writes (unless dryRun).
-func writeVaultMap(mapFile string, obj *orderedJSON, dryRun bool) error {
+func writeVaultMap(mapFile string, obj *jsonorder.OrderedJSON, dryRun bool) error {
 	ensureVaultMapDefaults(obj)
-	content, err := marshalOrderedJSON(obj)
+	content, err := jsonorder.Marshal(obj)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
@@ -332,7 +266,7 @@ func writeVaultMap(mapFile string, obj *orderedJSON, dryRun bool) error {
 		fmt.Printf("[DRY RUN] Would write to %s:\n%s\n", mapFile, string(content))
 		return nil
 	}
-	return atomicWriteJSON(mapFile, content)
+	return jsonorder.AtomicWrite(mapFile, content)
 }
 
 // ensureVaultMapDefaults appends top-level fields that are missing from the
@@ -340,53 +274,33 @@ func writeVaultMap(mapFile string, obj *orderedJSON, dryRun bool) error {
 // daemon maintenance keeps the file complete without clobbering user values).
 // The defaults are parsed through the ordered decoder, so backfilled fields
 // keep the Config struct's declaration order — including nested objects —
-// instead of JSON-map alphabetical order.
-func ensureVaultMapDefaults(obj *orderedJSON) {
+// instead of JSON-map alphabetical order. "projects" is pinned last: it is
+// the most frequently hand-edited section (appending a new project), so
+// daemon writes must not bury it under backfilled fields.
+func ensureVaultMapDefaults(obj *jsonorder.OrderedJSON) {
 	defs, err := json.Marshal(config.Defaults())
 	if err != nil {
 		return
 	}
-	defObj, err := parseOrderedJSON(defs)
+	defObj, err := jsonorder.Parse(defs)
 	if err != nil {
 		return
 	}
-	for _, f := range defObj.fields {
-		if _, ok := obj.get(f.key); ok {
+	var projects any
+	if v, ok := obj.Get("projects"); ok {
+		projects = v
+		obj.Delete("projects")
+	}
+	for _, f := range defObj.Fields() {
+		if f.Key == "projects" {
+			continue // handled below: pinned last, never backfilled as null
+		}
+		if _, ok := obj.Get(f.Key); ok {
 			continue
 		}
-		obj.set(f.key, f.value)
+		obj.Set(f.Key, f.Value)
 	}
-}
-
-func atomicWriteJSON(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".otg-register-")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
+	if projects != nil {
+		obj.Set("projects", projects)
 	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		closeErr := tmp.Close()
-		if closeErr != nil {
-			return fmt.Errorf("write temp: %w (close: %v)", err, closeErr)
-		}
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		closeErr := tmp.Close()
-		if closeErr != nil {
-			return fmt.Errorf("fsync: %w (close: %v)", err, closeErr)
-		}
-		return fmt.Errorf("fsync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
 }

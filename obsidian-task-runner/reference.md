@@ -12,9 +12,9 @@ blocked → ready → refining ─┬─ fully_mature → planning → plan-revi
                             ├─ 大型需求 → Wayfinder Map 决策地图（Grilling 焦点）
                             └─ 重复争议（grill_repeat≥2 或单任务 plan_version≥3 反复 replan）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
 
-决策清单（Notes/Grilling-Decisions.md）状态机：open ⇄ paused（手动或 REQ 更新自动激活）→ answered
-- paused：不提醒、任务静默 parked；分发不受影响（填答案 + grill_continue=true 照常）
-- REQ 更新 → daemon 自动激活为 open（提醒恢复 + 拆分/规划流程衔接）
+决策清单（Notes/Grilling-Decisions.md）状态机：open ⇄ paused（用户主动或 REQ 更新自动激活）→ answered
+- paused：项目级暂停开关——该项目的 grilling 流程任务整体暂停：不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 任务不解除；填答案也不流转
+- 恢复：用户手动把清单 status 改为 open，或**关联 REQ 更新时 daemon 自动激活回 open**（用户/团队主动补充需求 = 恢复信号）——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程
 
 needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
 
@@ -133,7 +133,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
 | `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
-| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时提醒整体抑制（需求未想好），REQ 更新自动激活回 `open` |
+| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不开 tab/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`; ` 分隔追加），用户可推翻后重跑 |
 | `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失 |
@@ -235,7 +235,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 |------|------|--------|------|
 | `scaffold` | object | `{}` | 新项目脚手架意图：`kind`（类型）、`capabilities`（能力列表）、`preferences`（键值偏好）、`notes`（自然语言说明） |
 
-`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段保留向后兼容。**接线状态**：frontmatter 解析与 Round 1 读取（Step 2.5：对照 `scaffold_registry` 能力校验 + `template_registry` 模板基线）已实现；project-scaffold 技能深度消费为可选项。
+`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段保留向后兼容。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
 
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
@@ -406,14 +406,16 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink）：core�
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 
+**知识库字段（`kb_db` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
+
 **模型兜底（`fallback_models`）**：顶层映射，key 为 assignee（对应 `models` 的 key），value 为任意 OMP 模型标识。gpt/default/deepseek 失败时 daemon 用对应 value 重启 OMP；可增删任意 key、置 `""` 禁用单个 assignee 的兜底。默认三者均指向 `deepseek/deepseek-v4-flash`。
 
 **vault-map 自主维护（daemon）**：
 
 - **新项目自动注册**：Round 2 首次调度 `new_project=true` 任务时自动写入 `projects` 条目——`name`/`path` 按解析结果，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`），并播种 `Notes/CONTEXT.md` 骨架。
-- **保序写入**：所有 daemon 维护写回（注册、scaffold 补充、默认补齐）保留用户手排的顶层字段顺序（`orderedJSON`），不按字母序重排。
+- **保序写入**：所有 daemon 维护写回（注册、默认补齐）保留用户手排的顶层字段顺序（`jsonorder` 保序解析/序列化），不按字母序重排；缺失字段按 Config 声明序追加到文件末尾，且 **`projects` 恒置末尾**（追加新项目是最频繁的手工编辑——`generateVaultMap` 新建与 `ensureVaultMapDefaults` 补齐都遵守该布局；用户可自由重排其他字段，重跑 `otg install`/默认补齐不会打乱）。
 - **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
-- **scaffold_registry 随项目积累**：merge→done 后，`classifyADR` 命中的知识主题中无对应能力（key/alias）的自动追加为能力（`Auto-derived from <project>`），registry 只增不减。
+- **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回均走知识库检索（能力主题文档承担描述/冲突元数据）；存量 registries.json 文件不再被读取，可手动删除。
 
 **Skill 清单**：installer 安装 core、refining、round1、round2、merge、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）。
 

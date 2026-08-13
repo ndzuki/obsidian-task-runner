@@ -14,13 +14,37 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
-// embedBatchSize is the number of chunks per embedding API call.
-const embedBatchSize = 8
-
 // EmbeddingClient talks to an ollama or OpenAI-compatible embedding backend.
 type EmbeddingClient struct {
 	cfg    *config.KBEmbeddingConfig
 	client *http.Client
+}
+
+// batchSize returns the configured chunk batch (32 default). Index builds
+// call EmbedBatch with this many texts per request — the throughput win for
+// ollama /api/embed.
+func (c *EmbeddingClient) batchSize() int {
+	if c == nil || c.cfg == nil || c.cfg.BatchSize <= 0 {
+		return 32
+	}
+	return c.cfg.BatchSize
+}
+
+// chunkChars returns the per-chunk body cap (600 default).
+func (c *EmbeddingClient) chunkChars() int {
+	if c == nil || c.cfg == nil || c.cfg.ChunkChars <= 0 {
+		return 600
+	}
+	return c.cfg.ChunkChars
+}
+
+// knnCandidates returns the max BM25-hit documents whose chunks enter the
+// cosine candidate set (100 default).
+func (c *EmbeddingClient) knnCandidates() int {
+	if c == nil || c.cfg == nil || c.cfg.KNNCandidates <= 0 {
+		return 100
+	}
+	return c.cfg.KNNCandidates
 }
 
 // NewEmbeddingClient wraps the configured backend. A nil cfg returns nil —
@@ -145,8 +169,12 @@ type textChunk struct {
 
 // chunkDocument splits a References document into sections at "## " headings.
 // Every chunk is prefixed with topics + title + summary so section vectors
-// carry document context; pre-heading content becomes its own chunk.
-func chunkDocument(data []byte) []textChunk {
+// carry document context; pre-heading content becomes its own chunk. Body
+// text beyond chunkChars chars is dropped — only the section head is
+// embedded (the topic sentence carries what retrieval matches); the cap is
+// configurable (kb_embedding.chunk_chars, 600 default) and bounded by the
+// backend's context window.
+func chunkDocument(data []byte, chunkChars int) []textChunk {
 	fm, body, err := parseFrontmatter(data)
 	if err != nil {
 		fm, body = nil, string(data)
@@ -167,12 +195,8 @@ func chunkDocument(data []byte) []textChunk {
 	current := strings.Builder{}
 	currentHeading := ""
 	appendChunk := func(text string) {
-		// CPU-only inference (~200 chars/s on bge-m3) bounds the embeddable
-		// volume: embed only the section head — the first 300 chars after the
-		// heading carry the section's topic sentence, which is what retrieval
-		// matches. Full-body vectors would take 40+ minutes to build.
-		if len(text) > 300 {
-			text = text[:300]
+		if len(text) > chunkChars {
+			text = text[:chunkChars]
 		}
 		text = prefix.String() + currentHeading + "\n" + text
 		chunks = append(chunks, textChunk{heading: currentHeading, text: text})

@@ -407,7 +407,7 @@ func syncVectors(db *sql.DB, docs []syncDoc, client *EmbeddingClient, fullVec bo
 				continue // vectors already current for this document
 			}
 		}
-		chunks := chunkDocument(d.data)
+		chunks := chunkDocument(d.data, client.chunkChars())
 		vecRows, dim, err := embedChunks(client, fm, d, chunks)
 		if err != nil {
 			if firstErr == nil {
@@ -460,6 +460,7 @@ func syncVectors(db *sql.DB, docs []syncDoc, client *EmbeddingClient, fullVec bo
 // serialized float32 BLOB produced by sqlite_vec.SerializeFloat32.
 type vecRow struct {
 	heading string
+	text    string
 	vector  []byte
 	hash    string
 }
@@ -473,8 +474,9 @@ func embedChunks(client *EmbeddingClient, fm map[string]any, d syncDoc, chunks [
 	}
 	var rows []vecRow
 	dim := 0
-	for start := 0; start < len(chunks); start += embedBatchSize {
-		end := start + embedBatchSize
+	batch := client.batchSize()
+	for start := 0; start < len(chunks); start += batch {
+		end := start + batch
 		if end > len(chunks) {
 			end = len(chunks)
 		}
@@ -498,17 +500,19 @@ func embedChunks(client *EmbeddingClient, fm map[string]any, d syncDoc, chunks [
 			if err != nil {
 				return nil, 0, err
 			}
-			rows = append(rows, vecRow{heading: chunks[start+i].heading, vector: b, hash: contentHash([]byte(chunks[start+i].text))})
+			rows = append(rows, vecRow{heading: chunks[start+i].heading, text: chunks[start+i].text, vector: b, hash: contentHash([]byte(chunks[start+i].text))})
 		}
 	}
 	return rows, dim, nil
 }
 
 // insertVecRow writes one vector + chunk metadata row inside tx. The vec0
-// rowid mirrors kb_chunks.chunk_id so deletes stay addressable.
+// rowid mirrors kb_chunks.chunk_id so deletes stay addressable. The chunk
+// text is stored alongside so `kb ask` / rerank can build reference blocks
+// without re-reading the vault.
 func insertVecRow(tx *sql.Tx, docID int64, v vecRow) (int64, error) {
-	res, err := tx.Exec(`INSERT INTO kb_chunks(doc_id, heading, content_hash) VALUES(?,?,?)`,
-		docID, v.heading, v.hash)
+	res, err := tx.Exec(`INSERT INTO kb_chunks(doc_id, heading, text, content_hash) VALUES(?,?,?,?)`,
+		docID, v.heading, v.text, v.hash)
 	if err != nil {
 		return 0, err
 	}
@@ -528,8 +532,11 @@ func insertVecRow(tx *sql.Tx, docID int64, v vecRow) (int64, error) {
 // always safe and lossless for the vault itself. All drops run in one
 // transaction: a mid-rebuild failure rolls back instead of leaving a
 // half-deleted store (which would read as an empty knowledge base).
+// The schema-version gate is bypassed on purpose: rebuild is also the
+// migration path when a newer binary meets an older store (schema v1 → v2),
+// and the drops make the version check moot.
 func RebuildKnowledgeDB(vaultDir, dbPath string, client *EmbeddingClient) (SyncStats, error) {
-	db, err := openKB(dbPath)
+	db, err := openKBForRebuild(dbPath)
 	if err != nil {
 		return SyncStats{}, err
 	}

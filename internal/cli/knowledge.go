@@ -15,7 +15,7 @@ func newKnowledgeCommand() *cobra.Command {
 		Use:   "kb",
 		Short: "Knowledge-base inspection commands",
 	}
-	cmd.AddCommand(kbGapsCmd, kbUsageCmd, kbSearchCmd, kbIndexCmd, kbRebuildCmd, kbAbsorbCmd, kbHitCmd, kbPromoteCmd)
+	cmd.AddCommand(kbGapsCmd, kbUsageCmd, kbSearchCmd, kbIndexCmd, kbRebuildCmd, kbAbsorbCmd, kbHitCmd, kbPromoteCmd, kbAskCmd)
 	return cmd
 }
 
@@ -117,6 +117,16 @@ var kbSearchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Optional cross-encoder rerank: hybrid top-N → rerank → final
+		// limit. RerankResults degrades silently when the backend is
+		// unreachable — the hybrid order stands.
+		if cfg.KBRerank != nil && len(hits) > 0 {
+			rc := knowledge.NewRerankClient(cfg.KBRerank)
+			if len(hits) > cfg.KBRerank.TopN {
+				hits = hits[:cfg.KBRerank.TopN]
+			}
+			hits = knowledge.RerankResults(hits, query, rc, kbSearchLimit)
+		}
 		if len(hits) == 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
 			return nil
@@ -131,6 +141,74 @@ var kbSearchCmd = &cobra.Command{
 				chunk = "  → " + h.Chunk
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s%s\n      %s\n      %s\n", h.Score, h.Path, chunk, h.Title, summary)
+		}
+		return nil
+	},
+}
+
+var (
+	kbAskLimit int
+	kbAskModel string
+)
+
+// kbAskCmd answers a question over the knowledge base: hybrid retrieval →
+// cited reference block → streamed chat completion (kb_chat must be
+// configured). Sources are printed deterministically — the model never
+// invents citations.
+var kbAskCmd = &cobra.Command{
+	Use:   "ask <question>",
+	Short: "Answer a question over the knowledge base (retrieval + generation)",
+	Long: `Answers a question grounded in References/ documents: hybrid retrieval
+(BM25 + embedding) fetches the top references, they are cited as [N] blocks
+in the prompt, and the kb_chat model streams the answer. The printed
+「参考资料」 list is the actual retrieval result — the model cannot invent
+sources. Requires kb_embedding (retrieval) and kb_chat (generation).`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(kbMapFile)
+		if err != nil {
+			return err
+		}
+		if cfg.KBEmbedding == nil {
+			return fmt.Errorf("kb_embedding not configured — semantic retrieval is required for `kb ask` (add kb_embedding to vault-map.json)")
+		}
+		if cfg.KBChat == nil {
+			return fmt.Errorf("kb_chat not configured — add kb_chat to vault-map.json, e.g. {\"url\":\"http://127.0.0.1:11434\",\"model\":\"qwen3:1.7b\"}")
+		}
+		query := strings.Join(args, " ")
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		client := knowledge.NewEmbeddingClient(cfg.KBEmbedding)
+		ready, stored := knowledge.VecStatus(dbPath)
+		switch {
+		case !ready:
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: vector index missing — run `otg kb index` first")
+		case stored != "" && stored != cfg.KBEmbedding.Model:
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector store built with %s, configured %s — run `otg kb index`\n", stored, cfg.KBEmbedding.Model)
+		}
+		chat := knowledge.NewChatClient(cfg.KBChat)
+		opts := knowledge.AskOptions{
+			Limit: kbAskLimit, Model: kbAskModel,
+			Stream: func(s string) error {
+				_, werr := fmt.Fprint(cmd.OutOrStdout(), s)
+				return werr
+			},
+		}
+		if cfg.KBRerank != nil {
+			opts.Rerank = knowledge.NewRerankClient(cfg.KBRerank)
+			opts.RerankTopN = cfg.KBRerank.TopN
+		}
+		refs, err := knowledge.AskKnowledgeDB(dbPath, query, opts, client, chat)
+		if err != nil {
+			return err
+		}
+		if len(refs) == 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), "\n参考资料：")
+		for _, r := range refs {
+			fmt.Fprintf(cmd.OutOrStdout(), "- %s（%s）\n", r.Path, r.Title)
 		}
 		return nil
 	},
@@ -356,6 +434,9 @@ func init() {
 	kbSearchCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbSearchCmd.Flags().IntVar(&kbSearchLimit, "limit", 5, "max results")
 	kbSearchCmd.Flags().BoolVar(&kbSearchArchived, "archived", false, "include the archived/ layer in search (default: core + extended)")
+	kbAskCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
+	kbAskCmd.Flags().IntVar(&kbAskLimit, "limit", 5, "max retrieved references")
+	kbAskCmd.Flags().StringVar(&kbAskModel, "model", "", "chat model override (default: kb_chat.model)")
 	kbIndexCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbRebuildCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbAbsorbCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")

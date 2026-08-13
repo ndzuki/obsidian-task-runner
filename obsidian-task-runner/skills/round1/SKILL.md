@@ -139,11 +139,9 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 新项目（`new_project=true`）时读取 TASK frontmatter `scaffold` 对象（`kind`/`capabilities`/`preferences`/`notes`）：
 
 1. 解析意图：技术栈/框架/构建/部署目标（如 `kind: go-microservice`、`capabilities: [connect-rpc, github-actions]`）。
-2. 对照 vault-map `scaffold_registry`（能力描述/别名/冲突）校验能力组合——冲突能力（如 `connect-rpc` 与 `http-api`）在计划中标注需用户确认。
-3. 对照 `template_registry`：`capabilities` 匹配的模板（`default_capabilities`）作为脚手架方案基线写入计划 Step 1（新项目首个 Step 常为脚手架搭建）。
-4. `scaffold` 为空 → 走 split 技术栈建议流程（PM 统筹）。
-
-5. **新项目且 `remote_create=true`**：从 REQ 提炼一句话仓库描述（项目定位 + 核心能力，≤200 字符），写入 frontmatter `repository_description`——daemon 创建 GitHub 仓库时用作 `--description` 与 `README.md` 内容。提炼规则：标题 + 需求摘要精华，不堆砌细节。
+2. **能力校验走知识库检索**（`otg kb search`）：对每个 `capabilities` 检索对应主题（`kb search "<能力名>"`），确认能力存在性与相关实践（主题文档的实践经验/踩坑小节）；主题文档中标注的冲突/替代关系（如「与 X 冲突」「优先 Y」）在计划中标注需用户确认。注册表已废弃（scaffold_registry 无代码消费者且噪音化，能力元数据由知识库主题承担）。
+3. `scaffold` 为空 → 走 split 技术栈建议流程（PM 统筹）。
+4. **新项目且 `remote_create=true`**：从 REQ 提炼一句话仓库描述（项目定位 + 核心能力，≤200 字符），写入 frontmatter `repository_description`——daemon 创建 GitHub 仓库时用作 `--description` 与 `README.md` 内容。提炼规则：标题 + 需求摘要精华，不堆砌细节。
 
 ## Step 3: Generate Plan（生成计划）
 

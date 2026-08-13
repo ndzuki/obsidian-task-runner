@@ -57,6 +57,7 @@ type Runner struct {
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
+	failNotifyAt       sync.Map              // taskPath → failNotifyEntry (failure/fallback toast debounce)
 	refIndexRebuiltAt  sync.Map              // "last" → time.Time (References INDEX rebuild debounce)
 	kbSyncAt           sync.Map              // "last" → time.Time (knowledge retrieval-store sync debounce)
 	kbSyncRunning      atomic.Bool           // true while a retrieval-store sync goroutine is in flight
@@ -286,10 +287,13 @@ func (r *Runner) Run(ctx context.Context) error {
 					results = task.OnReqChanged(r.cfg.ObsidianVault, reqRel, r.cfg.DefaultAssignee)
 				}
 				// A REQ detail update reactivates the project's paused
-				// decision list: the user rethinking the requirement is the
-				// signal to resume reminders and the downstream flow
-				// (pending_req → refining → maturity gate → consolidate/split
-				// re-evaluation → planning). One reactivation per project.
+				// decision list: the user/team actively supplementing the
+				// requirement is the signal to resume — reminders return and
+				// the downstream flow (pending_req → refining → maturity
+				// gate → consolidate re-evaluating new requirements against
+				// existing disputes → planning) picks up, then the user
+				// aligns via Grilling before tasks resume. One activation
+				// per project per REQ event.
 				activated := make(map[string]bool)
 				for _, result := range results {
 					if proj := projectFromReqPath(reqRel); proj != "" && !activated[proj] {
@@ -1120,6 +1124,14 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		}
 
 		if t.Status == "needs-grilling" {
+			// 项目级暂停开关：Grilling-Decisions.md 的 status=paused（或
+			// pause/closed）时，该项目的 grilling 流程任务整体暂停——不提醒、
+			// 不开决策 tab、不重置 refining（grill_continue 不生效）、不派发。
+			// 只有用户把清单 status 手动改为 open 才恢复自动化流程。
+			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingListPaused(listPath) {
+				r.logger.Printf("task %s: project decision list paused, task held (set list status=open to resume)", t.ID)
+				continue
+			}
 			if preempted, err := PreemptExpiredGrillLease(t.FilePath, time.Now()); err != nil {
 				r.logger.Printf("task %s: preempt grilling lease: %v", t.ID, err)
 			} else if preempted {
@@ -1645,6 +1657,11 @@ func (r *Runner) parkedFactRecovery() {
 			// TASK-068 un-parked every scan on landed blocked_by while D-88/89/90
 			// stayed unanswered, looping refining. Only prerequisite-gate parks
 			// (D-19 style, no list entry sourcing this task) exit on facts.
+			// 项目级暂停开关：清单 paused 时任何 park 都不解除，等用户手动
+			// 把清单 status 改为 open 才允许恢复流程。
+			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" && grillingListPaused(listPath) {
+				continue
+			}
 			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" &&
 				grillingDecisionPendingForTask(listPath, fm.ID) > 0 {
 				continue
@@ -2675,19 +2692,48 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, runErr)
 
+			var tokenErr string
 			if keyErr := checkAPIKeyUnavailable(logPath); keyErr != "" {
 				failureCode = ErrAPIKeyUnavailable
 				// Debounced: one toast per 5 minutes, not one per failing task.
 				r.notifyKeyUnavailable()
-			} else if tokenErr := checkTokenQuota(logPath, model); tokenErr != "" {
-				failureCode = ErrModelQuotaExhausted
-				notify.SendTaskAction(t.ID, t.Title, "💰", "Token 不足",
-					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), r.cfg.Notifications.Desktop)
-			} else if failureCode == ErrPhaseTimeout {
-				notify.SendTaskAction(t.ID, t.Title, "⏰", "执行超时",
-					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout), r.cfg.Notifications.Desktop)
 			} else {
-				notify.SendTaskAction(t.ID, t.Title, "💥", "进程异常", fmt.Sprintf("%s: %v", reason, runErr), r.cfg.Notifications.Desktop)
+				tokenErr = checkTokenQuota(logPath, model)
+				if tokenErr != "" {
+					failureCode = ErrModelQuotaExhausted
+				}
+			}
+
+			// Fallback 模型决定：通知与执行共用同一结论，避免两处计算漂移。
+			fallbackModel := ""
+			if !signalKilled && failureCode != ErrAPIKeyUnavailable {
+				if fm := r.cfg.FallbackModelFor(t.Assignee); fm != "" && fm != model {
+					fallbackModel = fm
+				}
+			}
+
+			// 失败通知（per-task 5 分钟防抖，notifyFailure）：有 fallback 时只发
+			// 一条合并通知（原因 + 切换动作），同一失败事件最多弹一条；反复失败
+			// 时同一任务 5 分钟最多一条，主模型持续不可用时不再轰炸桌面。
+			switch {
+			case failureCode == ErrAPIKeyUnavailable:
+				// 已由 notifyKeyUnavailable 全局防抖处理，此处不再发。
+			case fallbackModel != "":
+				failReason := reason
+				if tokenErr != "" {
+					failReason = fmt.Sprintf("token 配额已耗尽：%s", tokenErr)
+				}
+				r.notifyFailure(taskPath, t.ID, t.Title, "🔄", "模型切换",
+					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, failReason, fallbackModel), failNotifySwitch)
+			case tokenErr != "":
+				r.notifyFailure(taskPath, t.ID, t.Title, "💰", "Token 不足",
+					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), failNotifyReason)
+			case failureCode == ErrPhaseTimeout:
+				r.notifyFailure(taskPath, t.ID, t.Title, "⏰", "执行超时",
+					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout), failNotifyReason)
+			default:
+				r.notifyFailure(taskPath, t.ID, t.Title, "💥", "进程异常",
+					fmt.Sprintf("%s: %v", reason, runErr), failNotifyReason)
 			}
 
 			fellback := false
@@ -2697,91 +2743,87 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// (This branch is only reachable when shutdownInterrupt is false,
 			// so the old ctx.Err()==Canceled check — always true after
 			// cancel() — silently disabled fallback forever.)
-			if !signalKilled && failureCode != ErrAPIKeyUnavailable {
-				if fallbackModel := r.cfg.FallbackModelFor(t.Assignee); fallbackModel != "" && fallbackModel != model {
-					r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
-					notify.SendTaskAction(t.ID, t.Title, "🔄", "模型切换",
-						fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, reason, fallbackModel), r.cfg.Notifications.Desktop)
+			if fallbackModel != "" {
+				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
 
-					fallbackArgs := []string{"--model", fallbackModel}
-					fallbackArgs = append(fallbackArgs, args[2:]...)
-					fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
-					retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
-					retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
-					retryCmd.WaitDelay = 30 * time.Second
-					retryCmd.Dir = repoDir
-					if f != nil {
-						retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
-						retryCmd.Stderr = io.MultiWriter(f, os.Stderr)
+				fallbackArgs := []string{"--model", fallbackModel}
+				fallbackArgs = append(fallbackArgs, args[2:]...)
+				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
+				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
+				retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
+				retryCmd.WaitDelay = 30 * time.Second
+				retryCmd.Dir = repoDir
+				if f != nil {
+					retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
+					retryCmd.Stderr = io.MultiWriter(f, os.Stderr)
+				} else {
+					retryCmd.Stdout = os.Stderr
+					retryCmd.Stderr = os.Stderr
+				}
+				fbTailDone := make(chan struct{})
+				go tailOMPLog(ompLogPath, f, fbTailDone)
+				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
+					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
+					fbShutdown := r.daemonCtx.Err() != nil
+					fbCancel()
+					close(fbTailDone)
+					if !fbShutdown {
+						fellback = true
 					} else {
-						retryCmd.Stdout = os.Stderr
-						retryCmd.Stderr = os.Stderr
+						// Shutdown raced the fallback start: keep status, auto-resume later.
+						r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
 					}
-					fbTailDone := make(chan struct{})
-					go tailOMPLog(ompLogPath, f, fbTailDone)
-					if fbStartErr := retryCmd.Start(); fbStartErr != nil {
-						r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
-						fbShutdown := r.daemonCtx.Err() != nil
-						fbCancel()
-						close(fbTailDone)
-						if !fbShutdown {
-							fellback = true
+				} else {
+					if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
+						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
+					}
+					retryErr := retryCmd.Wait()
+					fbShutdown := r.daemonCtx.Err() != nil
+					fbCancel()
+					close(fbTailDone)
+					if retryErr != nil {
+						if fbShutdown {
+							// Shutdown interrupted the running fallback: keep status.
+							r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
+							if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+								"phase_error_code": string(ErrPhaseInterrupted),
+								"phase_error":      "daemon 重启中断，等待自动恢复",
+								"phase_log":        logPath,
+							}); err != nil {
+								r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+							}
 						} else {
-							// Shutdown raced the fallback start: keep status, auto-resume later.
-							r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
+							fbReason := "异常退出"
+							if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
+								fbReason = "超时"
+								failureCode = ErrPhaseTimeout
+							}
+							r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
+							r.notifyFailure(taskPath, t.ID, t.Title, "❌", "全部失败",
+								fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), failNotifyBlocked)
+							fellback = true
 						}
 					} else {
-						if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
-							r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
+						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
+						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
+							r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
 						}
-						retryErr := retryCmd.Wait()
-						fbShutdown := r.daemonCtx.Err() != nil
-						fbCancel()
-						close(fbTailDone)
-						if retryErr != nil {
-							if fbShutdown {
-								// Shutdown interrupted the running fallback: keep status.
-								r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
-								if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-									"phase_error_code": string(ErrPhaseInterrupted),
-									"phase_error":      "daemon 重启中断，等待自动恢复",
-									"phase_log":        logPath,
-								}); err != nil {
-									r.logger.Printf("task %s: record interruption: %v", t.ID, err)
-								}
-							} else {
-								fbReason := "异常退出"
-								if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
-									fbReason = "超时"
-									failureCode = ErrPhaseTimeout
-								}
-								r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
-								notify.SendTaskAction(t.ID, t.Title, "❌", "全部失败",
-									fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), r.cfg.Notifications.Desktop)
-								fellback = true
-							}
-						} else {
-							r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
-							if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
-								r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
-							}
-							r.compactPlanHistory(taskPath, phase)
-							r.validateChangedDocs(repoDir, t.ID, phase)
-							fbNotify := true
-							if phase == "round2" {
-								r.recordRound2Completion(taskPath, t.ID)
-								_, fbStalledNow := r.round2StallActive(taskPath)
-								fbNotify = !fbStalledNow
-							}
-							if fbNotify {
-								if _, statErr := os.Stat(taskPath); statErr == nil {
-									notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
-								}
-							}
-							r.clearPhaseRetry(taskPath, phase)
-							r.clearPhaseError(taskPath, t.ID)
-							r.clearMergeRepairBudget(taskPath, phase)
+						r.compactPlanHistory(taskPath, phase)
+						r.validateChangedDocs(repoDir, t.ID, phase)
+						fbNotify := true
+						if phase == "round2" {
+							r.recordRound2Completion(taskPath, t.ID)
+							_, fbStalledNow := r.round2StallActive(taskPath)
+							fbNotify = !fbStalledNow
 						}
+						if fbNotify {
+							if _, statErr := os.Stat(taskPath); statErr == nil {
+								notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+							}
+						}
+						r.clearPhaseRetry(taskPath, phase)
+						r.clearPhaseError(taskPath, t.ID)
+						r.clearMergeRepairBudget(taskPath, phase)
 					}
 				}
 			}
@@ -3004,9 +3046,8 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		r.logger.Printf("task %s: record blocked phase: %v", taskID, err)
 		return
 	}
-	notify.SendTaskAction(taskID, taskTitle, "🚫", "阶段失败",
-		fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase),
-		r.cfg.Notifications.Desktop)
+	r.notifyFailure(taskPath, taskID, taskTitle, "🚫", "阶段失败",
+		fmt.Sprintf("阶段 %s 连续失败两次，任务已阻塞。修复后设置 resume_approved: true 恢复。", phase), failNotifyBlocked)
 }
 func (r *Runner) clearPhaseRetry(taskPath, phase string) {
 	var err error
@@ -3222,6 +3263,43 @@ func (r *Runner) notifyKeyUnavailable() {
 	r.keyNotifyAt.Store("key", time.Now())
 	notify.SendTaskAction("", "API Key 不可用", "🔐", "等待 API Key",
 		"KeePassXC 未解锁或 key 不可达，任务已暂停等待。解锁后 daemon 自动恢复，无需手动操作。", r.cfg.Notifications.Desktop)
+}
+
+// failNotifyInterval is the per-task debounce window for failure and
+// fallback notifications. Repeated model failures (timeout, abnormal exit,
+// quota) plus their fallback switches previously produced one toast pair per
+// failure per phase — a stuck primary model could flood the desktop. Mirrors
+// the key/ref/grill debounce conventions (5-minute windows).
+const failNotifyInterval = 5 * time.Minute
+
+type failNotifyPriority int
+
+const (
+	failNotifyReason  failNotifyPriority = iota // 失败原因（超时 / 进程异常 / Token 不足）
+	failNotifySwitch                            // 模型切换（描述含失败原因）
+	failNotifyBlocked                           // 全部失败 / 阶段阻塞（最严重，可升级窗口内低级别通知）
+)
+
+type failNotifyEntry struct {
+	at   time.Time
+	prio failNotifyPriority
+}
+
+// notifyFailure sends a failure/fallback notification debounced per task
+// (failNotifyInterval window). The first toast for a task in the window wins;
+// a higher-priority event (fallback switch, then total failure/block) upgrades
+// the entry, so one failure episode surfaces as exactly one toast carrying the
+// most severe information. Returns whether a toast was sent.
+func (r *Runner) notifyFailure(taskPath, taskID, taskTitle, emoji, title, desc string, prio failNotifyPriority) bool {
+	if v, ok := r.failNotifyAt.Load(taskPath); ok {
+		e := v.(failNotifyEntry)
+		if time.Since(e.at) < failNotifyInterval && prio <= e.prio {
+			return false
+		}
+	}
+	r.failNotifyAt.Store(taskPath, failNotifyEntry{at: time.Now(), prio: prio})
+	notify.SendTaskAction(taskID, taskTitle, emoji, title, desc, r.cfg.Notifications.Desktop)
+	return true
 }
 
 // checkAPIKeyUnavailable scans the OMP log for missing API key errors.

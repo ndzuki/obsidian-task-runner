@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
 )
 
 func TestResolveProject(t *testing.T) {
@@ -120,58 +122,12 @@ func TestGitRemoteFor(t *testing.T) {
 	}
 }
 
-func TestRegisterScaffoldFromProject(t *testing.T) {
-	dir := t.TempDir()
-	mapFile := filepath.Join(dir, "vault-map.json")
-	config := map[string]interface{}{
-		"projects": []interface{}{},
-		"scaffold_registry": map[string]interface{}{
-			"connect-rpc": map[string]interface{}{
-				"aliases":     []interface{}{"connect", "grpc"},
-				"description": "Connect RPC framework",
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(config, "", "  ")
-	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// connect already registered (by alias) → skipped; otel is new → added.
-	if err := RegisterScaffoldFromProject(mapFile, "gamma", []string{"connect", "otel"}); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(mapFile)
-	var got struct {
-		Registry map[string]map[string]interface{} `json:"scaffold_registry"`
-	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := got.Registry["otel"]; !ok {
-		t.Fatal("otel capability must be auto-added")
-	}
-	if _, ok := got.Registry["connect-rpc"]; !ok {
-		t.Fatal("existing capability must be preserved")
-	}
-	if _, ok := got.Registry["connect"]; ok {
-		t.Fatal("registered alias must not create a duplicate capability")
-	}
-	// No new topics → no write.
-	before, _ := os.ReadFile(mapFile)
-	if err := RegisterScaffoldFromProject(mapFile, "gamma", []string{"connect"}); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.ReadFile(mapFile)
-	if string(before) != string(after) {
-		t.Fatal("no-op registration must not rewrite the file")
-	}
-}
-
 func TestMaintenancePreservesFieldOrder(t *testing.T) {
 	dir := t.TempDir()
 	mapFile := filepath.Join(dir, "vault-map.json")
-	// Hand-curated order: config_version first, projects last.
+	// Hand-curated order: config_version first, projects last. The legacy
+	// scaffold_registry field is gone from config — maintenance must never
+	// reintroduce it into the hand-curated file.
 	curated := `{
   "config_version": 1,
   "new_project_root": "/x",
@@ -183,8 +139,7 @@ func TestMaintenancePreservesFieldOrder(t *testing.T) {
       "path": "/x/alpha",
       "project_id": "001"
     }
-  ],
-  "scaffold_registry": {}
+  ]
 }
 `
 	if err := os.WriteFile(mapFile, []byte(curated), 0o644); err != nil {
@@ -198,7 +153,7 @@ func TestMaintenancePreservesFieldOrder(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(mapFile)
 	s := string(raw)
-	wantOrder := []string{"config_version", "new_project_root", "models", "projects", "scaffold_registry"}
+	wantOrder := []string{"config_version", "new_project_root", "models", "projects"}
 	last := -1
 	for _, key := range wantOrder {
 		idx := strings.Index(s, `"`+key+`"`)
@@ -210,6 +165,9 @@ func TestMaintenancePreservesFieldOrder(t *testing.T) {
 		}
 		last = idx
 	}
+	if strings.Contains(s, "scaffold_registry") {
+		t.Fatalf("maintenance must not reintroduce the removed scaffold_registry field")
+	}
 	// project_id auto-assigned for the appended entry.
 	var parsed struct {
 		Projects []map[string]string `json:"projects"`
@@ -219,6 +177,52 @@ func TestMaintenancePreservesFieldOrder(t *testing.T) {
 	}
 	if parsed.Projects[1]["project_id"] != "002" {
 		t.Fatalf("appended project_id = %q, want 002", parsed.Projects[1]["project_id"])
+	}
+}
+
+// TestMaintenanceKeepsProjectsLast: backfilling missing default fields must
+// not bury the hand-edited "projects" array — new fields go before it, the
+// array stays at the bottom of the file (the most frequently edited section).
+func TestMaintenanceKeepsProjectsLast(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	// Hand-curated: projects last, but a default field (stage_max_phases)
+	// is missing — maintenance must append it *before* projects.
+	curated := `{
+  "config_version": 1,
+  "obsidian_vault": "/x",
+  "projects": [
+    {"name": "alpha", "path": "/x/alpha", "project_id": "001"}
+  ]
+}
+`
+	if err := os.WriteFile(mapFile, []byte(curated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterProject(mapFile, "beta", "/x/beta", "github.com/ndzuki/beta", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(mapFile)
+	s := string(raw)
+	projectsIdx := strings.Index(s, `"projects"`)
+	stageIdx := strings.Index(s, `"stage_max_phases"`)
+	if projectsIdx < 0 || stageIdx < 0 {
+		t.Fatalf("projects=%d stage_max_phases=%d, both must exist", projectsIdx, stageIdx)
+	}
+	if stageIdx > projectsIdx {
+		t.Fatalf("backfilled field %q must appear before projects (got after)", "stage_max_phases")
+	}
+	if strings.Index(s[projectsIdx:], "stage_max_phases") >= 0 {
+		t.Fatal("stage_max_phases must not appear inside the projects block")
+	}
+	// projects is the last top-level field.
+	obj, err := jsonorder.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := obj.Fields()
+	if fields[len(fields)-1].Key != "projects" {
+		t.Fatalf("last top-level field = %q, want projects", fields[len(fields)-1].Key)
 	}
 }
 

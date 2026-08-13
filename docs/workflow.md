@@ -437,14 +437,13 @@ stateDiagram-v2
     open --> answered: 全部决策点已填 + 已分发（daemon 自动）
     open --> paused: 用户手动设置（需求未想好，暂停提醒）
     paused --> open: 用户手动改回，或关联 REQ 更新（daemon 自动激活）
-    paused --> answered: 用户直接填答案 + grill_continue=true（分发不受 paused 影响）
     answered --> open: consolidate 追加新决策点（PM 必须重置）
     answered --> [*]
 ```
 
 - **`open`**：有待答决策点 → 每个 parked 任务创建/聚焦一个 Kitty 决策 tab（每项目一个、5 分钟 debounce）；`grill_continue=true` 或全部填完 → distribute 分发 → `status=answered`。
-- **`paused`**（需求未想好）：**不创建 Kitty tab、不提醒**；任务保持 parked 静默等待。consolidate 向 paused 清单追加新决策点后**保持 paused**（用户仍未决定，不因新决策点恢复提醒）。
-- **自动激活**：用户更新关联 REQ（`OnReqChanged` 路径）→ daemon 把该项目的 paused 清单翻回 `open` 并通知——重新思考需求 = 恢复信号，提醒回归且后续链路（pending_req → refining → maturity gate → consolidate/split 重新评估 → planning）自动衔接。按项目去重，一次 REQ 事件每项目激活一次。
+- **`paused`**（需求未想好，项目级暂停开关）：该项目的 grilling 流程任务**整体暂停**——不创建 Kitty tab、不提醒、grill_continue 不重置 refining、**PM 不分发/不 consolidate**（填答案也不写回任务）、parked 任务不解除。consolidate 不得再向 paused 清单追加决策点。
+- **恢复**：① 用户手动把清单 frontmatter `status` 改为 `open`；② **关联 REQ 更新时 daemon 自动激活回 `open`**（用户/团队主动补充需求 = 恢复信号）并通知——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程。激活后下一轮 scan 起提醒/分发/派发全部恢复（已填答案的清单在 open 后自动分发）。
 - **通知风暴抑制**：API key 故障等批量失败场景，桌面提醒按 5 分钟窗口全局去重（`notifyKeyUnavailable`），不再每任务一条；调度前 `apiKeyAvailable()` 预检让任务保持状态等待（不启动 OMP、不消耗重试预算、无逐任务通知）。
 
 ## 6. Planning / Round 1
@@ -825,7 +824,8 @@ flowchart LR
 5. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。
 6. `otg kb absorb`（交互会话沉淀）：任务管道之外的日常会话经验（踩坑格式或 `--summary` 自由文本）→ 与 merge 相同的分类/归档/去重链路（`AbsorbKnowledge`），按「标题/失败方案」归一化去重，未命中归档 `References/uncategorized/`；重复遇到已记录教训时自动 bump 该文档 `hits`。
 7. 经验热度与 core 升级：`AppendApplicationRecord`（merge 命中 `knowledge_refs`）与 `AbsorbKnowledge`（duplicate）与 `otg kb hit` 均 `IncrementHits`（字段保序改写 `hits`，不破坏 KB v2 `updated` 格式，并原地更新进程内 ref 索引缓存避免全扫）；merge 后 `PromoteToCore`（hits≥3 的 extended/ 文档移入 core/ 同子目录，目标占用则跳过，基于缓存 O(候选数) 判断）。检索 `rank` 对 hits 加 0.02/次排序加成。
-8. 检索性能：`kb search` 走 SQLite 单库（`~/.local/share/otg/kb.sqlite`，vault 外；vault-map `kb_db` 可覆盖）——`SyncKnowledgeDB` 增量同步（文档 + FTS5 索引 + sqlite-vec 向量，按 content_hash 逐文档比对，增/改/删均行级事务，无全量重建、无指纹扫描；旧 `.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json` 首次同步自动清理）；**空扫描保护**：References/ 读为空（云同步间隙/错误 vault）时跳过删除，绝不批量清空索引；查询 `SearchKnowledgeDB`：FTS5 `bm25()`（取反恢复正分语义）+ vec0 余弦 KNN（`k = ?` 约束全量扫描，doc 级聚合）按历史公式融合；FTS5 中文检索靠预分词（`tokenize` bigram → 空格 join，unicode61 精确切分）；向量模型记录于 `kb_meta`，切换模型触发全量重建（`otg kb index`）；`archived/` 默认跳过（`--archived` 显式包含）；`IncrementHits` 同步更新 `kb_docs.hits`（排序 +0.02/次加成）；`openKB` 每次探测 FTS5——无 `-tags sqlite_fts5` 的构建在 kb 命令处立即报带构建提示的错误；`RebuildKnowledgeDB` 的 DROP 全部包在单事务内，失败回滚不留半状态库。
+8. 检索性能：`kb search` 走 SQLite 单库（`~/.local/share/otg/kb.sqlite`，vault 外；vault-map `kb_db` 可覆盖）——`SyncKnowledgeDB` 增量同步（文档 + FTS5 索引 + sqlite-vec 向量，按 content_hash 逐文档比对，增/改/删均行级事务，无全量重建、无指纹扫描；旧 `.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json` 首次同步自动清理）；**空扫描保护**：References/ 读为空（云同步间隙/错误 vault）时跳过删除，绝不批量清空索引；查询 `SearchKnowledgeDB`：FTS5 `bm25()`（取反恢复正分语义）与余弦相似度按历史公式融合（`cosine × weight + 归一化 BM25 × (1-weight)`，`weight` 默认 0.5）——余弦侧走**双路有界候选**：① BM25 命中 top-N 文档（`knn_candidates`，默认 100）的 chunk 在 Go 进程内余弦重排（vec0 MATCH 无过滤下推，候选集外扫描更省）；② vec0 全局 KNN 有界 top-K（`max(limit×3, 30)`）保留**纯向量召回**（BM25 零词面命中仍可浮现，如「状态机」→ state-machine）；并列余弦优先具名 section（信息量高于 preamble）；FTS5 中文检索靠预分词（`tokenize` bigram → 空格 join，unicode61 精确切分）；向量模型记录于 `kb_meta`，切换模型触发全量重建（`otg kb index`）；`archived/` 默认跳过（`--archived` 显式包含）；`IncrementHits` 同步更新 `kb_docs.hits`（排序 +0.02/次加成）；`openKB` 每次探测 FTS5——无 `-tags sqlite_fts5` 的构建在 kb 命令处立即报带构建提示的错误；`RebuildKnowledgeDB` 的 DROP 全部包在单事务内，失败回滚不留半状态库，且**绕过 schema 版本门禁**——`otg kb index` 同时是 v1→v2 等旧库迁移路径（派生数据重建即迁移）。
+9. **知识库问答（RAG 生成）**：`otg kb ask "<问题>"`（vault-map 配 `kb_chat` 后）——`AskKnowledgeDB` 先走第 8 点混合检索取 top-k（默认 5），以 `[N]` 编号把标题/摘要/best chunk 正文（`kb_chunks.text`，索引时落库）拼进 prompt，再流式调用 chat 后端（ollama `/api/chat` 或 OpenAI 兼容 `/chat/completions`）生成回答；打印的「参考资料」列表是**确定性检索结果**（模型无法编造来源）；检索为空短路不调生成。**可选精排**：vault-map 配 `kb_rerank`（OpenAI 兼容 `/v1/rerank` 或 llama.cpp `/rerank`）后，`kb search` 与 `kb ask` 的混合 top-N（`top_n` 默认 20，ask 先扩候选再精排截断到 `--limit`）由 cross-encoder 重排——后端不可用静默降级保持混合序。schema v2：`kb_chunks` 增 `text` 列（chunk 正文落库），`chunk_chars`/`batch_size` 可调（正文截断 600 字符、批量 32，改后需 `otg kb index` 全量重建）。
 
 **检索路径（skill 指令）**：
 

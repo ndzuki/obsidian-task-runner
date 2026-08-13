@@ -20,7 +20,6 @@ type ExtractResult struct {
 	UpdatedRefs  int
 	Duplicates   int // pitfall/practice notes skipped as already recorded
 	Unclassified []string // ADR ids auto-archived under References/uncategorized/
-	Topics       []string // matched knowledge topics (deduped) — feeds scaffold_registry
 	Touched      []string // absolute paths of knowledge files created/updated
 	Errors       []string
 }
@@ -31,7 +30,6 @@ type AbsorbResult struct {
 	Appended   int      // notes written into References/
 	Duplicates int      // skipped: an equivalent note already exists
 	Archived   []string // unclassified entries stored under References/uncategorized/
-	Topics     []string // matched topics from touched documents
 	Touched    []string // absolute paths written
 	Errors     []string
 }
@@ -237,7 +235,6 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 			result.UpdatedRefs += updated
 			if touchedPath != "" {
 				result.Touched = append(result.Touched, touchedPath)
-				result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, touchedPath))
 			}
 		}
 	}
@@ -273,7 +270,6 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 		}
 		result.UpdatedRefs++
 		result.Touched = append(result.Touched, filepath.Join(refsDir, target))
-		result.Topics = appendUniqueTopics(result.Topics, topicsForTarget(refsDir, target))
 	}
 	// marker 仅在全部成功时写入：任何错误保持 knowledge_extracted=false，
 	// daemon 的 done+merged 补救扫描（recoverUnExtractedKnowledge）会重试，
@@ -288,32 +284,7 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 	return result, nil
 }
 
-// topicsForTarget returns the frontmatter topics of a knowledge document.
-func topicsForTarget(refsDir, target string) []string {
-	for _, e := range loadRefIndex(refsDir) {
-		if e.Path == target {
-			return e.Topics
-		}
-	}
-	return nil
-}
-
-// appendUniqueTopics appends topics that are not already present.
-func appendUniqueTopics(dst, src []string) []string {
-	seen := make(map[string]bool, len(dst)+len(src))
-	for _, t := range dst {
-		seen[t] = true
-	}
-	for _, t := range src {
-		if t != "" && !seen[t] {
-			dst = append(dst, t)
-			seen[t] = true
-		}
-	}
-	return dst
-}
-
-// collectADRIDs normalizes the adr_written frontmatter value (string, []any of
+// marker 仅在全部成功时写入：任何错误保持 knowledge_extracted=false，
 // strings, or a map keyed by ADR id) into a flat list of id strings.
 func collectADRIDs(v any) []string {
 	var ids []string
@@ -899,7 +870,6 @@ func AbsorbKnowledge(vaultDir, projectName, text string, summary bool) (*AbsorbR
 		}
 		res.Appended++
 		res.Touched = append(res.Touched, targetPath)
-		res.Topics = appendUniqueTopics(res.Topics, topicsForTarget(refsDir, target))
 		return res, nil
 	}
 
@@ -931,7 +901,6 @@ func AbsorbKnowledge(vaultDir, projectName, text string, summary bool) (*AbsorbR
 		}
 		res.Appended++
 		res.Touched = append(res.Touched, filepath.Join(refsDir, target))
-		res.Topics = appendUniqueTopics(res.Topics, topicsForTarget(refsDir, target))
 	}
 	return res, nil
 }

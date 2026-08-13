@@ -40,14 +40,19 @@ type Config struct {
 	StageMinPerPhase           int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
 	StageMaxPhases             int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
 
-	// Registries
-	ScaffoldRegistry map[string]ScaffoldCapability `json:"scaffold_registry,omitempty"`
-	TemplateRegistry map[string]interface{}        `json:"template_registry,omitempty"`
-
 	// Knowledge-base vector search (optional). When configured and the
 	// vector index exists, otg kb search blends embedding cosine similarity
 	// with BM25; otherwise BM25 alone is used (zero-dependency fallback).
 	KBEmbedding *KBEmbeddingConfig `json:"kb_embedding,omitempty"`
+
+	// Knowledge-base rerank stage (optional). When configured, otg kb search
+	// reranks the hybrid top-N with a cross-encoder before trimming to the
+	// final limit; backend failure degrades to the hybrid order.
+	KBRerank *KBRerankConfig `json:"kb_rerank,omitempty"`
+
+	// Knowledge-base chat model for `otg kb ask` (retrieval-augmented
+	// generation). Requires kb_embedding: retrieval is the R of RAG.
+	KBChat *KBChatConfig `json:"kb_chat,omitempty"`
 
 	// Retrieval store path override (default: ~/.local/share/otg/kb.sqlite).
 	// Keep it outside the vault when the vault is cloud-synced.
@@ -72,6 +77,47 @@ type KBEmbeddingConfig struct {
 	APIKey string `json:"api_key,omitempty"`
 	// Blend weight for cosine similarity vs BM25 (0.5 = equal).
 	Weight float64 `json:"weight,omitempty"`
+	// ChunkChars caps each section's embedded body at N chars (600 default).
+	// Larger values capture more section semantics at proportionally higher
+	// indexing cost; changing it requires `otg kb index` (full rebuild —
+	// vectors are derived data).
+	ChunkChars int `json:"chunk_chars,omitempty"`
+	// BatchSize is the number of chunks per embedding API call (32 default;
+	// the throughput win for index builds).
+	BatchSize int `json:"batch_size,omitempty"`
+	// KNNCandidates caps the BM25-hit documents whose chunks enter the
+	// cosine candidate set (100 default). Query cost grows with this value.
+	KNNCandidates int `json:"knn_candidates,omitempty"`
+}
+
+// KBRerankConfig configures an optional cross-encoder rerank stage after
+// hybrid retrieval — OpenAI-compatible /v1/rerank (llama.cpp server) or
+// llama.cpp native /rerank. Ollama's server did not ship a rerank route as
+// of 0.32.x, so this points at a separate llama-server instance.
+type KBRerankConfig struct {
+	// Backend: "openai" (OpenAI-compatible /v1/rerank, default) or
+	// "llamacpp" (native /rerank).
+	Backend string `json:"backend,omitempty"`
+	// URL of the rerank server base ("http://127.0.0.1:11435").
+	URL string `json:"url,omitempty"`
+	// Model name on the rerank server (e.g. "bge-reranker-v2-m3").
+	Model string `json:"model,omitempty"`
+	// TopN rerank candidates taken from the hybrid top (20 default).
+	TopN int `json:"top_n,omitempty"`
+}
+
+// KBChatConfig configures the chat model used by `otg kb ask` (retrieval-
+// augmented generation over the knowledge base).
+type KBChatConfig struct {
+	// Backend: "ollama" (default) or "openai" (OpenAI-compatible).
+	Backend string `json:"backend,omitempty"`
+	// URL of the chat endpoint base ("http://127.0.0.1:11434").
+	URL string `json:"url,omitempty"`
+	// Model name (ollama "qwen3:1.7b", OpenAI "gpt-4o-mini" etc).
+	Model string `json:"model,omitempty"`
+	// Temperature for generation (0.2 default — retrieval-grounded answers
+	// want low entropy).
+	Temperature float64 `json:"temperature,omitempty"`
 }
 
 type TimeWindow struct {
@@ -83,14 +129,6 @@ type TimeWindow struct {
 type OffPeakWindow struct {
 	Start string `json:"start"` // "00:00"
 	End   string `json:"end"`   // "09:00"
-}
-
-// ScaffoldCapability defines a registered scaffold capability.
-type ScaffoldCapability struct {
-	Description string   `json:"description"`
-	Aliases     []string `json:"aliases,omitempty"`
-	Conflicts   []string `json:"conflicts,omitempty"`
-	Requires    []string `json:"requires,omitempty"`
 }
 
 // Project defines a project mapping.
@@ -174,10 +212,36 @@ func ModelReference() string {
 // search entirely.
 func DefaultKBEmbedding() *KBEmbeddingConfig {
 	return &KBEmbeddingConfig{
-		Backend: "ollama",
-		URL:     "http://127.0.0.1:11434",
-		Model:   "bge-m3",
-		Weight:  0.5,
+		Backend:       "ollama",
+		URL:           "http://127.0.0.1:11434",
+		Model:         "bge-m3",
+		Weight:        0.5,
+		ChunkChars:    600,
+		BatchSize:     32,
+		KNNCandidates: 100,
+	}
+}
+
+// DefaultKBRerank returns the shipped rerank defaults (llama.cpp-compatible
+// server on :11435). A nil config disables the rerank stage.
+func DefaultKBRerank() *KBRerankConfig {
+	return &KBRerankConfig{
+		Backend: "openai",
+		URL:     "http://127.0.0.1:11435",
+		Model:   "bge-reranker-v2-m3",
+		TopN:    20,
+	}
+}
+
+// DefaultKBChat returns the shipped chat defaults (ollama, qwen3:1.7b —
+// the smallest Qwen3 that still answers well on an Intel iGPU). A nil
+// config disables `otg kb ask`.
+func DefaultKBChat() *KBChatConfig {
+	return &KBChatConfig{
+		Backend:     "ollama",
+		URL:         "http://127.0.0.1:11434",
+		Model:       "qwen3:1.7b",
+		Temperature: 0.2,
 	}
 }
 
@@ -296,6 +360,45 @@ func mergeDefaults(cfg *Config) {
 		}
 		if cfg.KBEmbedding.Weight == 0 {
 			cfg.KBEmbedding.Weight = d.Weight
+		}
+		if cfg.KBEmbedding.ChunkChars == 0 {
+			cfg.KBEmbedding.ChunkChars = d.ChunkChars
+		}
+		if cfg.KBEmbedding.BatchSize == 0 {
+			cfg.KBEmbedding.BatchSize = d.BatchSize
+		}
+		if cfg.KBEmbedding.KNNCandidates == 0 {
+			cfg.KBEmbedding.KNNCandidates = d.KNNCandidates
+		}
+	}
+	if cfg.KBRerank != nil {
+		d := DefaultKBRerank()
+		if cfg.KBRerank.Backend == "" {
+			cfg.KBRerank.Backend = d.Backend
+		}
+		if cfg.KBRerank.URL == "" {
+			cfg.KBRerank.URL = d.URL
+		}
+		if cfg.KBRerank.Model == "" {
+			cfg.KBRerank.Model = d.Model
+		}
+		if cfg.KBRerank.TopN <= 0 {
+			cfg.KBRerank.TopN = d.TopN
+		}
+	}
+	if cfg.KBChat != nil {
+		d := DefaultKBChat()
+		if cfg.KBChat.Backend == "" {
+			cfg.KBChat.Backend = d.Backend
+		}
+		if cfg.KBChat.URL == "" {
+			cfg.KBChat.URL = d.URL
+		}
+		if cfg.KBChat.Model == "" {
+			cfg.KBChat.Model = d.Model
+		}
+		if cfg.KBChat.Temperature == 0 {
+			cfg.KBChat.Temperature = d.Temperature
 		}
 	}
 	if cfg.OMPCmd == "" {

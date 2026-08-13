@@ -925,6 +925,20 @@ func TestIsRound2(t *testing.T) {
 	}
 }
 
+// withDesktopNotificationsDisabled clones the vault-map content and forces
+// notifications.desktop=false. Defaults() ships desktop=true and config.Load
+// merges it in, so without this every test walking the Load path would fire
+// real failure/switch/status toasts on the user's desktop (T001 Fallback task
+// toasts were exactly that). The clone keeps the caller's map untouched.
+func withDesktopNotificationsDisabled(content map[string]any) map[string]any {
+	cloned := make(map[string]any, len(content)+1)
+	for k, v := range content {
+		cloned[k] = v
+	}
+	cloned["notifications"] = map[string]any{"desktop": false}
+	return cloned
+}
+
 func writeVaultMap(t *testing.T, dir string, projects map[string]string) string {
 	t.Helper()
 	skillDir := filepath.Join(dir, "skill")
@@ -935,7 +949,9 @@ func writeVaultMap(t *testing.T, dir string, projects map[string]string) string 
 	for name, path := range projects {
 		entries = append(entries, map[string]string{"name": name, "path": path})
 	}
-	data, err := json.Marshal(map[string]any{"projects": entries})
+	data, err := json.Marshal(withDesktopNotificationsDisabled(map[string]any{
+		"projects": entries,
+	}))
 	if err != nil {
 		t.Fatalf("marshal vault map: %v", err)
 	}

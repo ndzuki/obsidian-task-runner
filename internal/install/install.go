@@ -2,14 +2,15 @@
 package install
 
 import (
-	"encoding/json"
 	"fmt"
-	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // Options holds installation configuration.
@@ -293,41 +294,57 @@ func generateVaultMap(opts Options) error {
 		"off_peak_windows":        []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
 		"starvation_warning_days": map[string]int{"P3": 14, "P4": 30},
 	}
+	// Field order is deliberate: alphabetical (the natural sort users see in
+	// most editors) with "projects" pinned last — appending a new project is
+	// the most frequent manual edit, so the array stays at the bottom.
+	orderedKeys := []string{
+		"config_version", "fallback_models", "max_concurrent_tasks", "models",
+		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
+		"off_peak_windows", "phase_timeouts_minutes", "poll_interval_minutes",
+		"shutdown_grace_seconds", "starvation_warning_days", "projects",
+	}
 
-	// Merge new defaults into existing config — never overwrite user values.
+	// Merge new defaults into existing config — never overwrite user values,
+	// and never reshuffle the user's hand-curated field order.
 	if existing, err := os.ReadFile(mapFile); err == nil {
-		var existingCfg map[string]interface{}
-		if err := json.Unmarshal(existing, &existingCfg); err == nil {
-			for k, v := range config {
-				if _, exists := existingCfg[k]; !exists {
-					existingCfg[k] = v
+		obj, err := jsonorder.Parse(existing)
+		if err == nil {
+			for _, k := range orderedKeys {
+				if _, exists := obj.Get(k); !exists {
+					obj.Set(k, config[k])
 				}
 			}
 			// Back up raw bytes before writing to prevent data loss on crash.
 			backup := existing
-			newData, _ := json.MarshalIndent(existingCfg, "", "  ")
-			newData = append(newData, '\n')
-			if err := yamlfrontmatter.AtomicWrite(mapFile, newData); err != nil {
-				// Restore backup on failure
-				if restoreErr := os.WriteFile(mapFile, backup, 0644); restoreErr != nil {
-					return fmt.Errorf("atomic write vault-map: %w (restore backup: %v)", err, restoreErr)
+			newData, err := jsonorder.Marshal(obj)
+			if err == nil {
+				newData = append(newData, '\n')
+				if err := yamlfrontmatter.AtomicWrite(mapFile, newData); err != nil {
+					// Restore backup on failure
+					if restoreErr := os.WriteFile(mapFile, backup, 0644); restoreErr != nil {
+						return fmt.Errorf("atomic write vault-map: %w (restore backup: %v)", err, restoreErr)
+					}
+					return fmt.Errorf("atomic write vault-map: %w", err)
 				}
-				return fmt.Errorf("atomic write vault-map: %w", err)
+				fmt.Println("vault-map.json updated with new defaults")
+				return nil
 			}
-			fmt.Println("vault-map.json updated with new defaults")
-			return nil
 		}
 		fmt.Println("vault-map.json exists but unparseable, skipping (never overwritten)")
 		return nil
 	}
 
-	// No existing file — create fresh atomically.
+	// No existing file — create fresh atomically with the ordered layout.
+	obj := &jsonorder.OrderedJSON{}
+	for _, k := range orderedKeys {
+		obj.Set(k, config[k])
+	}
 	if opts.DryRun {
-		data, _ := json.MarshalIndent(config, "", "  ")
+		data, _ := jsonorder.Marshal(obj)
 		fmt.Printf("[DRY RUN] Would create vault-map.json:\n%s\n", string(data))
 		return nil
 	}
-	data, _ := json.MarshalIndent(config, "", "  ")
+	data, _ := jsonorder.Marshal(obj)
 	data = append(data, '\n')
 
 	if err := os.MkdirAll(filepath.Dir(mapFile), 0755); err != nil {
