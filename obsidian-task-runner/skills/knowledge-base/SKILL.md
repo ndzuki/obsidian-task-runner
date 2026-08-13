@@ -185,7 +185,8 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 **提炼质量要求**：只收可复用技术知识（含失败方案与根因），不复制业务琐事；实测数据标注日期与语料规模；`verified` 仅实践验证后翻 true。
 
 ### Step 1: 本地检索
-0. **先跑语义检索（本地 BM25）**：`otg kb search "<关键词>"`（vault-map 自动定位）— 输出按相关度排序的文档路径/摘要。命中 top-3 内即视为本地命中。性能说明：检索库为 SQLite 单文件（`~/.local/share/otg/kb.sqlite`，vault 外）：FTS5 BM25 倒排索引重复查询亚秒级，向量（sqlite-vec）可用时自动混合余弦，embedding 不可用自动回退纯 BM25；文档/向量按 content_hash 增量同步（`kb absorb`、merge 提取、`kb promote` 后自动），未变文档零成本；`archived/` 层默认不检索，确需时加 `--archived`。`kb index` 全量重建（迁移/模型切换后执行）。**ollama 停用不影响检索**：停掉后立即降级纯 BM25（毫秒级，不报错），重新启动后首次查询稍慢（模型加载），向量自动补齐——检索差异详见 README「检索模式与 ollama 依赖（实测）」：术语型关键词查询无感知差异，近义/口语化查询（如「链路追踪」无词面命中）依赖向量层。
+0. **先跑语义检索（本地 BM25）**：`otg kb search "<关键词>"`（vault-map 自动定位）— 输出按相关度排序的文档路径/摘要。命中 top-3 内即视为本地命中。性能说明：检索库为 SQLite 单文件（`~/.local/share/otg/kb.sqlite`，vault 外）：FTS5 BM25 倒排索引重复查询亚秒级，向量（sqlite-vec）可用时自动混合余弦，embedding 不可用自动回退纯 BM25；文档/向量按 content_hash 增量同步（`kb absorb`、merge 提取、`kb promote` 后自动），未变文档零成本；`archived/` 层默认不检索，确需时加 `--archived`。`kb index` 全量重建（迁移/模型切换后执行）。**ollama 停用不影响检索**：停掉后立即降级纯 BM25（毫秒级，不报错），重新启动后首次查询稍慢（模型加载），向量自动补齐——检索差异详见 README「检索模式与 ollama 依赖（实测）」：术语型关键词查询无感知差异，近义/口语化查询（如「链路追踪」无词面命中）依赖向量层。混合检索实现：余弦侧双路有界候选（BM25 top-N 进程内重排 + vec0 全局有界 K 保纯向量召回），配置项 `chunk_chars`/`batch_size`/`knn_candidates`/`weight` 见 README「知识库语义检索」。
+0a. **交互问答可用 `otg kb ask`（可选，人类/会话入口，非自动化主路径）**：vault-map 配 `kb_chat` 后，`otg kb ask "<问题>"` 混合检索 top-k 以 `[N]` 编号拼入 prompt，由 chat 模型（如 ollama `qwen3:1.7b`）流式回答并附「参考资料」列表（实际检索结果，模型不能编造来源）。**定位边界**：ask 适合**用户提问与交互会话**（快速 grounded 回答、低 token 概览）；**agent 自动化流程（Round 1/Round 2 计划引用）仍走 Step 0 的 search + read 原文**——小模型转述有信息损耗且计划需引用原文路径，禁止用 ask 替代原文检索。配 `kb_rerank`（如 llama.cpp `bge-reranker-v2-m3`，长尾/近义查询收益最明显；后端不可用自动降级）后，`kb search` 与 `kb ask` 均先取 top-N 精排再截断。详细配置与部署见 README「检索精排」与「知识库问答」。
 1. 读取 `$OBSIDIAN_VAULT/References/INDEX.md` 获取知识库目录（作为关键词检索与引用项目视图的补充）。
 2. **关键词构造（多轮扩展）**：
    - 从问题/REQ 提取技术名词与实体（含中文表述）；

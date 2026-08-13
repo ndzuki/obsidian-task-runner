@@ -22,7 +22,7 @@ func writeMapFile(t *testing.T, skillDir string, content map[string]interface{})
 		t.Fatalf("mkdir config: %v", err)
 	}
 	mapFile := filepath.Join(configDir, "vault-map.json")
-	data, _ := json.MarshalIndent(content, "", "  ")
+	data, _ := json.MarshalIndent(withDesktopNotificationsDisabled(content), "", "  ")
 	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
 		t.Fatalf("write vault map: %v", err)
 	}

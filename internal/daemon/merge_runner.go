@@ -17,7 +17,6 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
-	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -1294,15 +1293,6 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 		r.logger.Printf("knowledge-base read refs for record failed: %v", readErr)
 	}
 	// Delivered project experience grows the scaffold registry: classified
-	// topics without a matching capability become new capabilities.
-	if len(result.Topics) > 0 {
-		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
-		if err := project.RegisterScaffoldFromProject(mapFile, projectName, result.Topics); err != nil {
-			r.logger.Printf("knowledge-base scaffold registry update failed: %v", err)
-		} else {
-			r.logger.Printf("knowledge-base scaffold registry: %d topics reviewed for %s", len(result.Topics), projectName)
-		}
-	}
 	// The delivery passed verification and merged — the extracted ADR decisions
 	// are now validated by real practice. Flip verified on touched files so the
 	// knowledge base distinguishes proven content from untested references.

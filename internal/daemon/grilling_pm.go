@@ -97,6 +97,12 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 		if listPath == "" || !hasParked(byProject[project]) {
 			continue
 		}
+		// 项目级暂停开关：清单 status=paused 时用户明确搁置，答案即使
+		// 已填写也不分发写回、不派发 PM 会话——只有用户手动改回 open 才恢复。
+		if grillingListPaused(listPath) {
+			r.logger.Printf("project %s: decision list paused, distribution held", project)
+			continue
+		}
 		answered := grillingListAnswered(listPath) // manual flag
 		pending := grillingDecisionPending(listPath)
 		total := grillingDecisionTotal(listPath)
@@ -180,6 +186,10 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 	}
 	dispatched := 0
 	for _, project := range sortedProjectKeys(byProject) {
+		if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, project); listPath != "" && grillingListPaused(listPath) {
+			r.logger.Printf("project %s: decision list paused, consolidation held", project)
+			continue
+		}
 		group := groupByReqDoc(byProject[project])
 		for _, req := range sortedProjectKeys(group) {
 			members := group[req]
@@ -589,10 +599,12 @@ func grillingDecisionPendingForTask(path, taskID string) int {
 }
 
 // grillingListPaused reports whether the decision list's frontmatter status
-// is paused/closed — the user's opt-out from reminder noise while a
-// requirement is still being thought through. Reminders (Kitty decision tab)
-// are suppressed, but distribution still works: answering the list and
-// setting grill_continue=true dispatches normally.
+// is paused/closed — the project-level pause switch. While paused, every
+// automated flow for the project's grilling tasks is held: no reminders, no
+// Kitty decision tab, no grill_continue reset, no PM distribute/consolidate
+// dispatch, no parked-task un-parking. The pause lifts when the user acts:
+// manually setting the list status to "open", or updating the associated REQ
+// (daemon auto-activates — the user actively supplementing the requirement).
 //
 // Accepts "pause" (user typo variant seen in the field), "paused" and
 // "closed", case-insensitively.
@@ -613,10 +625,13 @@ func grillingListPaused(path string) bool {
 }
 
 // activatePausedDecisionList flips a project's decision list from paused
-// back to open when the requirement driving it was updated — the user
-// rethinking the requirement is the signal to resume: reminders return and
-// the downstream flow (tasks re-entering refining via pending_req, maturity
-// gate, consolidate/split re-evaluation, planning) picks up from there.
+// back to open when the requirement driving it was updated. A REQ update is
+// the user/team actively supplementing the requirement — the same "user
+// acting" signal as manually setting status=open — so the pause is lifted:
+// reminders and the downstream flow (tasks re-entering refining via
+// pending_req, maturity gate, consolidate re-evaluating new requirements
+// against existing disputes, planning) pick up again, and the user aligns
+// via Grilling before tasks resume.
 // Returns true when the list existed and was paused.
 func activatePausedDecisionList(vaultPath, project string) (bool, error) {
 	path := filepath.Join(vaultPath, "Projects", project, "Notes", "Grilling-Decisions.md")

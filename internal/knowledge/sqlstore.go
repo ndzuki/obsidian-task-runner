@@ -21,7 +21,11 @@ import (
 // (see Makefile / CI); sqlite-vec is registered via sqlite_vec.Auto().
 
 const (
-	kbSchemaVersion = "1"
+	// kbSchemaVersion 2: kb_chunks gained the embedded chunk text (needed by
+	// `kb ask` reference blocks and the rerank stage). Older stores fail
+	// open with a rebuild hint — the store is derived data, so `otg kb index`
+	// is the migration.
+	kbSchemaVersion = "2"
 	kbVecTable      = "kb_vec" // created lazily with the actual embedding dimension
 )
 
@@ -57,6 +61,28 @@ func KBPath(vaultDir, override string) string {
 // "no such module: fts5" (or worse, silently serve an empty index when the
 // tables already exist). Probing up front names the real cause once.
 func openKB(dbPath string) (*sql.DB, error) {
+	db, err := openRaw(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// openKBForRebuild opens the store without the schema-version gate: a
+// rebuild drops every table anyway, so a version mismatch must not block
+// the recovery/migration path (a v1 store cannot otherwise be rebuilt by a
+// v2 binary — the error message would demand the very command that fails).
+func openKBForRebuild(dbPath string) (*sql.DB, error) {
+	return openRaw(dbPath)
+}
+
+// openRaw opens the SQLite file with WAL + busy_timeout and probes FTS5 —
+// shared plumbing for openKB and openKBForRebuild.
+func openRaw(dbPath string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
@@ -75,10 +101,6 @@ func openKB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	if err := probeFTS5(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := ensureSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -141,6 +163,7 @@ func ensureSchema(db *sql.DB) error {
 			chunk_id INTEGER PRIMARY KEY,
 			doc_id INTEGER NOT NULL REFERENCES kb_docs(rowid) ON DELETE CASCADE,
 			heading TEXT NOT NULL,
+			text TEXT NOT NULL DEFAULT '',
 			content_hash TEXT NOT NULL,
 			UNIQUE(doc_id, heading))`,
 		// kb_vec is created lazily with the real embedding dimension

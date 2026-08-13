@@ -207,19 +207,76 @@ otg install \
 
 `otg kb search` 默认 BM25 关键词检索（零依赖、本地）。配置 embedding 后端后可做**语义检索**（同义/跨词面匹配，如「状态机」命中 state-machine 文档）：
 
+```mermaid
+flowchart LR
+    subgraph Index[索引构建 · otg kb index / 增量同步]
+        A[References/ 文档] --> B[按 ## 标题切 chunk<br/>+ topics/title/summary 前缀]
+        B --> C[embed 批量 32 · ollama bge-m3 核显]
+        C --> D[(kb.sqlite<br/>FTS5 + vec0 + chunk 文本)]
+    end
+    subgraph Query[检索 · kb search]
+        Q[查询] --> E[FTS5 BM25 命中]
+        E --> F[候选① BM25 top-100 文档 chunk<br/>Go 进程内余弦重排]
+        E --> G[候选② vec0 全局 top-K<br/>纯向量召回兜底]
+        F --> H[混合融合<br/>cos × w + 归一化 BM25 × (1-w)]
+        G --> H
+    end
+    H --> R{配 kb_rerank?}
+    R -->|是| K[llama.cpp cross-encoder<br/>top-20 → 精排 → top-N]
+    R -->|否| L[最终排序]
+    K --> L
+    subgraph Ask[问答 · kb ask]
+        L --> M[[kb_chat 流式生成<br/>[N] 编号引用参考资料]]
+        M --> N[回答 + 确定性参考资料列表]
+    end
+```
+
 ```json
 "kb_embedding": {
   "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容 API）
   "url": "http://127.0.0.1:11434",  // ollama 基址；openai 填 https://api.openai.com/v1
   "model": "bge-m3",                // ollama 推荐 bge-m3（中文友好）
   "api_key": "",                    // 仅 openai 后端需要
-  "weight": 0.5                     // 余弦相似度权重（0.5 = 与 BM25 对半）
+  "weight": 0.5,                    // 余弦相似度权重（0.5 = 与 BM25 对半）
+  "chunk_chars": 600,               // 每 section 嵌入正文上限（字符；调大捕获更多语义，需重跑 kb index）
+  "batch_size": 32,                 // 每次嵌入 API 调用条数（索引构建吞吐）
+  "knn_candidates": 100             // BM25 命中文档进入余弦候选集的上限（查询成本）
 }
 ```
 
 配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；**注意**：配置 `kb_db` 覆盖路径后，`otg kb hit` 的 hits 同步仍走默认库（该命令无配置上下文）——保持默认路径则实时生效，覆盖路径下 hits 在下次内容变更同步时从 frontmatter 补入。
 
 **Intel Arc 显卡方案**：Ollama 官方镜像不带 Intel GPU 后端。Intel Arc 独显请用社区 SYCL 构建 `eleiton/ollama-intel-arc`（本机副本 `~/src/repos/github.com/ndzuki/ollama-intel-arc`，`docker compose -f docker-compose.ollama-sycl.yml up -d --build`，端口仍为 11434，`kb_embedding` 配置无需改动）。完整部署、验证与排障见知识库 `core/containers/ollama-intel-arc.md`。
+
+### 检索精排（`kb_rerank`，可选）
+
+混合检索的 top-N（默认 20）可再接一个 **cross-encoder 精排**，把强相关文档顶到前面（对长尾/近义查询收益最明显）——`kb search` 与 `kb ask` 均生效（ask 先取 top-N 候选精排，再截断到 `--limit`）：
+
+```json
+"kb_rerank": {
+  "backend": "openai",                       // openai（默认，/v1/rerank）或 llamacpp（/rerank）
+  "url": "http://127.0.0.1:11435",           // llama.cpp server 基址（Ollama 0.32.x 无 rerank 路由）
+  "model": "bge-reranker-v2-m3",
+  "top_n": 20                                // 精排候选数
+}
+```
+
+llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-server -m bge-reranker-v2-m3-f16.gguf --port 11435`（SYCL/OpenVINO 编译版可加 `--device` 参数）。**后端不可用时自动降级**：保持混合检索原序，不影响搜索结果。精排文本 = 标题 + 摘要 + 最佳 section 嵌入文本（索引时落库，无需重读 vault）。
+
+### 知识库问答（`kb_chat` + `otg kb ask`，可选）
+
+完整 RAG：`otg kb ask "问题"` 先用混合检索取 top-k 参考资料（以 [N] 编号拼进 prompt），再让 `kb_chat` 模型**流式生成**回答；回答后打印的「参考资料」列表是**实际检索结果**（确定性，模型无法编造来源）：
+
+```json
+"kb_chat": {
+  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容）
+  "url": "http://127.0.0.1:11434",
+  "model": "qwen3:1.7b",            // 核显甜点；需先 ollama pull
+  "temperature": 0.2                // 低温度，检索接地回答
+}
+```
+
+依赖：`kb_embedding`（检索是 RAG 的 R）+ `kb_chat`（生成是 G）。用法：`otg kb ask "如何排查慢查询" --limit 5`；`--model` 可临时覆盖 chat 模型。检索为空时不调生成、直接提示换 web_search。
 
 ### 检索模式与 ollama 依赖（实测）
 
@@ -416,6 +473,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg review <task>` | 显示任务的 review bundle |
 | `otg stage-plan init <project>` | 按依赖拓扑生成/追加阶段计划（`--force` 重建，`--dry-run` 预览） |
 | `otg kb search "<关键词>"` | 知识库本地检索（BM25 + 可选 embedding 混合），语义命中优先 |
+| `otg kb ask "<问题>"` | 知识库问答（混合检索 + kb_chat 流式生成，带 [N] 引用与参考资料列表） |
 | `otg kb index` | 构建 embedding 向量索引（配置 `kb_embedding` 后执行一次） |
 | `otg kb gaps <project>` | 列出无知识库覆盖的 ADR（知识缺口） |
 | `otg kb usage [project]` | 显示 topic ↔ 项目引用图 |

@@ -156,7 +156,7 @@ func TestActivatePausedDecisionList(t *testing.T) {
 	if fm := mustParse(t, listPath); fm.Status != "open" {
 		t.Fatalf("open list status changed to %q", fm.Status)
 	}
-	// paused list → reactivated.
+	// paused list → reactivated (REQ update = user actively supplementing).
 	write("paused")
 	if ok, err := activatePausedDecisionList(vault, "002-magic-models-manager"); !ok || err != nil {
 		t.Fatalf("paused list: ok=%v err=%v, want true,nil", ok, err)
@@ -169,8 +169,8 @@ func TestActivatePausedDecisionList(t *testing.T) {
 func TestProjectFromReqPath(t *testing.T) {
 	cases := map[string]string{
 		"Projects/002-magic-models-manager/Requirements/REQ-001.md": "002-magic-models-manager",
-		"Requirements/REQ-001.md":                                    "",
-		"Projects/001-release-manager/Requirements/REQ-009.md":       "001-release-manager",
+		"Requirements/REQ-001.md":                                   "",
+		"Projects/001-release-manager/Requirements/REQ-009.md":      "001-release-manager",
 	}
 	for input, want := range cases {
 		if got := projectFromReqPath(input); got != want {
@@ -214,7 +214,8 @@ func TestResolveVaultProjectDirAcceptsPrefixedProject(t *testing.T) {
 	}
 }
 
-func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {	t.Helper()
+func writeGrillingTask(t *testing.T, path, id, reqDoc, project string, parked bool, repeat int) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("create task dir: %v", err)
 	}

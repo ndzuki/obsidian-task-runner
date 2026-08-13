@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
 func writeSearchDoc(t *testing.T, refsDir, name, topics, body string) {
@@ -36,7 +38,7 @@ func TestTokenize(t *testing.T) {
 
 func TestChunkDocument(t *testing.T) {
 	data := []byte("---\ntopics: [go, connect]\n---\n# Connect\n\n> summary\n\n前言内容。\n\n## 要点\n- a\n- b\n\n## 更新记录\n- 2026-08-01 x\n")
-	chunks := chunkDocument(data)
+	chunks := chunkDocument(data, 600)
 	if len(chunks) != 3 {
 		t.Fatalf("chunks = %d, want 3 (preamble + 2 sections)", len(chunks))
 	}
@@ -56,22 +58,22 @@ func TestChunkDocument(t *testing.T) {
 		}
 	}
 	// Empty body → no chunks (preamble flush skips empty content).
-	if got := chunkDocument([]byte("---\ntopics: [go]\n---\n")); len(got) != 0 {
+	if got := chunkDocument([]byte("---\ntopics: [go]\n---\n"), 600); len(got) != 0 {
 		t.Fatalf("empty body chunks = %d, want 0", len(got))
 	}
 }
 
 func TestChunkDocumentSplitsLongSections(t *testing.T) {
-	// A very long section is truncated to its head (CPU-inference budget):
-	// the chunk stays one per section but is capped at 300 body chars.
+	// A very long section is truncated to its head (configurable budget):
+	// the chunk stays one per section but is capped at 600 body chars.
 	long := strings.Repeat("段落内容示例。", 200) // 1400 chars
 	body := "---\ntopics: [go]\n---\n# T\n\n> s\n\n## 长节\n" + long + "\n\n## 尾节\n- x\n"
-	chunks := chunkDocument([]byte(body))
+	chunks := chunkDocument([]byte(body), 600)
 	if len(chunks) != 3 {
 		t.Fatalf("chunks = %d, want 3 (preamble + 2 sections)", len(chunks))
 	}
 	for _, c := range chunks {
-		if c.heading == "## 长节" && len(c.text) > 300+len("## 长节\n")+128 {
+		if c.heading == "## 长节" && len(c.text) > 600+len("## 长节\n")+128 {
 			t.Fatalf("chunk %q not truncated to head: %d chars", c.heading, len(c.text))
 		}
 		if c.heading == "## 长节" && !strings.Contains(c.text, "段落内容示例") {
@@ -165,5 +167,37 @@ func TestSearchMatchesTagsAndAliases(t *testing.T) {
 	// Alias-only match: body/topics never mention "REST Client".
 	if hits, err := SearchKnowledgeDB(dbPath, "REST Client", 3, true, nil, 0); err != nil || len(hits) == 0 || hits[0].Path != "extended/tools/kulala.md" {
 		t.Fatalf("alias match missing: %+v err=%v", hits, err)
+	}
+}
+
+// TestSearchHybridReturnsChunkText: the hybrid path reports the best chunk
+// heading AND its embedded text (needed by `kb ask` reference blocks and
+// the rerank stage).
+func TestSearchHybridReturnsChunkText(t *testing.T) {
+	srv := fakeEmbeddingServer(t)
+	defer srv.Close()
+	client := NewEmbeddingClient(&config.KBEmbeddingConfig{Backend: "ollama", URL: srv.URL, Model: "bge-m3"})
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "core")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSearchDoc(t, refsDir, "connect-rpc.md", "connect, rpc, grpc, protobuf",
+		"Connect 是轻量 RPC 框架。\n\n## 协议细节\nconnect 协议与 grpc 互操作。")
+	dbPath := syncTestKB(t, vault, client)
+
+	hits, err := SearchKnowledgeDB(dbPath, "connect rpc", 3, true, client, 1.0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Path != "core/connect-rpc.md" {
+		t.Fatalf("top hit = %+v, want core/connect-rpc.md", hits)
+	}
+	if hits[0].Chunk == "" || hits[0].ChunkText == "" {
+		t.Fatalf("chunk heading/text missing: %+v", hits[0])
+	}
+	if !strings.Contains(hits[0].ChunkText, "协议细节") {
+		t.Fatalf("ChunkText = %q, want 协议细节 section", hits[0].ChunkText)
 	}
 }

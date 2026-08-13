@@ -1,14 +1,37 @@
 {
-  "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。",
-  "obsidian_vault": "/home/you/Obsidian/MainVault",
-  "projects": [
-    {
-      "name": "example-project",
-      "path": "/home/you/src/example-project",
-      "git_remote": "github.com/you/example-project"
-    }
-  ],
-  "new_project_root": "/home/you/src",
+  "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。字段顺序可自由调整（daemon 保序维护、只追加缺失字段）；建议 projects 置末——追加新项目是最频繁的手工编辑。",
+  "fallback_models": {
+    "deepseek": "deepseek/deepseek-v4-flash",
+    "default": "deepseek/deepseek-v4-flash",
+    "gpt": "deepseek/deepseek-v4-flash"
+  },
+  "kb_chat": {
+    "_comment": "知识库问答（可选，otg kb ask 的生成模型）。需 kb_embedding（检索是 RAG 的 R）；ollama 需 ollama pull qwen3:1.7b。",
+    "backend": "ollama",
+    "url": "http://127.0.0.1:11434",
+    "model": "qwen3:1.7b",
+    "temperature": 0.2
+  },
+  "kb_db": "/home/you/.local/share/otg/kb.sqlite",
+  "kb_embedding": {
+    "_comment": "知识库语义检索（可选）。配置后 otg kb search 混合 BM25 + 余弦；缺省此项则纯 BM25。ollama 需先运行并 ollama pull bge-m3。",
+    "backend": "ollama",
+    "url": "http://127.0.0.1:11434",
+    "model": "bge-m3",
+    "api_key": "",
+    "weight": 0.5,
+    "chunk_chars": 600,
+    "batch_size": 32,
+    "knn_candidates": 100
+  },
+  "kb_rerank": {
+    "_comment": "检索精排（可选，cross-encoder）。Ollama 0.32.x 无 rerank 路由，需独立 llama.cpp server（如 bge-reranker-v2-m3，端口 11435）；后端不可用自动降级为混合序。",
+    "backend": "openai",
+    "url": "http://127.0.0.1:11435",
+    "model": "bge-reranker-v2-m3",
+    "top_n": 20
+  },
+  "max_concurrent_tasks": 2,
   "models": {
     "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
     "deepseek": "deepseek/deepseek-v4-flash",
@@ -18,17 +41,12 @@
     "claude":   "anthropic/claude-sonnet-4-20250514",
     "minimax":  "minimax/minimax-m1"
   },
-  "fallback_models": {
-    "gpt": "deepseek/deepseek-v4-flash",
-    "default": "deepseek/deepseek-v4-flash",
-    "deepseek": "deepseek/deepseek-v4-flash"
-  },
+  "new_project_root": "/home/you/src",
   "notifications": {
     "desktop": true,
     "sound": false
   },
-  "poll_interval_minutes": 30,
-  "max_concurrent_tasks": 2,
+  "obsidian_vault": "/home/you/Obsidian/MainVault",
   "phase_concurrency": {
     "_comment": "非 implementing 阶段的 OMP 并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks 控制。限制同时运行的 OMP 会话，保护 API 限速/token 消耗与本地资源。",
     "refining": 3,
@@ -36,5 +54,13 @@
     "merge": 1,
     "priority": 1,
     "pm": 1
-  }
+  },
+  "poll_interval_minutes": 30,
+  "projects": [
+    {
+      "name": "example-project",
+      "path": "/home/you/src/example-project",
+      "git_remote": "github.com/you/example-project"
+    }
+  ]
 }
