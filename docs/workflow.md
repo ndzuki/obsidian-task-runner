@@ -423,11 +423,11 @@ Daemon 消费完成结果时，优先级为：
 2. **重复检测**：dispute 与上一版 `## Grilling 待回答` 相同 → `grill_repeat+1`；`grill_repeat≥2` 且 REQ hash 未变 → **park 升级**（`grill_parked=true`），不再逐任务重复追问。
 3. **PM consolidate**（`processGrillingConsolidation`，scan 末尾每轮 ≤1）：按 req_doc 分组去重 → fact/auto 处置同步到所有相关任务 → dispute 写入 `Notes/Grilling-Decisions.md` 决策点（含来源任务、冲突引用、建议方向、决策空位）→ 任务 `grill_parked=true`。
 4. **一次性回答**：用户在清单中填「决策:」，置 frontmatter `grill_continue=true`。parked 任务不创建 Kitty、不提醒。
-5. **PM distribute**：检测到清单 answered → 读答案写回各 REQ（标注 `[决策: <清单 D-n>]`）→ 任务重置 `grill_parked=false / grill_repeat=0 / status=refining` → 各自重跑 maturity gate。
+5. **PM distribute**：检测到清单 answered → 读答案写回各 REQ（标注 `[决策: <清单 D-n>]`）→ 任务重置 `grill_parked=false / grill_repeat=0 / status=refining` → 各自重跑 maturity gate。清单 `status=paused` 时 daemon **不派发 distribute**（填答案也不写回），见 5.8。
 
 **审计与推翻**：`auto_accepted` 保留每次自动采纳记录（版本、时间、摘要）；用户可推翻自动采纳后重跑 refining，REQ 中的 `[采纳建议 auto]` 标注会被后续决策标注覆盖。
 
-### 5.8 决策清单生命周期与提醒抑制
+### 5.8 决策清单生命周期：暂停开关与分发控制
 
 决策清单（`Notes/Grilling-Decisions.md`）的 frontmatter `status` 驱动提醒与分发：
 
@@ -444,6 +444,7 @@ stateDiagram-v2
 - **`open`**：有待答决策点 → 每个 parked 任务创建/聚焦一个 Kitty 决策 tab（每项目一个、5 分钟 debounce）；`grill_continue=true` 或全部填完 → distribute 分发 → `status=answered`。
 - **`paused`**（需求未想好，项目级暂停开关）：该项目的 grilling 流程任务**整体暂停**——不创建 Kitty tab、不提醒、grill_continue 不重置 refining、**PM 不分发/不 consolidate**（填答案也不写回任务）、parked 任务不解除。consolidate 不得再向 paused 清单追加决策点。
 - **恢复**：① 用户手动把清单 frontmatter `status` 改为 `open`；② **关联 REQ 更新时 daemon 自动激活回 `open`**（用户/团队主动补充需求 = 恢复信号）并通知——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程。激活后下一轮 scan 起提醒/分发/派发全部恢复（已填答案的清单在 open 后自动分发）。
+- **失败/切换通知按任务防抖**（`notifyFailure`）：主模型失败（⏰ 超时 / 💥 进程异常 / 💰 Token 不足）、🔄 模型切换、❌ 全部失败、🚫 阶段失败通知按任务 5 分钟窗口去重——**同级/低级别事件窗口内抑制**，**更高级别事件升级后再发**（失败原因 < 模型切换 < 全部失败/阶段阻塞），保证终态必达：主失败 + fallback 失败最多 2 条（🔄 切换 + ❌ 全部失败）、反复失败到阻塞最多 2 条（⏰/💥 + 🚫），同级反复 5 分钟最多 1 条。有 fallback 时失败原因与切换合并为单条通知。
 - **通知风暴抑制**：API key 故障等批量失败场景，桌面提醒按 5 分钟窗口全局去重（`notifyKeyUnavailable`），不再每任务一条；调度前 `apiKeyAvailable()` 预检让任务保持状态等待（不启动 OMP、不消耗重试预算、无逐任务通知）。
 
 ## 6. Planning / Round 1

@@ -445,7 +445,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；fact/auto 自动收敛，成熟后自动进入 planning，仅真争议进 needs-grilling |
 | `needs-refining` | 旧版状态（已废弃） | daemon 自动迁移为 needs-grilling 后正常处理 |
-| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答；清单 `status=paused`（需求未想好）时暂停提醒，REQ 更新后 daemon 自动重新激活 |
+| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答；清单 `status=paused` 是项目级暂停开关——该项目的 grilling 流程整体暂停（不提醒、不分发、不 consolidate、parked 不解除），仅你手动改回 `open` 或关联 REQ 更新（daemon 自动激活）才恢复 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | auto_approve 默认 true → 自动批准进入实现；`auto_approve: false` 时需审阅计划 + ADR 提议，设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
