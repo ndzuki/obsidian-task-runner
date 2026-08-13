@@ -326,6 +326,14 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 
 修改 `max_concurrent_tasks` 或安装新调度器二进制后，常驻 watcher daemon 需要重启才能生效；`otg daemon --once` 会在每次启动时读取配置。
 
+### 计划文件重叠自动串行（`max_overlap_wait_minutes`）
+
+同仓库两个 implementing 任务计划修改同一文件时（Round 1 写回 `plan_files`），调度器自动**延迟派发**排序靠后的任务（项目内 stage → priority → created），待前序任务实现会话结束（状态离开 implementing 即释放，不跨 merge 生命周期）后自动继续——把合并冲突从 merge 阶段前置消除。
+
+- 等待上限 `max_overlap_wait_minutes`（默认 `720` = 12h，大于 round2 空转冷却上限 ~10.7h）：超限仍重叠则放行并发，merge 冲突走既有 AI 修复兜底，防止上游会话卡死饿死下游。
+- 任务无 `plan_files`（如未过 planning）时不参与串行，退化为 merge 阶段兜底。
+- 依赖关系（`blocked_by`）在 ready/refining/planning 阶段已由依赖门禁保证上游先行，重叠串行不改变依赖语义。
+
 ### 思考模式（Thinking Mode）
 
 DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `--thinking`，无需手动配置：

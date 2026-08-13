@@ -1,14 +1,17 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
+	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -89,6 +92,135 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 		}
 	}
 	return closed
+}
+
+// detectStaleDoneReopens reopens done tasks locked in a stale terminal: a
+// task whose frontmatter claims delivery (status=done + merge_status=merged)
+// while carrying a newer plan (plan_version >= 2) and a checkpoint_commit
+// that is NOT an ancestor of origin/main is an undelivered increment frozen
+// behind a terminal state — the daemon would never dispatch it again
+// (TASK-018: an external frontmatter write overwrote the reopen back to the
+// baseline done; downstream TASK-071 starved on the fake done via the
+// dependency gate). The reopen applies the same generation reset as a
+// breaking REQ change so the merge flow later creates a fresh PR. Tasks
+// whose checkpoint is an ancestor (or whose repo cannot be resolved, or the
+// git check is inconclusive) are left untouched — conservative, never
+// guesses. Idempotent: reopened tasks leave done, so later scans no-op.
+func (r *Runner) detectStaleDoneReopens() int {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return 0
+	}
+	reopened := 0
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		projReopened := 0
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			if fm.Status != "done" || fm.PlanVersion < 2 || fm.CheckpointCommit == "" {
+				continue
+			}
+			if fm.MergeStatus != "merged" {
+				// done without a merged PR: the DoneReopensMerge path owns it.
+				continue
+			}
+			repoDir := r.repoDirForTask(fm.Project)
+			if repoDir == "" {
+				continue
+			}
+			if checkpointAncestor(repoDir, fm.CheckpointCommit) {
+				continue // genuinely delivered (checkpoint is in origin/main)
+			}
+			// Stale terminal: reopen like a breaking REQ change.
+			updates := map[string]interface{}{
+				"status":              "refining",
+				"pending_req":         true,
+				"merge_approved":      false,
+				"reopen_count":        fm.ReopenCount + 1,
+				"target_branch":       "",
+				"pr_url":              "",
+				"merge_status":        "",
+				"completed":           "",
+				"knowledge_extracted": false,
+			}
+			if err := yamlfrontmatter.Update(path, updates); err != nil {
+				r.logger.Printf("stale-done reopen %s: %v", entry.Name(), err)
+				continue
+			}
+			projReopened++
+			reopened++
+			r.logger.Printf("health %s: TASK-%s stale done reopened to refining (checkpoint %s not in origin/main, undelivered increment)", projectEntry.Name(), fm.ID, fm.CheckpointCommit)
+			if !r.diagNotified("staledone|" + fm.ID) {
+				notify.SendTaskAction(fm.ID, fm.Title, "🔄", "陈旧终态自动重开",
+					"任务标记 done 但携带未合入的 checkpoint（plan v"+fmt.Sprint(fm.PlanVersion)+"），已按 breaking 语义重开 refining；请确认该增量是否仍需交付。", r.cfg.Notifications.Desktop)
+			}
+		}
+		if projReopened > 0 {
+			r.updateRoadmap(projectEntry.Name(), "陈旧终态自动重开", fmt.Sprintf("%d 个 done 任务因未合入 checkpoint 自动重开 refining", projReopened))
+		}
+	}
+	return reopened
+}
+
+// repoDirForTask resolves a project's registered checkout path without side
+// effects (no promotion/checkout — read-only scan). Empty when unresolved.
+//
+// Note: vault-fallback projects (registered with a path inside the Vault
+// rather than a standalone checkout) resolve to the Vault repo — the
+// checkpoint commit will not exist there, so checkpointAncestor reports
+// "inconclusive" and the task is left untouched (conservative: never
+// reopen on uncertainty). The read-only design intentionally skips the
+// ensureProjectCheckout promotion used by resolveRepo.
+func (r *Runner) repoDirForTask(projectName string) string {
+	if projectName == "" {
+		return ""
+	}
+	mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+	result := project.ResolveProject(mapFile, projectName, false)
+	if result.Status == "error" {
+		if mapped := project.MatchVaultDir(mapFile, projectName); mapped != "" {
+			result = project.ResolveProject(mapFile, mapped, false)
+		}
+	}
+	if result.Status == "error" || result.Path == "" {
+		return ""
+	}
+	return result.Path
+}
+
+// checkpointAncestor reports whether commit is an ancestor of the local
+// origin/main ref. Failures (missing ref/repo, git unavailable) are treated
+// as ancestor — never reopen on uncertainty.
+func checkpointAncestor(repoDir, commit string) bool {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return false // clean "not an ancestor"
+		}
+		return true // inconclusive: do not touch
+	}
+	return true
 }
 
 // recoverUnExtractedKnowledge 重试已交付任务的知识提取：daemon 在 merge
@@ -325,7 +457,7 @@ func (r *Runner) detectPlanFileOverlaps() {
 			}
 			r.logger.Printf("health %s: plan file overlap %s: TASK-%s", projectEntry.Name(), file, strings.Join(ids, ", TASK-"))
 			r.notifyDiag(projectEntry.Name(), "计划文件重叠",
-				"TASK-"+strings.Join(ids, " / TASK-")+" 计划修改同一文件 "+file+"，并行合并可能冲突；建议串行或划分文件所有权")
+				"TASK-"+strings.Join(ids, " / TASK-")+" 计划修改同一文件 "+file+"，调度器已自动排队串行（按 stage/priority 顺序，前序实现会话结束后继续；重叠超过 max_overlap_wait_minutes 将放行并发，merge 冲突走自动修复兜底）")
 		}
 	}
 }

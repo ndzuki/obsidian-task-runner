@@ -66,6 +66,8 @@ type Runner struct {
 	pmInFlight         sync.Map              // "distribute:<listPath>" / "consolidate:<taskPaths>" → true (PM session in flight)
 	diagNotifyAt       sync.Map              // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
 	lastReqHash        sync.Map              // reqRelPath → sha256 (skip watcher re-events for unchanged REQ content)
+	activePlanFiles    sync.Map              // taskPath → activePlanFilesEntry (in-flight implementing task's plan_files, for overlap serialization)
+	overlapWaits       sync.Map              // taskPath → time.Time (when an overlap-deferred task started waiting; bounded by max_overlap_wait_minutes)
 	activeTasks        atomic.Int32          // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index           // frontmatter cache: watcher events invalidate, scans reuse
 	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
@@ -94,6 +96,15 @@ type preparedTask struct {
 	workDir                string
 	lockMode               repoLockMode
 	implementationReserved bool
+}
+
+// activePlanFilesEntry records which repo-relative files an in-flight
+// implementing task plans to modify (Round 1 writes plan_files). The
+// scheduler serializes dispatch of tasks whose plans overlap so the merge
+// conflict is prevented at scheduling time instead of resolved at merge time.
+type activePlanFilesEntry struct {
+	repoDir string
+	files   []string
 }
 
 func New(cfg *config.Config) *Runner {
@@ -784,7 +795,9 @@ func (r *Runner) scanAndProcess() error {
 	r.validateDependencyRefs()
 	r.detectPlanFileOverlaps()
 	r.autoCloseStaleMergedTasks()
+	r.detectStaleDoneReopens()
 	r.recoverUnExtractedKnowledge()
+	r.fixBlockedGateErrorCodes()
 	r.resolveBlockedDependencies()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
@@ -881,6 +894,17 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 				}
 				continue
 			}
+			if r.overlapBlocked(candidate) {
+				// Another in-flight implementing task plans to modify the
+				// same file: defer this dispatch until the overlap clears
+				// (bounded by max_overlap_wait_minutes). The capacity and
+				// repo lock are released; the next scan round re-evaluates.
+				r.unlockRepo(candidate.repoDir, candidate.lockMode)
+				if reservedImplementation {
+					r.implementationGate.releaseLocal()
+				}
+				continue
+			}
 			candidate.implementationReserved = reservedImplementation
 			index = i
 			break
@@ -900,9 +924,94 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 		candidate := pending[index]
 		pending = append(pending[:index], pending[index+1:]...)
 		dispatched++
+		// Register plan_files synchronously (before the goroutine starts) so
+		// later candidates in this batch and next scan rounds see the
+		// overlap. runTask removes the entry when the task finishes — the
+		// serialization window is one implementation session, never the
+		// whole delivery lifecycle (a review/merge-stalled upstream must not
+		// starve its overlapping downstream).
+		if candidate.task.Status == "implementing" && len(candidate.task.PlanFiles) > 0 {
+			r.activePlanFiles.Store(candidate.task.FilePath, activePlanFilesEntry{repoDir: candidate.repoDir, files: candidate.task.PlanFiles})
+		}
 		go r.runTask(candidate)
 	}
 	return dispatched
+}
+
+// overlapWaitLimit returns the bound for plan-file overlap deferral. The
+// default (720m) exceeds the round2 no-progress cooldown ceiling (~10.7h), so
+// a stalled upstream stops being re-dispatched before the deferred task is
+// released to run concurrently — merge conflict resolution stays the
+// ultimate fallback.
+func (r *Runner) overlapWaitLimit() time.Duration {
+	m := r.cfg.MaxOverlapWaitMinutes
+	if m <= 0 {
+		m = 720
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// overlapBlocked reports whether dispatching candidate must wait for another
+// in-flight implementing task of the same repository that plans to modify the
+// same file (plan_files written by Round 1). Only tasks with a non-empty
+// plan_files list participate; without plan information the merge flow stays
+// the conflict safety net. The wait is bounded by overlapWaitLimit so a
+// stalled upstream cannot starve the deferred task forever.
+func (r *Runner) overlapBlocked(c *preparedTask) bool {
+	if c.task.Status != "implementing" || len(c.task.PlanFiles) == 0 {
+		r.overlapWaits.Delete(c.task.FilePath)
+		return false
+	}
+	if !r.hasPlanFileConflict(c.task.FilePath, c.repoDir, c.task.PlanFiles) {
+		r.overlapWaits.Delete(c.task.FilePath)
+		return false
+	}
+	since, ok := r.overlapWaits.Load(c.task.FilePath)
+	if !ok {
+		r.overlapWaits.Store(c.task.FilePath, time.Now())
+		r.logger.Printf("task %s: plan file overlap with in-flight task, deferred (serialized until the overlap clears or %s elapses)",
+			c.task.ID, r.overlapWaitLimit())
+		return true
+	}
+	if time.Since(since.(time.Time)) < r.overlapWaitLimit() {
+		return true
+	}
+	r.overlapWaits.Delete(c.task.FilePath)
+	r.logger.Printf("task %s: overlap wait limit (%s) exceeded, dispatching concurrently (merge conflict resolution is the fallback)",
+		c.task.ID, r.overlapWaitLimit())
+	return false
+}
+
+// hasPlanFileConflict reports whether any in-flight implementing task of the
+// same repository plans to modify one of files. Entries are registered at
+// dispatch time (synchronously, before the runTask goroutine starts) and
+// removed when the task finishes, so the view is exact across scan rounds.
+func (r *Runner) hasPlanFileConflict(selfPath, repoDir string, files []string) bool {
+	if repoDir == "" {
+		return false
+	}
+	want := make(map[string]bool, len(files))
+	for _, f := range files {
+		want[f] = true
+	}
+	conflict := false
+	r.activePlanFiles.Range(func(key, value interface{}) bool {
+		if key.(string) == selfPath {
+			return true
+		}
+		entry := value.(activePlanFilesEntry)
+		if entry.repoDir != repoDir {
+			return true
+		}
+		for _, f := range entry.files {
+			if want[f] {
+				conflict = true
+				return false
+			}
+		}
+		return true
+	})
+	return conflict
 }
 
 // projectFromReqPath extracts the project directory from a vault-relative
@@ -1059,6 +1168,7 @@ func (r *Runner) runTask(p preparedTask) {
 	r.activeTasks.Add(1)
 	defer r.activeTasks.Add(-1)
 	defer r.unlockRepo(p.repoDir, p.lockMode)
+	defer r.activePlanFiles.Delete(p.task.FilePath)
 	// New-project tasks opting into remote creation get their GitHub remote
 	// (name/description/README) before the OMP session starts; failure blocks
 	// the task with an actionable error instead of failing the session.
@@ -1503,6 +1613,57 @@ func (r *Runner) normRemember(path string) {
 	}
 }
 
+// fixBlockedGateErrorCodes backfills the PREREQUISITE_SMOKE_FAILED code onto
+// entry-gate blocks whose round2 write-back lost the error code (observed:
+// TASK-019, 8/11 — the round2 session wrote status=blocked with an empty
+// phase_error_code, so the dependency resolver treated the gate as a generic
+// phase failure and auto-resumed it repeatedly: completed → blocked → resume
+// → re-run loop, 10+ rounds of wasted OMP sessions). A blocked task with a
+// non-empty blocked_phase, no error code and a non-empty blocked_by is an
+// entry gate by construction: the fact-based recovery branch
+// (prereqDepsSatisfied) is the only correct exit. Runs before
+// resolveBlockedDependencies every scan; idempotent — tasks that already
+// carry an error code are untouched.
+func (r *Runner) fixBlockedGateErrorCodes() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, proj := range projects {
+		if !proj.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(raw)
+			if err != nil || fm == nil || fm.Status != "blocked" || fm.BlockedPhase == "" || fm.PhaseErrorCode != "" || len(fm.BlockedBy) == 0 {
+				continue
+			}
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{
+				"phase_error_code": string(ErrPrerequisiteSmokeFailed),
+				"phase_error":      "入口门禁未通过（round2 写回缺失错误码，daemon 自动补记）：等待 blocked_by 上游交付合入后按事实自动恢复",
+			}); err != nil {
+				r.logger.Printf("task %s: backfill prerequisite gate code: %v", entry.Name(), err)
+				continue
+			}
+			r.logger.Printf("task %s: backfilled PREREQUISITE_SMOKE_FAILED (empty round2 error code)", entry.Name())
+		}
+	}
+}
+
 // syncReqSchemaDefaults backfills frontmatter fields added by newer daemon
 // versions into old REQ documents, mirroring syncTaskSchemaDefaults. REQ
 // documents were historically never normalized, so a REQ created before a
@@ -1523,6 +1684,7 @@ func (r *Runner) syncReqSchemaDefaults() {
 			continue
 		}
 		reqsDir := filepath.Join(projectsDir, project.Name(), "Requirements")
+		projDir := filepath.Join(projectsDir, project.Name())
 		entries, err := os.ReadDir(reqsDir)
 		if err != nil {
 			continue
@@ -1535,6 +1697,8 @@ func (r *Runner) syncReqSchemaDefaults() {
 			if r.normUnchanged(path, entry) {
 				continue
 			}
+			reqRel := filepath.Join("Projects", project.Name(), "Requirements", entry.Name())
+			oldHash := r.reqHash(reqRel)
 			updated, err := yamlfrontmatter.NormalizeReqFrontmatter(path)
 			if err != nil {
 				r.logger.Printf("req %s: schema defaults sync failed: %v", strings.TrimPrefix(entry.Name(), "REQ-"), err)
@@ -1542,6 +1706,15 @@ func (r *Runner) syncReqSchemaDefaults() {
 			}
 			r.normRemember(path)
 			if updated {
+				// The rewrite only backfills frontmatter metadata; linked
+				// tasks' stored hashes must follow the new bytes or
+				// OnReqChanged mistakes this normalization for a requirement
+				// change and reopens every task (2026-08-12: 19 tasks
+				// batch-flipped to refining by one schema backfill).
+				newHash := r.reqHash(reqRel)
+				if refreshed := r.refreshTaskReqHashes(projDir, reqRel, oldHash, newHash); refreshed > 0 {
+					r.logger.Printf("schema defaults: refreshed %d task hash(es) for %s (frontmatter-only rewrite)", refreshed, entry.Name())
+				}
 				normalized++
 			}
 		}
@@ -1549,6 +1722,59 @@ func (r *Runner) syncReqSchemaDefaults() {
 	if normalized > 0 {
 		r.logger.Printf("schema defaults: normalized %d requirement document(s) (backfilled/reordered schema fields)", normalized)
 	}
+}
+
+// refreshTaskReqHashes follows a schema-defaults rewrite of a REQ document
+// by advancing the stored refine/plan hashes of every linked task whose hash
+// matches the pre-write bytes. The rewrite only backfills frontmatter
+// metadata (tags/created/updated/field order) — the requirement content is
+// unchanged — so the stored hashes must follow the new bytes; otherwise
+// OnReqChanged mistakes the daemon's own normalization for a requirement
+// change and batch-reopens every linked task (2026-08-12: 19 tasks flipped
+// to refining by one schema backfill). Tasks whose stored hash predates the
+// pre-write REQ keep it: their unabsorbed change is real and must still
+// trigger re-refining.
+func (r *Runner) refreshTaskReqHashes(projDir, reqRel, oldHash, newHash string) int {
+	tasksDir := filepath.Join(projDir, "Tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return 0
+	}
+	reqNorm := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(reqRel)), ".md")
+	refreshed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		taskPath := filepath.Join(tasksDir, entry.Name())
+		raw, err := os.ReadFile(taskPath)
+		if err != nil {
+			continue
+		}
+		fm, err := yamlfrontmatter.Parse(raw)
+		if err != nil || fm == nil {
+			continue
+		}
+		if fm.ReqDoc == "" || strings.TrimSuffix(filepath.ToSlash(filepath.Clean(fm.ReqDoc)), ".md") != reqNorm {
+			continue
+		}
+		updates := map[string]interface{}{}
+		if fm.RefineReqHash == oldHash {
+			updates["refine_req_hash"] = newHash
+		}
+		if fm.PlanReqHash == oldHash {
+			updates["plan_req_hash"] = newHash
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+			r.logger.Printf("task %s: refresh req hash after normalize failed: %v", entry.Name(), err)
+			continue
+		}
+		refreshed++
+	}
+	return refreshed
 }
 
 func (r *Runner) resolveBlockedDependencies() {
@@ -1822,7 +2048,8 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 		if expectProject != "" && upstream.Project != expectProject {
 			continue
 		}
-		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved && isAutoResumableError(upstream.PhaseErrorCode) {
+		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved &&
+			(upstream.PhaseErrorCode != "" || len(upstream.BlockedBy) == 0) && isAutoResumableError(upstream.PhaseErrorCode) {
 			if upstream.AutoResumeCount >= maxAutoResumeAttempts {
 				r.logger.Printf("dependency: TASK-%s exceeded %d auto-resume attempts, manual resume required", id, maxAutoResumeAttempts)
 				notify.SendTaskAction(id, upstream.Title, "🧩", "自动恢复达上限",
@@ -2662,11 +2889,26 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		ompLogPath := filepath.Join(logDir, "omp."+time.Now().Format("2006-01-02")+".log")
 		tailDone := make(chan struct{})
 		go tailOMPLog(ompLogPath, f, tailDone)
+		// Empty-stop watch: a provider that replies stop with zero content
+		// makes OMP retry the same flaky model (minutes lost per empty reply).
+		// Two empty stops inside the window cancel this session; the runErr
+		// path below then falls back to fallback_models (deepseek official).
+		var emptyStopTriggered atomic.Bool
+		emptyStopDone := make(chan struct{})
+		if f != nil {
+			go watchEmptyStops(ompLogPath, func() {
+				if emptyStopTriggered.CompareAndSwap(false, true) {
+					r.logger.Printf("task %s: repeated empty model responses, cancelling session for fallback", t.ID)
+					cancel()
+				}
+			}, emptyStopDone)
+		}
 		// Start OMP and write PID file for crash recovery.
 		if startErr := cmd.Start(); startErr != nil {
 			r.logger.Printf("task %s: OMP start failed: %v", t.ID, startErr)
 			cancel()
 			close(tailDone)
+			close(emptyStopDone)
 			continue
 		}
 		if err := os.WriteFile(pidFile, []byte(formatPIDRecord(cmd.Process.Pid)), 0o644); err != nil {
@@ -2686,7 +2928,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// skipping failure recovery (fallback/blocked/retry) entirely.
 		shutdownInterrupt := r.daemonCtx.Err() != nil
 		cancel()
-		close(tailDone) // signal tail goroutine to stop
+		close(tailDone)      // signal tail goroutine to stop
+		close(emptyStopDone) // signal empty-stop watcher to stop
 
 		if runErr != nil && shutdownInterrupt {
 			// Daemon-initiated shutdown (ctx canceled): the OMP was killed by
@@ -2710,6 +2953,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = fmt.Sprintf("超时（%v 无响应）", timeout)
 				failureCode = ErrPhaseTimeout
+			} else if emptyStopTriggered.Load() {
+				// Cancelled by the empty-stop watch: the provider keeps
+				// returning empty completions. signalKilled stays false so
+				// the fallback path below switches to fallback_models
+				// (deepseek official) instead of treating this as an
+				// external kill.
+				reason = "模型连续返回空响应（渠道抖动），切换兜底模型"
 			} else if exitErr, ok := runErr.(*exec.ExitError); ok && exitErr.ExitCode() == -1 {
 				reason = "进程被终止（内存不足或系统信号）"
 				signalKilled = true
@@ -3469,6 +3719,61 @@ func tailOMPLog(logPath string, taskLog *os.File, done <-chan struct{}) {
 						log.Printf("write tailed OMP log: %v", err)
 					}
 				}
+			}
+		}
+	}
+}
+
+// emptyStopWindow bounds the "consecutive empty responses" detection: two
+// empty-stop replies within this window trip the fallback; older empty
+// replies (rare one-offs) do not waste the fallback budget.
+var emptyStopWindow = 10 * time.Minute
+
+// watchEmptyStops scans OMP's structured log for empty model responses —
+// provider returns stop with zero content blocks (gateway/gpt-5.6-sol
+// exhibited this on 2026-08-13: two empty replies cost the TASK-067 planning
+// session 5+ minutes each while OMP retried the same model). On the second
+// empty stop inside the window, trigger() is called so runTask can cancel
+// the session and re-enter the existing fallback path with the
+// fallback_models model (deepseek official direct), instead of burning more
+// time on the flaky channel.
+func watchEmptyStops(logPath string, trigger func(), done <-chan struct{}) {
+	if logPath == "" {
+		return
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		log.Printf("seek OMP log for empty-stop watch: %v", logPath)
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	scanner := bufio.NewScanner(f)
+	firstEmpty := time.Time{}
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			for scanner.Scan() {
+				line := scanner.Text()
+				if !strings.Contains(line, "empty-stop-handled") {
+					continue
+				}
+				now := time.Now()
+				if firstEmpty.IsZero() {
+					firstEmpty = now
+					continue
+				}
+				if now.Sub(firstEmpty) > emptyStopWindow {
+					firstEmpty = now
+					continue
+				}
+				trigger()
+				return
 			}
 		}
 	}
