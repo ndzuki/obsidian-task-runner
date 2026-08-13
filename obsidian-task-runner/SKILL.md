@@ -131,6 +131,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - Kitty Grilling tab 始终尝试创建，不受 desktop 开关控制。
 - 同一 TASK 只允许一个活跃 Grilling tab；创建前按 task ID 检查 Kitty tab/window title，并以 per-task flock + debounce 防止并发和重启重复创建。
 - Kitty JSON 无法解析时不创建 tab，保留 notify-send fallback；Kitty 不可用时保持 needs-grilling 并周期重试。
+- **失败/切换通知按任务 5 分钟防抖**（`notifyFailure`）：⏰执行超时 / 💥进程异常 / 💰Token 不足 / 🔄模型切换 / ❌全部失败 / 🚫阶段失败——同级/低级别窗口内抑制，更高级别事件（❌全部失败 / 🚫阶段阻塞）升级后再发，保证终态必达（一个失败事件链最多 2 条：🔄+❌ 或 ⏰+🚫）；有 fallback 时失败原因并入切换通知单条发出。API key 故障走全局 5 分钟防抖（`notifyKeyUnavailable`）。
 
 ## Fallback Model（兜底模型）
 

@@ -34,7 +34,7 @@ closed -- [终态，不可恢复]
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
 | `ready` | 可开始 priority assessment + maturity gate；**`blocked_by` 上游未 done 时不调度**（依赖门禁前置，防无效重规划） | daemon | `refining` |
 | `refining` | Headless 检查需求规格成熟度；**同样受依赖门禁约束** | `models.default` | `planning` / `needs-grilling` / `blocked` |
-| `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
+| `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发；清单 `status=paused` 时该项目 grilling 流程整体暂停（不提醒/不分发/不 consolidate/不解除），手动改 `open` 或 REQ 更新自动激活后恢复 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派；checkpoint_commit 写入或状态离开 implementing 即重置 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
