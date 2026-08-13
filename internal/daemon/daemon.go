@@ -53,6 +53,7 @@ type Runner struct {
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
+	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
 	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
@@ -2418,7 +2419,30 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
-		// Auto-merge gate: a fresh review (Round 2 completed, no failure) with
+		// ── Completion audit gate (independent verification) ──
+		// MUST run BEFORE canAutoApproveMerge: auto-approval writes
+		// merge_approved=true and processReviewAudit skips already-approved
+		// tasks — placing the audit after the approval would make the gate
+		// dead code for the exact fresh-review case it exists for. An
+		// auto_merge review task must pass the read-only audit (AC evidence
+		// re-verified in the task worktree) before merge authorization; a
+		// fail verdict routes it back to implementing (bounded by
+		// audit.max_fixes) or to a grilling decision for requirement
+		// disputes. Session failures keep the task in review for a retry
+		// next scan.
+		if t.Status == "review" {
+			audited, auditErr := r.processReviewAudit(t, repoDir)
+			if auditErr != nil {
+				r.logger.Printf("task %s: audit gate: %v", t.ID, auditErr)
+			}
+			if audited {
+				processed++
+				continue
+			}
+		}
+
+		// ── Auto-merge gate ──
+		// A fresh review (Round 2 completed, audit passed, no failure) with
 		// auto_merge=true is approved without a manual gate. Merge-failure
 		// fallbacks carry phase_error_code; those that are REQ-stable and have
 		// repair budget left re-authorize automatically (a failed merge attempt

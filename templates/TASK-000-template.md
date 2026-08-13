@@ -25,7 +25,7 @@ priority_recommendation: ""
 
 # 🔵 Gate — 由你批准
 plan_approved: false  # 仅 plan-review 状态有效
-auto_merge: true  # 默认自动合并：进入 review 后 daemon 自动授权 merge；设 false 恢复人工审查
+auto_merge: true  # 默认自动合并：进入 review 后先过独立完成审计（只读复核 AC 证据），通过后 daemon 自动授权 merge；设 false 恢复人工审查
 merge_approved: false
 adr_approved: false  # daemon 自动管理，plan-review→implementing 时置 true
 resume_approved: false

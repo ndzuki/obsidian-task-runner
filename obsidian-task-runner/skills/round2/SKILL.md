@@ -54,6 +54,22 @@ disableModelInvocation: true
 
 **计划外 Seam = 架构信号**：若某个行为无法通过计划声明的 seam 测试（必须测内部、必须新增 mock 边界、或 seam 本身放错层），不要静默绕过——按 `Implementation Blockers` 走 grilling，附证据（测什么测不到、为什么）。计划外 seam 往往意味着 Step 边界或接口设计需要修正（回归 Round 1 的 design-it-twice 对比）。
 
+### Incremental Verification（写入即反馈）
+
+每条 AC 的 Green 落地后**立即**运行受影响包的测试与静态检查（Go: `go vet ./...` + `go test -race ./<受影响包>`），而不是等全部 AC 完成后一次性跑——错误在产生时暴露，避免错误累积到会话尾部再集中修复（失败重派率与审计打回率的主要来源）。全部 AC 完成后再跑全量（见 Completion Checklist）。
+
+### Independent Audit Expectation（独立审计预期）
+
+`auto_merge: true` 的任务在进入 review 后，daemon 会启动独立只读审计会话（`read`/`grep`/`bash`，无写工具）逐条 AC 复核原始证据。实现会话必须保证验收记录可被独立复现：每条 AC 标注可复现的命令（测试/curl/示例调用）与预期输出，而非仅写"已实现"。审计失败会带审计报告打回 implementing（见 daemon 文档 audit 配置）。
+
+### Audit Failure Repair（审计失败修复）
+
+`auto_merge: true` 的任务在 review 被独立审计打回 `implementing` 时（`phase_error_code=AUDIT_FAILED`）：
+
+1. **加载 `skill://diagnosing-bugs`**，先读 `phase_error`（审计摘要）与 `audit_log` 字段指向的审计会话日志（`~/.omp/logs/tasks/TASK-*-audit-*.log`）——审计已给出失败 AC 与原始证据，直接以此为根因起点，不要从零排查。
+2. 按审计报告的失败 AC 逐条修复；修复后运行该 AC 对应的复现命令，确认证据与审计预期一致。
+3. 修复完成走正常完成检查转 review，daemon 会重新审计（新会话、新证据）。`audit_fail_count` 由 daemon 维护，无需处理。
+4. 若修复后仍无法满足 AC——怀疑 AC 本身歧义/矛盾/无法验证，不要反复空转：如实转 `needs-grilling`（grill_context 附审计报告与你的证据），daemon 审计路径也会将 requirement 类失败自动转 grilling 决策。
 
 ### Scope Hammering（时间盒过半自动削 scope）
 

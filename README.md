@@ -13,6 +13,7 @@ Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求�
 > 当前版本面向 Linux + systemd + OMP。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
 
 ## 工作方式：你只需确认方向并验收产品
+
 ```text
 写需求 REQ-xxx.md
         │
@@ -40,7 +41,7 @@ refining（headless 成熟度检查）
 Round 2 完成后：
         │
         ▼
-    review ──(auto_merge 默认 true，全自动)──> 自动创建 PR + 合并 ──> done
+    review ──(auto_merge 默认 true)──> 独立完成审计（只读复核 AC 证据）──> 自动创建 PR + 合并 ──> done
         │
         ▼
     最终验收：运行/试用产品
@@ -51,7 +52,7 @@ Round 2 完成后：
 
 - **Grilling 对话**：AI 在 Kitty tab 中逐项追问，你确认方向。完成后自动回到成熟度检查。
 - **计划与实现全自动**（`auto_approve: true` 默认）：计划生成后自动批准进入实现——**Grilling 是唯一人工关卡**；个别任务可设 `auto_approve: false` 恢复人工审计划（`plan_approved: true`）。
-- **自动 PR 与合并**（`auto_merge: true` 默认）：实现完成后自动创建 PR、等待 CI 检查通过并合并，无需你操作；合并遇到冲突时 AI 自动尝试解决一次，仍失败才通知你手动处理。个别任务可设 `auto_merge: false` 恢复人工确认。
+- **自动 PR 与合并**（`auto_merge: true` 默认）：实现完成后先由**独立只读审计会话**逐条复核验收标准（AC）的原始证据（测试/命令输出，非实现者自证），通过后才自动创建 PR、等待 CI 检查通过并合并，无需你操作；审计失败自动转回实现修复（详见 [docs/workflow.md §7.4](docs/workflow.md)）；合并遇到冲突时 AI 自动尝试解决一次，仍失败才通知你手动处理。个别任务可设 `auto_merge: false` 恢复人工确认。
 - **最终验收**：合并完成后（done）运行/试用产品；不满意直接修改 REQ，系统自动重新规划实现。
 
 ```mermaid
@@ -65,7 +66,9 @@ flowchart TD
     PLAN --> PR[plan-review]
     PR -->|plan_approved| R2[Round 2 实现]
     R2 --> RV[review]
-    RV -->|auto_merge 自动授权| DONE[done]
+    RV -->|独立审计通过| AUDIT[完成审计 · 只读会话复核 AC]
+    AUDIT -->|auto_merge 自动授权| DONE[done]
+    AUDIT -->|fail → implementing 修复 / grilling 决策| R2
     RV -->|PR 冲突| CF[conflict]
     CF -->|AI 自动解决一次，失败后人工重授权| DONE
     R2 -->|API key 不可用| KEYBLOCK[blocked API_KEY_UNAVAILABLE]
@@ -105,7 +108,6 @@ flowchart TD
 - **推荐**：Kitty 终端（`allow_remote_control yes`）用于 Grilling 通知时自动创建新 tab。同一 TASK 只会保留一个活跃 Grilling tab；daemon 会跨 Kitty 窗口按任务 ID 去重，任务标题变化或 daemon 重启不会重复创建。
 - 桌面通知还需要 `notify-send` 和通知服务。`kitty @ ls` 失败时 daemon 使用本次尝试写入的 5 分钟 debounce 阻止重复创建；Kitty JSON 无法解析时也不会冒险创建 tab，而是使用桌面通知 fallback 并等待后续扫描重试。
 
-
 ### 2. 构建并安装 `otg`
 
 在仓库根目录执行：
@@ -136,7 +138,7 @@ otg install \
 常用选项：
 
 | 选项 | 默认值 | 作用 |
-|------|--------|------|
+| ------ | -------- | ------ |
 | `--vault` | `~/Documents/Obsidian/MainVault` | Obsidian Vault 路径 |
 | `--new-project-root` | `~/src` | 新项目创建根目录 |
 | `--notifications` | `true` | 开启桌面通知 |
@@ -195,7 +197,8 @@ otg install \
   "planning": 2,
   "merge": 1,
   "priority": 1,
-  "pm": 1
+  "pm": 1,
+  "audit": 1
 }
 ```
 
@@ -285,7 +288,7 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 **三种检索模式**：
 
 | 模式 | 触发 | 依赖 |
-|---|---|---|
+| --- | --- | --- |
 | Hybrid（默认） | `kb_embedding` 已配置 + ollama 可用 + 向量库健康 | ollama（查询 embed + 建库 embed） |
 | BM25-only | ollama 不可用 / 未配置向量 | 零依赖 |
 | FTS-only 库 | 建库时 ollama 不可用 | 零依赖 |
@@ -295,7 +298,7 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 **规模推演（差异随语料放大）**：
 
 | 语料 | Top-1 差异 | Top-5 差异 | 原因 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 百篇（全手册，术语标准化） | ~0-10% | ~10% | 实测锚点 |
 | 千篇（手册 + 项目经验） | ~10% | ~15-30% | 非标文本增多 |
 | 万篇（主题面宽 + 非标文本） | ~15-25% | ~25-45% | 词面巧合假阳性 + 近义表述场景上升 |
@@ -313,7 +316,7 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 `max_concurrent_tasks` 是 daemon 同时运行的 **implementing（Round 2）任务**上限，默认 `2`，配置值必须至少为 `1`。该限制覆盖同一 daemon 内所有批次和扫描周期，避免多个实现任务同时占用过多 LSP、debug adapter、编译器以及本机 CPU/内存资源。
 
 - **implementing / Round 2**：必须先获取全局 implementation slot；同一时刻最多运行 `max_concurrent_tasks` 个。
-- **planning / refining / priority / merge**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 OMP 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
+- **planning / refining / priority / merge / audit**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 OMP 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
 - **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `~/.omp/worktrees/` 下的任务专属 Git worktree，再释放仓库锁；实际 OMP 在独立 worktree 中运行。
 - **新项目 implementing**：虽然不使用 Round 2 worktree，但仍会占用 implementation slot，因为同样会使用代码分析和构建资源。
 - **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
@@ -328,7 +331,7 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `--thinking`，无需手动配置：
 
 | 阶段 | thinking | 理由 |
-|------|----------|------|
+| ------ | ---------- | ------ |
 | priority | `off` | 快速 JSON 评估 |
 | refining | `low` | 对话式，轻推理 |
 | planning | `high` | 深度思维链，提升计划质量 |
@@ -440,7 +443,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 ## 状态与人工操作
 
 | 状态 | 含义 | 你的操作 |
-|------|------|----------|
+| ------ | ------ | ---------- |
 | `blocked` | 缺少项目、执行者或依赖未完成 | 补齐 `project`、`assignee`，检查 `blocked_by` |
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；fact/auto 自动收敛，成熟后自动进入 planning，仅真争议进 needs-grilling |
@@ -449,16 +452,16 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | auto_approve 默认 true → 自动批准进入实现；`auto_approve: false` 时需审阅计划 + ADR 提议，设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
-| `review` | 本地实现已提交，正在自动合并（`auto_merge: true`） | 无需操作；合并失败时按通知处理 |
+| `review` | 本地实现已提交；auto_merge 任务先过独立完成审计（只读复核 AC 证据），通过后自动合并 | 无需操作；审计/合并失败时按通知处理 |
 | `conflict` | 合并遇到冲突（AI 已自动尝试解决一次） | 手动解决并设 `merge_approved: true` 重新授权 |
 | `done` | 已合并完成 | 任务结束；REQ 变更时自动回 refining |
 | `closed` | 已关闭（重复/取消/不予处理） | 终态，不可恢复 |
-Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。进入 Merge Phase 需 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 在 review 阶段自动授权，无需你操作；PR 冲突时 AI 自动解决一次，失败才通知你手动处理。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
+Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。进入 Merge Phase 需 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 在 review 阶段先跑独立只读审计（逐条 AC 复核原始证据），通过后自动授权，无需你操作；人工设 `merge_approved: true` 可跳过审计直接授权（人工门禁优先）。PR 冲突时 AI 自动解决一次，失败才通知你手动处理。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
 
 ## 常用命令
 
 | 命令 | 用途 |
-|------|------|
+| ------ | ------ |
 | `otg install` | 安装 Skill、配置和 systemd |
 | `otg install --dry-run` | 预览安装动作 |
 | `otg install-systemd` | 重新生成并启用 systemd 单元（vault 迁移后或单元缺失时使用；vault/轮询间隔从 `vault-map.json` 读取） |
@@ -484,7 +487,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 ## 文件在哪里
 
 | 路径 | 内容 |
-|------|------|
+| ------ | ------ |
 | `~/.local/bin/otg` | Go 二进制（systemd 守护进程使用） |
 | `~/go/bin/otg` | Go 二进制（终端直接调用） |
 | `~/.omp/skills/obsidian-task-runner/` | Agent Skill、参考文档和配置 |
@@ -492,6 +495,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `~/.omp/logs/` | daemon 和任务审计日志 |
 | `~/Vault/Projects/<project>/Requirements/` | 你编写的需求 |
 | `~/Vault/Projects/<project>/Tasks/` | Agent 自动创建和更新的任务 |
+
 ## 故障排查
 
 1. **没有生成 TASK**：确认文件名是 `REQ-<id>-<slug>.md`，并查看 `~/.omp/logs/otg-daemon.log`。
