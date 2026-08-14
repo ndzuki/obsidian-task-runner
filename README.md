@@ -336,6 +336,17 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 - 任务无 `plan_files`（如未过 planning）时不参与串行，退化为 merge 阶段兜底。
 - 依赖关系（`blocked_by`）在 ready/refining/planning 阶段已由依赖门禁保证上游先行，重叠串行不改变依赖语义。
 
+### Merge 自动化调优
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `max_auto_merge_fixes` | `3` | AI 冲突/CI 修复预算（`merge_retry_count` 上限）；预算耗尽交还用户 |
+| `max_auto_fix_conflicts` | `40` | **冲突规模熔断**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；`0` = 禁用（TASK-067：90+ 文件 15min 会话必然超时） |
+| `upstream_stall_days` | `3` | **上游未完成提醒**：`blocked_by` 上游非终态且 `updated` 超阈值 → 每日一次通知（TASK-067：下游静默阻塞一个多月）；`0` = 禁用 |
+| `merge_poll_wait_ticks` | `20` | CI 轮询 ticks（30s 每次）；**push 后 mergeability 未收敛（非 MERGEABLE）也在此轮询窗口内等待**，避免 `gh pr merge` 被服务端拒绝烧重试预算 |
+
+人工在 forge UI 合并了交还任务的 PR 后，daemon 每任务 5 分钟冷却探测并自动收口 `done`（`autoCloseMergedConflictPRs`），无需手动改 frontmatter。
+
 ### 思考模式（Thinking Mode）
 
 DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `--thinking`，无需手动配置：
