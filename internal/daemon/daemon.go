@@ -256,6 +256,23 @@ func (r *Runner) Run(ctx context.Context) error {
 				// frontmatter validation (and the debounced notification).
 				if strings.HasSuffix(evt.Path, ".md") && filepath.Base(evt.Path) != "INDEX.md" {
 					if verr := knowledge.ValidateRefFile(evt.Path); verr != nil {
+						// Self-heal the common agent-intake violations (RFC3339
+						// timestamps, empty source) before alerting: a fixable
+						// write is normalized in place so broken documents
+						// self-repair instead of spamming notifications and
+						// polluting the retrieval index. A document that still
+						// fails after normalization (partial fix, unfixable
+						// violation) keeps the original alert path.
+						if fixed, nerr := knowledge.NormalizeRefFile(evt.Path); nerr == nil && fixed {
+							if verr2 := knowledge.ValidateRefFile(evt.Path); verr2 == nil {
+								r.logger.Printf("knowledge-base intake: %s normalized (KB v2 frontmatter)", filepath.Base(evt.Path))
+								goto normalized
+							} else {
+								verr = verr2
+							}
+						} else if nerr != nil {
+							r.logger.Printf("knowledge-base intake: %s normalize failed: %v", filepath.Base(evt.Path), nerr)
+						}
 						r.logger.Printf("knowledge-base intake: %s invalid: %v", filepath.Base(evt.Path), verr)
 						// Debounced per file: watcher events for one broken
 						// document (or a storm of invalid writes) must not
@@ -266,6 +283,7 @@ func (r *Runner) Run(ctx context.Context) error {
 								verr.Error()+"; 请按 KB v2 六字段 frontmatter 修正，INDEX 将跳过该文档。", r.cfg.Notifications.Desktop)
 						}
 					}
+				normalized:
 				}
 				r.maybeRebuildRefIndex()
 				r.maybeSyncKnowledgeDB()

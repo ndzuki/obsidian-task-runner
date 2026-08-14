@@ -155,7 +155,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		}
 		if state == "MERGED" {
 			r.logger.Printf("task %s: PR %s already merged, converging to done", candidate.ID, prURL)
-			return r.completeMerge(candidate, prURL)
+			return r.completeMerge(candidate, repoDir, prURL)
 		}
 	}
 
@@ -497,7 +497,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 				}
 			}
 			// Transition to done (shared with the already-merged convergence path).
-			return r.completeMerge(candidate, prURL)
+			return r.completeMerge(candidate, repoDir, prURL)
 		default:
 			return fmt.Errorf("%s: unknown merge decision", ErrInternal)
 		}
@@ -622,7 +622,14 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 // completeMerge transitions the task to done after a successful merge — or
 // when the PR is already merged remotely (manual merge, earlier run). Used by
 // both the merge action and the early convergence path.
-func (r *Runner) completeMerge(candidate task.ReadyTask, prURL string) error {
+func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) error {
+	// Refresh the local origin/main mirror BEFORE writing done: the merge
+	// itself happened on the forge (gh pr merge), so the local ref updates
+	// only on the next fetch. A scan racing that window would read the
+	// freshly-done task as an undelivered increment and reopen it (TASK-018
+	// 2026-08-14: reopened minutes after PR #76 merged). Failure is silent —
+	// detectStaleDoneReopens re-fetches before reopening anyway.
+	fetchOriginMain(r.daemonCtx, repoDir)
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
@@ -641,6 +648,23 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, prURL string) error {
 		r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
 	}()
 	return nil
+}
+
+// fetchOriginMain refreshes the local origin/main mirror so stale-terminal
+// checks see freshly-merged delivery evidence. Failures are silent: the
+// caller falls back to conservative behavior (never reopen on uncertainty),
+// and the next scan retries. Network timeouts mirror syncMergeBranch so an
+// unreachable forge cannot stall a scan behind the fetch.
+func fetchOriginMain(parent context.Context, repoDir string) bool {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir,
+		"-c", "http.connectTimeout=15", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+		"fetch", "origin", "main")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 // findExistingPR returns the URL of an open PR for the target branch, or ""
