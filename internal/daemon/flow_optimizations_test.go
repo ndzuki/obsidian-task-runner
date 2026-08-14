@@ -46,17 +46,6 @@ func TestEvaluateMergeChecksWaitsForMergeableConvergence(t *testing.T) {
 	}
 }
 
-func gitHash(t *testing.T, repo string, content []byte) string {
-	t.Helper()
-	cmd := exec.Command("git", "-C", repo, "hash-object", "-w", "--stdin")
-	cmd.Stdin = strings.NewReader(string(content))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("hash-object: %v: %s", err, out)
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // TestAutoResolveMergeConflictCircuitBreakerSkipsHugeConflicts pins the
 // TASK-067 lesson: a conflict set far beyond what an AI session can resolve
 // inside its bounded timeout must not burn the repair budget — it hands the

@@ -49,7 +49,7 @@ func SearchKnowledgeDB(dbPath, query string, limit int, skipArchived bool, clien
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Fresh or empty store: nothing to search (caller prompts `kb index`).
 	var total int
@@ -95,7 +95,7 @@ func bm25Search(db *sql.DB, match string, skipArchived bool, limit int) ([]bm25H
 	if err != nil {
 		return nil, fmt.Errorf("fts query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var hits []bm25Hit
 	for rows.Next() {
 		var h bm25Hit
@@ -203,16 +203,16 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 			var path, heading, text string
 			var blob []byte
 			if err := rows.Scan(&path, &heading, &text, &blob); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			merge(path, heading, text, cosine(qn, decodeFloat32(blob)))
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	// Path 2: bounded global KNN — vector-only recall with capped rows.
@@ -233,7 +233,7 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 	if err != nil {
 		return nil, fmt.Errorf("knn query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var path, heading, text string
 		var dist float64
@@ -284,12 +284,12 @@ func hybridRank(db *sql.DB, hits []bm25Hit, query string, limit int, client *Emb
 		for mrows.Next() {
 			var m bm25Hit
 			if err := mrows.Scan(&m.Path, &m.Title, &m.Summary); err != nil {
-				mrows.Close()
+				_ = mrows.Close()
 				return nil, err
 			}
 			meta[m.Path] = m
 		}
-		mrows.Close()
+		_ = mrows.Close()
 	}
 	results := make([]SearchResult, 0, len(paths))
 	for _, p := range paths {

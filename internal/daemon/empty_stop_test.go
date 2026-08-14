@@ -23,7 +23,7 @@ func TestWatchEmptyStopsTriggersOnTwoEmptyReplies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		for _, l := range lines {
 			if _, err := f.WriteString(l + "\n"); err != nil {
 				t.Fatal(err)
@@ -107,7 +107,7 @@ func TestWatchEmptyStopsResetsOutsideWindow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err := f.WriteString(s + "\n"); err != nil {
 			t.Fatal(err)
 		}

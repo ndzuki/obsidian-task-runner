@@ -194,7 +194,7 @@ func chunkCount(t *testing.T, dbPath string) (int, int, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var chunks int
 	if err := db.QueryRow(`SELECT count(*) FROM kb_chunks`).Scan(&chunks); err != nil {
 		return 0, 0, err

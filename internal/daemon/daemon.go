@@ -45,7 +45,7 @@ type Runner struct {
 	scanActive         bool
 	scanPending        bool
 	lastScanAt         time.Time     // last scan cycle start; throttles watcher bursts
-	scanTimer          *time.Timer   // deferred scan after minScanInterval (nil = none pending)
+	scanTimer          *time.Timer   // deferred scan after the scan interval (nil = none pending)
 	scanMinInterval    time.Duration // watcher scan throttle; 0 disables (tests)
 	worktreeCache      sync.Map      // taskRunKey → worktreePath (parallel warmup)
 	implementationGate *implementationGate
@@ -369,17 +369,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// minScanInterval throttles watcher-driven scans. Round 2 sessions write the
-// TASK file on every progress step; without a floor each write triggers a
-// full scan (observed: 2-3 scans/second, 066 的 14:43-14:47 连续 5 次 round2
-// 互相 SIGTERM). 10s is short enough for responsive state pickup and long
-// enough to absorb write bursts.
-const minScanInterval = 10 * time.Second
-
 // requestScan schedules one scan cycle on a dedicated goroutine. If a scan
 // is already running the request is coalesced into exactly one follow-up
 // scan, so bursts of watcher events cannot pile up scan goroutines. Scans
-// started less than minScanInterval after the previous one are deferred to
+// started less than the scan interval after the previous one are deferred to
 // the interval boundary — write bursts (TASK frontmatter updates during
 // Round 2) coalesce into a single scan instead of a per-write storm.
 func (r *Runner) requestScan() {
@@ -416,7 +409,7 @@ func (r *Runner) fireDeferredScan() {
 }
 
 func (r *Runner) runScanCycle() {
-	r.scanAndProcess()
+	_ = r.scanAndProcess()
 	r.scanGateMu.Lock()
 	r.scanActive = false
 	// Clear the coalesced marker unconditionally; a follow-up scan runs only
@@ -485,7 +478,7 @@ func (r *Runner) RunOnce() error {
 		return nil // not an error — watcher daemon is handling it
 	}
 	defer unlock()
-	r.scanAndProcess()
+	_ = r.scanAndProcess()
 	// A --once run has no resident scan loop to pick up completed tasks, so
 	// wait for the dispatched OMP sessions here (same synchronous semantics
 	// as the pre-async processBatch). On SIGTERM the OMP children get a
@@ -1264,12 +1257,10 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			}
 		}
 	dispatchConventions:
-		if t.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project) {
-			// Fall through to the direct-phase dispatch below with the
-			// conventions phase selected by the switch — the goto above and
-			// this marker keep the gate decision in one place.
-		}
-
+		// conventions gate: team projects' first task must pass the
+		// read-only spec-review gate before direct-phase dispatch; the goto
+		// above and this marker keep the gate decision in one place (the
+		// dispatch switch below selects the conventions phase).
 		if t.Status == "needs-grilling" {
 			// 项目级暂停开关：Grilling-Decisions.md 的 status=paused（或
 			// pause/closed）时，该项目的 grilling 流程任务整体暂停——不提醒、
@@ -1840,6 +1831,9 @@ func (r *Runner) resolveBlockedDependencies() {
 			}
 			taskPath := filepath.Join(tasksDir, entry.Name())
 			data, err := os.ReadFile(taskPath)
+			if err != nil {
+				continue
+			}
 			fm, err := yamlfrontmatter.Parse(data)
 			if err != nil || fm == nil || fm.Status == "done" || fm.Status == "closed" {
 				// Terminal states need no upstream unblocking: done/closed

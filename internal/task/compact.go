@@ -126,9 +126,8 @@ func CompactPrototypeHistory(taskPath string) (bool, error) {
 			end = locs[i+1][0]
 		} else if next := strings.Index(content[loc[1]:], "\n## "); next >= 0 {
 			end = loc[1] + next
-		} else {
-			// Last section may extend to EOF.
 		}
+		// Last section may extend to EOF.
 		sections = append(sections, section{start: loc[0], end: end})
 	}
 	if len(sections) <= 1 {

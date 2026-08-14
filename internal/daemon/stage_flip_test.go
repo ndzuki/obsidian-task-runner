@@ -57,8 +57,8 @@ func TestApplyStageDecisionContinue(t *testing.T) {
 // continue: no next phase → Stage-Plan status completed.
 func TestApplyStageDecisionContinueCompletesProject(t *testing.T) {
 	runner := flipRunner(t, t.TempDir())
-	out, flipped, _ := runner.applyStageDecision(flipPlanTemplate, "continue", "", "test")
-	_ = flipped
+	// First call: full plan continues into phase 2 (results discarded).
+	runner.applyStageDecision(flipPlanTemplate, "continue", "", "test")
 	// Remove phase 2: phase 1 is the last.
 	onePhase := flipPlanTemplate[:strings.Index(flipPlanTemplate, "### Phase 2")]
 	out, flipped, summary := runner.applyStageDecision(onePhase, "continue", "", "test")

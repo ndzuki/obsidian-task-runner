@@ -1062,11 +1062,11 @@ func IncrementHits(vaultDir string, refPaths []string) (int, error) {
 			if db, err := openKB(dbPath); err == nil {
 				for _, s := range syncHits {
 					if _, err := db.Exec(`UPDATE kb_docs SET hits=? WHERE path=?`, s.hits, s.path); err != nil {
-						db.Close()
+						_ = db.Close()
 						break
 					}
 				}
-				db.Close()
+				_ = db.Close()
 			}
 		}
 	}
@@ -1173,7 +1173,7 @@ func tailLogTail(logPath string, maxBytes int64) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil || st.Size() == 0 {
 		return ""

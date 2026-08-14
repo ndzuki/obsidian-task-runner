@@ -96,7 +96,7 @@ func (c *EmbeddingClient) embedOllamaBatch(texts []string) ([][]float64, error) 
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("ollama embed: %s: %s", resp.Status, string(data))
@@ -132,7 +132,7 @@ func (c *EmbeddingClient) embedOpenAIBatch(texts []string) ([][]float64, error) 
 	if err != nil {
 		return nil, fmt.Errorf("openai embeddings: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("openai embeddings: %s: %s", resp.Status, string(data))

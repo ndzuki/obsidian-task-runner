@@ -212,7 +212,7 @@ func TestMaintenanceKeepsProjectsLast(t *testing.T) {
 	if stageIdx > projectsIdx {
 		t.Fatalf("backfilled field %q must appear before projects (got after)", "stage_max_phases")
 	}
-	if strings.Index(s[projectsIdx:], "stage_max_phases") >= 0 {
+	if strings.Contains(s[projectsIdx:], "stage_max_phases") {
 		t.Fatal("stage_max_phases must not appear inside the projects block")
 	}
 	// projects is the last top-level field.

@@ -423,12 +423,12 @@ func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
 		log.Printf("decision tab: cannot open lock: %v", err)
 		return false
 	}
-	defer lockFile.Close()
+	defer func() { _ = lockFile.Close() }()
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		log.Printf("decision tab: cannot acquire lock: %v", err)
 		return false
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
 	if data, err := os.ReadFile(kittyDebounceFile(debounceKey)); err == nil {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil && time.Since(t) < kittyDebounceInterval {
