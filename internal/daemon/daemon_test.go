@@ -215,6 +215,11 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 			}
 
 			releaseBarrier(t, rel)
+			// processBatch is dispatch-only: runTask goroutines may still be
+			// starting OMP (writing start files) when it returns. Wait for
+			// them before the test ends, or TempDir cleanup races the OMP
+			// start write (observed on slow CI: "directory not empty").
+			waitForTasksIdle(t, runner)
 			waitForBatch(t, done)
 		})
 	}
@@ -1621,7 +1626,10 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	// observe as an active window, since the task may no longer be ready).
 	releaseBarrier(t, releaseFile)
 	var active bool
-	deadline = time.Now().Add(10 * time.Second)
+	// 30s matches the barrier script's poll ceiling (3000 × 10ms): on a
+	// loaded CI runner the OMP exit + coalesced follow-up scan can take
+	// longer than the old 10s window (observed: 10.11s timeout).
+	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		runner.scanGateMu.Lock()
 		active = runner.scanActive
@@ -1630,10 +1638,10 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 		if !active && !pending {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	if active {
-		t.Fatal("scan gate did not unwind after barrier release")
+		t.Fatalf("scan gate did not unwind after barrier release (active=%v pending=%v)", active, pending)
 	}
 	if pending {
 		t.Fatal("coalesced pending scan was not scheduled after unwind")
