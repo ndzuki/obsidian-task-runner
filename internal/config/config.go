@@ -37,6 +37,8 @@ type Config struct {
 	MaxAutoMergeFixes          int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
 	CompactOversizeThresholdKB int `json:"compact_oversize_threshold_kb"` // TASK docs above this size get history folding
 	GrillingConsolidationBatch int `json:"grilling_consolidation_batch"`  // PM sessions per scan
+	MaxAutoFixConflicts        int `json:"max_auto_fix_conflicts"`        // conflict-size circuit breaker: skip AI repair above N conflicting files (0 = disabled)
+	UpstreamStallDays          int `json:"upstream_stall_days"`           // blocked_by upstreams idle this many days trigger a one-time warning (0 = disabled)
 	MergePollWaitTicks         int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
 	StageMinPerPhase           int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
 	StageMaxPhases             int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
@@ -313,8 +315,8 @@ func Defaults() *Config {
 		Audit:                 &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
-		GrillingConsolidationBatch: 3,
-		MergePollWaitTicks:         20,
+		MaxAutoFixConflicts:        40, // TASK-067: 90+ conflicting files doomed the 15min AI session
+		UpstreamStallDays:          3,  // upstream idle warning (TASK-067: month-long silent blockage)
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
 		SkillInstallDir:            filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
@@ -475,6 +477,12 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.MergePollWaitTicks <= 0 {
 		cfg.MergePollWaitTicks = defaults.MergePollWaitTicks
+	}
+	if cfg.MaxAutoFixConflicts == 0 {
+		cfg.MaxAutoFixConflicts = defaults.MaxAutoFixConflicts
+	}
+	if cfg.UpstreamStallDays == 0 {
+		cfg.UpstreamStallDays = defaults.UpstreamStallDays
 	}
 	if cfg.StageMinPerPhase <= 0 {
 		cfg.StageMinPerPhase = defaults.StageMinPerPhase

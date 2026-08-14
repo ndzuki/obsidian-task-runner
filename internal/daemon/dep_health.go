@@ -12,6 +12,7 @@ import (
 
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -89,6 +90,112 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 		}
 		if projClosed > 0 {
 			r.updateRoadmap(projectEntry.Name(), "任务自动收口", fmt.Sprintf("%d 个任务自动收口为 done（PR merged 且无 pending_req）", projClosed))
+		}
+	}
+	return closed
+}
+
+// conflictPRProbeInterval bounds remote PR-state probes for handed-back
+// conflict tasks: the GitHub API is polled at most once per task per window,
+// so a stuck task never spams the forge (and a scan storm never spams
+// GitHub) while the human finishes the merge in the UI.
+const conflictPRProbeInterval = 5 * time.Minute
+
+// autoCloseMergedConflictPRs converges tasks whose PR was merged MANUALLY on
+// GitHub while the task sat handed back in conflict (merge budget exhausted,
+// merge_approved=false). The user's UI merge is deterministic delivery
+// evidence, but autoCloseStaleMergedTasks only sees merge_status=merged —
+// conflict tasks carry conflict-resolve-attempted/auto-fix-conflict instead
+// and would stay stuck forever, blocking downstream blocked_by chains
+// (TASK-067: PR #51 merged by hand, task kept dispatching nothing until
+// frontmatter was rewritten manually). Probe the PR state at a bounded rate
+// and complete the task when it reports MERGED.
+func (r *Runner) autoCloseMergedConflictPRs() int {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return 0
+	}
+	closed := 0
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil {
+				continue
+			}
+			// Handed-back conflict/review state with an exhausted repair
+			// budget: AI repair stopped, the human owns the merge now.
+			if fm.Status != "conflict" && fm.Status != "review" {
+				continue
+			}
+			if !fm.AutoMerge || fm.MergeApproved || fm.PendingReq {
+				continue
+			}
+			if fm.MergeStatus == "merged" || fm.MergeStatus == "pushed" {
+				continue
+			}
+			if fm.MergeRetryCount < r.cfg.MaxAutoMergeFixes {
+				continue // budget not exhausted: auto-repair still owns it
+			}
+			if fm.TargetBranch == "" {
+				continue
+			}
+			// Bounded probing: skip tasks probed within the window.
+			if last, ok := r.conflictPRProbed.Load(path); ok {
+				if time.Since(last.(time.Time)) < conflictPRProbeInterval {
+					continue
+				}
+			}
+			r.conflictPRProbed.Store(path, time.Now())
+
+			repoDir, repoErr := r.resolveRepo(task.ReadyTask{Project: fm.Project})
+			if repoErr != nil {
+				r.logger.Printf("conflict-probe %s: resolve repo: %v", fm.ID, repoErr)
+				continue
+			}
+			prURL := findAnyPR(r.daemonCtx, repoDir, fm.TargetBranch)
+			if prURL == "" {
+				continue
+			}
+			state, stateErr := prState(r.daemonCtx, repoDir, prURL)
+			if stateErr != nil {
+				r.logger.Printf("conflict-probe %s: pr state: %v", fm.ID, stateErr)
+				continue
+			}
+			if state != "MERGED" {
+				continue
+			}
+			candidate := task.ReadyTask{
+				ID: fm.ID, Title: fm.Title, Project: fm.Project,
+				FilePath: path, Status: fm.Status, TargetBranch: fm.TargetBranch,
+				AutoMerge: fm.AutoMerge,
+			}
+			if err := r.completeMerge(candidate, repoDir, prURL); err != nil {
+				r.logger.Printf("conflict-probe %s: complete merge: %v", fm.ID, err)
+				continue
+			}
+			closed++
+			r.logger.Printf("health %s: TASK-%s converged to done (PR %s merged manually while handed back)", projectEntry.Name(), fm.ID, prURL)
+			if !r.diagNotified("conflictpr|" + fm.ID) {
+				notify.SendTaskAction(fm.ID, fm.Title, "✅", "任务自动收口",
+					"PR 已人工合入，任务从 "+fm.Status+" 自动转为 done。", r.cfg.Notifications.Desktop)
+			}
 		}
 	}
 	return closed
@@ -310,7 +417,7 @@ func (r *Runner) validateDependencyRefs() {
 		}
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
 		tasksDir := filepath.Join(projDir, "Tasks")
-		taskIDs, taskStatus, closedReason, closedReplacement, unparsable, err := r.depIDs(tasksDir)
+		taskIDs, taskStatus, closedReason, closedReplacement, unparsable, updatedByID, err := r.depIDs(tasksDir)
 		if err != nil {
 			continue
 		}
@@ -350,6 +457,25 @@ func (r *Runner) validateDependencyRefs() {
 								"TASK-"+fm.ID+" 的 blocked_by 引用了已关闭的 TASK-"+id+"（closed 为终态且无已交付替代，依赖永不满足）；请修正引用或重新打开该任务（otg update-status blocked_by=...）")
 						}
 					}
+					// Upstream-starvation visibility: a non-terminal upstream
+					// that has not advanced for a long time silently blocks
+					// everything downstream (TASK-067: 019/057/066/069 waited
+					// a month+ on an unmerged PR with no signal). Notify once
+					// per (project, upstream) when its last update crosses
+					// the threshold.
+					if threshold := r.upstreamStallDays(); threshold > 0 {
+						if updated, ok := updatedByID[id]; ok {
+							if time.Since(updated) > time.Duration(threshold)*24*time.Hour {
+								key := projectEntry.Name() + "|blocked_by_stale|" + id
+								if !r.diagNotified(key) {
+									days := int(time.Since(updated).Hours() / 24)
+									r.logger.Printf("health %s: TASK-%s blocked by TASK-%s (no update for %dd)", projectEntry.Name(), fm.ID, id, days)
+									r.notifyDiag(projectEntry.Name(), "上游任务长期未完成",
+										"TASK-"+id+" 已 "+fmt.Sprint(days)+" 天无进展，阻塞了 TASK-"+fm.ID+" 等下游；请检查其状态（blocked/conflict/review）并推动完成或调整依赖")
+								}
+							}
+						}
+					}
 					continue
 				}
 				if unparsable[id] {
@@ -369,6 +495,15 @@ func (r *Runner) validateDependencyRefs() {
 			}
 		}
 	}
+}
+
+// upstreamStallDays returns the upstream-stall warning threshold in days
+// (0 disables the check).
+func (r *Runner) upstreamStallDays() int {
+	if r.cfg.UpstreamStallDays <= 0 {
+		return 0
+	}
+	return r.cfg.UpstreamStallDays
 }
 
 // closedNeverSatisfiable reports whether a closed upstream blocks its
@@ -393,16 +528,17 @@ func closedNeverSatisfiable(status, reason, replacement string) bool {
 // whose files exist but are temporarily unparsable. The closure metadata lets
 // dependency diagnostics distinguish delivered already-implemented closures
 // from genuinely unsatisfiable cancelled/wont-fix closures.
-func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, statusByID, closedReason, closedReplacement map[string]string, unparsable map[string]bool, err error) {
+func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, statusByID, closedReason, closedReplacement map[string]string, unparsable map[string]bool, updatedByID map[string]time.Time, err error) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	ids = make(map[string]bool, len(entries))
 	statusByID = make(map[string]string, len(entries))
 	closedReason = make(map[string]string, len(entries))
 	closedReplacement = make(map[string]string, len(entries))
 	unparsable = make(map[string]bool)
+	updatedByID = make(map[string]time.Time)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -428,8 +564,23 @@ func (r *Runner) depIDs(tasksDir string) (ids map[string]bool, statusByID, close
 		statusByID[fm.ID] = fm.Status
 		closedReason[fm.ID] = fm.ClosureReason
 		closedReplacement[fm.ID] = fm.ReplacementTask
+		if !isTerminalStatus(fm.Status) && fm.Updated != "" {
+			if t, err := time.Parse(time.RFC3339, fm.Updated); err == nil {
+				updatedByID[fm.ID] = t
+			}
+		}
 	}
-	return ids, statusByID, closedReason, closedReplacement, unparsable, nil
+	return ids, statusByID, closedReason, closedReplacement, unparsable, updatedByID, nil
+}
+
+// isTerminalStatus reports whether a task status is a terminal delivery state.
+// Non-terminal statuses are the ones that can starve a downstream dependency.
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "done", "closed":
+		return true
+	}
+	return false
 }
 
 // detectPlanFileOverlaps warns when two concurrently implementing tasks of
