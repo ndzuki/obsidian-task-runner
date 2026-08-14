@@ -118,6 +118,7 @@ func TestDetectStaleDoneReopens(t *testing.T) {
 
 	// Idempotent: second run reopens nothing.
 	if n := runner.detectStaleDoneReopens(); n != 0 {
+		t.Fatalf("second run reopened %d tasks", n)
 	}
 }
 

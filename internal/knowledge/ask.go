@@ -67,7 +67,7 @@ func (c *ChatClient) completeOllama(system, user, model string, fragment func(st
 	if err != nil {
 		return "", fmt.Errorf("ollama chat: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("ollama chat: %s: %s", resp.Status, string(data))
@@ -125,7 +125,7 @@ func (c *ChatClient) completeOpenAI(system, user, model string, fragment func(st
 	if err != nil {
 		return "", fmt.Errorf("openai chat: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("openai chat: %s: %s", resp.Status, string(data))

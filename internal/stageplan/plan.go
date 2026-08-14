@@ -163,8 +163,6 @@ func deriveName(ids []string, tasks []TaskInfo) string {
 	}
 	// Fall back to a compressed member list: "TASK-018/019 等".
 	compact := make([]string, 0, len(ids))
-	for _, id := range ids {
-		compact = append(compact, id)
-	}
+	compact = append(compact, ids...)
 	return fmt.Sprintf("TASK-%s 等", strings.Join(compact, "/"))
 }

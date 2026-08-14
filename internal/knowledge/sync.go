@@ -111,7 +111,7 @@ func SyncKnowledgeDB(vaultDir, dbPath string, client *EmbeddingClient) (SyncStat
 	if err != nil {
 		return SyncStats{}, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	refsDir := filepath.Join(vaultDir, "References")
 	cleanupLegacyIndexFiles(refsDir)
 	docs, err := walkRefs(refsDir)
@@ -192,14 +192,14 @@ func SyncKnowledgeDB(vaultDir, dbPath string, client *EmbeddingClient) (SyncStat
 				path  string
 			}
 			if err := rows.Scan(&r.rowid, &r.path); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return stats, err
 			}
 			if !seen[r.path] {
 				stale = append(stale, r)
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 		// Partial-empty guard: warn when a removal pass would delete more
 		// than half the store (and the store is meaningfully sized) — a
 		// corpus that reads as partially visible is likely a transient
@@ -252,12 +252,12 @@ func deleteChunkRows(tx *sql.Tx, docID int64) error {
 	for ids.Next() {
 		var id int64
 		if err := ids.Scan(&id); err != nil {
-			ids.Close()
+			_ = ids.Close()
 			return err
 		}
 		chunkIDs = append(chunkIDs, id)
 	}
-	ids.Close()
+	_ = ids.Close()
 	for _, id := range chunkIDs {
 		if _, err := tx.Exec(`DELETE FROM kb_vec WHERE rowid=?`, id); err != nil {
 			return err
@@ -278,7 +278,7 @@ func upsertDoc(db *sql.DB, d syncDoc, fm map[string]any, title, summary, tokens,
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var rowid int64
 	err = tx.QueryRow(`SELECT rowid FROM kb_docs WHERE path=?`, d.rel).Scan(&rowid)
 	switch {
@@ -331,7 +331,7 @@ func removeDoc(db *sql.DB, rowid int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM kb_fts WHERE rowid=?`, rowid); err != nil {
 		return err
 	}
@@ -426,7 +426,7 @@ func syncVectors(db *sql.DB, docs []syncDoc, client *EmbeddingClient, fullVec bo
 			return embedded > 0, err
 		}
 		if err := deleteChunkRows(tx, rowid); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return embedded > 0, err
 		}
 		bad := false
@@ -442,7 +442,7 @@ func syncVectors(db *sql.DB, docs []syncDoc, client *EmbeddingClient, fullVec bo
 			_ = chunkID
 		}
 		if bad {
-			tx.Rollback()
+			_ = tx.Rollback()
 			continue
 		}
 		if err := tx.Commit(); err != nil {
@@ -540,14 +540,14 @@ func RebuildKnowledgeDB(vaultDir, dbPath string, client *EmbeddingClient) (SyncS
 	if err != nil {
 		return SyncStats{}, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tx, err := db.Begin()
 	if err != nil {
 		return SyncStats{}, err
 	}
 	for _, tbl := range []string{kbVecTable, "kb_chunks", "kb_fts", "kb_docs", "kb_meta"} {
 		if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + tbl); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return SyncStats{}, fmt.Errorf("drop %s: %w", tbl, err)
 		}
 	}

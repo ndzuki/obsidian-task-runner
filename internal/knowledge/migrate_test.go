@@ -63,11 +63,11 @@ func TestRebuildMigratesOlderSchema(t *testing.T) {
 			UNIQUE(doc_id, heading))`,
 	} {
 		if _, err := db.Exec(s); err != nil {
-			db.Close()
+			_ = db.Close()
 			t.Fatalf("seed v1 schema: %v", err)
 		}
 	}
-	db.Close()
+	_ = db.Close()
 
 	// A normal open refuses the stale store…
 	if _, err := openKB(dbPath); err == nil {
@@ -85,7 +85,7 @@ func TestRebuildMigratesOlderSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openKB after rebuild: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var version string
 	if err := db.QueryRow(`SELECT value FROM kb_meta WHERE key=?`, metaSchemaVersion).Scan(&version); err != nil {
 		t.Fatal(err)

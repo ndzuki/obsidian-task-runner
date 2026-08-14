@@ -11,7 +11,7 @@ import (
 
 func writeSearchDoc(t *testing.T, refsDir, name, topics, body string) {
 	t.Helper()
-	content := "---\ntopics: [" + topics + "]\nlevel: reference\nupdated: \"2026-08-03\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# " + strings.Title(name) + "\n\n> summary " + topics + "\n\n" + body + "\n"
+	content := "---\ntopics: [" + topics + "]\nlevel: reference\nupdated: \"2026-08-03\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# " + strings.ToUpper(name[:1]) + name[1:] + "\n\n> summary " + topics + "\n\n" + body + "\n"
 	if err := os.WriteFile(filepath.Join(refsDir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

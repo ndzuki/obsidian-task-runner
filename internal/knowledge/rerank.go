@@ -63,7 +63,7 @@ func (c *RerankClient) Rerank(query string, documents []string) ([]float64, erro
 			continue
 		}
 		data, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if rerr != nil {
 			return nil, rerr
 		}

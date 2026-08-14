@@ -457,15 +457,6 @@ var taskFieldDefaults = map[string]interface{}{
 	"knowledge_extract_error":        "",
 }
 
-// fieldOrderIndex maps canonical key → position in taskFieldOrder.
-var fieldOrderIndex = func() map[string]int {
-	index := make(map[string]int, len(taskFieldOrder))
-	for i, key := range taskFieldOrder {
-		index[key] = i
-	}
-	return index
-}()
-
 // missingDefaults computes the ordered list of absent keys with their
 // backfill values. priority_assessment_status follows Parse's compatibility
 // semantics: it derives from whether priority was set. Returns nil when

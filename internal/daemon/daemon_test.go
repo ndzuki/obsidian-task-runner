@@ -1677,7 +1677,7 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 
 	// SignalContext registers the handler synchronously before RunOnce
 	// proceeds, so this cannot hit the default SIGTERM disposition.
-	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 	select {
 	case err := <-done:
 		if err != nil {
@@ -1767,7 +1767,7 @@ func TestResolveMergeConflictExternalKillTreatedAsInterrupted(t *testing.T) {
 		t.Fatal("merge resolution session did not start")
 	}
 
-	syscall.Kill(sessionPID, syscall.SIGTERM)
+	_ = syscall.Kill(sessionPID, syscall.SIGTERM)
 	select {
 	case err := <-done:
 		if !errors.Is(err, errConflictResolutionInterrupted) {

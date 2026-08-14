@@ -66,7 +66,7 @@ func openKB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := ensureSchema(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
@@ -93,15 +93,15 @@ func openRaw(dbPath string) (*sql.DB, error) {
 	// WAL: concurrent daemon/CLI access without read locks; busy_timeout
 	// serializes writers instead of failing fast.
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	if err := probeFTS5(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
@@ -272,7 +272,7 @@ func VecStatus(dbPath string) (ready bool, model string) {
 	if err != nil {
 		return false, ""
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, kbVecTable).Scan(&n); err != nil || n == 0 {
 		return false, ""

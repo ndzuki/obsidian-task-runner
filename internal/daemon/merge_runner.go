@@ -1331,7 +1331,7 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	if err != nil {
 		return fmt.Errorf("create merge fix log: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	header := fmt.Sprintf("# TASK-%s %s\n# model=%s phase=%s time=%s\n\n",
 		candidate.ID, candidate.Title, model, logSuffix, time.Now().Format(time.RFC3339))
 	if _, err := f.WriteString(header); err != nil {

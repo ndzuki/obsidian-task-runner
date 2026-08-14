@@ -951,6 +951,7 @@ func TestSyncMergeBranch(t *testing.T) {
 		t.Fatalf("remote commit not in local history after sync:\n%s", got)
 	}
 	if got := git(work, "log", "--oneline", "-5"); !strings.Contains(got, "local change") {
+		t.Fatalf("local commit not in local history after sync:\n%s", got)
 	}
 	git(work, "push", "origin", "task/foo")
 

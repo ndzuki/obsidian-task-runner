@@ -736,9 +736,8 @@ func waitForPmArgs(t *testing.T, argsPath string) string {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	data, _ := os.ReadFile(argsPath)
 	t.Fatalf("pm args never appeared at %s", argsPath)
-	return string(data)
+	return ""
 }
 
 func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {

@@ -914,7 +914,7 @@ auto_merge: false
 	statusPos := strings.Index(content, "status:")
 	phaseErrPos := strings.Index(content, "phase_error:")
 	autoMergePos := strings.Index(content, "auto_merge:")
-	if !(idPos < statusPos && statusPos < autoMergePos && autoMergePos < phaseErrPos) {
+	if idPos >= statusPos || statusPos >= autoMergePos || autoMergePos >= phaseErrPos {
 		t.Fatalf("frontmatter not in canonical order (id=%d status=%d auto_merge=%d phase_error=%d):\n%s", idPos, statusPos, autoMergePos, phaseErrPos, content)
 	}
 
@@ -989,9 +989,9 @@ title: Scrambled
 			t.Fatalf("key %q missing after normalize:\n%s", key, content)
 		}
 	}
-	if !(positions["id:"] < positions["title:"] && positions["title:"] < positions["status:"] &&
-		positions["status:"] < positions["auto_merge:"] && positions["auto_merge:"] < positions["phase_error_code:"] &&
-		positions["phase_error_code:"] < positions["custom_field:"]) {
+	if positions["id:"] >= positions["title:"] || positions["title:"] >= positions["status:"] ||
+		positions["status:"] >= positions["auto_merge:"] || positions["auto_merge:"] >= positions["phase_error_code:"] ||
+		positions["phase_error_code:"] >= positions["custom_field:"] {
 		t.Fatalf("canonical order violated: %v\n%s", positions, content)
 	}
 }
@@ -1111,7 +1111,7 @@ grill_prev_status: ""
 	if prevPos < 0 || parkedPos < 0 || repeatPos < 0 || acceptedPos < 0 {
 		t.Fatalf("grill fields missing after normalize:\n%s", content)
 	}
-	if !(prevPos < parkedPos && parkedPos < repeatPos && repeatPos < acceptedPos) {
+	if prevPos >= parkedPos || parkedPos >= repeatPos || repeatPos >= acceptedPos {
 		t.Fatalf("grill fields not in canonical order (prev=%d parked=%d repeat=%d accepted=%d):\n%s", prevPos, parkedPos, repeatPos, acceptedPos, content)
 	}
 

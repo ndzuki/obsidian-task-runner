@@ -167,10 +167,6 @@ func areBlockersDoneWith(vaultPath, projectName string, blockedBy []string, look
 	return len(remaining) == 0
 }
 
-func checkDirDeps(tasksDir, projName string, remaining map[string]bool) {
-	checkDirDepsWith(tasksDir, projName, remaining, nil)
-}
-
 func checkDirDepsWith(tasksDir, projName string, remaining map[string]bool, lookup fmLookup) {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
@@ -218,10 +214,6 @@ func checkDirDepsWith(tasksDir, projName string, remaining map[string]bool, look
 			}
 		}
 	}
-}
-
-func blockerSatisfied(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName string) bool {
-	return blockerSatisfiedWith(fm, tasksDir, projectName, nil)
 }
 
 func blockerSatisfiedWith(fm *yamlfrontmatter.Frontmatter, tasksDir, projectName string, lookup fmLookup) bool {

@@ -34,12 +34,12 @@ var kbGapsCmd = &cobra.Command{
 			return err
 		}
 		if len(gaps) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "project %s: no knowledge gaps (every ADR has a References target)\n", args[0])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "project %s: no knowledge gaps (every ADR has a References target)\n", args[0])
 			return nil
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "project %s: %d ADR(s) without knowledge-base coverage:\n\n", args[0], len(gaps))
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "project %s: %d ADR(s) without knowledge-base coverage:\n\n", args[0], len(gaps))
 		for _, g := range gaps {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s  %s\n", g.ADR, g.Title)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s  %s\n", g.ADR, g.Title)
 		}
 		return nil
 	},
@@ -61,20 +61,20 @@ var kbUsageCmd = &cobra.Command{
 		}
 		if len(args) == 1 {
 			refs := usage.ProjectRefs[args[0]]
-			fmt.Fprintf(cmd.OutOrStdout(), "project %s: %d referenced doc(s), %d delivered task(s) with application metric\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "project %s: %d referenced doc(s), %d delivered task(s) with application metric\n",
 				args[0], len(refs), usage.ProjectApplied[args[0]])
 			for _, r := range refs {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", r)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", r)
 			}
 			return nil
 		}
 		if len(usage.ProjectRefs) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "no project references recorded yet")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no project references recorded yet")
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "project → referenced documents:")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "project → referenced documents:")
 		for project, refs := range usage.ProjectRefs {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s (%d docs, %d applied)\n", project, len(refs), usage.ProjectApplied[project])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s (%d docs, %d applied)\n", project, len(refs), usage.ProjectApplied[project])
 		}
 		return nil
 	},
@@ -106,10 +106,10 @@ var kbSearchCmd = &cobra.Command{
 			ready, stored := knowledge.VecStatus(dbPath)
 			switch {
 			case !ready:
-				fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
 				client = nil
 			case stored != "" && stored != cfg.KBEmbedding.Model:
-				fmt.Fprintf(cmd.OutOrStdout(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
 				client = nil
 			}
 		}
@@ -128,7 +128,7 @@ var kbSearchCmd = &cobra.Command{
 			hits = knowledge.RerankResults(hits, query, rc, kbSearchLimit)
 		}
 		if len(hits) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
 			return nil
 		}
 		for _, h := range hits {
@@ -140,7 +140,7 @@ var kbSearchCmd = &cobra.Command{
 			if h.Chunk != "" {
 				chunk = "  → " + h.Chunk
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s%s\n      %s\n      %s\n", h.Score, h.Path, chunk, h.Title, summary)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%.4f  %s%s\n      %s\n      %s\n", h.Score, h.Path, chunk, h.Title, summary)
 		}
 		return nil
 	},
@@ -181,9 +181,9 @@ sources. Requires kb_embedding (retrieval) and kb_chat (generation).`,
 		ready, stored := knowledge.VecStatus(dbPath)
 		switch {
 		case !ready:
-			fmt.Fprintln(cmd.ErrOrStderr(), "warning: vector index missing — run `otg kb index` first")
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: vector index missing — run `otg kb index` first")
 		case stored != "" && stored != cfg.KBEmbedding.Model:
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector store built with %s, configured %s — run `otg kb index`\n", stored, cfg.KBEmbedding.Model)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector store built with %s, configured %s — run `otg kb index`\n", stored, cfg.KBEmbedding.Model)
 		}
 		chat := knowledge.NewChatClient(cfg.KBChat)
 		opts := knowledge.AskOptions{
@@ -202,13 +202,13 @@ sources. Requires kb_embedding (retrieval) and kb_chat (generation).`,
 			return err
 		}
 		if len(refs) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "\n参考资料：")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "\n参考资料：")
 		for _, r := range refs {
-			fmt.Fprintf(cmd.OutOrStdout(), "- %s（%s）\n", r.Path, r.Title)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "- %s（%s）\n", r.Path, r.Title)
 		}
 		return nil
 	},
@@ -247,26 +247,25 @@ Duplicate lessons (same normalized title or failed approach) are skipped.`,
 			return err
 		}
 		for _, e := range res.Errors {
-			fmt.Fprintf(cmd.ErrOrStderr(), "absorb: %s\n", e)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "absorb: %s\n", e)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"absorbed: %d appended, %d duplicates, %d archived\n",
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "absorbed: %d appended, %d duplicates, %d archived\n",
 			res.Appended, res.Duplicates, len(res.Archived))
 		for _, t := range res.Touched {
-			fmt.Fprintf(cmd.OutOrStdout(), "  wrote %s\n", t)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  wrote %s\n", t)
 		}
 		for _, a := range res.Archived {
-			fmt.Fprintf(cmd.OutOrStdout(), "  archived %q\n", a)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  archived %q\n", a)
 		}
 		if res.Appended+res.Duplicates+len(res.Archived)+len(res.Errors) == 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "no lessons parsed — expected 踩坑记录 format (see --help)")
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "no lessons parsed — expected 踩坑记录 format (see --help)")
 		}
 		// The knowledge base changed: refresh INDEX and incrementally sync
 		// the retrieval store so new lessons are immediately searchable.
 		// Sync is idempotent (content_hash) and never rolls back on
 		// embedding failure — FTS keeps working without ollama.
 		if _, rerr := knowledge.RebuildINDEX(cfg.ObsidianVault); rerr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: INDEX rebuild failed: %v\n", rerr)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: INDEX rebuild failed: %v\n", rerr)
 		}
 		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
 		var client *knowledge.EmbeddingClient
@@ -275,14 +274,14 @@ Duplicate lessons (same normalized title or failed approach) are skipped.`,
 		}
 		stats, serr := knowledge.SyncKnowledgeDB(cfg.ObsidianVault, dbPath, client)
 		if serr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "store synced: %d docs (+%d -%d), %d chunks\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "store synced: %d docs (+%d -%d), %d chunks\n",
 				stats.TotalDocs, stats.Added, stats.Removed, stats.TotalChunks)
 			if stats.VecSkipped {
-				fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — FTS-only store (add kb_embedding to vault-map.json for semantic search)")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — FTS-only store (add kb_embedding to vault-map.json for semantic search)")
 			} else if stats.VecError != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (BM25 still works)\n", stats.VecError)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (BM25 still works)\n", stats.VecError)
 			}
 		}
 		return nil
@@ -311,10 +310,10 @@ var kbHitCmd = &cobra.Command{
 			return err
 		}
 		if n == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "no document bumped (missing: %s)\n", args[0])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no document bumped (missing: %s)\n", args[0])
 			return nil
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "hits+1 on %s\n", args[0])
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hits+1 on %s\n", args[0])
 		return nil
 	},
 }
@@ -335,10 +334,10 @@ var kbPromoteCmd = &cobra.Command{
 			return err
 		}
 		for _, m := range moved {
-			fmt.Fprintf(cmd.OutOrStdout(), "promoted %s\n", m)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "promoted %s\n", m)
 		}
 		if len(moved) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "no documents reached hits≥%d\n", kbPromoteMinHits)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no documents reached hits≥%d\n", kbPromoteMinHits)
 			return nil
 		}
 		// Rebuild INDEX and sync the store so the new core/ paths are
@@ -348,7 +347,7 @@ var kbPromoteCmd = &cobra.Command{
 		if rerr != nil {
 			return rerr
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "rebuilt INDEX.md: %d entries\n", n)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "rebuilt INDEX.md: %d entries\n", n)
 		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
 		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding != nil {
@@ -356,9 +355,9 @@ var kbPromoteCmd = &cobra.Command{
 		}
 		stats, serr := knowledge.SyncKnowledgeDB(cfg.ObsidianVault, dbPath, client)
 		if serr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: store sync failed: %v\n", serr)
 		} else if stats.VecError != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v\n", stats.VecError)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v\n", stats.VecError)
 		}
 		return nil
 	},
@@ -382,7 +381,7 @@ var kbRebuildCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("rebuild index: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "rebuilt INDEX.md: %d entries\n", n)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "rebuilt INDEX.md: %d entries\n", n)
 		return nil
 	},
 }
@@ -402,7 +401,7 @@ var kbIndexCmd = &cobra.Command{
 		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
 		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding == nil {
-			fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — building FTS-only store (add kb_embedding to vault-map.json for semantic search)")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding not configured — building FTS-only store (add kb_embedding to vault-map.json for semantic search)")
 		} else {
 			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
 		}
@@ -411,13 +410,13 @@ var kbIndexCmd = &cobra.Command{
 			return fmt.Errorf("rebuild store: %w", err)
 		}
 		if stats.VecError != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (FTS-only store)\n", stats.VecError)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: vector refresh failed: %v (FTS-only store)\n", stats.VecError)
 		}
 		if client != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents, %d chunks (%s, model %s)\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents, %d chunks (%s, model %s)\n",
 				stats.TotalDocs, stats.TotalChunks, cfg.KBEmbedding.Backend, cfg.KBEmbedding.Model)
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents (FTS only)\n", stats.TotalDocs)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "rebuilt store: %d documents (FTS only)\n", stats.TotalDocs)
 		}
 		return nil
 	},
