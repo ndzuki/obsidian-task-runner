@@ -56,6 +56,7 @@ type ReadyTask struct {
 	RefineReqHash            string `json:"refine_req_hash,omitempty"`
 	PlanReqHash              string `json:"plan_req_hash,omitempty"`
 	MergeRetryCount          int    `json:"merge_retry_count,omitempty"`
+	MergeStatus              string `json:"merge_status,omitempty"`
 	AuditStatus              string `json:"audit_status,omitempty"`
 	AuditFailCount           int    `json:"audit_fail_count,omitempty"`
 	AuditLog                 string `json:"audit_log,omitempty"`

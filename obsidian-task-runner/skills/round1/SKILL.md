@@ -126,6 +126,18 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 
 > 成本控制：探索只读不写；产出 ≤300 字；子代理数量 ≤3。小需求（触发条件不满足）绝不执行本步。
 > 版本化：`### 架构探索` 为计划头部固定小节，**每次 planning（含 replan）由本步重写**，不留存旧版探索结论（旧结论随 `### vN` 历史保留）。
+
+## Step 1.8: Project Conventions Alignment（项目规范对齐，强制）
+
+读取 `{vault}/Projects/{project}/Notes/PROJECT-CONVENTIONS.md`（存在时）——该项目的
+规范基线（设计/代码/注释语言/API 文档/文档/提交规范），**优先级高于本 Skill 与全局
+AGENTS.md 默认约定**：
+
+1. 计划中每个涉及代码/文档的 Step，其实现约定（注释语言、代码风格、文档格式、commit 语言）必须声明遵循项目规范；项目规范与全局默认冲突时以项目规范为准。
+2. 技术选型**优先项目已有技术栈**：Step 引入的新依赖/新框架必须与项目既有模式一致，否则按架构决策检测触发 ADR（引用项目现状为上下文）。
+3. 计划不得包含项目规范之外的重构/优化类 Step（团队项目 review 认知负担优先）；已有规范未覆盖处按最小变更原则。
+4. 新项目（无此文件）不适用本步，照常生成计划。
+
 ## Step 2: Checkpoint Assessment（Checkpoint 评估）
 
 若 `checkpoint_commit` 非空：

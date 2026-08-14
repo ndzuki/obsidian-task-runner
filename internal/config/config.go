@@ -162,6 +162,26 @@ type Project struct {
 	Path      string `json:"path"`
 	GitRemote string `json:"git_remote"`
 	ProjectID string `json:"project_id"`
+
+	// ProjectType declares who owns the repository. Empty/"personal" is the
+	// default: the daemon may auto-register the project, promote a Vault
+	// fallback to a standalone checkout, and create the GitHub remote via
+	// gh CLI. "team" marks a pre-existing organization repository (e.g. a
+	// private Gitea project): the daemon must never create repos, never
+	// auto-register, and never run GitHub-CLI remote operations against it.
+	ProjectType string `json:"project_type"`
+
+	// MergeMode selects the delivery path. Empty/"auto" uses the full
+	// gh-CLI flow (push → PR → CI checks → merge). "manual" stops at push:
+	// the branch is pushed with the repository's own credentials, the task
+	// stays in review with merge_status=pushed, and a human merges through
+	// the forge UI; the daemon flips the task to done once the pushed head
+	// becomes an ancestor of the remote default branch. "fork-merge"
+	// (fork development) merges the feature branch into the fork's default
+	// branch locally (conflicts via the bounded AI session) and pushes it
+	// with the repository's own credentials — the human then sends the
+	// team project a PR from the fork's default branch.
+	MergeMode string `json:"merge_mode"`
 }
 
 // NotifConfig holds notification settings.

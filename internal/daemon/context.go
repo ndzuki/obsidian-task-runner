@@ -46,10 +46,11 @@ func BuildProjectContext(projectVaultDir, reqPath string) string {
 		contextPath := filepath.Join(projectVaultDir, "Notes", "CONTEXT.md")
 		data, err := os.ReadFile(contextPath)
 		if err != nil {
-			return ""
+			content = ""
+		} else {
+			content = string(data)
+			contextCache.Store(projectVaultDir, content)
 		}
-		content = string(data)
-		contextCache.Store(projectVaultDir, content)
 	}
 
 	constraints := extractSection(content, "Development Constraints")
@@ -63,6 +64,20 @@ func BuildProjectContext(projectVaultDir, reqPath string) string {
 	// Anti-patterns: keep first sentence of each only.
 	if antiPatterns != "" {
 		parts = append(parts, "## Anti-patterns\n"+compactAntiPatterns(antiPatterns))
+	}
+
+	// Project conventions baseline (Notes/PROJECT-CONVENTIONS.md, produced by
+	// the conventions review gate): the project's own design/code/comment/
+	// API-doc/documentation/commit rules. Injected verbatim — the session
+	// MUST follow these over the task runner's generic defaults (e.g. comment
+	// language, code style, commit wording). Small file (<60 lines), read
+	// fresh per project; absent for projects that never passed the gate.
+	convPath := filepath.Join(projectVaultDir, "Notes", "PROJECT-CONVENTIONS.md")
+	if convData, convErr := os.ReadFile(convPath); convErr == nil {
+		conv := strings.TrimSpace(string(convData))
+		if conv != "" {
+			parts = append(parts, "## Project Conventions（项目规范基线，最高优先，覆盖全局默认约定）\n"+conv)
+		}
 	}
 
 	// Read the REQ document to extract keywords for relevance scoring.

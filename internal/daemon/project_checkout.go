@@ -37,6 +37,12 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 	if gitRemote == "" {
 		return fallbackPath, nil // vault-only project by choice
 	}
+	// Team projects are pre-existing organization repositories (e.g. private
+	// Gitea): the daemon must never create a standalone checkout or a remote
+	// repo for them. The registered path is authoritative.
+	if projectIsTeam(mapFile, t.Project) {
+		return fallbackPath, nil
+	}
 	// Already a standalone checkout (or a real repo) — nothing to promote.
 	if top, err := gitTopLevel(fallbackPath); err == nil && filepath.Clean(top) == filepath.Clean(fallbackPath) {
 		return fallbackPath, nil
@@ -80,11 +86,13 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 	return checkout, nil
 }
 
-// ensureCheckoutRemoteRepo makes the GitHub repository declared by git_remote
-// exist and be reachable as "origin" of the checkout. Creation failures are
-// logged, never fatal: the merge flow surfaces push/PR errors with their own
-// phase_error, and the README-only repo is harmless if created early.
 func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote string) {
+	// Team projects own their forge repository; never create one via gh.
+	mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+	if projectIsTeam(mapFile, t.Project) {
+		r.logger.Printf("task %s: team project %q, skipping remote repo creation", t.ID, t.Project)
+		return
+	}
 	ownerRepo := normalizeGitRepo(gitRemote)
 	if !strings.HasPrefix(ownerRepo, "github.com/") {
 		r.logger.Printf("task %s: git_remote %q is not a github.com repo, skipping remote repo creation", t.ID, gitRemote)
@@ -134,20 +142,64 @@ func (r *Runner) projectDescription(t task.ReadyTask) string {
 // a project, or "" when unset. Reads the map file directly (not the config
 // snapshot) so a promotion sees the latest registration.
 func gitRemoteForProject(mapFile, projectName string) string {
+	return projectEntryFromVaultMap(mapFile, projectName)["git_remote"]
+}
+
+// projectEntryFromVaultMap returns the vault-map.json entry for a project
+// (name/path/git_remote/project_type/merge_mode/conventions_reviewed), or an
+// empty map when the project is not registered. Reads the map file directly
+// (not the config snapshot) so manual edits are honored immediately.
+func projectEntryFromVaultMap(mapFile, projectName string) map[string]string {
 	data, err := os.ReadFile(mapFile)
 	if err != nil {
-		return ""
+		return nil
 	}
 	var config struct {
 		Projects []map[string]string `json:"projects"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
-		return ""
+		return nil
 	}
 	for _, p := range config.Projects {
 		if p["name"] == projectName {
-			return p["git_remote"]
+			return p
 		}
 	}
+	return nil
+}
+
+// projectMergeMode returns the merge_mode for a project: "manual" (push-only
+// delivery, human merges through the forge UI) or "fork-merge" (fork
+// development: local merge into the fork default branch, then push). "" means
+// the auto GitHub flow. Unknown projects default to auto so nothing changes
+// for unregistered/vault-only projects.
+func projectMergeMode(mapFile, projectName string) string {
+	if entry := projectEntryFromVaultMap(mapFile, projectName); entry != nil {
+		return entry["merge_mode"]
+	}
 	return ""
+}
+
+// projectIsTeam reports whether the vault-map entry marks the project as an
+// existing organization repository ("team"). Unknown projects are personal.
+func projectIsTeam(mapFile, projectName string) bool {
+	if entry := projectEntryFromVaultMap(mapFile, projectName); entry != nil {
+		return entry["project_type"] == "team"
+	}
+	return false
+}
+
+// conventionsReviewed reports whether the project's conventions baseline
+// exists — the review artifact itself is the idempotent gate marker:
+// `{vault}/Projects/{proj}/Notes/PROJECT-CONVENTIONS.md`. The conventions
+// review session creates it; deleting it re-arms the gate for a re-review.
+// Projects whose Vault directory cannot be located are treated as reviewed
+// (conservative: never block a task on an unlocatable project).
+func (r *Runner) conventionsReviewed(project string) bool {
+	projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, project)
+	if projDir == "" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(projDir, "Notes", "PROJECT-CONVENTIONS.md"))
+	return err == nil
 }

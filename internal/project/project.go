@@ -223,6 +223,14 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 			if id, ok := proj.Get("project_id"); ok {
 				entry.Set("project_id", id)
 			}
+			// Preserve hand-curated team/merge settings on update: daemon
+			// rewrites (promotion path, new-project registration) must never
+			// clobber manual vault-map edits.
+			for _, field := range []string{"project_type", "merge_mode"} {
+				if v, ok := proj.Get(field); ok {
+					entry.Set(field, v)
+				}
+			}
 			list[i] = entry
 			updated = true
 			break

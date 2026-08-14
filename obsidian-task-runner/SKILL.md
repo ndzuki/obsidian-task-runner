@@ -9,12 +9,16 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 ## Required Skills
 
-随包安装：
+随包安装（清单见 `skills/manifest`）：
 
 - `skill://obsidian-task-runner-refining`
 - `skill://obsidian-task-runner-round1`
 - `skill://obsidian-task-runner-round2`
 - `skill://obsidian-task-runner-merge`
+- `skill://obsidian-task-runner-conventions`（团队项目规范审查门禁）
+- `skill://obsidian-task-runner-priority`
+- `skill://obsidian-task-runner-pm`
+- `skill://obsidian-task-runner-split`
 
 外部依赖：
 
@@ -40,7 +44,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | status | 行为 |
 | -------- | ------ |
 | `blocked` | 五类：① 缺字段/依赖——补齐后自动 `ready`/`plan-review`；② 阶段失败——`resume_approved=true` 后恢复 `blocked_phase`；③ `API_KEY_UNAVAILABLE`——daemon 每轮探测 key，可用即自动恢复（无需 resume）；④ 人工暂停——`blocked_phase` 非空 + `REQ_MISSING` 等非瞬时错误码，保持阻塞直到手动 resume；⑤ **前置门禁失败**（`PREREQUISITE_SMOKE_FAILED`）——round2 入口门禁（如 AC-066-17）未通过时由 round2 转 blocked，daemon 每轮按 `blocked_by` **事实**（上游 `done` 且 `phase_error_code` 空 = PR 已合入）自动恢复，无用户干预；门禁失败禁止 replan 循环 |
-| `ready` | daemon 转 `refining`；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
+| `ready` | daemon 转 `refining`；**团队项目（`project_type: team`）首个任务先拦截过只读规范审查（`/obsidian-task-runner-conventions`，产物 `Notes/PROJECT-CONVENTIONS.md` 即一次性门禁标记，见「团队项目模式」）**；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
 | `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先加载 skill://wayfinder 生成 Wayfinder Map 决策地图，作为 Grilling 焦点；failed 项三分类收敛——fact 自修正 REQ、auto 采纳建议留 `auto_accepted` 审计（可推翻）、仅 dispute 进 grilling；重复争议（grill_repeat≥2）park 升级到项目级清单 |
 | `needs-refining` | 旧版遗留状态；scan 拾起后自动迁移为 needs-grilling（`nextLocalTransition`），随后走正常 Grilling 路径（Kitty tab、提醒、lease） |
 | `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；**清单 `status=paused` 时该项目 grilling 流程整体暂停**——不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 不解除；恢复靠用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 OMP 会话逐项提问，答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
@@ -50,6 +54,26 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | `review` / `conflict` | pending_req 优先→refining；rework=resume→implementing；关闭门禁仅对 `review` 生效（conflict 不关闭——先解决合并冲突）；**auto_merge 完成审计门禁**：进入 review 且 `merge_approved=false` 时先跑独立只读审计会话（受限工具面 read/grep/bash，无写工具）逐条 AC 复核原始证据——pass 才自动授权合并；fail 按失败类型分路：`implementation`（代码/测试缺陷）带审计报告转回 implementing 自动修复（round2 加载 diagnosing-bugs 消费 `phase_error`/`audit_log`），连续 `audit.max_fixes` 次仍失败升级为 **grilling 决策**（resume→继续修复重置预算 / replan→refining）；`requirement`（AC 歧义/矛盾/不可验证）直接转 needs-grilling 决策；人工已 `merge_approved=true` 的任务跳过审计。**merge 失败回退（REQ 未变 + 预算未耗尽）同样自动重授权**（`canAutoApproveMerge`：非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷即重试），停机/超时中断保持授权重启自动恢复。AI 修复预算（`merge_retry_count`，上限 `max_auto_merge_fixes`）耗尽后交还用户：① 清计数重授权继续 AI 修复；② replan（review 设 `rework_resolution=replan`；conflict 在 REQ 追加歧义裁决保存→自动转 refining）——详见 `skill://obsidian-task-runner-merge`「预算恢复」 |
 | `done` | REQ 变更按类型路由：`breaking`（含未标注，保守）→ pending_req=true 回 refining，代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted，新一轮交付新 PR）；`additive`（纯增量向后兼容）→ 保持 done，通知建议新建 TASK 承接；`cosmetic`（措辞/格式）→ 忽略；`merge_status != merged` 且有 PR/分支（任务 done 但 PR 从未合入）→ 自动重开 `review` 走 merge 闭环（auto_merge 自动授权）；**陈旧终态检测（`detectStaleDoneReopens`，每轮 scan，前置 `merge_status=merged`）**：done + `plan_version≥2` + `checkpoint_commit` 非空且**不是本地 origin/main 祖先**（git merge-base 本地检查，不 fetch）→ 未交付增量被假终态锁死（TASK-018 教训）→ 自动按 breaking 语义重开 refining + 代际重置 + 通知；git 检查不确定（无 repo/ref 缺失）→ 保守不动；否则终态；不会自动转 closed |
 | `closed` | 无需交付终态（Bets, Not Backlogs）。仅两条入口：① plan-review/review 的显式关闭门禁（用户批准 + 原因 + 备注）；② Stage-Review 用户决策 `end` 关闭**尚未开始交付**的后续阶段任务。已有计划/分支/PR/checkpoint/merge 状态或处于 planning/implementing/review/conflict 的任务会阻断整次 stage end，禁止自动关闭。closure_reason: not-bet / already-implemented / duplicate / cancelled / wont-fix。不可自动恢复 |
+
+## 团队项目模式（Team Projects）
+
+对**已存在的组织仓库**（如私有 Gitea），在 vault-map.json 手动注册即可。
+`git_remote` 指向你实际开发操作的仓库：直接在团队仓库上开发用 `merge_mode:
+manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向团队发 PR）用
+`merge_mode: fork-merge`，`git_remote` 指向你的 fork：
+
+```json
+{"name": "team-app", "path": "/work/team-app-fork",
+ "git_remote": "git@gitea.internal.example.com:yourname/team-app-fork.git",
+ "project_type": "team", "merge_mode": "fork-merge"}
+```
+
+- **`project_type: team`**：daemon 禁止对该项目自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`——仓库归团队所有，操作面只读 + 推送。
+- **`merge_mode: manual`**：交付停在**推分支**（`git push` 用仓库自身 SSH/https 凭据，不注入 gh credential helper）；不创建 PR、不轮询 CI、不自动合并。push 后写 `merge_status=pushed`、保持 `review` 并通知「请到仓库 UI 合并」；**daemon 每轮探测远端默认分支（`git ls-remote --symref` + fetch + `merge-base --is-ancestor`，默认分支名不硬编码）**，人工合入后自动转 `done`。完成审计（AC 证据复核）在 push 前照常执行。
+- **`merge_mode: fork-merge`**（fork 开发）：自动化推进到**本地 merge 完成**——在任务 worktree 中把 feature 分支 `merge --no-ff` 进 fork 默认分支（默认分支名经 `ls-remote --symref` 解析，不硬编码 main）；**冲突由 AI 会话自动解决**（`merge_retry_count` 预算，与 PR 冲突共享）；merge 成功后用仓库自身凭据 push fork 默认分支，任务自动转 `done` 并通知**「请手动向团队项目提交 PR」**——团队侧 PR/review/合入完全人工，daemon 不接触团队仓库。失败（预算耗尽）转 conflict 交还用户，与 manual 同语义。
+- **规范审查门禁**：团队项目**首个任务**在 refining 前必须通过只读规范审查（`/obsidian-task-runner-conventions`，models.default）——汇总项目的设计/代码/注释语言/API 文档/文档/提交规范到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性标记**，删除可重审）；审查只总结规范、零优化建议、零代码修改。失败转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
+- **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复全部会话，**优先级高于全局默认约定**——项目注释用中文就用中文、技术栈按项目既有模式、commit 按项目习惯；不引入项目没有的框架，不做计划外重构（团队 review 认知负担优先）。
+- **防误重开**：`detectStaleDoneReopens` 与 done 重开 merge 对团队项目跳过（squash 合入后 checkpoint 不是 main 祖先，但 `merge_status=merged` 由远端探测/本地 merge 完成写入，是权威交付证据）。
 
 ## Core Invariants（核心不变量）
 

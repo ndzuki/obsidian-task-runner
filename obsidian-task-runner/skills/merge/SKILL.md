@@ -21,13 +21,16 @@ disableModelInvocation: true
 >
 > **gh 未登录处理**：daemon 在远程操作前本地预检 `gh auth status`（无网络）。gh 缺失或未登录 → 不发起任何远程操作，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE`，`phase_error` 附 `gh auth login` 指引，并桌面通知提醒用户完成 GitHub CLI 认证；登录后重新设 `merge_approved=true` 继续。
 
-任一失败：
+## Team Delivery Modes（团队项目例外）
 
-- 不执行任何远程操作。
-- 若 pending_req=true 或 hash 不一致，清 merge_approved 并转 refining。
-- 写变更记录和错误上下文。
+**`merge_mode: manual` / `fork-merge` 的团队项目不适用上述 gh 通道**——它们
+托管在组织自己的 forge（如私有 Gitea），不依赖 GitHub CLI：
 
-用户手动重新设置 merge_approved 不能绕过 pending_req 门禁。
+- 前置门禁 5（gh 认证）**跳过**；push 走仓库自身 SSH/https 凭据（无 gh credential-helper 注入）。
+- **manual（直接在团队仓库上开发）**：流程停在**推分支**——daemon push `target_branch` 后写 `merge_status=pushed` 并保持 `review`（通知用户去仓库 UI 合并）；**不创建 PR、不轮询 CI、不自动合并、不重新授权**（`merge_approved` 保持 false，`canAutoApproveMerge` 对 pushed 状态返回 false）。完成判定由 daemon 远端探测负责（`git ls-remote --symref` 取默认分支 + `merge-base --is-ancestor`），人工合入后自动转 done。
+- **fork-merge（fork 开发，`git_remote` 指向自己的 fork）**：自动化推进到**本地 merge 完成**——daemon 在任务 worktree 中把 feature 分支 `merge --no-ff` 进 fork 默认分支（默认分支名经 `ls-remote --symref` 解析），push fork 默认分支后任务转 `done`，通知用户**手动向团队项目提交 PR**。冲突修复（本 Skill 会话）在 fork-merge 的 merge 冲突时触发：本地 commit 完成 merge commit，随后 daemon push 默认分支。**不走下方 Sync & Push 的 syncMergeBranch 祖先分流**——fork 默认分支直接 checkout 重置后本地 merge，无 feature 分支推送。
+
+本 Skill 会话（Step 0 本地冲突解决）在两种团队模式下行为一致：本地 commit、禁远程操作、需求溯源、测试通过才退出。
 
 ## Merge Flow（合并流程）
 

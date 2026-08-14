@@ -187,6 +187,8 @@ otg install \
 
 `project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
 
+**团队已有项目（私有 Gitea 等）**：手动注册并标记 `project_type: team`（daemon 禁止自动建仓/提升/gh 操作，首个任务自动过只读规范审查门禁）。`merge_mode` 按开发方式选择——`manual`：直接在团队仓库上开发，交付停在推分支、你在仓库 UI 人工合并；`fork-merge`（推荐）：`git_remote` 指向你自己的 fork，自动化 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。详见 `docs/workflow.md` §6.5.1。
+
 ### 阶段并发上限（`phase_concurrency`）
 
 `max_concurrent_tasks` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 OMP 会话导致 token 快速消耗、API 限速或资源抢占：

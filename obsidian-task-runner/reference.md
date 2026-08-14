@@ -422,13 +422,14 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 
 ## 9. Skill 安装
 
-Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink）：core、refining、round1、round2、merge、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
+Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（团队项目规范审查门禁）、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 
 **知识库字段（`kb_db` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
 
-**模型兜底（`fallback_models`）**：顶层映射，key 为 assignee（对应 `models` 的 key），value 为任意 OMP 模型标识。gpt/default/deepseek 失败时 daemon 用对应 value 重启 OMP；可增删任意 key、置 `""` 禁用单个 assignee 的兜底。默认三者均指向 `deepseek/deepseek-v4-flash`。
+
+**团队项目字段（`projects[].project_type` / `projects[].merge_mode`）**：`project_type: team` 标记已存在的组织仓库（如私有 Gitea）——daemon 禁止自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`，仓库归团队所有。`merge_mode` 三选一：缺省/`auto`（个人项目 gh 全自动）、`manual`（直接在团队仓库上开发：推分支 → `merge_status=pushed` → 人工在仓库 UI 合并 → daemon 远端探测自动 done）、`fork-merge`（fork 开发，`git_remote` 指向自己的 fork：本地 merge 进 fork 默认分支（冲突 AI 解决）→ push → done → 用户手动向团队项目发 PR）。两字段均由用户手工填写，daemon 注册/更新时**保留**（不覆盖）。团队项目首个任务自动过只读规范审查门禁（产物 `Notes/PROJECT-CONVENTIONS.md` 即一次性标记）。详见 docs/workflow.md §6.5.1 与 §8.2。
 
 **vault-map 自主维护（daemon）**：
 

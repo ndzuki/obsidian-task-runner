@@ -1210,7 +1210,17 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			r.logger.Printf("task %s: parse frontmatter before dispatch: %v", t.ID, err)
 			continue
 		}
-
+		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+		// Conventions gate intercept BEFORE the ready→refining transition:
+		// a team project's first task stays ready and dispatches the
+		// read-only conventions review instead of entering the maturity
+		// gate. The review artifact (Notes/PROJECT-CONVENTIONS.md) is the
+		// one-shot marker; delete it to re-review.
+		if fm.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project) {
+			r.logger.Printf("task %s: conventions gate: team project %q pending review", t.ID, t.Project)
+			t.Status = "ready"
+			goto dispatchConventions
+		}
 		if transition, ok := nextLocalTransition(fm); ok {
 			r.logger.Printf("task %s: local transition %s → %s (%s)", t.ID, fm.Status, transition.Status, transition.Reason)
 			if err := yamlfrontmatter.Update(t.FilePath, transition.Updates); err != nil {
@@ -1232,6 +1242,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if !transition.Dispatch {
 				continue
 			}
+		}
+	dispatchConventions:
+		if t.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project) {
+			// Fall through to the direct-phase dispatch below with the
+			// conventions phase selected by the switch — the goto above and
+			// this marker keep the gate decision in one place.
 		}
 
 		if t.Status == "needs-grilling" {
@@ -2657,6 +2673,24 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// audit.max_fixes) or to a grilling decision for requirement
 		// disputes. Session failures keep the task in review for a retry
 		// next scan.
+		// ── Manual-mode remote-merge probe ──
+		// Team projects (merge_mode=manual) deliver by pushing a branch; the
+		// human merges it through the forge UI. Each scan probes whether the
+		// pushed head landed in the remote default branch and flips the task
+		// to done. Runs before the audit gate: an already-merged delivery
+		// needs no re-audit. Merge status "pushed" guards against probing
+		// before the first push completes.
+		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+		if t.Status == "review" && projectMergeMode(mapFile, t.Project) == "manual" && t.MergeStatus == "pushed" {
+			merged, probeErr := r.checkRemoteMergedAndComplete(t, repoDir)
+			if probeErr != nil {
+				r.logger.Printf("task %s: manual merge probe: %v", t.ID, probeErr)
+			}
+			if merged {
+				processed++
+				continue
+			}
+		}
 		if t.Status == "review" {
 			audited, auditErr := r.processReviewAudit(t, repoDir)
 			if auditErr != nil {
@@ -2706,6 +2740,20 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		var phase, skillPrompt string
 
 		switch {
+		case t.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project):
+			// ── Conventions gate（团队项目首次自动化前）──
+			// A team project's first task must pass a read-only conventions
+			// review before any requirement work: the review summarizes the
+			// project's design/code/comment/API-doc/documentation/commit
+			// conventions into Notes/PROJECT-CONVENTIONS.md (the artifact
+			// itself is the one-shot gate marker; delete it to re-review).
+			// Failure blocks the task (CONVENTIONS_REVIEW_FAILED); resume
+			// re-runs the review — conventions are a precondition, never
+			// skipped.
+			phase = "conventions"
+			model = r.cfg.Model("default")
+			skillPrompt = "/obsidian-task-runner-conventions " + t.FilePath
+			r.logger.Printf("task %s: team project %q conventions review (model=%s)", t.ID, t.Project, model)
 		case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
 			phase = "priority"
 			model = r.cfg.Model("default")
@@ -3106,6 +3154,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
 			}
 		} else {
+			if phase == "conventions" && !r.conventionsReviewed(t.Project) {
+				// Session exited cleanly but the review artifact is missing
+				// (the model skipped the mandated write). Treat it as a
+				// failure: a silent success would re-trigger the gate every
+				// scan and burn sessions without ever converging.
+				reason := "conventions 会话正常退出但未生成 Notes/PROJECT-CONVENTIONS.md"
+				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrConventionsReviewFailed, reason, logPath)
+				notify.SendTaskAction(t.ID, t.Title, "⛔", "项目规范审查失败",
+					"团队项目首次自动化前的规范审查未产出 PROJECT-CONVENTIONS.md；修复后 resume_approved=true 重跑", r.cfg.Notifications.Desktop)
+				processed++
+				continue
+			}
 			r.logger.Printf("task %s: completed", t.ID)
 			if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
 				r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
@@ -3156,14 +3216,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 }
 
 // canAutoApproveMerge decides whether an auto_merge task may be re-authorized
-// without a human gate. Fresh reviews (no phase error) always qualify;
-// merge-failure fallbacks qualify when the REQ is unchanged, the failure is
-// not a permanent environment defect, and AI repair budget remains.
 func canAutoApproveMerge(t task.ReadyTask, currentReqHash string, maxAutoMergeFixes int) bool {
 	if t.Status != "review" && t.Status != "conflict" {
 		return false
 	}
 	if t.MergeApproved || !t.AutoMerge || t.PendingReq {
+		return false
+	}
+	if t.MergeStatus == "pushed" {
+		// Manual-mode delivery already pushed: the branch waits for a human
+		// merge in the forge UI. Re-authorizing would re-push the same head
+		// and re-notify on every scan; the remote-merge probe owns
+		// completion.
 		return false
 	}
 	if t.PhaseErrorCode == "" {

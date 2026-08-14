@@ -46,6 +46,64 @@ func TestBuildProjectContext_ReleaseManager(t *testing.T) {
 	}
 }
 
+// TestBuildProjectContextInjectsConventions verifies the conventions baseline
+// (PROJECT-CONVENTIONS.md) is injected into the project context even when no
+// CONTEXT.md exists — team projects rely on it as their sole convention
+// source for the first phases.
+func TestBuildProjectContextInjectsConventions(t *testing.T) {
+	dir := t.TempDir()
+	notesDir := filepath.Join(dir, "Notes")
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conv := "# team-app 项目规范基线\n\n## 注释规范\n- **语言**: 中文\n\n## 代码规范\n- 错误处理: Go 1.20 errors.Join\n"
+	if err := os.WriteFile(filepath.Join(notesDir, "PROJECT-CONVENTIONS.md"), []byte(conv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reqPath := filepath.Join(dir, "REQ.md")
+	if err := os.WriteFile(reqPath, []byte("# REQ\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := BuildProjectContext(dir, reqPath)
+	if ctx == "" {
+		t.Fatal("expected non-empty context (conventions baseline alone must inject)")
+	}
+	if !strings.Contains(ctx, "Project Conventions") {
+		t.Fatal("missing Project Conventions section")
+	}
+	if !strings.Contains(ctx, "中文") {
+		t.Fatal("conventions content missing from context")
+	}
+}
+
+// TestBuildProjectContextConventionsOverrideDefault pins the precedence: the
+// conventions section must appear before the generic sections so a session
+// reading top-down applies the project rules first.
+func TestBuildProjectContextConventionsOverrideDefault(t *testing.T) {
+	dir := t.TempDir()
+	notesDir := filepath.Join(dir, "Notes")
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notesDir, "CONTEXT.md"), []byte("## Development Constraints\n- 约束A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notesDir, "PROJECT-CONVENTIONS.md"), []byte("## 注释规范\n- 中文\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reqPath := filepath.Join(dir, "REQ.md")
+	if err := os.WriteFile(reqPath, []byte("# REQ\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := BuildProjectContext(dir, reqPath)
+	if !strings.Contains(ctx, "Project Conventions") || !strings.Contains(ctx, "中文") {
+		t.Fatalf("conventions must be injected alongside CONTEXT.md sections:\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "约束A") {
+		t.Fatalf("CONTEXT.md constraints must still be injected:\n%s", ctx)
+	}
+}
+
 func TestContextCacheInvalidation(t *testing.T) {
 	dir := t.TempDir()
 	notesDir := filepath.Join(dir, "Notes")

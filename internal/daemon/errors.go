@@ -30,6 +30,7 @@ const (
 	ErrBranchOwnershipConflict  ErrorCode = "BRANCH_OWNERSHIP_CONFLICT"
 	ErrDependencyCycle          ErrorCode = "DEPENDENCY_CYCLE"
 	ErrPrerequisiteSmokeFailed  ErrorCode = "PREREQUISITE_SMOKE_FAILED"
+	ErrConventionsReviewFailed  ErrorCode = "CONVENTIONS_REVIEW_FAILED"
 	ErrInternal                 ErrorCode = "INTERNAL"
 	ErrAuditFailed              ErrorCode = "AUDIT_FAILED"
 )
@@ -60,8 +61,8 @@ var stableErrorCodes = []ErrorCode{
 	ErrBranchOwnershipConflict,
 	ErrDependencyCycle,
 	ErrPrerequisiteSmokeFailed,
+	ErrConventionsReviewFailed,
 	ErrAuditFailed,
-	ErrInternal,
 }
 
 type recoveryPolicy string
