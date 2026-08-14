@@ -73,6 +73,7 @@ type mergeDecision struct {
 	ErrorCode ErrorCode
 	Reason    string
 }
+
 func evaluateMergeChecks(approvedHead string, checks mergeChecks) mergeDecision {
 	if approvedHead == "" || checks.HeadOID != approvedHead {
 		return mergeDecision{Action: mergeActionReview, ErrorCode: ErrBaseCommitMismatch, Reason: "approved head changed"}

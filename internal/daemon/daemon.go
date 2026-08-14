@@ -70,8 +70,8 @@ type Runner struct {
 	overlapWaits       sync.Map              // taskPath → time.Time (when an overlap-deferred task started waiting; bounded by max_overlap_wait_minutes)
 	activeTasks        atomic.Int32          // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index           // frontmatter cache: watcher events invalidate, scans reuse
-	conflictPRProbed    sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
-	gatedLogged         map[string]bool       // task paths whose dependency-gate log was emitted
+	conflictPRProbed   sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
+	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -197,6 +197,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.cfg.ConcurrencyFor("refining"), r.cfg.ConcurrencyFor("planning"),
 		r.cfg.ConcurrencyFor("merge"), r.cfg.ConcurrencyFor("priority"), r.cfg.ConcurrencyFor("pm"))
 	r.cleanupOldLogs()
+	// 启动即回收历史遗留：过期 frontmatter 锁文件与 grilling debounce 文件
+	//（曾因不清理在 /tmp 累积上万个，无 swap 机器上占不可回收内存）与
+	// 终态/孤儿任务的 git worktree。
+	yamlfrontmatter.CleanStaleTaskLocks()
+	notify.CleanStaleKittyDebounceFiles()
+	r.cleanupOrphanWorktrees()
 
 	// Run an initial scan to catch any tasks that became ready while daemon was down.
 	// Scans run on the scan-gate goroutine so this event loop never blocks
@@ -364,6 +370,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.requestScan()
 		case <-ticker.C:
 			r.logger.Println("timer: periodic scan")
+			// 周期回收：锁文件与 grilling debounce 文件 24h 过期清理 +
+			// 终态/孤儿 worktree 回收，防止长期运行再次累积
+			//（8/14：15325 锁文件、1052 worktree）。
+			yamlfrontmatter.CleanStaleTaskLocks()
+			notify.CleanStaleKittyDebounceFiles()
+			r.cleanupOrphanWorktrees()
 			r.requestScan()
 		}
 	}
@@ -478,6 +490,10 @@ func (r *Runner) RunOnce() error {
 		return nil // not an error — watcher daemon is handling it
 	}
 	defer unlock()
+	// --once 兜底轮询同样回收过期锁文件与 grilling debounce 文件
+	//（低频触发，24h 窗口内至多一次生效）。
+	yamlfrontmatter.CleanStaleTaskLocks()
+	notify.CleanStaleKittyDebounceFiles()
 	_ = r.scanAndProcess()
 	// A --once run has no resident scan loop to pick up completed tasks, so
 	// wait for the dispatched OMP sessions here (same synchronous semantics
@@ -1240,6 +1256,9 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: apply local transition: %v", t.ID, err)
 				continue
 			}
+			if transition.Status == "done" || transition.Status == "closed" {
+				r.cleanupTaskArtifacts(t.FilePath, r.repoDirForTask(t.Project))
+			}
 			if strings.Contains(transition.Reason, "auto_approve") {
 				// Default plan automation (auto_approve defaults true, so
 				// Grilling is the only manual gate): tell the user the plan
@@ -1419,9 +1438,10 @@ func (r *Runner) processPreparedTask(prepared preparedTask) int {
 		r.logger.Printf("task %s: skipping (already scheduled in this daemon)", prepared.task.ID)
 		return 0
 	}
-	defer r.taskRuns.Delete(taskKey)
-
-	return r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
+	processed := r.processBatchSequential([]task.ReadyTask{prepared.task}, prepared.workDir)
+	r.taskRuns.Delete(taskKey)
+	r.cleanupTaskArtifacts(prepared.task.FilePath, prepared.repoDir)
+	return processed
 }
 
 func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[string]interface{}) error {
@@ -1518,6 +1538,96 @@ func gitDiffNameOnly(repoDir string) ([]string, error) {
 func taskRunKey(taskPath string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(taskPath)))
 	return fmt.Sprintf("%x", sum[:8])
+}
+
+// taskTempDirForKey returns the private temporary directory inherited by all
+// child processes for one task. Keeping TMPDIR task-scoped makes go test,
+// go build, mktemp, and agent-created temporary files attributable and
+// removable when the task reaches a terminal state.
+func taskTempDirForKey(runKey string) string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		cacheDir = os.TempDir()
+	}
+	return filepath.Join(cacheDir, "otg", "tasks", runKey)
+}
+
+// setTaskTempEnv gives a child process an isolated temporary directory.
+func setTaskTempEnv(cmd *exec.Cmd, taskPath string) error {
+	dir := taskTempDirForKey(taskRunKey(taskPath))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create task temp directory: %w", err)
+	}
+	base := os.Environ()
+	env := make([]string, 0, len(base)+4)
+	keys := []string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR"}
+	for _, entry := range base {
+		skip := false
+		for _, key := range keys {
+			if strings.HasPrefix(entry, key+"=") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			env = append(env, entry)
+		}
+	}
+	for _, key := range keys {
+		env = append(env, key+"="+dir)
+	}
+	cmd.Env = env
+	return nil
+}
+
+// cleanupTaskArtifacts removes task-owned temporary state after a terminal
+// write-back. Task logs remain as the audit trail; the private temp directory,
+// stale PID file, and terminal worktree are disposable resources.
+func (r *Runner) cleanupTaskArtifacts(taskPath, repoDir string) {
+	if taskPath == "" {
+		return
+	}
+	runKey := taskRunKey(taskPath)
+	if _, active := r.taskRuns.Load(runKey); active {
+		return
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil || (fm.Status != "done" && fm.Status != "closed") {
+		return
+	}
+	if err := os.RemoveAll(taskTempDirForKey(runKey)); err != nil {
+		r.logger.Printf("task %s: remove temp directory: %v", fm.ID, err)
+	}
+	if fm.ID != "" {
+		pidPath := taskPIDFile(r.taskLogDir(), fm.ID, taskPath)
+		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+			r.logger.Printf("task %s: remove PID file: %v", fm.ID, err)
+		}
+	}
+	if repoDir != "" && (fm.Status == "closed" || fm.MergeStatus == "merged") {
+		r.removeTaskWorktree(repoDir, runKey, fm.ID)
+	}
+}
+
+func (r *Runner) removeTaskWorktree(repoDir, runKey, taskID string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))[:12]
+	wtPath := filepath.Join(home, ".omp", "worktrees", repoHash, "TASK-"+runKey)
+	if _, err := os.Stat(wtPath); err != nil {
+		return
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "worktree", "remove", "--force", wtPath).CombinedOutput(); err != nil {
+		r.logger.Printf("task %s: remove terminal worktree: %v: %s", taskID, err, out)
+		return
+	}
+	r.worktreeCache.Delete(runKey)
 }
 
 func taskPIDFile(taskLogDir, taskID, taskPath string) string {
@@ -2957,6 +3067,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 
 		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
+		if err := setTaskTempEnv(cmd, taskPath); err != nil {
+			r.logger.Printf("task %s: create child temp environment: %v", t.ID, err)
+			cancel()
+			continue
+		}
 		// Graceful shutdown: on ctx cancellation (daemon stop or phase timeout)
 		// send SIGTERM so omp can persist its session, then hard-kill after
 		// WaitDelay if it does not exit.
@@ -3111,6 +3226,14 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				fallbackArgs = append(fallbackArgs, args[2:]...)
 				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
 				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
+				if err := setTaskTempEnv(retryCmd, taskPath); err != nil {
+					// 临时目录创建失败属环境故障：不启动 fallback，直接按主模型
+					// 失败记录（blocked/重试路径），避免每轮 scan 静默重试。
+					r.logger.Printf("task %s: create fallback temp environment: %v", t.ID, err)
+					fbCancel()
+					r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
+					continue
+				}
 				retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
 				retryCmd.WaitDelay = 30 * time.Second
 				retryCmd.Dir = repoDir
@@ -3486,13 +3609,8 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 	}
 	if result.Status == "existing" {
 		// Vault-fallback promotion: a registered project whose path is not a
-		// git root (registered via the Vault project dir fallback) but has a
-		// conventional git_remote must run in its own checkout — otherwise
-		// worktrees and merges silently target the enclosing Vault repo
-		// (wrong-repo merges, observed with TASK-001-demo). Promotion
-		// failures fall back to the registered path: read-only phases must
-		// not block, and the merge-time ensureGitRemote guard still refuses
-		// pushes to a mismatched origin.
+		// git root but has a conventional git_remote must run in its own
+		// checkout. Promotion failures fall back to the registered path.
 		promoted, promoteErr := r.ensureProjectCheckout(t, result.Path)
 		if promoteErr != nil {
 			r.logger.Printf("task %s: promote project %s to standalone checkout: %v", t.ID, projectName, promoteErr)
@@ -3501,18 +3619,15 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 		return promoted, nil
 	}
 	if result.Status == "new" {
-		if err := os.MkdirAll(result.Path, 0755); err != nil {
+		if err := os.MkdirAll(result.Path, 0o755); err != nil {
 			return "", fmt.Errorf("create new project %s: %w", result.Path, err)
 		}
-		// Auto-register the new project in vault-map.json (name/path/
-		// git_remote/project_id generated from existing conventions) so later
-		// scans resolve it as "existing" without manual configuration.
+		// Auto-register the new project in vault-map.json so later scans
+		// resolve it as existing without manual configuration.
 		gitRemote := project.GitRemoteFor(mapFile, projectName)
 		if err := project.RegisterProject(mapFile, projectName, result.Path, gitRemote, false); err != nil {
 			r.logger.Printf("task %s: register new project %s: %v", t.ID, projectName, err)
 		}
-		// Seed the CONTEXT.md skeleton so context injection has a base and
-		// agents build on it instead of creating ad-hoc files.
 		if err := r.ensureProjectContext(result.Path); err != nil {
 			r.logger.Printf("task %s: seed CONTEXT.md: %v", t.ID, err)
 		}
@@ -3558,6 +3673,124 @@ func (r *Runner) ensureProjectContext(projDir string) error {
 
 func (r *Runner) selectModel(assignee string) string {
 	return r.cfg.Model(assignee)
+}
+
+// cleanupOrphanWorktrees 回收已交付/关闭/孤儿任务的 git worktree。
+//
+// 背景：每个 round2 任务在 ~/.omp/worktrees/<repoHash>/TASK-<runkey> 创建
+// 独立 worktree，此前从不回收——8/14 观察：1052 个 worktree 占用 4GB，
+// 且每个都注册进仓库 git 元数据，拖慢所有 git 操作。本函数在 daemon 启动
+// 和每个 ticker 周期调用，回收满足任一条件的 worktree：
+//
+//   - 任务文件不存在（任务被删除/项目移除）→ 孤儿
+//   - 任务状态 closed → 绝对终态，不会再调度
+//   - 任务状态 done 且 merge_status=merged → 已合并交付
+//
+// done 未合并的 worktree 必须保留：DoneReopensMerge 会重开 merge 流程；
+// 非终态任务下次调度直接复用现有 worktree（省重建）。调度保护：taskRuns
+// 中在调度/执行的任务绝不回收（prepareBatch 创建 worktree 先于 taskRuns
+// 注册，但清理判据只回收终态/孤儿，此窗口无害）。
+func (r *Runner) cleanupOrphanWorktrees() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	wtRoot := filepath.Join(home, ".omp", "worktrees")
+	repoDirs, err := os.ReadDir(wtRoot)
+	if err != nil {
+		return
+	}
+	// 只扫描当前 vault 配置中的仓库；其他 vault 的 worktree 不属于本次
+	// daemon，不能因当前 vault 看不到对应 TASK 就误判为孤儿。
+	allowedRepos := make(map[string]bool, len(r.cfg.Projects))
+	for _, project := range r.cfg.Projects {
+		if project.Path == "" {
+			continue
+		}
+		repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(filepath.Clean(project.Path))))[:12]
+		allowedRepos[repoHash] = true
+	}
+	if len(allowedRepos) == 0 {
+		return
+	}
+	active := make(map[string]bool)
+	r.taskRuns.Range(func(key, _ interface{}) bool {
+		active[key.(string)] = true
+		return true
+	})
+	live := r.liveTaskWorktreeKeys()
+	for _, repoDir := range repoDirs {
+		if !repoDir.IsDir() || !allowedRepos[repoDir.Name()] {
+			continue
+		}
+		dir := filepath.Join(wtRoot, repoDir.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), "TASK-") {
+				continue
+			}
+			runKey := strings.TrimPrefix(e.Name(), "TASK-")
+			if active[runKey] || live[runKey] {
+				continue
+			}
+			wtPath := filepath.Join(dir, e.Name())
+			r.logger.Printf("cleanup: reclaiming worktree %s (task terminal or orphan)", wtPath)
+			if out, err := exec.Command("git", "-C", wtPath, "worktree", "remove", "--force", wtPath).CombinedOutput(); err != nil {
+				r.logger.Printf("cleanup: git worktree remove %s: %v: %s", wtPath, err, out)
+				continue
+			}
+			if err := os.RemoveAll(wtPath); err != nil {
+				r.logger.Printf("cleanup: remove worktree dir %s: %v", wtPath, err)
+			}
+			r.worktreeCache.Delete(runKey)
+		}
+	}
+}
+
+// liveTaskWorktreeKeys 遍历 vault 所有任务文件，返回仍活跃的 runkey。
+// 不在集合中的 worktree 可回收：任务文件不存在或已到终态。
+func (r *Runner) liveTaskWorktreeKeys() map[string]bool {
+	live := make(map[string]bool)
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return live
+	}
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, project.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "TASK-") || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(tasksDir, entry.Name())
+			fm, err := yamlfrontmatter.ParseTaskDocument(path)
+			if err != nil {
+				continue
+			}
+			if taskWorktreeTerminal(fm) {
+				continue
+			}
+			live[taskRunKey(path)] = true
+		}
+	}
+	return live
+}
+
+func taskWorktreeTerminal(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm.Status == "closed" {
+		return true
+	}
+	return fm.Status == "done" && fm.MergeStatus == "merged"
 }
 
 // cleanupOldLogs removes task log files older than 7 days.

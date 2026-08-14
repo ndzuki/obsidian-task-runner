@@ -31,6 +31,15 @@ import (
 // (withAPIKeyValue / apiKeyProbe.Store) and restore via Cleanup.
 func TestMain(m *testing.M) {
 	apiKeyProbe.Store(func() bool { return true })
+	// 任务临时目录（setTaskTempEnv / cleanupTaskArtifacts）与锁文件都落在
+	// XDG_CACHE_HOME；测试必须隔离，否则 dispatch 路径会污染真实
+	// ~/.cache/otg/tasks|locks（2026-08-14：全量测试在真实目录留下 269 个
+	// /tmp/TestXxx 路径 hash 的空目录）。
+	cacheDir, err := os.MkdirTemp("", "otg-test-cache-")
+	if err != nil {
+		panic("create test cache dir: " + err.Error())
+	}
+	os.Setenv("XDG_CACHE_HOME", cacheDir)
 	os.Exit(m.Run())
 }
 
@@ -1057,6 +1066,7 @@ func TestEnsureTaskWorktreeBindsDetachedToTargetBranch(t *testing.T) {
 		t.Fatalf("branch after bind = %q, want task/010-feature", branch)
 	}
 }
+
 // TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout pins the isolation
 // contract: when the primary checkout sits on the target branch (the old
 // fallback let merge pollute the user's working directory, TASK-067), the

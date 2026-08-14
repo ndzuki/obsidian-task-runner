@@ -34,7 +34,7 @@ func TestProcessAutoStagingPhasesUnstagedTasks(t *testing.T) {
 	writeTask("TASK-003-c.md", "003", "done", "") // excluded
 
 	runner := New(&config.Config{
-		ObsidianVault: vault,
+		ObsidianVault:    vault,
 		StageMinPerPhase: 1,
 		StageMaxPhases:   4,
 	})
@@ -117,7 +117,7 @@ updated: 2026-08-05T00:00:00+08:00
 	}
 
 	runner := New(&config.Config{
-		ObsidianVault: vault,
+		ObsidianVault:    vault,
 		StageMinPerPhase: 1,
 		StageMaxPhases:   4,
 	})

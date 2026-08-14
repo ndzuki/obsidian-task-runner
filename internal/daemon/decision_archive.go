@@ -134,8 +134,8 @@ updated: %s
 			continue
 		}
 		_ = yamlfrontmatter.Update(listPath, map[string]interface{}{
-			"answered_count":          len(answered),
-			"pending_count":           len(pendingBlocks),
+			"answered_count":           len(answered),
+			"pending_count":            len(pendingBlocks),
 			"distributed_answers_hash": grillingAnswersHash(newMain),
 			"last_distributed_at":      now.Format(time.RFC3339),
 		})

@@ -14,11 +14,11 @@ import (
 func TestCanAutoApproveMerge(t *testing.T) {
 	const reqHash = "sha256:abc"
 	tests := []struct {
-		name  string
-		task  task.ReadyTask
-		hash  string
-		max   int
-		want  bool
+		name string
+		task task.ReadyTask
+		hash string
+		max  int
+		want bool
 	}{
 		{
 			name: "fresh review auto-approves",

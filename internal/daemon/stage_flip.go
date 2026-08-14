@@ -243,7 +243,9 @@ func (r *Runner) closePhaseTasks(projDir string, phases []stagePhase, startIdx i
 			"closure_note":   "阶段化交付提前结束（用户评估满意）",
 		}); err != nil {
 			r.logger.Printf("project close phase task %s: %v", entry.Name(), err)
+			continue
 		}
+		r.cleanupTaskArtifacts(path, r.repoDirForTask(fm.Project))
 	}
 }
 

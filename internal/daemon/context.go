@@ -2,16 +2,14 @@ package daemon
 
 import (
 	"fmt"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
-
-
 
 // contextTerm is a domain term parsed from CONTEXT.md's ## Language section.
 type contextTerm struct {
@@ -483,6 +481,7 @@ func dynamicTermCount(parts []string, adrCount int) int {
 	}
 	return n
 }
+
 // compactConstraints extracts the core prohibition from each constraint line.
 func compactConstraints(raw string) string {
 	var lines []string
@@ -532,9 +531,6 @@ func truncateDef(def string, maxLen int) string {
 	}
 	return def[:maxLen]
 }
-
-
-
 
 // wholeWordMatch returns true if the keyword appears as a whole word in text.
 // A "word" boundary is defined by non-alphanumeric characters. Keywords and
