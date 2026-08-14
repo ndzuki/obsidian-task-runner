@@ -42,6 +42,8 @@ func writeTeamVaultMapMode(t *testing.T, dir, name, path, mergeMode string) stri
 // newForkMergeFixture builds a bare origin (the fork) + working repo. main
 // carries a base commit (pushed); the feature branch carries one extra commit
 // and is NOT pushed — fork-merge delivery never pushes the feature branch.
+// The PRIMARY checkout sits on main while the feature branch lives in the
+// task worktree (the real daemon layout, TASK-067).
 // Returns (repo, origin, taskPath, runner, candidate).
 func newForkMergeFixture(t *testing.T, mergeMode string) (string, string, string, *Runner, task.ReadyTask) {
 	t.Helper()
@@ -72,6 +74,15 @@ func newForkMergeFixture(t *testing.T, mergeMode string) (string, string, string
 	}
 	git(t, "-C", repo, "add", "feature.txt")
 	git(t, "-C", repo, "commit", "-m", "feature")
+	// Detach the primary checkout (the task worktree binds the feature
+	// branch; forkMergeDelivery must be able to check out main inside the
+	// worktree, which git forbids while the primary checkout holds it).
+	git(t, "-C", repo, "checkout", "--detach")
+	// Release the feature branch from the primary checkout so the task
+	// worktree can bind it.
+	// The task worktree carries the feature branch; processMergeTask must
+	// find and reuse it via the same taskRunKey the daemon uses.
+
 
 	vault := filepath.Join(dir, "vault")
 	reqDir := filepath.Join(vault, "Projects", "001-team-app", "Requirements")
@@ -106,6 +117,12 @@ target_branch: task/001-fork
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
+	// The task worktree carries the feature branch; processMergeTask must
+	// find and reuse it via the same taskRunKey the daemon uses.
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-fork"); err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
 
 	skillDir := writeTeamVaultMapMode(t, dir, "team-app", repo, mergeMode)
 	runner := newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
@@ -120,7 +137,9 @@ target_branch: task/001-fork
 
 // makeForkConflict rewrites base.txt on both main and the feature branch so a
 // later `git merge` conflicts, and pushes the new main to the fork origin.
-func makeForkConflict(t *testing.T, repo string) {
+// The feature-side edit happens inside the task worktree (the branch lives
+// there, never on the primary checkout).
+func makeForkConflict(t *testing.T, worktree, repo string) {
 	t.Helper()
 	git(t, "-C", repo, "checkout", "main")
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("main-change\n"), 0o644); err != nil {
@@ -128,11 +147,16 @@ func makeForkConflict(t *testing.T, repo string) {
 	}
 	git(t, "-C", repo, "commit", "-am", "main change")
 	git(t, "-C", repo, "push")
-	git(t, "-C", repo, "checkout", "task/001-fork")
-	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("feature-change\n"), 0o644); err != nil {
+	// Leave the primary checkout off main so forkMergeDelivery can check
+	// out main inside the task worktree.
+	git(t, "-C", repo, "checkout", "--detach")
+	// The feature side changes inside the task worktree, whose gitdir is
+	// shared with the primary checkout (same repo), so the branch commit
+	// is visible to every worktree.
+	if err := os.WriteFile(filepath.Join(worktree, "base.txt"), []byte("feature-change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	git(t, "-C", repo, "commit", "-am", "feature change")
+	git(t, "-C", worktree, "commit", "-am", "feature change")
 }
 
 // TestProcessMergeTaskForkMergeHappyPath drives the fork-merge delivery: the
@@ -186,8 +210,11 @@ func TestProcessMergeTaskForkMergeHappyPath(t *testing.T) {
 // merge), then the fork default branch is pushed and the task completes.
 func TestForkMergeConflictAutoResolved(t *testing.T) {
 	repo, origin, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	makeForkConflict(t, repo)
-
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
+	makeForkConflict(t, worktree, repo)
 	// Fake OMP resolves the in-progress merge by taking the feature side
 	// (--theirs = the merged branch) and committing — completing the merge
 	// commit, like the real AI session would after editing markers out.
@@ -233,13 +260,14 @@ exit 0
 
 // TestForkMergeConflictBudgetExhausted: when the AI repair budget is already
 // exhausted (0), a merge conflict hands the task straight back to the human —
-// status=conflict with the conflict-resolve-attempted marker and the merge
-// authorization revoked.
 func TestForkMergeConflictBudgetExhausted(t *testing.T) {
 	repo, _, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	makeForkConflict(t, repo)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
+	makeForkConflict(t, worktree, repo)
 	runner.cfg.MaxAutoMergeFixes = 0 // no budget at all: AI session never starts
-
 	if err := runner.processMergeTask(candidate, repo); err != nil {
 		t.Fatalf("processMergeTask: %v", err)
 	}
@@ -262,7 +290,11 @@ func TestForkMergeConflictBudgetExhausted(t *testing.T) {
 // mirroring the errConflictResolutionInterrupted semantics of the PR flow.
 func TestForkMergeConflictInterruptedKeepsAuthorization(t *testing.T) {
 	repo, _, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	makeForkConflict(t, repo)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
+	makeForkConflict(t, worktree, repo)
 	runner.cfg.MaxAutoMergeFixes = 1
 
 	// Fake OMP blocks until released (like a real AI session that outlives

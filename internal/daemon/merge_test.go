@@ -175,18 +175,19 @@ func TestPrURLFromCreateError(t *testing.T) {
 }
 
 // mergeFixture bundles the shared setup for merge-flow end-to-end tests:
-// a vault with an authorized review task, a git repo on the target branch
-// with an origin remote, and a Runner wired to them. gh/git fakes are
-// installed separately per test so each scenario controls its own remote
-// behavior.
+// a vault with an authorized review task, a git repo whose PRIMARY checkout
+// sits on main while the target branch lives in the task worktree (the real
+// daemon layout — merge must run in the round2 worktree, never the main
+// checkout, TASK-067), and a Runner wired to them. gh/git fakes are installed
+// separately per test so each scenario controls its own remote behavior.
 type mergeFixture struct {
 	repo      string
+	worktree  string
 	head      string
 	taskPath  string
 	runner    *Runner
 	candidate task.ReadyTask
 }
-
 const mergeFixtureBranch = "task/064-rollout"
 const mergeFixturePR = "https://github.com/x/y/pull/66"
 
@@ -227,11 +228,8 @@ target_branch: %s
 	}
 
 	repo := filepath.Join(dir, "repo")
-	if output, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
+	if output, err := exec.Command("git", "init", "-b", "main", repo).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
-	}
-	if output, err := exec.Command("git", "-C", repo, "checkout", "-b", mergeFixtureBranch).CombinedOutput(); err != nil {
-		t.Fatalf("checkout branch: %v: %s", err, output)
 	}
 	// Isolate from the developer's global git config: a global
 	// commit.gpgsign=true backed by an SSH key fails when the ssh-agent has
@@ -245,17 +243,34 @@ target_branch: %s
 			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 		}
 	}
+	if output, err := exec.Command("git", "-C", repo, "commit", "--allow-empty", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("commit base: %v: %s", err, output)
+	}
+	// Create the feature branch and its WIP commit, then return the primary
+	// checkout to main so the task worktree can bind the feature branch.
+	if output, err := exec.Command("git", "-C", repo, "checkout", "-b", mergeFixtureBranch).CombinedOutput(); err != nil {
+		t.Fatalf("checkout branch: %v: %s", err, output)
+	}
 	if output, err := exec.Command("git", "-C", repo, "commit", "--allow-empty", "-m", "wip").CombinedOutput(); err != nil {
 		t.Fatalf("commit: %v: %s", err, output)
 	}
+	if output, err := exec.Command("git", "-C", repo, "checkout", "main").CombinedOutput(); err != nil {
+		t.Fatalf("checkout main: %v: %s", err, output)
+	}
 	if output, err := exec.Command("git", "-C", repo, "remote", "add", "origin", "https://github.com/x/y.git").CombinedOutput(); err != nil {
 		t.Fatalf("add origin: %v: %s", err, output)
+	}
+	// The task worktree is created with the same key the daemon uses, so
+	// processMergeTask reuses it instead of creating a second one.
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), mergeFixtureBranch)
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
 	head := gitCurrentHead(repo, mergeFixtureBranch)
 	if head == "" {
 		t.Fatal("branch head unavailable")
 	}
-
 	// Fake git forwards everything except push (which would hit the network).
 	binDir := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -284,6 +299,7 @@ target_branch: %s
 	runner.cfg.ObsidianVault = vault
 	return &mergeFixture{
 		repo:     repo,
+		worktree: worktree,
 		head:     head,
 		taskPath: taskPath,
 		runner:   runner,

@@ -22,8 +22,9 @@ func writeTeamVaultMap(t *testing.T, dir, name, path string) string {
 
 // newManualMergeFixture builds a real bare origin + working repo pair so the
 // manual-mode delivery path (push, default-branch probe, ancestor check) runs
-// against genuine git semantics. The working repo sits on the feature branch
-// (mirroring the round2 worktree convention).
+// against genuine git semantics. The PRIMARY checkout sits on main while the
+// feature branch lives in the task worktree (mirroring the round2 worktree
+// convention — merge never runs on the main checkout, TASK-067).
 func newManualMergeFixture(t *testing.T) (repo, origin, taskPath string, runner *Runner, candidate task.ReadyTask, head string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -48,10 +49,15 @@ func newManualMergeFixture(t *testing.T) (repo, origin, taskPath string, runner 
 	// The branch is already pushed (the manual delivery pushed it); the
 	// probe tests rely on the remote state matching a delivered task.
 	git(t, "-C", repo, "push", "-u", "origin", "task/001-manual")
+	// Release the feature branch from the primary checkout so the task
+	// worktree can bind it (the real daemon layout).
+	git(t, "-C", repo, "checkout", "main")
 	head = gitCurrentHead(repo, "task/001-manual")
 	if head == "" {
 		t.Fatal("feature head unavailable")
 	}
+	// vault/task scaffolding below; the task worktree is created after
+	// taskPath is defined.
 
 	vault := filepath.Join(dir, "vault")
 	reqDir := filepath.Join(vault, "Projects", "001-team-app", "Requirements")
@@ -90,6 +96,12 @@ target_branch: task/001-manual
 	skillDir := writeTeamVaultMap(t, dir, "team-app", repo)
 	runner = newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
+	// The task worktree carries the feature branch; processMergeTask must
+	// find and reuse it via the same taskRunKey the daemon uses.
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-manual"); err != nil {
+		t.Fatalf("ensureTaskWorktree: %v", err)
+	}
 	candidate = task.ReadyTask{
 		ID: "001", Title: "Team Task", Project: "team-app",
 		FilePath: taskPath, Status: "review", MergeApproved: true,

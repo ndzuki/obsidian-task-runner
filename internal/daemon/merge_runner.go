@@ -238,8 +238,28 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// branch and corrupts both (TASK-051/059: the main checkout sat on
 	// task/067; sync merged origin/task/051 into it, a 14-file conflict, and
 	// budget exhaustion then left a stale MERGE_HEAD polluting later runs).
-	if wd, wdErr := ensureTaskWorktree(repoDir, candidate.ID, fm.TargetBranch); wdErr != nil {
-		r.logger.Printf("task %s: merge worktree unavailable (%v), falling back to main checkout", candidate.ID, wdErr)
+	// The worktree is keyed by taskRunKey(filePath), the SAME key round2 and
+	// audit use — a merge must reuse the round2 worktree, never look up a
+	// TASK-<id> directory that does not exist (TASK-067: merge fell back to
+	// the main checkout, the AI session polluted its index with another
+	// task's staged files, and `git merge --abort` spun forever on
+	// "Entry ... not uptodate").
+	if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(candidate.FilePath), fm.TargetBranch); wdErr != nil {
+		// Never fall back to the main checkout: merge performs write
+		// operations (sync three-way merge, checkout, commit, push). A
+		// missing/misbound worktree is an environment defect (e.g. the
+		// target branch is checked out by another worktree) that must be
+		// surfaced, not worked around by touching the user's primary
+		// working directory. The task stays review + merge_approved=true,
+		// so the next scan resumes automatically once the environment is
+		// fixed.
+		// Debounced per task (notifyFailure, 5min window): the merge
+		// retries on every scan while the environment is broken, and a
+		// bare SendTaskAction would re-toast each round (TASK-067
+		// notification storm).
+		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "🚫", "Merge 工作区不可用",
+			fmt.Sprintf("任务 worktree 无法绑定分支 %s（%v）。请确认主 checkout 不在该分支上、无残留 worktree 占用，修复后 daemon 自动重试", fm.TargetBranch, wdErr), failNotifyReason)
+		return fmt.Errorf("merge worktree unavailable: %w", wdErr)
 	} else {
 		repoDir = wd
 	}
@@ -432,9 +452,11 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 						"phase_error_code": string(decision.ErrorCode),
 						"phase_error":      decision.Reason + "; AI CI-fix failed: " + err.Error(),
 					})
-					notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-					notify.SendTaskAction(candidate.ID, candidate.Title, "❌", "合并被拒绝",
-						decision.Reason+"；AI 修复失败，解决后重新设置 merge_approved=true 即可重试", r.cfg.Notifications.Desktop)
+					// Debounced per task (notifyFailure): a failed CI fix
+					// re-authorizes on the next scan (auto_merge), which
+					// would re-toast every round without a window.
+					r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "❌", "合并被拒绝",
+						decision.Reason+"；AI 修复失败，解决后重新设置 merge_approved=true 即可重试", failNotifyReason)
 					return updateErr
 				}
 				// Fix committed locally: push and re-evaluate checks.
@@ -448,7 +470,10 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 						"phase_error_code": string(decision.ErrorCode),
 						"phase_error":      decision.Reason + "; push CI fix failed: " + strings.TrimSpace(string(output)),
 					})
-					notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+					// Debounced: push-CI-fix failure also re-authorizes next
+					// scan; keep the toast rate bounded.
+					r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "❌", "合并被拒绝",
+						decision.Reason+"；AI 修复推送失败，解决后重新设置 merge_approved=true 即可重试", failNotifyReason)
 					return updateErr
 				}
 				approvedHead = gitCurrentHead(repoDir, fm.TargetBranch)
@@ -461,9 +486,12 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 				"phase_error_code": string(decision.ErrorCode), "phase_error": decision.Reason +
 					"; 自动修复已达上限（" + fmt.Sprint(r.cfg.MaxAutoMergeFixes) + " 次）。继续 AI 修复：清 merge_retry_count 后重设 merge_approved=true；大范围冲突/失败建议 replan（REQ 变更或 rework_resolution=replan）由 Round 2 重做，无需手动解决",
 			})
-			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-			notify.SendTaskAction(candidate.ID, candidate.Title, "❌", "合并被拒绝",
-				decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 大范围改动建议重出计划（rework_resolution=replan）由 Round 2 重做", r.cfg.Notifications.Desktop)
+			// Debounced (failNotifyBlocked — most severe tier): budget
+			// exhaustion hands back to the user, but clearing the count
+			// re-authorizes and re-runs the merge; without a window every
+			// round re-toasts (TASK-067 notification storm).
+			r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "❌", "合并被拒绝",
+				decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 大范围改动建议重出计划（rework_resolution=replan）由 Round 2 重做", failNotifyBlocked)
 			return updateErr
 		case mergeActionConflict:
 			if err := r.autoResolveMergeConflict(candidate, repoDir, fm, decision.Reason); err != nil {
@@ -562,7 +590,8 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 				"phase_error_code": string(ErrGitConflict),
 				"phase_error":      fmt.Sprintf("fork merge conflict in %s; 自动修复已达上限（%d 次）。清 merge_retry_count 后重设 merge_approved=true 继续；连续失败建议 replan", defaultBranch, r.cfg.MaxAutoMergeFixes),
 			})
-			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "fork 合并冲突",
+				fmt.Sprintf("fork merge conflict in %s；自动修复已达上限（%d 次）。清 merge_retry_count 后重设 merge_approved=true 继续；连续失败建议 replan", defaultBranch, r.cfg.MaxAutoMergeFixes), failNotifyBlocked)
 			return updateErr
 		}
 		fm.MergeRetryCount++
@@ -582,7 +611,8 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 				"phase_error_code": string(ErrGitConflict),
 				"phase_error":      "fork merge conflict; AI auto-resolution failed: " + err.Error(),
 			})
-			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "fork 合并冲突",
+				"fork merge conflict; AI auto-resolution failed: "+err.Error(), failNotifyReason)
 			return updateErr
 		}
 		// AI committed the resolution (completing the merge); the loop
@@ -1128,10 +1158,34 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 			"phase_error_code": string(ErrGitConflict), "phase_error": reason +
 				"; 自动修复已达上限（" + fmt.Sprint(r.cfg.MaxAutoMergeFixes) + " 次）。继续 AI 修复：清 merge_retry_count 后重设 merge_approved=true；连续修复失败多为需求歧义——在 REQ 文档中追加歧义裁决记录并保存（可含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重审需求后重新出计划，无需手动解决",
 		})
-		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-		notify.SendTaskAction(candidate.ID, candidate.Title, "⚠️", "合并冲突待处理",
-			reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 连续失败多为需求歧义：在 REQ 文档中追加歧义裁决并保存（建议含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重出计划——仅需修改需求文档，无需手动改任务状态", r.cfg.Notifications.Desktop)
+		// Debounced (failNotifyBlocked): the user may clear merge_retry_count
+		// to continue AI repair, which re-authorizes and re-runs the merge —
+		// a bare toast would re-fire every round (TASK-067 storm).
+		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "合并冲突待处理",
+			reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 连续失败多为需求歧义：在 REQ 文档中追加歧义裁决并保存（建议含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重出计划——仅需修改需求文档，无需手动改任务状态", failNotifyBlocked)
 		return updateErr
+	}
+	// Conflict-size circuit breaker: an AI session cannot realistically
+	// resolve a very large conflict set inside its bounded timeout, and the
+	// attempt only burns the repair budget and session time before failing
+	// (TASK-067: 90+ conflicting files → 15min session timeout exit 143;
+	// ~22 files resolved in 5min). When the local worktree carries more
+	// conflicting files than the configured threshold, hand the task
+	// straight back to the user instead of starting a doomed session.
+	// Only the pre-push sync path has staged conflicts in the worktree; the
+	// PR-conflict path (GitHub-side DIRTY) reports 0 and passes through.
+	if r.cfg.MaxAutoFixConflicts > 0 {
+		if n := countUnmergedFiles(repoDir); n > r.cfg.MaxAutoFixConflicts {
+			updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+				"phase_error_code": string(ErrGitConflict), "phase_error": fmt.Sprintf(
+					"%s; 冲突规模 %d 文件超过自动修复阈值 %d——AI 会话无法在预算内解决，请人工处理或 replan（REQ 追加歧义裁决并保存，daemon 自动转 refining 重出计划）",
+					reason, n, r.cfg.MaxAutoFixConflicts),
+			})
+			r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "合并冲突规模过大",
+				fmt.Sprintf("冲突 %d 文件超阈值 %d，跳过 AI 自动修复。replan：REQ 追加歧义裁决并保存；或人工解决后重设 merge_approved=true", n, r.cfg.MaxAutoFixConflicts), failNotifyBlocked)
+			return updateErr
+		}
 	}
 	r.logger.Printf("task %s: merge conflicts (%s), starting AI auto-resolution (%d/%d)", candidate.ID, reason, fm.MergeRetryCount+1, r.cfg.MaxAutoMergeFixes)
 	fm.MergeRetryCount++
@@ -1155,7 +1209,8 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 			"phase_error_code": string(ErrGitConflict),
 			"phase_error":      reason + "; AI auto-resolution failed: " + err.Error(),
 		})
-		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "合并冲突解决失败",
+			reason+"; AI auto-resolution failed: "+err.Error(), failNotifyReason)
 		return updateErr
 	}
 	// Resolution committed locally: push the new head. Team projects use
@@ -1170,18 +1225,42 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 	output, pushErr := resPush.CombinedOutput()
 	resPushCancel()
 	if pushErr != nil {
-		r.logger.Printf("task %s: push conflict resolution failed: %v", candidate.ID, pushErr)
+		if r.daemonCtx.Err() != nil {
+			r.logger.Printf("task %s: conflict resolution push interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
+			return errConflictResolutionInterrupted
+		}
 		updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 			"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
 			"phase_error_code": string(ErrGitConflict),
-			"phase_error":      reason + "; push resolution failed: " + strings.TrimSpace(string(output)),
+			"phase_error":      "conflict resolution committed but push failed: " + strings.TrimSpace(string(output)),
 		})
-		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "冲突解决推送失败",
+			"conflict resolution committed but push failed: "+strings.TrimSpace(string(output)), failNotifyReason)
 		return updateErr
 	}
 	return nil
 }
 
+// countUnmergedFiles reports how many files are in a conflicted state in the
+// given worktree (git diff --diff-filter=U). Returns 0 when the repo is not
+// mid-conflict or the command fails — callers use it as a circuit-breaker
+// input, and a failed count must never block the normal repair path.
+func countUnmergedFiles(repoDir string) int {
+	if repoDir == "" {
+		return 0
+	}
+	output, err := exec.Command("git", "-C", repoDir, "diff", "--name-only", "--diff-filter=U").CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line != "" {
+			n++
+		}
+	}
+	return n
+}
 // errConflictResolutionInterrupted marks an AI conflict-resolution session
 // aborted by daemon shutdown. Unlike a resolution failure, it must NOT
 // downgrade the task to conflict: the merge stays authorized and resumes on
@@ -1393,16 +1472,17 @@ func (r *Runner) checkRemoteMergedAndComplete(candidate task.ReadyTask, repoDir 
 func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks, error) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "headRefOid,mergeStateStatus,statusCheckRollup,url")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "headRefOid,mergeStateStatus,mergeable,statusCheckRollup,url")
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return mergeChecks{}, fmt.Errorf("%s: inspect PR checks: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
 	}
 	var payload struct {
-		HeadRefOID        string `json:"headRefOid"`
-		MergeStateStatus  string `json:"mergeStateStatus"`
-		URL               string `json:"url"`
+		HeadRefOID       string `json:"headRefOid"`
+		MergeStateStatus string `json:"mergeStateStatus"`
+		Mergeable        string `json:"mergeable"`
+		URL              string `json:"url"`
 		StatusCheckRollup []struct {
 			Type       string `json:"__typename"`
 			State      string `json:"state"`
@@ -1433,7 +1513,7 @@ func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks
 		switch checkState {
 		case "FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
 			state = "FAILURE"
-			return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL}, nil
+			return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL, Mergeable: payload.Mergeable}, nil
 		case "SUCCESS", "NEUTRAL", "SKIPPED", "STALE":
 			// completed or non-blocking: keep current state. STALE means the
 			// run was superseded (e.g. by a head push); GitHub schedules a
@@ -1443,7 +1523,7 @@ func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks
 			state = "PENDING"
 		}
 	}
-	return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL}, nil
+	return mergeChecks{HeadOID: payload.HeadRefOID, State: state, URL: payload.URL, Mergeable: payload.Mergeable}, nil
 }
 
 // taskKnowledgeRefs returns the task's knowledge_refs (relative References/
