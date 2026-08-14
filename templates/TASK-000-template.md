@@ -106,7 +106,7 @@ replacement_task: ""  # closure_reason=duplicate
 #   capabilities: []
 #   preferences: {}
 #   notes: ""
-# remote_create: false  # 在 GitHub 创建远程仓库（gh repo create）
+# remote_create: false  # 在 GitHub 创建远程仓库（gh repo create）；团队项目（vault-map project_type=team）禁止开启
 # github_owner: ""
 # repository_name: ""
 # repository_visibility: private

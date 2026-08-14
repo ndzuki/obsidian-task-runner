@@ -364,3 +364,47 @@ func TestExtractProjectID(t *testing.T) {
 		})
 	}
 }
+
+// TestRegisterProjectPreservesTeamSettings guards the hand-curated fields:
+// daemon rewrites (promotion path, new-project registration) must never
+// clobber project_type/merge_mode that the user edited into vault-map.json.
+func TestRegisterProjectPreservesTeamSettings(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	curated := `{
+  "projects": [
+    {
+      "name": "team-app",
+      "path": "/work/team-app",
+      "git_remote": "git@gitea.internal:team/team-app.git",
+      "project_type": "team",
+      "merge_mode": "manual"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(mapFile, []byte(curated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Update path (promotion-style rewrite): team settings must survive.
+	if err := RegisterProject(mapFile, "team-app", "/work/team-app-v2", "git@gitea.internal:team/team-app.git", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(mapFile)
+	var parsed struct {
+		Projects []map[string]string `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(parsed.Projects))
+	}
+	entry := parsed.Projects[0]
+	if entry["project_type"] != "team" || entry["merge_mode"] != "manual" {
+		t.Fatalf("team settings clobbered by rewrite: %+v", entry)
+	}
+	if entry["path"] != "/work/team-app-v2" {
+		t.Fatalf("path = %q, want updated path", entry["path"])
+	}
+}

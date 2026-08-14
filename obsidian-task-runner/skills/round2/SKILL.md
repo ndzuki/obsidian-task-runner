@@ -25,6 +25,18 @@ disableModelInvocation: true
 5. 读取已批准计划和 checkpoint 复用策略。
 6. **加载 `skill://knowledge-base`**：按计划中的技术栈检索知识库 core/ 文档，引用已验证的最佳实践和版本约束。实现过程中发现的踩坑经验，在 Commit 或 ADR 写回后追加到对应的 References 文件。
 
+## Project Conventions Alignment（项目规范对齐，强制）
+
+实现前读取 `{vault}/Projects/{project}/Notes/PROJECT-CONVENTIONS.md`（存在时）——
+它是该项目的规范基线，**优先级高于本 Skill 与全局 AGENTS.md 的默认约定**：
+
+- **注释语言**：项目用中文注释就用中文、英文就英文（即使全局约定是英文）——注释语言是项目规范的一部分，不是偏好。
+- **代码风格**：命名、错误处理、包结构、测试风格按项目既有模式；不引入项目没有的框架/模式。
+- **提交信息**：commit 语言与格式对齐项目 `git log` 习惯（feat/fix/chore/中文描述…）。
+- **文档/API 文档**：新增/修改的文档按项目的文档规范与 API 文档形式。
+- **最小变更**：只按计划实现 AC；不顺手重构、不格式化项目没要求格式化的区域、不新增多余抽象——团队项目 review 认知负担优先。
+- 项目没有 PROJECT-CONVENTIONS.md 时按常识 + 最小变更执行，并保持与项目现状一致。
+
 ## Prototype Gate（高风险 Step 的前置验证）
 
 若已批准计划包含 `## Prototype 建议` section，在执行任何标记为 `risk: high` 的 Step 之前：

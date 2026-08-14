@@ -71,6 +71,14 @@
       "name": "example-project",
       "path": "/home/you/src/example-project",
       "git_remote": "github.com/you/example-project"
+    },
+    {
+      "_comment": "团队已有项目（如私有 Gitea）：手动注册即可。project_type=team 禁止自动建仓/提升/gh 操作。merge_mode 二选一：manual=只推分支、由人工在仓库 UI 合并（远端合入后任务自动 done）；fork-merge=fork 开发，自动 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。首个任务自动做一次只读规范审查，生成 Notes/PROJECT-CONVENTIONS.md，后续任务按该项目规范执行。",
+      "name": "team-app-fork",
+      "path": "/work/team-app-fork",
+      "git_remote": "git@gitea.internal.example.com:yourname/team-app-fork.git",
+      "project_type": "team",
+      "merge_mode": "fork-merge"
     }
   ]
 }

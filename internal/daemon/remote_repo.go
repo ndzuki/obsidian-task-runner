@@ -29,6 +29,12 @@ func (r *Runner) ensureRemoteRepository(taskPath, repoDir string) error {
 	if !fm.RemoteCreate || fm.RepositoryURL != "" {
 		return nil
 	}
+	// Team projects own their forge repository (e.g. private Gitea): creating
+	// a GitHub remote for them would fork the project into the wrong forge.
+	// The vault-map registration is authoritative for existing projects.
+	if projectIsTeam(filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json"), fm.Project) {
+		return fmt.Errorf("remote_create is not supported for team project %q: the repository already exists in the organization forge; remove remote_create from the task", fm.Project)
+	}
 	if repoDir == "" {
 		return fmt.Errorf("repo dir empty")
 	}

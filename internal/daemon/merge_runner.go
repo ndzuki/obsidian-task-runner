@@ -127,17 +127,28 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	if err != nil || fm == nil {
 		return fmt.Errorf("parse task: %w", err)
 	}
+	// Delivery mode: merge_mode=manual (team projects) stops at branch push;
+	// the human merges through the forge UI. merge_mode=fork-merge (fork
+	// development) merges the feature branch into the fork's default branch
+	// locally and pushes it — the human then sends the team project a PR
+	// from the fork. Both skip all gh-based remote operations.
+	mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
+	manualMerge := projectMergeMode(mapFile, candidate.Project) == "manual"
+	forkMerge := projectMergeMode(mapFile, candidate.Project) == "fork-merge"
 	// Early convergence BEFORE the REQ-hash gate: a PR that already merged
 	// (legacy done tasks whose merge_status was never written back, or a
 	// manual merge) finishes as done immediately. A merged PR needs no
 	// re-planning no matter how stale the plan_req_hash is — sending it
 	// through the hash gate would flip dozens of merged tasks into refining
 	// (observed: 30+ done tasks re-refining after the done-reopen landed).
+	// Manual/fork-merge projects have no PR: manual's remote-merge probe
+	// (checkRemoteMergedAndComplete) owns completion; fork-merge completes
+	// on the local merge into the fork default branch.
 	prURL := fm.PRURL
-	if prURL == "" && fm.TargetBranch != "" {
+	if prURL == "" && fm.TargetBranch != "" && !manualMerge && !forkMerge {
 		prURL = findAnyPR(r.daemonCtx, repoDir, fm.TargetBranch)
 	}
-	if prURL != "" {
+	if prURL != "" && !manualMerge && !forkMerge {
 		state, err := prState(r.daemonCtx, repoDir, prURL)
 		if err != nil {
 			return err
@@ -179,29 +190,31 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		_ = yamlfrontmatter.Update(candidate.FilePath, updates)
 		return err
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-			"status": "review", "merge_approved": false,
-			"phase_error_code": string(ErrGitHubUnavailable), "phase_error": "gh CLI unavailable",
-		})
-		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-		return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
-	}
-	// gh 存在但可能未登录：push 走 gh credential helper，PR create/merge
-	// 也直接用 gh——未登录会阻塞全部远程步骤。先本地预检并把精确补救
-	// 指引（`gh auth login`）交给用户，而不是烧光重试预算（TASK-004：
-	// 5/5 次 push 重试全部失败 "could not read Username"）。预检是本地
-	// 操作（读 gh config/keyring，无网络）；写回撤销授权，daemon 扫描
-	// 保持安静，直到用户登录后重新批准。
-	if err := checkGHAuth(r.daemonCtx); err != nil {
-		_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-			"status": "review", "merge_approved": false,
-			"phase_error_code": string(ErrGitHubUnavailable), "phase_error": err.Error(),
-		})
-		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
-		notify.SendTaskAction(candidate.ID, candidate.Title, "🔑", "GitHub CLI 未登录",
-			"Merge 需要 GitHub 认证：请运行 `gh auth login` 完成登录，然后重新设置 merge_approved=true", r.cfg.Notifications.Desktop)
-		return fmt.Errorf("%s: %v", ErrGitHubUnavailable, err)
+	if !manualMerge && !forkMerge {
+		if _, err := exec.LookPath("gh"); err != nil {
+			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "review", "merge_approved": false,
+				"phase_error_code": string(ErrGitHubUnavailable), "phase_error": "gh CLI unavailable",
+			})
+			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
+		}
+		// gh 存在但可能未登录：push 走 gh credential helper，PR create/merge
+		// 也直接用 gh——未登录会阻塞全部远程步骤。先本地预检并把精确补救
+		// 指引（`gh auth login`）交给用户，而不是烧光重试预算（TASK-004：
+		// 5/5 次 push 重试全部失败 "could not read Username"）。预检是本地
+		// 操作（读 gh config/keyring，无网络）；写回撤销授权，daemon 扫描
+		// 保持安静，直到用户登录后重新批准。
+		if err := checkGHAuth(r.daemonCtx); err != nil {
+			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "review", "merge_approved": false,
+				"phase_error_code": string(ErrGitHubUnavailable), "phase_error": err.Error(),
+			})
+			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			notify.SendTaskAction(candidate.ID, candidate.Title, "🔑", "GitHub CLI 未登录",
+				"Merge 需要 GitHub 认证：请运行 `gh auth login` 完成登录，然后重新设置 merge_approved=true", r.cfg.Notifications.Desktop)
+			return fmt.Errorf("%s: %v", ErrGitHubUnavailable, err)
+		}
 	}
 
 	if err := ensureGitRemote(r.cfg, repoDir, candidate.Project); err != nil {
@@ -242,6 +255,12 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// conflict is resolved in-place by the AI auto-fix session, same budget
 	// as PR conflicts), force-push when the local rewritten history
 	// supersedes a remote head that is fully absorbed into main.
+	if forkMerge {
+		// Fork development: no feature-branch push/sync — the deliverable
+		// lands directly on the fork's default branch. The feature branch
+		// exists only in the task worktree; the merge below folds it in.
+		return r.forkMergeDelivery(candidate, repoDir, fm)
+	}
 	forcePush, err := syncMergeBranch(r.daemonCtx, repoDir, fm.TargetBranch)
 	if err != nil {
 		if strings.Contains(err.Error(), string(ErrGitConflict)) {
@@ -255,11 +274,19 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		}
 	}
 	// Fail fast on a stalled network: git's default connect retry can burn
-	// 2+ minutes per push when github.com is unreachable, stalling the merge
+	// 2+ minutes per push when the forge is unreachable, stalling the merge
 	// goroutine and every scan batch behind it. http.connectTimeout bounds
 	// the TCP connect phase, http.lowSpeed* aborts once the transfer makes
 	// no progress for 20s.
-	pushCmd, pushCancel := r.mergePushCommand(repoDir, fm.TargetBranch, forcePush)
+	var pushCmd *exec.Cmd
+	var pushCancel context.CancelFunc
+	if manualMerge {
+		// Team projects authenticate with the checkout's own SSH/https
+		// credentials — no gh credential-helper injection.
+		pushCmd, pushCancel = r.mergePushCommandPlain(repoDir, fm.TargetBranch, forcePush)
+	} else {
+		pushCmd, pushCancel = r.mergePushCommand(repoDir, fm.TargetBranch, forcePush)
+	}
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		pushCancel()
 		// Daemon shutdown raced the push (SIGTERM kills the git child via
@@ -274,6 +301,27 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	pushCancel()
+	if manualMerge {
+		// Push-only delivery: the branch is on the remote, the human merges
+		// through the forge UI. Record the pushed head and hand the task to
+		// the remote-merge probe (checkRemoteMergedAndComplete) — no PR, no
+		// CI polling, no gh merge. The worktree stays intact until the merge
+		// is confirmed so a re-push after conflict repair reuses it.
+		approvedHead := gitCurrentHead(repoDir, fm.TargetBranch)
+		if approvedHead == "" {
+			return fmt.Errorf("%s: target branch head unavailable", ErrBaseCommitMismatch)
+		}
+		if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"merge_status": "pushed", "approved_head": approvedHead,
+			"merge_approved": false,
+		}); err != nil {
+			return err
+		}
+		notify.SendTaskAction(candidate.ID, candidate.Title, "🚀", "分支已推送，请人工合并",
+			fmt.Sprintf("分支 %s 已推送到项目 %s；请通过仓库 UI 发起合并（PR/merge request），远端合入后任务自动完成", fm.TargetBranch, candidate.Project), r.cfg.Notifications.Desktop)
+		r.logger.Printf("task %s: manual-mode delivery: branch %s pushed at %s, waiting for human merge", candidate.ID, fm.TargetBranch, approvedHead)
+		return nil
+	}
 	if prURL == "" {
 		// A PR may already exist on the remote even when frontmatter pr_url
 		// is empty (created manually, or by an earlier run that crashed
@@ -456,6 +504,121 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	}
 }
 
+// forkMergeDelivery merges the task's feature branch into the fork's default
+// branch and pushes it — fork-development delivery: the fork belongs to the
+// developer, so the merge is fully automatable; the human then sends the team
+// project a PR from the fork's default branch (out-of-band, manual by design).
+//
+// Flow (all in the task worktree, which starts on the feature branch):
+//  1. fetch origin <default> (default resolved via ls-remote --symref — forges
+//     allow configuring it, never hardcode main)
+//  2. checkout -B <default> origin/<default>
+//  3. git merge --no-ff <feature>; conflicts go through the bounded AI
+//     conflict-resolution session (merge_retry_count budget, same as PR
+//     conflicts); the AI session commits the resolution, completing the merge
+//  4. push origin <default> with the repository's own credentials (no gh)
+//  5. done + merge_status=merged — the fork default branch is the deliverable
+func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm *yamlfrontmatter.Frontmatter) error {
+	defaultBranch := remoteDefaultBranch(r.daemonCtx, repoDir)
+	if defaultBranch == "" {
+		return fmt.Errorf("%s: cannot resolve fork default branch (remote unreachable or HEAD symref missing)", ErrGitHubUnavailable)
+	}
+	// Fetch the default branch so the local ref is current.
+	fetchCmd, fetchCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
+		"-c", "http.connectTimeout=15", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+		"fetch", "origin", defaultBranch+":refs/remotes/origin/"+defaultBranch)
+	out, fetchErr := fetchCmd.CombinedOutput()
+	fetchCancel()
+	if fetchErr != nil {
+		return fmt.Errorf("fetch fork default branch: %w: %s", fetchErr, strings.TrimSpace(string(out)))
+	}
+	// Move the worktree onto the default branch (tracking the fetched ref).
+	if out, err := exec.Command("git", "-C", repoDir, "checkout", "-B", defaultBranch, "origin/"+defaultBranch).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout fork default branch: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	// Merge the feature branch in; a conflict keeps the in-progress merge
+	// state (MERGE_HEAD + markers) for the AI session, which commits the
+	// resolution — completing the merge. Retry until clean or budget spent.
+	for attempt := 0; ; attempt++ {
+		mergeCmd, mergeCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
+			"-c", "http.connectTimeout=15", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+			"merge", "--no-ff", fm.TargetBranch)
+		output, mergeErr := mergeCmd.CombinedOutput()
+		mergeCancel()
+		if mergeErr == nil {
+			break // merged (or already up to date after an AI resolution)
+		}
+		msg := strings.TrimSpace(string(output))
+		r.logger.Printf("task %s: fork merge into %s failed: %v: %s", candidate.ID, defaultBranch, mergeErr, msg)
+		if r.daemonCtx.Err() != nil {
+			return errConflictResolutionInterrupted
+		}
+		if !strings.Contains(msg, "CONFLICT") && !strings.Contains(mergeErr.Error(), string(ErrGitConflict)) {
+			return fmt.Errorf("merge into fork default branch: %w: %s", mergeErr, msg)
+		}
+		if fm.MergeRetryCount >= r.cfg.MaxAutoMergeFixes {
+			updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+				"phase_error_code": string(ErrGitConflict),
+				"phase_error":      fmt.Sprintf("fork merge conflict in %s; 自动修复已达上限（%d 次）。清 merge_retry_count 后重设 merge_approved=true 继续；连续失败建议 replan", defaultBranch, r.cfg.MaxAutoMergeFixes),
+			})
+			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			return updateErr
+		}
+		fm.MergeRetryCount++
+		if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+			"merge_retry_count": fm.MergeRetryCount,
+			"merge_status":      "auto-fix-conflict",
+		}); err != nil {
+			return err
+		}
+		if err := r.resolveMergeConflict(candidate, repoDir); err != nil {
+			if errors.Is(err, errConflictResolutionInterrupted) {
+				r.logger.Printf("task %s: fork merge conflict resolution interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
+				return nil
+			}
+			updateErr := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"status": "conflict", "merge_approved": false, "merge_status": "conflict-resolve-attempted",
+				"phase_error_code": string(ErrGitConflict),
+				"phase_error":      "fork merge conflict; AI auto-resolution failed: " + err.Error(),
+			})
+			notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
+			return updateErr
+		}
+		// AI committed the resolution (completing the merge); the loop
+		// re-merges and sees "Already up to date" → clean.
+	}
+	// Push the fork default branch with the repository's own credentials.
+	pushCmd, pushCancel := r.mergePushCommandPlain(repoDir, defaultBranch, false)
+	output, pushErr := pushCmd.CombinedOutput()
+	pushCancel()
+	if pushErr != nil {
+		if r.daemonCtx.Err() != nil {
+			r.logger.Printf("task %s: fork merge push interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
+			return errConflictResolutionInterrupted
+		}
+		return fmt.Errorf("push fork default branch: %w: %s", pushErr, strings.TrimSpace(string(output)))
+	}
+	// Delivered: the fork default branch carries the implementation and is
+	// on the remote. The human sends the team project a PR from here.
+	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+		"status": "done", "merge_approved": false, "pending_req": false,
+		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
+	}); err != nil {
+		return err
+	}
+	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "已合入 fork 默认分支",
+		fmt.Sprintf("实现已 merge 到 %s 的 %s 分支并推送；请手动向团队项目提交 PR，团队 review 后合入", candidate.Project, defaultBranch), r.cfg.Notifications.Desktop)
+	r.logger.Printf("task %s: fork-merge delivery: %s merged into fork %s and pushed, awaiting manual team PR", candidate.ID, fm.TargetBranch, defaultBranch)
+	r.activeTasks.Add(1)
+	go func() {
+		defer r.activeTasks.Add(-1)
+		r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
+	}()
+	return nil
+}
+
 // completeMerge transitions the task to done after a successful merge — or
 // when the PR is already merged remotely (manual merge, earlier run). Used by
 // both the merge action and the early convergence path.
@@ -570,6 +733,7 @@ func prURLFromCreateError(output string) string {
 // prIsMerged reports whether the PR has been merged on the remote, used to
 // distinguish "merge succeeded but local --delete-branch cleanup failed" from
 // a genuine merge failure.
+
 func prIsMerged(parent context.Context, repoDir, prURL string) bool {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
@@ -784,6 +948,22 @@ func (r *Runner) mergePushCommand(repoDir, branch string, force bool) (*exec.Cmd
 	return mergeCommand(r.daemonCtx, repoDir, "git", args...)
 }
 
+// mergePushCommandPlain is the push command for team-project deliveries
+// (merge_mode=manual push-only and merge_mode=fork-merge): no gh
+// credential-helper injection — the ambient SSH/https credentials of the
+// checkout authenticate the push. Same fail-fast network flags as the
+// gh-credential variant.
+func (r *Runner) mergePushCommandPlain(repoDir, branch string, force bool) (*exec.Cmd, context.CancelFunc) {
+	args := []string{"-C", repoDir,
+		"-c", "http.connectTimeout=15",
+		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
+		"push", "-u", "origin", branch}
+	if force {
+		args = append(args, "--force-with-lease")
+	}
+	return mergeCommand(r.daemonCtx, repoDir, "git", args...)
+}
+
 // checkGHAuth 验证 merge 流程所需的 gh CLI 认证（`gh auth status` 退出码 0）。
 // 全部远程步骤——push（gh credential helper）、PR 创建/复用、PR 合并——
 // 都依赖 gh 身份，因此未登录时无论 ambient git 凭据如何都无法合并。
@@ -954,8 +1134,15 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 		notify.StatusNotify(candidate.FilePath, r.cfg.Notifications.Desktop)
 		return updateErr
 	}
-	// Resolution committed locally: push the new head.
-	resPush, resPushCancel := r.mergePushCommand(repoDir, fm.TargetBranch, false)
+	// Resolution committed locally: push the new head. Team projects use
+	// the checkout's own credentials (no gh credential helper).
+	var resPush *exec.Cmd
+	var resPushCancel context.CancelFunc
+	if projectMergeMode(filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json"), candidate.Project) == "manual" {
+		resPush, resPushCancel = r.mergePushCommandPlain(repoDir, fm.TargetBranch, false)
+	} else {
+		resPush, resPushCancel = r.mergePushCommand(repoDir, fm.TargetBranch, false)
+	}
 	output, pushErr := resPush.CombinedOutput()
 	resPushCancel()
 	if pushErr != nil {
@@ -1095,6 +1282,88 @@ func gitCurrentHead(repoDir, branch string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// remoteDefaultBranch resolves the remote's default branch name via
+// `git ls-remote --symref origin HEAD` ("refs/heads/main" etc.), or "" when
+// the lookup fails. Team forges (Gitea/GitLab) allow configuring the default
+// branch name, so hardcoding "main" would miss merges into "master".
+func remoteDefaultBranch(parent context.Context, repoDir string) string {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-remote", "--symref", "origin", "HEAD")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		// Format: "ref: refs/heads/main\tHEAD"
+		if strings.HasPrefix(line, "ref:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return strings.TrimPrefix(fields[1], "refs/heads/")
+			}
+		}
+	}
+	return ""
+}
+
+// checkRemoteMergedAndComplete reports whether the pushed head
+// (approved_head) has been merged into the remote default branch — the
+// manual-mode completion signal: the human merged the branch through the
+// forge UI. Returns (true, nil) after flipping the task to done; (false, nil)
+// when the branch is not merged yet; an error only for hard failures (no
+// approved_head, unreadable repo). Network hiccups degrade to (false, nil):
+// the next scan re-probes — a transient fetch failure must never revoke
+// anything or spam notifications.
+func (r *Runner) checkRemoteMergedAndComplete(candidate task.ReadyTask, repoDir string) (bool, error) {
+	data, err := os.ReadFile(candidate.FilePath)
+	if err != nil {
+		return false, fmt.Errorf("read task: %w", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return false, fmt.Errorf("parse task: %w", err)
+	}
+	if fm.ApprovedHead == "" {
+		return false, fmt.Errorf("%s: approved_head empty for pushed branch", ErrBaseCommitMismatch)
+	}
+	defaultBranch := remoteDefaultBranch(r.daemonCtx, repoDir)
+	if defaultBranch == "" {
+		return false, nil // remote unreachable or no HEAD symref — retry next scan
+	}
+	fetchCmd, fetchCancel := mergeCommand(r.daemonCtx, repoDir, "git", "-C", repoDir,
+		"-c", "http.connectTimeout=15", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+		"fetch", "origin", defaultBranch+":refs/remotes/origin/"+defaultBranch)
+	out, fetchErr := fetchCmd.CombinedOutput()
+	fetchCancel()
+	if fetchErr != nil {
+		// Transient network/credential failure: keep waiting, retry next scan.
+		r.logger.Printf("task %s: fetch default branch %s for merge probe: %v", candidate.ID, defaultBranch, strings.TrimSpace(string(out)))
+		return false, nil
+	}
+	cmd := exec.Command("git", "-C", repoDir, "merge-base", "--is-ancestor", fm.ApprovedHead, "refs/remotes/origin/"+defaultBranch)
+	if err := cmd.Run(); err != nil {
+		return false, nil // not an ancestor yet — the human has not merged
+	}
+	// Merged: flip to done like completeMerge, but with the manual-mode
+	// wording (no PR URL).
+	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+		"status": "done", "merge_approved": false, "pending_req": false,
+		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
+	}); err != nil {
+		return false, err
+	}
+	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "远端已合入，任务完成",
+		fmt.Sprintf("分支 %s 已由人工合入 %s 的 %s 分支", fm.TargetBranch, candidate.Project, defaultBranch), r.cfg.Notifications.Desktop)
+	r.logger.Printf("task %s: manual-mode delivery confirmed: head %s merged into origin/%s", candidate.ID, fm.ApprovedHead, defaultBranch)
+	r.activeTasks.Add(1)
+	go func() {
+		defer r.activeTasks.Add(-1)
+		r.extractProjectKnowledge(candidate.Project, candidate.FilePath)
+	}()
+	return true, nil
 }
 
 func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks, error) {

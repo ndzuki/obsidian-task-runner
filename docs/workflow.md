@@ -23,8 +23,10 @@ flowchart TD
     SCAN --> VALIDATE[validateDependencyRefs<br/>blocked_by 引用存在性校验<br/>目标解析失败 defer 不误报]
     SCAN --> FR[FindReadyTasks → processBatch]
     FR --> SM[nextLocalTransition 本地状态机]
+    SM -->|ready + 团队项目首任务<br/>（project_type=team 且无 PROJECT-CONVENTIONS.md）| CONV[conventions 审查<br/>/obsidian-task-runner-conventions 只读<br/>产物 = 一次性门禁标记]
+    CONV -->|产物落盘| REFINE[refining<br/>/obsidian-task-runner-refining]
+    CONV -->|失败/产物缺失| BLK
     SM -->|ready| REFINE[refining<br/>/obsidian-task-runner-refining]
-    REFINE -->|maturity=fully_mature 且 REQ hash 未变| PLAN[planning<br/>/obsidian-task-runner-round1]
     REFINE -->|fact/auto 采纳后成熟| PLAN
     REFINE -->|仅剩 dispute| GRILL[needs-grilling<br/>Kitty + requirement-elaborator]
     REFINE -->|dispute 重复 grill_repeat≥2| PARK[park 升级<br/>→ 项目级 Grilling-Decisions.md]
@@ -39,10 +41,14 @@ flowchart TD
     PR -->|plan_approved=true| R2[implementing<br/>/obsidian-task-runner-round2 + worktree]
     R2 -->|全部 AC 完成| RV[review]
     RV -->|审计通过| AUDIT[完成审计<br/>独立只读会话 read/grep/bash<br/>逐条 AC 复核原始证据]
-    AUDIT -->|auto_merge 自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>worktree sync → push → PR → CI checks]
+    AUDIT -->|auto_merge 自动授权| MERGE[processMergeTaskWithRetry 纯 Go<br/>按 merge_mode 分流<br/>auto: worktree sync → push → PR → CI checks<br/>manual/fork-merge: 无 gh 通道]
     AUDIT -->|fail implementation<br/>→ implementing 修复<br/>连续 max_fixes 次 → grilling 决策| R2
     AUDIT -->|fail requirement<br/>→ needs-grilling 决策| GRILL
-    MERGE -->|SUCCESS| DONE[done<br/>+ 知识库提取]
+    MERGE -->|auto: PR 合并成功| DONE[done<br/>+ 知识库提取]
+    MERGE -->|manual: 推分支 merge_status=pushed| PROBE[远端默认分支探测<br/>ls-remote --symref + merge-base --is-ancestor<br/>每轮 scan]
+    PROBE -->|人工合入| DONE
+    MERGE -->|fork-merge: 本地 merge --no-ff 进 fork 默认分支<br/>（冲突 AI 会话解决）→ push| DONE
+    DONE -.->|fork-merge 交付后| PRM[用户手动向团队项目发 PR<br/>团队 review 合入（daemon 之外）]
     MERGE -.->|环境性失败：2min 退避自动重试 ×5| MERGE
     MERGE -->|REPO_MISMATCH 目标仓库不符<br/>硬失败不重试| RV
     MERGE -->|CONFLICTING| AI[AI 自动解决<br/>/obsidian-task-runner-merge 预算内多次]
@@ -90,7 +96,7 @@ flowchart TD
 | 8 | plan-review | auto_approve（默认 true）或 `plan_approved=true`（人工） | `nextLocalTransition` → implementing；auto_approve 路径自动 `plan_approved=true`、`adr_approved=<adr_proposed 为空>`；预热 worktree | 无 | `status=implementing` | Round 2 |
 | 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；OMP 子进程（assignee 模型，thinking max，60min 超时）；**无进展完成（仍 implementing + 无 `checkpoint_commit`）→ 指数退避冷却（10m→…→~10.7h）不重派** | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining；无进展 → implementing（冷却中） |
 | 10 | 完成审计与自动合并 | `status=review` + auto_merge（默认 true） | **① 完成审计**（§7.4）：`merge_approved=false` + `audit_status!=passed` 时先跑独立只读审计会话（受限工具面 read/grep/bash，无写工具；assignee 模型 / `audit.model` 覆盖；任务 worktree 内逐条 AC 复核原始证据）——pass 写 `audit_status=passed` 继续；fail implementation → `AUDIT_FAILED` 转 implementing（round2 自动修复，连续 `audit.max_fixes` 次升级 grilling 决策）；fail requirement → 直接 needs-grilling 决策；会话失败保持 review 待重试。**② 合并授权**：审计通过或人工已授权后 daemon 自动设 `merge_approved=true`；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + `merge_retry_count < max_auto_merge_fixes` + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用；失败回退保持 `audit_status=passed`，不重复审计）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch/**origin==git_remote 目标仓库守卫，REPO_MISMATCH 硬失败**）→ 在任务 worktree 上 sync（祖先关系分流：fast-forward / 三路 merge / 文件级覆盖确认后 `--force-with-lease`）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` ...
-| 11 | 交付 | merge 成功 | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（breaking 需求变更则回 refining 新一轮交付） |
+| 11 | 交付 | merge 成功（或团队模式交付完成） | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（breaking 需求变更则回 refining 新一轮交付）。**团队模式差异**：manual = 远端探测到人工合入后 done（无 PR URL）；fork-merge = 本地 merge 进 fork 默认分支并推送后 done，通知用户手动向团队项目发 PR |
 | 12 | 失败与恢复 | OMP 退出码非零 / 超时 / key 缺失 / **空响应×2（10min 窗口，`watchEmptyStops`）** | fallback 模型重试 → `handlePhaseFailure` 按阶段策略：blocked（resume 门禁）/ conflict / review；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_phase/auto_resume_count` | 见 §10 并发与恢复 |
 | 13 | 阶段评审 | 某阶段全部任务 done+merged（`merge_status=merged`）或剩余全 blocked/closed | `processStageReviews` 检测（每轮 ≤1）→ PM stage-review 四维评分写 `Notes/Stage-Review.md`；用户填「评审决策:」后 **daemon 先确定性翻转 Stage-Plan 状态机**（`flipStageReviewDecision`：continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）→ PM distribute 只做 REQ 标注/知识沉淀并写 answered | `/obsidian-task-runner-pm stage-review` / distribute | `Notes/Stage-Review.md`、Stage-Plan 阶段状态（delivered/ended/completed/in-progress） | continue → 下一阶段 in-progress；supplement:{建议} → 追加下一阶段；end → 后续阶段 ended + 任务 close（不维护积压） |
 
@@ -521,6 +527,32 @@ Round 2 首次调度（`resolveRepo` new 分支）自动完成项目初始化：
 - **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns` / `## Reference Map`），由首轮 agent 填充。
 - 新项目首个 REQ 由 PM 统筹触发 `skill://obsidian-task-runner-split` 拆分建议（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
 
+### 6.5.1 团队已有项目（`project_type: team`）
+
+对**已存在的组织仓库**（如私有 Gitea）不适用上述自动初始化——仓库归团队所有，
+daemon 不得创建/移动/复制它。手动在 vault-map.json 注册即可，`git_remote`
+指向你实际开发操作的仓库，`merge_mode` 按开发方式二选一：
+
+```json
+// 直接在团队仓库上开发（交付停在推分支，人工在仓库 UI 合并）
+{"name": "team-app", "path": "/work/team-app",
+ "git_remote": "git@gitea.internal.example.com:team/team-app.git",
+ "project_type": "team", "merge_mode": "manual"}
+
+// fork 开发（推荐：团队仓库只读，自动化 merge 进 fork 默认分支并推送，
+// 由你手动向团队项目发 PR）
+{"name": "team-app", "path": "/work/team-app-fork",
+ "git_remote": "git@gitea.internal.example.com:yourname/team-app-fork.git",
+ "project_type": "team", "merge_mode": "fork-merge"}
+```
+
+- **禁自动动作**：`ensureProjectRegistered` 跳过（防止推断 remote 覆盖真实配置）、`ensureProjectCheckout` 提升跳过、`gh repo create`/`remote_create` 拒绝（错误信息指引移除 remote_create）。`path` 必须是该团队仓库（或 fork）的本地 checkout（git 根）。
+- **`merge_mode: manual`**：交付停在**推分支**（仓库自身 SSH/https 凭据，无 gh credential-helper 注入）→ `merge_status=pushed` + 保持 `review` + 通知「请到仓库 UI 合并」→ daemon 每轮探测远端默认分支（`ls-remote --symref` + fetch + `merge-base --is-ancestor`，不硬编码 main）→ 人工合入后自动 `done`。详见 §8.2 第 7 条。
+- **`merge_mode: fork-merge`**：`git_remote` 必须指向**开发者自己的 fork**。自动化推进到本地 merge 完成——worktree 内 fetch fork 默认分支 → `checkout -B <default> origin/<default>` → `merge --no-ff <feature>`（冲突由 AI 会话解决，共享 `merge_retry_count` 预算；停机中断保持授权重启自动恢复）→ 仓库自身凭据 push fork 默认分支 → 自动 `done` + 通知「请手动向团队项目提交 PR」。团队侧 PR/review/合入完全在 daemon 之外。详见 §8.2 第 9 条。
+- **规范审查门禁（强制，每项目一次）**：首个任务在 refining 前先跑只读规范审查会话（`/obsidian-task-runner-conventions`，models.default，工作目录=项目 checkout）。审查汇总项目的设计/代码/注释语言/API 文档/文档/提交规范到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性门禁标记**；删除文件可人工重审）。**硬约束：零优化建议、零代码修改、每条规范附项目内证据**。会话失败或成功退出但产物缺失 → 转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
+- **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复会话（`BuildProjectContext`），优先级高于全局默认约定——注释语言、代码风格、commit 习惯、技术栈选择均按项目规范；round1 Step 1.8 强制计划声明规范对齐；round2 实现前强制读取。
+- **防误重开**：`detectStaleDoneReopens` 与 done 重开 merge 对 team 项目跳过（squash 合入后 checkpoint 非 main 祖先但交付已发生，`merge_status=merged` 由远端探测/本地 merge 完成权威写入）。
+
 ### 6.6 planning 失败恢复
 
 与 refining 相同：自动恢复一次，再失败转 `blocked`：
@@ -655,6 +687,13 @@ Merge Skill 必须在任何远程操作前确认：
 4. 当前 REQ hash 等于已批准计划的 `plan_req_hash`。
 5. `target_branch` 存在。
 6. **目标仓库守卫**：repoDir 的 `origin` 必须与 vault-map 配置的 `git_remote` 指向同一仓库（URL 归一化比较：`git@…:`/`https://`/`.git` 后缀/大小写等价）。不一致（vault 回退目录场景）→ **拒绝 push**，写 `status=review` + `merge_approved=false` + `phase_error_code=REPO_MISMATCH` + 通知，属永久配置缺陷，不自动重试。
+7. **manual 交付模式（`merge_mode: manual`，团队项目）例外**：不适用 gh 通道——push 用仓库自身 SSH/https 凭据（无 gh credential-helper 注入）、跳过 `gh auth` 预检、不创建 PR、不轮询 CI、不自动合并。push 成功写 `merge_status=pushed` + `merge_approved=false` + 通知「请到仓库 UI 合并」，保持 `review`；**`canAutoApproveMerge` 对 pushed 状态返回 false**（防每轮重复 push 与重复通知）。daemon 每轮对 `review + pushed` 任务探测远端默认分支（`git ls-remote --symref origin HEAD` 解析默认分支名，不硬编码 main；fetch + `merge-base --is-ancestor approved_head origin/<default>`），人工合入后自动转 `done` + 知识提炼（等同 `completeMerge`，无 PR URL）。冲突修复（AI 会话）后 push 同样用仓库自身凭据。完成审计（§7.4）在首次 push 前照常执行，push 后 `audit_status=passed` 保持、不重复审计。
+8. **`merge_status` 新值 `pushed`**：manual 模式推送完成标记；`detectStaleDoneReopens` 与 done 重开 merge（`DoneReopensMerge`）对 team 项目不适用（squash 合入后 checkpoint 非 main 祖先但交付已发生，`merge_status=merged` 由远端探测权威写入）。
+9. **fork-merge 交付模式（`merge_mode: fork-merge`，fork 开发）**：`git_remote` 指向**开发者自己的 fork**。自动化推进到本地 merge 完成，不经 gh 通道、不接触团队仓库：
+   - 在任务 worktree 中：fetch fork 默认分支（`ls-remote --symref` 解析，不硬编码 main）→ `checkout -B <default> origin/<default>` → `git merge --no-ff <feature>`；
+   - **merge 冲突 → AI 冲突解决会话**（本地 commit 完成 merge commit，共享 `merge_retry_count` 预算；预算耗尽转 conflict 交还用户，与 PR 冲突同语义）；
+   - merge 成功 → 仓库自身凭据 `push origin <default>` → 写 `status=done` + `merge_status=merged` + 通知「**请手动向团队项目提交 PR**」+ 知识提炼（等同 completeMerge，无 PR URL）。
+   - 用户手动向团队仓库发 PR，团队 review 后合入——此环节完全在 daemon 之外。worktree 留在默认分支；任务 done 后不参与任何远端探测。
 
 任一失败时不得执行远程操作。
 

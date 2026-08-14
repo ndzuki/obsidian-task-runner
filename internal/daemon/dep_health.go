@@ -117,6 +117,16 @@ func (r *Runner) detectStaleDoneReopens() int {
 		if !projectEntry.IsDir() {
 			continue
 		}
+		// Team projects (manual-mode delivery) merge through the forge UI,
+		// which may squash the feature branch: the checkpoint commit then
+		// never becomes an origin/main ancestor even though the delivery
+		// landed. merge_status=merged is written by the remote-merge probe
+		// only after the head actually reached the default branch, so it is
+		// the authoritative delivery evidence — skip the ancestry re-check
+		// to avoid false reopens of delivered team tasks.
+		if projectIsTeam(filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json"), stripNumericPrefix(projectEntry.Name())) {
+			continue
+		}
 		projReopened := 0
 		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
 		entries, err := os.ReadDir(tasksDir)
