@@ -2,83 +2,120 @@ package daemon
 
 import "sync"
 
-// implementationGate tracks both OMP processes started by this daemon and
-// surviving implementation processes adopted after a daemon restart.
+// implementationGate bounds concurrent implementing (Round 2) OMP sessions.
+// Capacity is granted per project (perLimit) with an optional global cap
+// (global, 0 = unlimited) across all projects, so N projects run up to
+// N*perLimit sessions in parallel — each project's work cannot starve the
+// others' (previously a single daemon-wide limit let one project occupy every
+// slot). It tracks both OMP processes started by this daemon and surviving
+// implementation processes adopted after a daemon restart.
 type implementationGate struct {
-	mu      sync.Mutex
-	limit   int
-	active  int
-	local   int
-	adopted map[int]struct{}
-	changed chan struct{}
+	mu       sync.Mutex
+	perLimit int            // per-project cap; <=0 = unlimited per project
+	global   int            // total cap across all projects; <=0 = unlimited
+	local    map[string]int // project → locally started active count
+	active   map[string]int // project → active count (local + adopted)
+	total    int            // active across all projects (global cap check)
+	adopted  map[int]string // pid → project
+	changed  chan struct{}
 }
 
-func newImplementationGate(limit int) *implementationGate {
-	if limit < 1 {
-		limit = 1
-	}
+func newImplementationGate(global, perProject int) *implementationGate {
 	return &implementationGate{
-		limit:   limit,
-		adopted: make(map[int]struct{}),
-		changed: make(chan struct{}),
+		perLimit: perProject,
+		global:   global,
+		local:    make(map[string]int),
+		active:   make(map[string]int),
+		adopted:  make(map[int]string),
+		changed:  make(chan struct{}),
 	}
 }
 
-// tryAcquireLocal reserves capacity for a locally started implementation.
-func (g *implementationGate) tryAcquireLocal() (bool, <-chan struct{}) {
+// tryAcquireLocal reserves capacity for a locally started implementation of
+// the given project. It succeeds when the project is below its per-project
+// cap and the global total is below the optional global cap.
+func (g *implementationGate) tryAcquireLocal(project string) (bool, <-chan struct{}) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.active >= g.limit {
+	if g.perLimit > 0 && g.active[project] >= g.perLimit {
 		return false, g.changed
 	}
-	g.active++
-	g.local++
+	if g.global > 0 && g.total >= g.global {
+		return false, g.changed
+	}
+	g.local[project]++
+	g.active[project]++
+	g.total++
 	return true, nil
 }
 
-func (g *implementationGate) releaseLocal() {
+func (g *implementationGate) releaseLocal(project string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.local == 0 {
+	if g.local[project] == 0 {
 		return
 	}
-	g.local--
-	g.active--
+	g.local[project]--
+	g.active[project]--
+	if g.active[project] == 0 {
+		delete(g.active, project)
+	}
+	if g.total > 0 {
+		g.total--
+	}
 	g.signalLocked()
 }
 
-// adopt accounts for a surviving process even when the configured limit was
-// reduced below the current active count. New work stays blocked until enough
-// adopted processes exit.
-func (g *implementationGate) adopt(pid int) bool {
+// adopt accounts for a surviving process even when the configured limits were
+// reduced below the current active counts. New work stays blocked until
+// enough adopted processes exit.
+func (g *implementationGate) adopt(pid int, project string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if _, exists := g.adopted[pid]; exists {
 		return false
 	}
-	g.adopted[pid] = struct{}{}
-	g.active++
+	g.adopted[pid] = project
+	g.active[project]++
+	g.total++
 	return true
 }
 
 func (g *implementationGate) releaseAdopted(pid int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if _, exists := g.adopted[pid]; !exists {
+	project, exists := g.adopted[pid]
+	if !exists {
 		return
 	}
 	delete(g.adopted, pid)
-	if g.active > 0 {
-		g.active--
+	g.active[project]--
+	if g.active[project] == 0 {
+		delete(g.active, project)
+	}
+	if g.total > 0 {
+		g.total--
 	}
 	g.signalLocked()
 }
 
-// localActive returns the count of active slots held by locally started processes.
+// localActive returns the count of active slots held by locally started
+// processes, summed across projects.
 func (g *implementationGate) localActive() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.local
+	total := 0
+	for _, n := range g.local {
+		total += n
+	}
+	return total
+}
+
+// activeFor reports the active count for one project (local + adopted).
+func (g *implementationGate) activeFor(project string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active[project]
 }
 
 func (g *implementationGate) signalLocked() {

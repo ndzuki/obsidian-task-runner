@@ -97,6 +97,15 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 18. **Round 2 无进展完成 MUST 进入冷却**：会话结束后仍 `implementing` 且无 `checkpoint_commit`（入口门禁复验类空转）→ daemon 指数退避冷却（10m→…→~10.7h 上限）内不重派、不通知；**截止时间持久化 `round2_stall_until`（RFC3339）——daemon 重启不清零**（TASK-071 二修：纯内存冷却在频繁重启下每次重启即重派）；`checkpoint_commit` 写入或状态离开 implementing 即重置（重置点 = `recordRound2Completion` 判定：`Status != "implementing" || CheckpointCommit != ""`，同时清 frontmatter 字段）。人工派发不受冷却限制。无进展完成的 implementing 会话不发状态通知（`StatusNotify` 的 implementing 分支仅在 `phase_error_code` 非空时报「实现会话异常 + 原因」，正常完成等待门禁静默）。
 19. **auto_merge 完成审计门禁**：`auto_merge: true` 的 review 任务 MUST 通过**独立只读审计**（`audit_status=passed`，受限工具面 read/grep/bash 逐条 AC 复核原始证据）才自动授权合并——实现者不能自证完成；`merge_approved=true`（人工门禁优先）或 `audit.enabled=false` 跳过。fail implementation → 转 implementing 自动修复（`AUDIT_FAILED`，round2 消费 `phase_error`/`audit_log`），连续 `audit.max_fixes`（默认 2）次升级 **grilling 决策**（resume 重置预算 / replan 回 refining）；fail requirement → 直接 needs-grilling，不消耗修复预算。会话失败保持 review + `audit_status=pending` 下一轮重试（进程级失败 2min 冷却防烧 token）；API key 不可用无冷却（key 恢复即重试）。不惩罚实现。
 
+## 并发上限（Concurrency）
+
+并发语义的权威定义（代码实现 = `internal/daemon/implementation_gate.go`；其余阶段 = `phase_gate.go`）：
+
+- **implementing / Round 2**：`max_concurrent_tasks_per_project`（每项目上限，默认 `2`，缺失/`0` 回落默认）——N 个项目最多并行 N×2 个实现会话，一个项目的满负荷不会饿死其它项目；`max_concurrent_tasks` 为可选**全局总封顶**（`0` = 不限，默认 `0`），两上限同时生效、取更严格者。**旧配置仅含 `max_concurrent_tasks: 2` 时行为不变**（等效全局封顶 2 + 每项目 2）。
+- **其它阶段**：`phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`；key 置 `0` 或删除 = 不限），防止一轮 scan 同时拉起 20+ 个 OMP 会话烧 token、触发 API 限速与本地资源抢占。
+- **daemon 重启存活会话**：存活的 implementing 进程按项目计入所属项目槽位（`adopt`），槽位占满时新任务等其退出。
+- 修改配置后重启 daemon 生效。
+
 ## IDs & Dependencies（ID与依赖）
 
 - 数字 ID 项目内唯一。

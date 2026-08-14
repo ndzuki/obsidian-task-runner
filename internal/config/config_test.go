@@ -7,9 +7,13 @@ import (
 	"testing"
 )
 
-func TestDefaultsSetsConcurrentTaskLimit(t *testing.T) {
-	if got := Defaults().MaxConcurrentTasks; got != 2 {
-		t.Fatalf("MaxConcurrentTasks = %d, want 2", got)
+func TestDefaultsSetsConcurrentTaskLimits(t *testing.T) {
+	d := Defaults()
+	if d.MaxConcurrentTasks != 0 {
+		t.Fatalf("MaxConcurrentTasks = %d, want 0 (no global cap by default)", d.MaxConcurrentTasks)
+	}
+	if d.MaxConcurrentTasksPerProject != 2 {
+		t.Fatalf("MaxConcurrentTasksPerProject = %d, want 2", d.MaxConcurrentTasksPerProject)
 	}
 }
 
@@ -249,5 +253,71 @@ func TestLoadRejectsNegativePhaseConcurrency(t *testing.T) {
 	}
 	if _, err := Load(mapFile); err == nil {
 		t.Fatal("expected invalid configuration error for negative phase_concurrency")
+	}
+}
+
+func TestLoadDefaultsPerProjectConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	// Legacy config without the per-project key: per-project falls back to 2,
+	// and the legacy global value is preserved as-is.
+	if err := os.WriteFile(mapFile, []byte(`{"max_concurrent_tasks": 2}`), 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxConcurrentTasks != 2 {
+		t.Errorf("MaxConcurrentTasks = %d, want 2 (legacy value preserved)", cfg.MaxConcurrentTasks)
+	}
+	if cfg.MaxConcurrentTasksPerProject != 2 {
+		t.Errorf("MaxConcurrentTasksPerProject = %d, want default 2", cfg.MaxConcurrentTasksPerProject)
+	}
+}
+
+func TestLoadReadsPerProjectConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	data := []byte(`{"max_concurrent_tasks": 0, "max_concurrent_tasks_per_project": 4}`)
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxConcurrentTasks != 0 {
+		t.Errorf("MaxConcurrentTasks = %d, want 0 (no global cap)", cfg.MaxConcurrentTasks)
+	}
+	if cfg.MaxConcurrentTasksPerProject != 4 {
+		t.Errorf("MaxConcurrentTasksPerProject = %d, want 4", cfg.MaxConcurrentTasksPerProject)
+	}
+}
+
+func TestLoadAppliesPerProjectEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"max_concurrent_tasks": 0}`), 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	t.Setenv("OTG_MAX_CONCURRENT_TASKS_PER_PROJECT", "6")
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxConcurrentTasksPerProject != 6 {
+		t.Fatalf("MaxConcurrentTasksPerProject = %d, want 6 (env override)", cfg.MaxConcurrentTasksPerProject)
+	}
+}
+
+func TestLoadRejectsNegativePerProjectConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"max_concurrent_tasks_per_project": -1}`), 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+	if _, err := Load(mapFile); err == nil {
+		t.Fatal("expected invalid configuration error for negative per-project concurrency")
 	}
 }

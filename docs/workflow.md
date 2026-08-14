@@ -103,7 +103,7 @@ flowchart TD
 ### 0.3 时序事实（与历史文档的差异说明）
 
 - **旧版 `needs-refining` 状态自动迁移**：早期 daemon 使用 `needs-refining`，当前状态机已改名 `needs-grilling`。遗留任务文档中的 `needs-refining` 会被 scan 拾起（`IsReady` 视为可调度）并经 `nextLocalTransition` 同轮迁移为 `needs-grilling`——之后正常创建 Grilling tab、发送提醒并按 lease 语义处理。
-- **阶段顺序调度**：`Index.Scan` 排序键 = 项目内 stage 升序（数字序，P10 在 P2 后）→ priority → created；跨项目回到 created 公平（stage 是项目级语义，不做全局比较）；stage 空的任务排最后（当轮 auto-staging 归组后次轮生效）。低阶段任务优先消耗 `max_concurrent_tasks` 容量，P1 未收敛前 P2+ 实现任务不抢容量（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
+- **阶段顺序调度**：`Index.Scan` 排序键 = 项目内 stage 升序（数字序，P10 在 P2 后）→ priority → created；跨项目回到 created 公平（stage 是项目级语义，不做全局比较）；stage 空的任务排最后（当轮 auto-staging 归组后次轮生效）。低阶段任务优先消耗实现容量（`max_concurrent_tasks_per_project` 每项目 + `max_concurrent_tasks` 可选全局封顶），P1 未收敛前 P2+ 实现任务不抢容量（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
 - **阶段评审防卡死放宽**：`stageTasksState` 三态——landed（全部 done+merged）/ reviewable（landed 或剩余全部 blocked/closed）/ unreviewable（存在可推进任务）。blocked-only 阶段触发 stage-review，PM 给「继续/收窄/拆出」建议；closed 任务不阻塞评审；无任务阶段不评审。
 - **依赖卫生与健康诊断**（每轮 scan）：① blocked_by / REQ depends_on 引用存在性校验（坏引用日志 + 一次性通知；**目标文件存在但 frontmatter 暂解析失败——如 OMP 会话写回瞬时窗口——跳过本轮 defer，下一轮重查，不误报**）；② 同 repo implementing 任务 `plan_files` 重叠**自动串行**（`overlapBlocked` 延迟派发排序靠后的任务，实现会话结束即释放，`max_overlap_wait_minutes` 默认 720 超限放行防饿死；无 plan_files 信息时退化为仅预警通知）；③ 项目健康摘要（in-flight / stage 空 / merged 未收口）超阈值每日一次通知（rebaseline / stage-plan init / 拆阶段提示）。
 - **任务自动收口**（`autoCloseStaleMergedTasks`）：`merge_status=merged` 且非 done/closed 且无 `pending_req` → 自动 `status=done`（PR 合入 = 确定性证据；pending_req 增量任务受保护）+ 通知 + Roadmap 里程碑。**反向防锁**（`detectStaleDoneReopens`，autoClose 之后同轮执行）：done + `plan_version≥2` + `checkpoint_commit` 非空且**非本地 `origin/main` 祖先**（`git merge-base --is-ancestor`，不 fetch）→ 未交付增量被假终态锁死（TASK-018：外部 frontmatter 写回基线 done，v6 checkpoint `d65af54b` 未合入，下游 TASK-071 被依赖门禁饿死）→ 自动按 breaking 语义重开 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted）+ 通知 + Roadmap 里程碑。**保守边界**：repo 不可解析 / git 检查不确定（ref 缺失、invalid object）→ 视为已合入不动，绝不误伤正常交付；与 autoClose 无回环（重开时 merge_status 清空 → autoClose 的 `MergeStatus != "merged"` 跳过）。
@@ -807,12 +807,24 @@ flowchart TD
 
 ### 10.6 阶段并发上限
 
-`max_concurrent_tasks` 只限制 implementing；其它启动 OMP 会话的阶段由 `phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`）：
+`max_concurrent_tasks`（可选全局总封顶，0=不限）与 `max_concurrent_tasks_per_project`（每项目上限，默认 2）只限制 implementing；其它启动 OMP 会话的阶段由 `phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`）：
 
 - **动机**：一轮 scan 可能同时拉起 20+ 个 OMP（release-manager 实测），造成 token 快速消耗、API 限速、OMP 启动互相拖慢（settings:init 20s+）与 CPU/内存抢占。
 - **机制**：调度循环对每个待调度任务按阶段 tryAcquire 非阻塞槽位（`phaseGate`）；满员任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度，与 implementationGate 同语义。
 - **范围**：`refining`/`planning` 按任务状态映射；`merge` 映射到 review/conflict + merge_approved（同步执行的 merge 流程也占槽）；`priority` 映射到 ready+priority pending；`pm` 为 PM consolidate/stage-review（scan 末尾同步段，每轮 ≤1 已有预算，跨轮叠加也受限）；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）。`needs-grilling`（Kitty 交互）不限。
-- **配置**：key 置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks` 控制；修改后重启 daemon 生效。
+- **配置**：key 置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限，缺失/0 回落默认 2）+ `max_concurrent_tasks`（可选全局总封顶，0 = 不限）控制；修改后重启 daemon 生效。
+
+```mermaid
+flowchart TD
+    TASK[implementing 任务待派发] --> G1{该任务所属项目<br/>已占用 ≥ max_concurrent_tasks_per_project?}
+    G1 -->|是| WAIT[留在 pending<br/>下一轮 scan 重试]
+    G1 -->|否| G2{全局总数 ≥ max_concurrent_tasks?<br/>（0 = 不限，跳过本门）}
+    G2 -->|是| WAIT
+    G2 -->|否| RUN[获得槽位 → 派发 round2]
+    RUN -->|会话结束释放槽位<br/>（含 repo lock / overlap 回退释放）| TASK
+```
+
+判定顺序：**先每项目门、后全局门**——`max_concurrent_tasks_per_project` 保证项目间公平（满负荷项目不占他人槽位），`max_concurrent_tasks` 兜底资源总量。
 
 ### 10.7 模型兜底与空响应切换
 

@@ -862,8 +862,8 @@ assignee: default
 	}
 	waitForTasksIdle(t, runner)
 
-	if runner.implementationGate.localActive() != 0 || runner.implementationGate.active != 0 {
-		t.Errorf("post-idle gate: local=%d active=%d, want 0/0",
+	if runner.implementationGate.localActive() != 0 || len(runner.implementationGate.active) != 0 {
+		t.Errorf("post-idle gate: local=%d active=%v, want 0/empty",
 			runner.implementationGate.localActive(),
 			runner.implementationGate.active)
 	}
@@ -924,13 +924,13 @@ func TestProcessBatchRunsSameRepositoryPlanningTasksConcurrently(t *testing.T) {
 	}
 }
 
-func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
+func TestProcessBatchNonPositiveGlobalLimitMeansUnlimited(t *testing.T) {
 	dir := t.TempDir()
-	projectOne := filepath.Join(dir, "project-one")
-	projectTwo := filepath.Join(dir, "project-two")
+	projectOne := filepath.Join(dir, "repo-one")
+	projectTwo := filepath.Join(dir, "repo-two")
 	for _, project := range []string{projectOne, projectTwo} {
 		if err := os.MkdirAll(project, 0755); err != nil {
-			t.Fatalf("create project directory: %v", err)
+			t.Fatalf("create project dir: %v", err)
 		}
 	}
 
@@ -944,24 +944,69 @@ func TestProcessBatchTreatsNonPositiveLimitAsOne(t *testing.T) {
 
 	taskOne := writeTaskFile(t, dir, "TASK-021.md", "implementing")
 	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "implementing")
+	// global limit 0 = no total cap; the per-project default (2) allows both
+	// projects' tasks to run at once.
 	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "implementing", NewProject: true, Assignee: "default"},
 		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "implementing", NewProject: true, Assignee: "default"},
 	})
-	waitForStartCount(t, startDir, 1)
-	assertStartCount(t, startDir, 1)
+	waitForStartCount(t, startDir, 2)
+	assertStartCount(t, startDir, 2)
 	releaseBarrier(t, releaseFile)
-	// limit<=0 means one slot: only one task is dispatched per round; the
-	// second waits for capacity release on the next scan round.
-	if processed := waitForBatch(t, done); processed != 1 {
-		t.Fatalf("dispatched = %d, want 1", processed)
+	if processed := waitForBatch(t, done); processed != 2 {
+		t.Fatalf("dispatched = %d, want 2", processed)
 	}
 	waitForTasksIdle(t, runner)
-	nextDone := runBatch(runner, []task.ReadyTask{
-		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "implementing", NewProject: true, Assignee: "default"},
+}
+
+// TestProcessBatchPerProjectConcurrency guards the per-project Round 2
+// capacity: with no global cap and 2 per project, two projects dispatch four
+// implementing sessions in one round — the requested behavior behind
+// max_concurrent_tasks_per_project.
+func TestProcessBatchPerProjectConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	os.MkdirAll(filepath.Join(dir, "one"), 0755)
+	os.MkdirAll(filepath.Join(dir, "two"), 0755)
+	projectOne := createRepository(t, filepath.Join(dir, "one"))
+	projectTwo := createRepository(t, filepath.Join(dir, "two"))
+
+	skillDir := writeVaultMap(t, dir, map[string]string{
+		"project-one": projectOne,
+		"project-two": projectTwo,
 	})
-	waitForStartCount(t, startDir, 2)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	var tasks []task.ReadyTask
+	for i, id := range []string{"031", "032", "033", "034", "035"} {
+		project := "project-one"
+		if i >= 2 {
+			project = "project-two"
+		}
+		path := writeTaskFile(t, dir, "TASK-"+id+".md", "implementing")
+		tasks = append(tasks, task.ReadyTask{
+			ID: id, Title: "T" + id, Project: project, FilePath: path,
+			Status: "implementing", Assignee: "default",
+		})
+	}
+	// Four slots (2 per project) across two projects; the fifth task (third
+	// of project-two) must wait for capacity.
+	runner := newTestRunnerLimits(skillDir, omp, filepath.Join(dir, "logs"), 0, 2)
+	done := runBatch(runner, tasks)
+	waitForStartCount(t, startDir, 4)
+	assertStartCount(t, startDir, 4)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, done); processed != 4 {
+		t.Fatalf("dispatched = %d, want 4", processed)
+	}
+	waitForTasksIdle(t, runner)
+
+	// Capacity released: the fifth task dispatches on the next round.
+	nextDone := runBatch(runner, []task.ReadyTask{tasks[4]})
+	waitForStartCount(t, startDir, 5)
 	releaseBarrier(t, releaseFile)
 	if processed := waitForBatch(t, nextDone); processed != 1 {
 		t.Fatalf("next round dispatched = %d, want 1", processed)
@@ -1206,12 +1251,17 @@ func writeTaskFile(t *testing.T, dir, name, status string) string {
 }
 
 func newTestRunner(skillDir, omp, logDir string, limit int) *Runner {
+	return newTestRunnerLimits(skillDir, omp, logDir, limit, 2)
+}
+
+func newTestRunnerLimits(skillDir, omp, logDir string, limit, perProject int) *Runner {
 	runner := New(&config.Config{
-		SkillInstallDir:    skillDir,
-		OMPCmd:             omp,
-		LogDir:             logDir,
-		MaxConcurrentTasks: limit,
-		Models:             config.DefaultModels(),
+		SkillInstallDir:              skillDir,
+		OMPCmd:                       omp,
+		LogDir:                       logDir,
+		MaxConcurrentTasks:           limit,
+		MaxConcurrentTasksPerProject: perProject,
+		Models:                       config.DefaultModels(),
 	})
 	runner.logger = log.New(io.Discard, "", 0)
 	return runner

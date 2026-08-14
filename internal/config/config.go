@@ -12,24 +12,25 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ConfigVersion         int               `json:"config_version"`
-	ObsidianVault         string            `json:"obsidian_vault"`
-	NewProjectRoot        string            `json:"new_project_root"`
-	Projects              []Project         `json:"projects"`
-	Notifications         NotifConfig       `json:"notifications"`
-	PollIntervalMin       int               `json:"poll_interval_minutes"`
-	MaxConcurrentTasks    int               `json:"max_concurrent_tasks"`
-	PhaseConcurrency      map[string]int    `json:"phase_concurrency"`
-	PhaseTimeoutMinutes   map[string]int    `json:"phase_timeouts_minutes"`
-	ShutdownGraceSeconds  int               `json:"shutdown_grace_seconds"`
-	OffPeakTimezone       string            `json:"off_peak_timezone"`
-	OffPeakWindows        []TimeWindow      `json:"off_peak_windows"`
-	StarvationWarningDays map[string]int    `json:"starvation_warning_days"`
-	Models                map[string]string `json:"models"`
-	FallbackModels        map[string]string `json:"fallback_models"`
-	OMPCmd                string            `json:"omp_cmd"`
-	DefaultAssignee       string            `json:"default_assignee"`
-	LogDir                string            `json:"log_dir,omitempty"`
+	ConfigVersion                int               `json:"config_version"`
+	ObsidianVault                string            `json:"obsidian_vault"`
+	NewProjectRoot               string            `json:"new_project_root"`
+	Projects                     []Project         `json:"projects"`
+	Notifications                NotifConfig       `json:"notifications"`
+	PollIntervalMin              int               `json:"poll_interval_minutes"`
+	MaxConcurrentTasks           int               `json:"max_concurrent_tasks"`
+	MaxConcurrentTasksPerProject int               `json:"max_concurrent_tasks_per_project"`
+	PhaseConcurrency             map[string]int    `json:"phase_concurrency"`
+	PhaseTimeoutMinutes          map[string]int    `json:"phase_timeouts_minutes"`
+	ShutdownGraceSeconds         int               `json:"shutdown_grace_seconds"`
+	OffPeakTimezone              string            `json:"off_peak_timezone"`
+	OffPeakWindows               []TimeWindow      `json:"off_peak_windows"`
+	StarvationWarningDays        map[string]int    `json:"starvation_warning_days"`
+	Models                       map[string]string `json:"models"`
+	FallbackModels               map[string]string `json:"fallback_models"`
+	OMPCmd                       string            `json:"omp_cmd"`
+	DefaultAssignee              string            `json:"default_assignee"`
+	LogDir                       string            `json:"log_dir,omitempty"`
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
 	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
@@ -205,9 +206,11 @@ func DefaultModels() map[string]string {
 
 // DefaultPhaseConcurrency returns the per-phase OMP concurrency ceilings.
 // Keys are phase names (refining/planning/merge/priority/pm/audit); a missing
-// key or 0 means unlimited. round2 is governed by max_concurrent_tasks (kept
-// for backward compatibility). These caps bound simultaneous OMP sessions to
-// protect API rate limits, token spend, and local CPU/memory.
+// key or 0 means unlimited. round2 is governed by
+// max_concurrent_tasks_per_project (per-project cap, default 2) plus
+// max_concurrent_tasks (optional global total cap, 0 = unlimited). These caps
+// bound simultaneous OMP sessions to protect API rate limits, token spend,
+// and local CPU/memory.
 func DefaultPhaseConcurrency() map[string]int {
 	return map[string]int{
 		"refining": 3,
@@ -297,22 +300,26 @@ func DefaultKBChat() *KBChatConfig {
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		ConfigVersion:              1,
-		NewProjectRoot:             filepath.Join(home, "src"),
-		PollIntervalMin:            30,
-		MaxConcurrentTasks:         2,
-		PhaseConcurrency:           DefaultPhaseConcurrency(),
-		PhaseTimeoutMinutes:        map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
-		ShutdownGraceSeconds:       30,
-		OffPeakTimezone:            "Asia/Shanghai",
-		OffPeakWindows:             []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
-		StarvationWarningDays:      map[string]int{"P3": 14, "P4": 30},
-		ScanMinIntervalSeconds:     10,
+		ConfigVersion:   1,
+		NewProjectRoot:  filepath.Join(home, "src"),
+		PollIntervalMin: 30,
+		// max_concurrent_tasks = optional global cap across all projects
+		// (0 = unlimited); per-project capacity is governed by
+		// MaxConcurrentTasksPerProject (default 2).
+		MaxConcurrentTasks:           0,
+		MaxConcurrentTasksPerProject: 2,
+		PhaseConcurrency:             DefaultPhaseConcurrency(),
+		PhaseTimeoutMinutes:          map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
+		ShutdownGraceSeconds:         30,
+		OffPeakTimezone:              "Asia/Shanghai",
+		OffPeakWindows:               []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
+		StarvationWarningDays:        map[string]int{"P3": 14, "P4": 30},
+		ScanMinIntervalSeconds:       10,
 		// Overlap deferral cap: 12h exceeds the round2 no-progress cooldown
 		// ceiling (~10.7h), so a stalled upstream stops being re-dispatched
 		// before the deferred task is released to run concurrently.
-		MaxOverlapWaitMinutes: 720,
-		Audit:                 &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
+		MaxOverlapWaitMinutes:      720,
+		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
 		MaxAutoFixConflicts:        40, // TASK-067: 90+ conflicting files doomed the 15min AI session
@@ -358,11 +365,12 @@ func mergeDefaults(cfg *Config) {
 	if cfg.ConfigVersion == 0 {
 		cfg.ConfigVersion = defaults.ConfigVersion
 	}
-	if cfg.PollIntervalMin == 0 {
-		cfg.PollIntervalMin = defaults.PollIntervalMin
-	}
-	if cfg.MaxConcurrentTasks == 0 {
-		cfg.MaxConcurrentTasks = defaults.MaxConcurrentTasks
+	// MaxConcurrentTasks: 0 is a valid value (no global cap) — missing and
+	// explicit 0 are identical, so no fallback. Per-project capacity: 0
+	// (missing or explicit) falls back to the default 2 — a per-project cap
+	// of 0 has no useful meaning, unlike the global cap.
+	if cfg.MaxConcurrentTasksPerProject == 0 {
+		cfg.MaxConcurrentTasksPerProject = defaults.MaxConcurrentTasksPerProject
 	}
 	if cfg.PhaseConcurrency == nil {
 		cfg.PhaseConcurrency = defaults.PhaseConcurrency
@@ -517,6 +525,11 @@ func applyEnvironment(cfg *Config) {
 			cfg.MaxConcurrentTasks = parsed
 		}
 	}
+	if value := os.Getenv("OTG_MAX_CONCURRENT_TASKS_PER_PROJECT"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.MaxConcurrentTasksPerProject = parsed
+		}
+	}
 }
 
 func firstNonEmptyEnv(names ...string) string {
@@ -532,8 +545,11 @@ func (c *Config) Validate() error {
 	if c.ConfigVersion != 1 {
 		return fmt.Errorf("CONFIG_INVALID: unsupported config_version %d", c.ConfigVersion)
 	}
-	if c.MaxConcurrentTasks < 1 {
-		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks must be at least 1")
+	if c.MaxConcurrentTasks < 0 {
+		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks must be >= 0 (0 = no global cap)")
+	}
+	if c.MaxConcurrentTasksPerProject < 0 {
+		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks_per_project must be >= 0 (0 = default 2)")
 	}
 	for phase, limit := range c.PhaseConcurrency {
 		if limit < 0 {
