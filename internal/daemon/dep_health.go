@@ -160,6 +160,17 @@ func (r *Runner) detectStaleDoneReopens() int {
 			if checkpointAncestor(repoDir, fm.CheckpointCommit) {
 				continue // genuinely delivered (checkpoint is in origin/main)
 			}
+			// Not in the local mirror — but the mirror itself may be stale: a
+			// merge completed moments ago (gh pr merge happens on the forge;
+			// the local origin/main ref updates only on the next fetch) reads
+			// as "undelivered" here (TASK-018 2026-08-14: reopened minutes
+			// after PR #76 merged). Refresh before declaring a stale
+			// terminal. A failed fetch is uncertainty — keep the task
+			// untouched and let the next scan retry (conservative: never
+			// reopen on uncertainty).
+			if r.daemonCtx == nil || !fetchOriginMain(r.daemonCtx, repoDir) || checkpointAncestor(repoDir, fm.CheckpointCommit) {
+				continue
+			}
 			// Stale terminal: reopen like a breaking REQ change.
 			updates := map[string]interface{}{
 				"status":              "refining",
