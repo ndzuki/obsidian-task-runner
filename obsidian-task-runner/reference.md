@@ -22,7 +22,8 @@ refining/planning -- retry once, fail again --> blocked
 implementing -- pending_req at AC boundary --> refining
 implementing -- prototype FAIL → needs-grilling（带原型证据）
 implementing -- 无进展完成（仍 implementing + 无 checkpoint_commit）→ 冷却自环（指数退避 10m→…→~10.7h，不重派不通知；有进展即重置）
-review -- merge conflict --> conflict -- AI 预算内自动修复+自动重授权，耗尽后人工 --> done
+review -- merge conflict --> conflict -- AI 预算内自动修复+自动重授权，耗尽/超规模熔断后人工 --> done
+review/conflict -- 交还后 PR 被人工合并（MERGED）--> 自动收口 done（autoCloseMergedConflictPRs）
 plan-review -- close_approved --> closed
 review -- close_approved --> closed
 closed -- [终态，不可恢复]
@@ -41,7 +42,7 @@ closed -- [终态，不可恢复]
 | `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派；checkpoint_commit 写入或状态离开 implementing 即重置 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
 | `review` | 本地实现已提交；auto_merge=true 时先过**独立完成审计**（只读会话逐条 AC 复核原始证据，见 §4.6.10），通过后自动授权合并；人工 `merge_approved=true` 跳过审计；审计 fail 按类型转 implementing 或 needs-grilling | daemon 自动 / 人工 | `done` / `conflict` / `refining` / `implementing` / `needs-grilling` / `closed` |
 | `closed` | 已关闭终止；不再流转 | 人工 | —（终态） |
-| `conflict` | Merge 冲突；auto_merge 任务在 REQ 未变 + 预算未耗尽时 daemon 自动重授权重试，预算耗尽（conflict-resolve-attempted）/ 永久缺陷交还人工 | daemon（AI 预算内）+ 人工 | `done` / `refining` |
+| `conflict` | Merge 冲突；auto_merge 任务在 REQ 未变 + 预算未耗尽时 daemon 自动重授权重试，预算耗尽（conflict-resolve-attempted）/ 冲突规模超 `max_auto_fix_conflicts` 熔断 / 永久缺陷交还人工；**交还后 PR 被人工合并（MERGED）→ `autoCloseMergedConflictPRs` 每任务 5 分钟冷却探测自动转 done**（TASK-067：手动合完 PR 任务仍卡 conflict 阻塞下游） | daemon（AI 预算内）+ 人工 | `done` / `refining` |
 | `done` | 已合并推送；breaking 变更重开（代际重置）或 additive/cosmetic 保持终态 | — | `refining`（breaking）或结束 |
 
 ## 3. 人工 Gate
@@ -164,7 +165,7 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `target_branch` | string | `""` | Round 2 分支；done 重开时清空，round2 完成后 daemon 写新分支 |
 | `pr_url` | string | `""` | PR URL；done 重开时清空，新交付创建新 PR |
 | `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
-| `merge_retry_count` | int | `0` | AI 合并修复预算（冲突/CI 失败共享，上限见 vault-map `max_auto_merge_fixes`）；仅在 merge 成功或**新一轮 planning 完成**时清零——replan 不继承旧交付耗尽（TASK-067 教训）；同一计划内重复授权不重置（防无限循环） |
+| `merge_retry_count` | int | `0` | AI 合并修复预算（冲突/CI 失败共享，上限见 vault-map `max_auto_merge_fixes`）；仅在 merge 成功或**新一轮 planning 完成**时清零——replan 不继承旧交付耗尽（TASK-067 教训）；同一计划内重复授权不重置（防无限循环）。**冲突规模熔断（`max_auto_fix_conflicts`，默认 40）**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；**`upstream_stall_days`（默认 3）**：blocked_by 上游非终态且 `updated` 超阈值 → 每日一次提醒 |
 
 `pending_req` 仅在新 planning 成功后清 false。**done 重开代际重置**：breaking 变更（含未标注）打回 done 任务时清 `target_branch`/`pr_url`/`merge_status`/`completed` 并置 `knowledge_extracted=false`——旧 PR 已 MERGED 时 merge 流程会提前收敛为 done，不清则新交付永远合不进去（TASK-018 实测）。
 

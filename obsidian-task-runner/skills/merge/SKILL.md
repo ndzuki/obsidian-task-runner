@@ -78,9 +78,14 @@ completed: {local ISO8601}
 
 ## Sync & Push（daemon 执行）
 
-- merge 在**任务 worktree** 上执行（round2 worktree 已 checkout `target_branch`），不在主 checkout 上 merge——主 checkout 停留其他分支时会把 remote feature 历史合入错误分支（TASK-051/059 教训）。
+- merge 在**任务 worktree** 上执行（round2 worktree 已 checkout `target_branch`），不在主 checkout 上 merge——主 checkout 停留其他分支时会把 remote feature 历史合入错误分支（TASK-051/059 教训）。worktree 由 `taskRunKey(filePath)` 统一标识（round2/audit/merge 同 key，TASK-067：merge 曾用任务 ID 查 `TASK-<id>` 找不到，回退主 checkout 造成污染）。
 - sync 前自动清理残留 `MERGE_HEAD`（`git merge abort`）：上一次失败会话遗留的悬挂 merge 会污染后续 sync。
 - sync 按**祖先关系**分流：remote 是 local 祖先 → 直接 push；local 是 remote 祖先 → 三路 merge（冲突交 Step 0 AI 解决）；历史分叉 → 仅当 remote 独有变更文件全部被 local 重新实现（`merge-base..remote` ⊆ `merge-base..local` 文件级覆盖）时 `--force-with-lease` push，否则拒绝并交还用户——绝不猜测覆盖 main 不知道的提交。
+- **mergeability 收敛等待**：GitHub 异步计算 PR mergeability——push 新 head 后短暂窗口内 checks 可能 CLEAN 但 `mergeable` 仍 UNKNOWN。`loadMergeChecks` 同时读取 `mergeStateStatus` 与 `mergeable`；checks SUCCESS 但 `mergeable` 非 `MERGEABLE` 时**继续 poll 等待**而非立即 `gh pr merge`（否则 GitHub 服务端拒绝 "not mergeable" 烧掉环境重试预算，TASK-067：push → 立即 merge 被拒 DIRTY → 5 次重试浪费）。`mergeable` 字段缺失（旧 gh）保持旧行为：SUCCESS 即 merge。
+
+## 通知防抖（merge 路径）
+
+merge 失败/冲突路径（worktree 不可用、CI 修复失败、push 修复失败、预算耗尽、fork merge 失败、冲突解决失败）统一走 `notifyFailure` **per-task 5 分钟窗口**（`failNotifyBlocked` 给预算耗尽/熔断类最高优先级，可升级窗口内低级别通知）——阶段失败早已防抖，merge 路径曾裸调 `SendTaskAction` 造成通知风暴（TASK-067：清计数后每轮自动重授权重跑 + 每次失败弹通知）。
 
 ## Conflict Write-back（冲突写回）
 
@@ -90,7 +95,11 @@ merge_approved: false
 merge_status: conflict-resolve-attempted
 ```
 
-记录冲突文件、PR URL、分支和解决指引。`merge_status=conflict-resolve-attempted` 标记 AI 自动修复已达上限（`merge_retry_count >= max_auto_merge_fixes`）。交还用户后两条出路（均无需手动解冲突）：① 清 `merge_retry_count` 后重设 `merge_approved: true` 继续 AI 修复；② 在 REQ 文档追加歧义裁决记录并保存（建议含 `> 变更类型: breaking` 行）→ daemon 自动转 refining 重审需求后重新出计划。同一计划内重复授权不重置计数（防无限自动修复循环）。
+记录冲突文件、PR URL、分支和解决指引。`merge_status=conflict-resolve-attempted` 标记 AI 自动修复已达上限（`merge_retry_count >= max_auto_merge_fixes`）或**冲突规模超阈值被熔断**。交还用户后两条出路（均无需手动解冲突）：① 清 `merge_retry_count` 后重设 `merge_approved: true` 继续 AI 修复；② 在 REQ 文档追加歧义裁决记录并保存（建议含 `> 变更类型: breaking` 行）→ daemon 自动转 refining 重审需求后重新出计划。同一计划内重复授权不重置计数（防无限自动修复循环）。
+
+**冲突规模熔断（`max_auto_fix_conflicts`，vault-map 配置，默认 40）**：AI 冲突会话有界超时无法解决超大冲突集，启动前 daemon 在任务 worktree 统计未合并文件数（`git diff --diff-filter=U`）；超过阈值直接写 `conflict + conflict-resolve-attempted` 交还用户，**不启动会话、不消耗 `merge_retry_count`**（TASK-067：90+ 文件冲突 → 15min 会话超时 exit 143；~22 文件 5min 成功）。仅 pre-push sync 路径有本地冲突状态；PR 侧 DIRTY（GitHub 计算）不受熔断影响。0 或缺失 = 禁用。
+
+**人工合入自动收口（`autoCloseMergedConflictPRs`）**：预算耗尽/熔断交还用户的 conflict/review 任务（`auto_merge=true` + `merge_approved=false` + 预算耗尽），若 PR 已被**人工在 forge UI 合并**（`gh pr view` 报 MERGED），daemon 每轮以每任务 5 分钟冷却探测并自动 `completeMerge` 转 `done`——否则任务永久卡 conflict 静默阻塞下游 `blocked_by` 链（TASK-067：PR #51 手动合入后任务仍卡 conflict，需手动改 frontmatter）。
 
 如果 conflict 期间 REQ 发生变更：取消旧 Merge 流程，保留冲突审计记录和分支，直接转 refining，不继续解决旧需求版本的冲突。
 
