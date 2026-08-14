@@ -1026,7 +1026,11 @@ func IncrementHits(vaultDir string, refPaths []string) (int, error) {
 		case float64:
 			hits = int(vv)
 		}
-		if err := os.WriteFile(path, []byte(bumpHitsField(string(data), hits+1)), 0o644); err != nil {
+		// Atomic replace, not os.WriteFile: a truncate+write mid-state is
+		// observable by the daemon's References watcher as an empty/partial
+		// file and fires a bogus intake-format alert (observed 2026-08-14:
+		// absorb's hits bump alerted "frontmatter: no frontmatter").
+		if err := yamlfrontmatter.AtomicWrite(path, []byte(bumpHitsField(string(data), hits+1))); err != nil {
 			return bumped, fmt.Errorf("bump hits on %s: %w", ref, err)
 		}
 		// Keep the in-process classification cache hot: bump the cached entry

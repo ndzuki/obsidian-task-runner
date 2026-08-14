@@ -5,6 +5,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // validLevels is the KB v2 level enum.
@@ -52,4 +55,64 @@ func ValidateRefFile(path string) error {
 		return fmt.Errorf("aliases: missing")
 	}
 	return nil
+}
+
+// NormalizeRefFile self-heals the common KB v2 frontmatter violations from
+// agent/interactive intake that skips the skill's checks: RFC3339 (or other
+// parseable) timestamps in updated/created — the schema pins them to
+// YYYY-MM-DD — and an empty source. Rewrites only the offending lines,
+// preserving every other field, their order, and quoting style (same
+// field-preserving pattern as bumpHitsField). Returns whether the document
+// was rewritten; already-valid or unfixable documents are left untouched
+// (unfixable ones keep failing ValidateRefFile so the caller's alert path
+// still fires).
+func NormalizeRefFile(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read: %w", err)
+	}
+	content := string(data)
+	if !strings.HasPrefix(content, "---\n") {
+		return false, nil
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return false, nil
+	}
+	fmText := rest[:end]
+	body := rest[end+4:]
+	lines := strings.Split(fmText, "\n")
+	changed := false
+	for i, line := range lines {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		switch key {
+		case "updated", "created":
+			if updatedDateRE.MatchString(val) {
+				continue
+			}
+			if t, terr := time.Parse(time.RFC3339, val); terr == nil {
+				lines[i] = key + ": \"" + t.Format("2006-01-02") + "\""
+				changed = true
+			}
+		case "source":
+			if val == "" {
+				lines[i] = "source: \"local\""
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	updated := "---\n" + strings.Join(lines, "\n") + "\n---" + body
+	if err := yamlfrontmatter.AtomicWrite(path, []byte(updated)); err != nil {
+		return false, fmt.Errorf("write: %w", err)
+	}
+	return true, nil
 }
