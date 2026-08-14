@@ -31,8 +31,8 @@
     "model": "bge-reranker-v2-m3",
     "top_n": 20
   },
-  "max_concurrent_tasks": 2,
-  "max_overlap_wait_minutes": 720,
+  "max_concurrent_tasks": 0,
+  "max_concurrent_tasks_per_project": 2,
   "models": {
     "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
     "deepseek": "deepseek/deepseek-v4-flash",
@@ -49,7 +49,7 @@
   },
   "obsidian_vault": "/home/you/Obsidian/MainVault",
   "phase_concurrency": {
-    "_comment": "非 implementing 阶段的 OMP 并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks 控制。限制同时运行的 OMP 会话，保护 API 限速/token 消耗与本地资源。",
+    "_comment": "非 implementing 阶段的 OMP 并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks_per_project（每项目上限，默认 2）+ max_concurrent_tasks（可选全局总封顶，0=不限）控制。限制同时运行的 OMP 会话，保护 API 限速/token 消耗与本地资源。",
     "refining": 3,
     "planning": 2,
     "merge": 1,

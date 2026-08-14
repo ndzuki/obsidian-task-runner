@@ -181,7 +181,8 @@ otg install \
   },
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
-  "max_concurrent_tasks": 2
+  "max_concurrent_tasks": 0,
+  "max_concurrent_tasks_per_project": 2
 }
 ```
 
@@ -191,7 +192,7 @@ otg install \
 
 ### 阶段并发上限（`phase_concurrency`）
 
-`max_concurrent_tasks` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 OMP 会话导致 token 快速消耗、API 限速或资源抢占：
+`max_concurrent_tasks` / `max_concurrent_tasks_per_project` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 OMP 会话导致 token 快速消耗、API 限速或资源抢占：
 
 ```json
 "phase_concurrency": {
@@ -205,7 +206,7 @@ otg install \
 ```
 
 - 达到上限的任务留在待调度队列，等其它任务完成释放槽位后自动启动（无需手动操作）。
-- 任意 key 可调大/调小；置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks` 控制（不在此配置）。
+- 任意 key 可调大/调小；置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限）+ `max_concurrent_tasks`（可选全局总封顶）控制（不在此配置）。
 - 修改后重启 daemon 生效。
 
 ### 知识库语义检索（`kb_embedding`，可选）
@@ -315,18 +316,30 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 
 ### 并发任务
 
-`max_concurrent_tasks` 是 daemon 同时运行的 **implementing（Round 2）任务**上限，默认 `2`，配置值必须至少为 `1`。该限制覆盖同一 daemon 内所有批次和扫描周期，避免多个实现任务同时占用过多 LSP、debug adapter、编译器以及本机 CPU/内存资源。
+`max_concurrent_tasks_per_project` 是**每项目**同时运行的 **implementing（Round 2）任务**上限，默认 `2`：N 个项目最多同时运行 N×2 个实现会话，一个项目的满负荷不会饿死其它项目。`max_concurrent_tasks` 是可选的**全局总封顶**（`0` = 不限，默认 `0`；旧配置里的显式值按全局封顶保留，仅此一项的配置行为不变）。两个上限同时生效，取更严格者。该限制覆盖同一 daemon 内所有批次和扫描周期，避免多个实现任务同时占用过多 LSP、debug adapter、编译器以及本机 CPU/内存资源。
 
-- **implementing / Round 2**：必须先获取全局 implementation slot；同一时刻最多运行 `max_concurrent_tasks` 个。
+- **implementing / Round 2**：必须先获取所属项目的 implementation slot；每项目同时最多运行 `max_concurrent_tasks_per_project` 个，且全部项目合计不超过 `max_concurrent_tasks`（0 = 不限）。
 - **planning / refining / priority / merge / audit**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 OMP 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
 - **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `~/.omp/worktrees/` 下的任务专属 Git worktree，再释放仓库锁；实际 OMP 在独立 worktree 中运行。
-- **新项目 implementing**：虽然不使用 Round 2 worktree，但仍会占用 implementation slot，因为同样会使用代码分析和构建资源。
+- **新项目 implementing**：虽然不使用 Round 2 worktree，但仍会占用所属项目的 implementation slot，因为同样会使用代码分析和构建资源。
 - **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
 - **空分支字段兼容**：尚未进入 Round 2 的任务可以保留 `target_branch: ""`。daemon 先提供任务专属 worktree，agent 在其中创建 `task/<id>-<slug>`；Round 2 完成后把实际分支写回 `target_branch`。
 - **安全边界**：Round 2 使用独立 worktree；多个 Merge 或新项目任务仍不会同时修改主工作区。Planning / Refining 阶段不使用仓库。
 - **任务身份与恢复**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
 
-修改 `max_concurrent_tasks` 或安装新调度器二进制后，常驻 watcher daemon 需要重启才能生效；`otg daemon --once` 会在每次启动时读取配置。
+```mermaid
+flowchart TD
+    TASK[implementing 任务待派发] --> G1{所属项目已占用<br/>≥ max_concurrent_tasks_per_project?}
+    G1 -->|是| WAIT[留在 pending<br/>下一轮 scan 重试]
+    G1 -->|否| G2{全局总数 ≥ max_concurrent_tasks?<br/>（0 = 不限）}
+    G2 -->|是| WAIT
+    G2 -->|否| RUN[获得槽位 → 派发 round2]
+    RUN -->|会话结束释放槽位| TASK
+```
+
+判定顺序：先每项目门、后全局门；两上限同时生效取更严格者。
+
+修改 `max_concurrent_tasks` / `max_concurrent_tasks_per_project` 或安装新调度器二进制后，常驻 watcher daemon 需要重启才能生效；`otg daemon --once` 会在每次启动时读取配置。
 
 ### 计划文件重叠自动串行（`max_overlap_wait_minutes`）
 

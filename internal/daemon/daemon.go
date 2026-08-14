@@ -120,9 +120,16 @@ func New(cfg *config.Config) *Runner {
 			gates[phase] = newPhaseGate(limit)
 		}
 	}
+	// Defensive fallback for callers constructing Config directly (config.Load
+	// already merges defaults): a per-project cap of 0 means "default 2", so
+	// the gate never silently runs unlimited per project.
+	perProject := cfg.MaxConcurrentTasksPerProject
+	if perProject == 0 {
+		perProject = config.Defaults().MaxConcurrentTasksPerProject
+	}
 	return &Runner{
 		cfg:                cfg,
-		implementationGate: newImplementationGate(cfg.MaxConcurrentTasks),
+		implementationGate: newImplementationGate(cfg.MaxConcurrentTasks, perProject),
 		phaseGates:         gates,
 		daemonCtx:          context.Background(),
 		taskIdx:            task.NewIndex(),
@@ -192,8 +199,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer unlock()
 
 	r.logger.Printf("daemon started, vault=%s", r.cfg.ObsidianVault)
-	r.logger.Printf("concurrency gates: implementing=%d refining=%d planning=%d merge=%d priority=%d pm=%d",
-		r.cfg.MaxConcurrentTasks,
+	r.logger.Printf("concurrency gates: implementing=global(%d)/per-project(%d) refining=%d planning=%d merge=%d priority=%d pm=%d",
+		r.cfg.MaxConcurrentTasks, r.cfg.MaxConcurrentTasksPerProject,
 		r.cfg.ConcurrencyFor("refining"), r.cfg.ConcurrencyFor("planning"),
 		r.cfg.ConcurrencyFor("merge"), r.cfg.ConcurrencyFor("priority"), r.cfg.ConcurrencyFor("pm"))
 	r.cleanupOldLogs()
@@ -910,7 +917,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			candidate := &pending[i]
 			reservedImplementation := false
 			if candidate.task.Status == "implementing" {
-				acquired, _ := r.implementationGate.tryAcquireLocal()
+				acquired, _ := r.implementationGate.tryAcquireLocal(candidate.task.Project)
 				if !acquired {
 					implementationBlocked = true
 					continue
@@ -919,7 +926,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 			}
 			if !r.tryRepoLock(candidate.repoDir, candidate.lockMode) {
 				if reservedImplementation {
-					r.implementationGate.releaseLocal()
+					r.implementationGate.releaseLocal(candidate.task.Project)
 				}
 				continue
 			}
@@ -930,7 +937,7 @@ func (r *Runner) processBatch(tasks []task.ReadyTask) int {
 				// repo lock are released; the next scan round re-evaluates.
 				r.unlockRepo(candidate.repoDir, candidate.lockMode)
 				if reservedImplementation {
-					r.implementationGate.releaseLocal()
+					r.implementationGate.releaseLocal(candidate.task.Project)
 				}
 				continue
 			}
@@ -1170,7 +1177,8 @@ func (r *Runner) hasCanonicalTask(reqRel string) bool {
 }
 
 // phaseGateKey maps a task's dispatch stage to its concurrency gate key.
-// round2 is governed by implementationGate (max_concurrent_tasks) and the
+// round2 is governed by implementationGate (max_concurrent_tasks_per_project
+// per project + optional max_concurrent_tasks global cap) and the
 // needs-grilling/plan-review interactive stages are unbounded — they do not
 // start OMP sessions (or run Kitty, which is out-of-band).
 func phaseGateKey(t task.ReadyTask) string {
@@ -1431,7 +1439,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 
 func (r *Runner) processPreparedTask(prepared preparedTask) int {
 	if prepared.implementationReserved {
-		defer r.implementationGate.releaseLocal()
+		defer r.implementationGate.releaseLocal(prepared.task.Project)
 	}
 	taskKey := taskRunKey(prepared.task.FilePath)
 	if _, loaded := r.taskRuns.LoadOrStore(taskKey, struct{}{}); loaded {
@@ -2403,7 +2411,7 @@ func (r *Runner) adoptSurvivingImplementations() map[string]struct{} {
 				continue
 			}
 			adopted[taskRunKey(taskPath)] = struct{}{}
-			if r.implementationGate.adopt(pid) {
+			if r.implementationGate.adopt(pid, projectEntry.Name()) {
 				r.logger.Printf("task %s: adopted surviving implementation PID %d", fm.ID, pid)
 				go r.watchAdoptedImplementation(pid, pidFile)
 			}

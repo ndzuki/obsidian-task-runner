@@ -283,26 +283,28 @@ func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
 
 	config := map[string]interface{}{
-		"config_version":          1,
-		"obsidian_vault":          opts.ObsidianVault,
-		"new_project_root":        opts.NewProjectRoot,
-		"projects":                []interface{}{},
-		"models":                  map[string]string{"default": "gateway/gpt-5.4-mini"},
-		"fallback_models":         map[string]string{"gpt": "deepseek/deepseek-v4-flash", "default": "deepseek/deepseek-v4-flash", "deepseek": "deepseek/deepseek-v4-flash"},
-		"notifications":           map[string]interface{}{"desktop": opts.NotifyEnabled},
-		"poll_interval_minutes":   opts.PollIntervalMin,
-		"max_concurrent_tasks":    2,
-		"phase_timeouts_minutes":  map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
-		"shutdown_grace_seconds":  30,
-		"off_peak_timezone":       "Asia/Shanghai",
-		"off_peak_windows":        []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
-		"starvation_warning_days": map[string]int{"P3": 14, "P4": 30},
+		"config_version":        1,
+		"obsidian_vault":        opts.ObsidianVault,
+		"new_project_root":      opts.NewProjectRoot,
+		"projects":              []interface{}{},
+		"models":                map[string]string{"default": "gateway/gpt-5.4-mini"},
+		"fallback_models":       map[string]string{"gpt": "deepseek/deepseek-v4-flash", "default": "deepseek/deepseek-v4-flash", "deepseek": "deepseek/deepseek-v4-flash"},
+		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
+		"poll_interval_minutes": opts.PollIntervalMin,
+		// max_concurrent_tasks: 0 = no global cap (per-project governs);
+		// legacy values are preserved on upgrade via the merge below.
+		"max_concurrent_tasks":             0,
+		"max_concurrent_tasks_per_project": 2,
+		"off_peak_timezone":                "Asia/Shanghai",
+		"off_peak_windows":                 []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
+		"starvation_warning_days":          map[string]int{"P3": 14, "P4": 30},
 	}
 	// Field order is deliberate: alphabetical (the natural sort users see in
 	// most editors) with "projects" pinned last — appending a new project is
 	// the most frequent manual edit, so the array stays at the bottom.
 	orderedKeys := []string{
-		"config_version", "fallback_models", "max_concurrent_tasks", "models",
+		"config_version", "fallback_models", "max_concurrent_tasks",
+		"max_concurrent_tasks_per_project", "models",
 		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
 		"off_peak_windows", "phase_timeouts_minutes", "poll_interval_minutes",
 		"shutdown_grace_seconds", "starvation_warning_days", "projects",
