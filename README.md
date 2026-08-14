@@ -223,7 +223,7 @@ flowchart LR
         Q[查询] --> E[FTS5 BM25 命中]
         E --> F[候选① BM25 top-100 文档 chunk<br/>Go 进程内余弦重排]
         E --> G[候选② vec0 全局 top-K<br/>纯向量召回兜底]
-        F --> H[混合融合<br/>cos × w + 归一化 BM25 × (1-w)]
+        F --> H["混合融合<br/>cos × w + 归一化 BM25 × (1-w)"]
         G --> H
     end
     H --> R{配 kb_rerank?}
@@ -231,7 +231,7 @@ flowchart LR
     R -->|否| L[最终排序]
     K --> L
     subgraph Ask[问答 · kb ask]
-        L --> M[[kb_chat 流式生成<br/>[N] 编号引用参考资料]]
+        L --> M[["kb_chat 流式生成<br/>[N] 编号引用参考资料"]]
         M --> N[回答 + 确定性参考资料列表]
     end
 ```
