@@ -1019,6 +1019,60 @@ func TestEnsureTaskWorktreeRejectsMismatchedTargetBranch(t *testing.T) {
 	}
 }
 
+// TestEnsureTaskWorktreeBindsDetachedToTargetBranch: a worktree created
+// before target_branch existed (detached HEAD, e.g. an early audit) must be
+// bound to the target branch on the next call so merge/round2 phases operate
+// on the feature branch instead of failing (TASK-067: merge could not reuse
+// the detached round2 worktree and fell back to the main checkout).
+func TestEnsureTaskWorktreeBindsDetachedToTargetBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	git(t, "-C", repo, "checkout", "-b", "task/010-feature")
+	git(t, "-C", repo, "commit", "--allow-empty", "-m", "feature")
+	git(t, "-C", repo, "checkout", "--detach")
+
+	wt, err := ensureTaskWorktree(repo, "010", "")
+	if err != nil {
+		t.Fatalf("create detached worktree: %v", err)
+	}
+	// Reuse with a target branch: the detached worktree must switch onto it.
+	bound, err := ensureTaskWorktree(repo, "010", "task/010-feature")
+	if err != nil {
+		t.Fatalf("bind detached worktree to target branch: %v", err)
+	}
+	if bound != wt {
+		t.Fatalf("bound worktree = %q, want reused %q", bound, wt)
+	}
+	branch, err := gitCurrentBranch(wt)
+	if err != nil {
+		t.Fatalf("gitCurrentBranch: %v", err)
+	}
+	if branch != "task/010-feature" {
+		t.Fatalf("branch after bind = %q, want task/010-feature", branch)
+	}
+}
+// TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout pins the isolation
+// contract: when the primary checkout sits on the target branch (the old
+// fallback let merge pollute the user's working directory, TASK-067), the
+// call must FAIL loudly — git refuses to check the branch out in a second
+// worktree — instead of silently reusing the primary checkout.
+func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	git(t, "-C", repo, "checkout", "-b", "task/011-feature")
+	git(t, "-C", repo, "commit", "--allow-empty", "-m", "feature")
+
+	wt, err := ensureTaskWorktree(repo, "011", "task/011-feature")
+	if err == nil {
+		t.Fatalf("expected error when primary checkout holds the target branch, got worktree %q", wt)
+	}
+	if strings.Contains(err.Error(), "is already used by worktree") == false {
+		t.Fatalf("error must report the branch is checked out elsewhere: %v", err)
+	}
+}
+
 func TestIsRound2(t *testing.T) {
 	tests := []struct {
 		name string

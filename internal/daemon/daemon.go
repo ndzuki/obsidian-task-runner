@@ -70,7 +70,8 @@ type Runner struct {
 	overlapWaits       sync.Map              // taskPath → time.Time (when an overlap-deferred task started waiting; bounded by max_overlap_wait_minutes)
 	activeTasks        atomic.Int32          // dispatched task goroutines still running (shutdown drain)
 	taskIdx            *task.Index           // frontmatter cache: watcher events invalidate, scans reuse
-	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
+	conflictPRProbed    sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
+	gatedLogged         map[string]bool       // task paths whose dependency-gate log was emitted
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -813,6 +814,7 @@ func (r *Runner) scanAndProcess() error {
 	r.validateDependencyRefs()
 	r.detectPlanFileOverlaps()
 	r.autoCloseStaleMergedTasks()
+	r.autoCloseMergedConflictPRs()
 	r.detectStaleDoneReopens()
 	r.recoverUnExtractedKnowledge()
 	r.fixBlockedGateErrorCodes()
@@ -1352,15 +1354,16 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			lockMode = repoLockNone
 		case (t.Status == "review" || t.Status == "conflict") &&
 			(t.MergeApproved || canAutoApproveMerge(t, r.reqHash(t.ReqDoc), r.cfg.MaxAutoMergeFixes)):
-			// Merge pushes and merges via git/gh on the main checkout; it
-			// never touches worktrees. Blocking on the repo write lock would
-			// stall merges behind every planning/refining read lock (up to
-			// 30-60min), freezing authorized merges. Worktree OMP sessions
-			// already run lock-free for the same isolation reason.
-			// Auto-reauthorizable fallbacks (TASK-051/059: conflict +
-			// auto_merge + REQ 未变 + 预算未耗尽) take the same lock-free
-			// path — otherwise a busy repo write lock starves them before
-			// the canAutoApproveMerge gate inside runTask ever runs.
+			// Merge runs in the task worktree (processMergeTask reuses the
+			// round2 worktree via ensureTaskWorktree) and never touches the
+			// main checkout, so no repo lock is needed — blocking on the
+			// write lock would stall merges behind every planning/refining
+			// read lock (up to 30-60min), freezing authorized merges.
+			// Worktree OMP sessions already run lock-free for the same
+			// isolation reason. Auto-reauthorizable fallbacks (TASK-051/059:
+			// conflict + auto_merge + REQ 未变 + 预算未耗尽) take the same
+			// lock-free path — otherwise a busy repo write lock starves them
+			// before the canAutoApproveMerge gate inside runTask ever runs.
 			lockMode = repoLockNone
 		}
 		prepared := preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode}
@@ -1433,7 +1436,10 @@ func (r *Runner) processPreparedTask(prepared preparedTask) int {
 func (r *Runner) updateTaskFile(taskPath, taskID, taskTitle string, updates map[string]interface{}) error {
 	if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 		r.logger.Printf("task %s: frontmatter update failed: %v", taskID, err)
-		notify.SendTaskAction(taskID, taskTitle, "🚫", "任务文档写入失败", err.Error(), r.cfg.Notifications.Desktop)
+		// Debounced per task: updateTaskFile is called from phase and merge
+		// paths that retry every scan; a persistent write failure would
+		// otherwise re-toast each round.
+		r.notifyFailure(taskPath, taskID, taskTitle, "🚫", "任务文档写入失败", err.Error(), failNotifyReason)
 		return err
 	}
 	return nil
@@ -1484,9 +1490,11 @@ func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
 				}
 			}
 			r.logger.Printf("task %s: %s damaged after %s: %v", taskID, f, phase, err)
-			notify.SendTaskAction(taskID, "", "📄", "文档损坏",
-				fmt.Sprintf("%s 在 %s 阶段后被修改且无法自动修复，需要人工处理: %v", f, phase, err),
-				r.cfg.Notifications.Desktop)
+			// Debounced per document (notifyFailure): validateChangedDocs
+			// runs after every phase session; an unfixed damaged document
+			// would otherwise re-toast on each session completion.
+			r.notifyFailure(absPath, taskID, "", "📄", "文档损坏",
+				fmt.Sprintf("%s 在 %s 阶段后被修改且无法自动修复，需要人工处理: %v", f, phase, err), failNotifyReason)
 		}
 	}
 }
@@ -2343,6 +2351,19 @@ func isRound2(t task.ReadyTask) bool {
 	return (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
 }
 
+// ensureTaskWorktree locates or creates the task's isolated worktree under
+// ~/.omp/worktrees/<repoHash>/TASK-<taskID>. The taskID must be the SAME key
+// every phase uses — taskRunKey(filePath) — so round2, audit and merge all
+// share one worktree per task (TASK-067: merge looked up TASK-<id> while
+// round2 created TASK-<runkey>, never found it, and fell back to the primary
+// checkout, corrupting it).
+//
+// The primary checkout is NEVER used as a task workspace: it may sit on any
+// branch (or carry uncommitted user work), and merge/round2 write operations
+// there would pollute the user's working directory and merge remote history
+// into the wrong branch (TASK-051/059). A task whose target branch is checked
+// out by the primary checkout or another worktree therefore fails loudly
+// instead of silently reusing the main checkout.
 func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -2360,20 +2381,26 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 			if branchErr != nil {
 				return "", branchErr
 			}
-			if branch != targetBranch {
-				return "", fmt.Errorf("existing worktree %s uses branch %q, want %q", path, branch, targetBranch)
+			if branch == targetBranch {
+				return path, nil
 			}
+			if branch == "" {
+				// Detached HEAD: the worktree predates target_branch (created
+				// while the field was still empty, e.g. an early audit).
+				// Bind it to the target branch so subsequent phases operate
+				// on the feature branch (TASK-067: merge could not reuse the
+				// detached round2 worktree and fell back to the main checkout).
+				cmd := exec.Command("git", "-C", path, "checkout", targetBranch)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					return "", fmt.Errorf("checkout existing worktree %s to %q: %w: %s", path, targetBranch, err, strings.TrimSpace(string(output)))
+				}
+				return path, nil
+			}
+			return "", fmt.Errorf("existing worktree %s uses branch %q, want %q", path, branch, targetBranch)
 		}
 		return path, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat worktree path: %w", err)
-	}
-	// If the main repo is already on targetBranch, use it directly.
-	// Avoids "already used by worktree" error when user manually checked out the branch.
-	if targetBranch != "" {
-		if current, err := gitCurrentBranch(repoDir); err == nil && current == targetBranch {
-			return repoDir, nil
-		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("create worktree parent: %w", err)

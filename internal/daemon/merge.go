@@ -53,9 +53,10 @@ func hashFile(path string) (string, error) {
 }
 
 type mergeChecks struct {
-	HeadOID string
-	State   string
-	URL     string
+	HeadOID   string
+	State     string
+	URL       string
+	Mergeable string // GitHub PR mergeable: MERGEABLE / CONFLICTING / UNKNOWN (computing)
 }
 
 type mergeAction string
@@ -72,13 +73,22 @@ type mergeDecision struct {
 	ErrorCode ErrorCode
 	Reason    string
 }
-
 func evaluateMergeChecks(approvedHead string, checks mergeChecks) mergeDecision {
 	if approvedHead == "" || checks.HeadOID != approvedHead {
 		return mergeDecision{Action: mergeActionReview, ErrorCode: ErrBaseCommitMismatch, Reason: "approved head changed"}
 	}
 	switch strings.ToUpper(checks.State) {
 	case "SUCCESS":
+		// GitHub computes mergeability asynchronously: a freshly pushed head
+		// can report CLEAN checks while mergeable is still UNKNOWN. Merging
+		// immediately then fails server-side with "not mergeable" and burns
+		// the environmental retry budget (TASK-067: push → gh pr merge
+		// rejected DIRTY → 5 retries wasted). Wait for the server to
+		// converge instead. An empty mergeable (gh did not return the field,
+		// e.g. older gh CLI) keeps the legacy behavior: merge on SUCCESS.
+		if checks.Mergeable != "" && !strings.EqualFold(checks.Mergeable, "MERGEABLE") {
+			return mergeDecision{Action: mergeActionWait, Reason: "PR mergeability still computing"}
+		}
 		return mergeDecision{Action: mergeActionMerge}
 	case "FAILURE", "ERROR", "CANCELLED":
 		return mergeDecision{Action: mergeActionReview, ErrorCode: ErrValidationFailed, Reason: "required checks failed"}
