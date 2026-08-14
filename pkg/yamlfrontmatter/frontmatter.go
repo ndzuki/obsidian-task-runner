@@ -813,9 +813,60 @@ func updateUnlocked(path string, data []byte, updates map[string]interface{}) er
 	return atomicWrite(path, []byte(newContent))
 }
 
+// taskLockDir 返回任务 frontmatter flock 目录（XDG cache 下），
+// 避免在 /tmp tmpfs 上无限累积锁文件——8/14 观察：15325 个 /tmp 残留
+// 在无 swap 机器上直接占用不可回收的 shmem 内存，是系统 OOM 的推手之一。
+func taskLockDir() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		cacheDir = os.TempDir()
+	}
+	dir := filepath.Join(cacheDir, "otg", "locks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		// 目录创建失败时退回临时目录，锁语义不丢。
+		return os.TempDir()
+	}
+	return dir
+}
+
+// CleanStaleTaskLocks 删除无人持有且超过 24 小时的锁文件。
+// flock 惯例下锁文件不随解锁删除（unlink 会让等待者与新创建者同时持锁，
+// 形成竞态窗口），但旧文件会无限累积——daemon 周期性调用本函数回收。
+// 判据：先 flock LOCK_EX|LOCK_NB 探测，能立即拿到说明无人持有；持锁是
+// 毫秒级读改写操作，24 小时前的文件不可能仍被持有，mtime 是安全下界。
+func CleanStaleTaskLocks() {
+	dir := taskLockDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "otg-task-") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			continue // 已被删除或不可访问
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = f.Close()
+			continue // 仍被持有
+		}
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		_ = os.Remove(path)
+	}
+}
+
 func acquireTaskLock(path string) (func(), error) {
 	sum := sha256.Sum256([]byte(path))
-	lockPath := filepath.Join(os.TempDir(), fmt.Sprintf("otg-task-%x.lock", sum[:]))
+	lockPath := filepath.Join(taskLockDir(), fmt.Sprintf("otg-task-%x.lock", sum[:]))
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open task lock: %w", err)

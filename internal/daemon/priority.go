@@ -85,9 +85,11 @@ func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, "--model", r.cfg.Model("default"), "--auto-approve", "-p", "/obsidian-task-runner-priority "+reqPath)
+	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
+		return fmt.Errorf("create task temp environment: %w", err)
+	}
 	// Deterministic working directory: without it the OMP session inherits
-	// the daemon's cwd (service root), which varies by launch method and
-	// makes the session's relative paths and logs launch-dependent.
+	// the daemon's cwd and relative paths become launch-dependent.
 	if reqPath != "" {
 		cmd.Dir = filepath.Dir(reqPath)
 	}

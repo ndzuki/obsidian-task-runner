@@ -188,6 +188,7 @@ type mergeFixture struct {
 	runner    *Runner
 	candidate task.ReadyTask
 }
+
 const mergeFixtureBranch = "task/064-rollout"
 const mergeFixturePR = "https://github.com/x/y/pull/66"
 

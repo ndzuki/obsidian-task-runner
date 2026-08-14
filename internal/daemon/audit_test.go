@@ -15,7 +15,7 @@ func TestPhaseLoggerWritesRedactedJSONL(t *testing.T) {
 	logger := newPhaseLogger(&output)
 	logger.Event(phaseEvent{
 		Timestamp: time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC),
-		VaultID: "vault", Project: "otg", TaskPathHash: "abc", TaskID: "003",
+		VaultID:   "vault", Project: "otg", TaskPathHash: "abc", TaskID: "003",
 		Phase: "planning", Event: "FAILED", ErrorCode: ErrModelFailed,
 		Message: "Authorization: Bearer secret-token",
 	})

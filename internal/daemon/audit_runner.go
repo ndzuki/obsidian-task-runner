@@ -321,15 +321,18 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 			workDir = wd
 		}
 	}
+	prompt := fmt.Sprintf(auditPromptTemplate, t.FilePath, t.Project)
 	ctx, cancel := context.WithTimeout(parent, r.auditTimeout())
 	defer cancel()
 
-	prompt := fmt.Sprintf(auditPromptTemplate, t.FilePath, t.Project)
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd,
 		"--model", model, "--auto-approve", "-p", prompt,
 		"--thinking", "off", "--tools", "read,grep,bash")
+	if err := setTaskTempEnv(cmd, t.FilePath); err != nil {
+		return nil, "", fmt.Errorf("create task temp environment: %w", err)
+	}
 	cmd.Dir = workDir
-	// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
+	// Graceful shutdown: SIGTERM first, hard-kill after WaitDelay.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 30 * time.Second
 	output, runErr := cmd.Output()

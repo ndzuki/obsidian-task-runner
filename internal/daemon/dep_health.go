@@ -80,6 +80,7 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 				r.logger.Printf("auto-close %s: %v", entry.Name(), err)
 				continue
 			}
+			r.cleanupTaskArtifacts(path, r.repoDirForTask(fm.Project))
 			projClosed++
 			closed++
 			r.logger.Printf("health %s: TASK-%s auto-closed to done (PR merged, no pending_req)", projectEntry.Name(), fm.ID)

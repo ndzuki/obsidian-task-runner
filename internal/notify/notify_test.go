@@ -146,6 +146,7 @@ exit 1
 
 	t.Setenv("PATH", binDir)
 	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // debounce 文件迁移到 XDG cache 后必须隔离
 	t.Setenv("USER", "notify-parse-failure-test")
 	t.Setenv("KITTY_LISTEN_ON", "unix:test")
 	t.Setenv("KITTY_LAUNCH_MARKER", marker)
@@ -182,6 +183,7 @@ exit 1
 
 	t.Setenv("PATH", binDir)
 	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // debounce 文件迁移到 XDG cache 后必须隔离
 	t.Setenv("USER", "notify-ls-failure-test")
 	t.Setenv("KITTY_LISTEN_ON", "unix:test")
 	t.Setenv("KITTY_LAUNCH_MARKER", marker)

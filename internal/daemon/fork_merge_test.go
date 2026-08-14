@@ -83,7 +83,6 @@ func newForkMergeFixture(t *testing.T, mergeMode string) (string, string, string
 	// The task worktree carries the feature branch; processMergeTask must
 	// find and reuse it via the same taskRunKey the daemon uses.
 
-
 	vault := filepath.Join(dir, "vault")
 	reqDir := filepath.Join(vault, "Projects", "001-team-app", "Requirements")
 	tasksDir := filepath.Join(vault, "Projects", "001-team-app", "Tasks")

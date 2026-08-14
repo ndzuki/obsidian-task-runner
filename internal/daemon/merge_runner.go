@@ -638,6 +638,7 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 	}); err != nil {
 		return err
 	}
+	r.cleanupTaskArtifacts(candidate.FilePath, repoDir)
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "已合入 fork 默认分支",
 		fmt.Sprintf("实现已 merge 到 %s 的 %s 分支并推送；请手动向团队项目提交 PR，团队 review 后合入", candidate.Project, defaultBranch), r.cfg.Notifications.Desktop)
 	r.logger.Printf("task %s: fork-merge delivery: %s merged into fork %s and pushed, awaiting manual team PR", candidate.ID, fm.TargetBranch, defaultBranch)
@@ -667,6 +668,7 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	}); err != nil {
 		return err
 	}
+	r.cleanupTaskArtifacts(candidate.FilePath, repoDir)
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "合并成功",
 		fmt.Sprintf("PR %s 已合并，任务完成", prURL), r.cfg.Notifications.Desktop)
 	// Step 0：把本任务知识提取到知识库（非阻塞，但计入 activeTasks——
@@ -1261,6 +1263,7 @@ func countUnmergedFiles(repoDir string) int {
 	}
 	return n
 }
+
 // errConflictResolutionInterrupted marks an AI conflict-resolution session
 // aborted by daemon shutdown. Unlike a resolution failure, it must NOT
 // downgrade the task to conflict: the merge stays authorized and resumes on
@@ -1345,6 +1348,9 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
+	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
+		return fmt.Errorf("create task temp environment: %w", err)
+	}
 	// Graceful shutdown: SIGTERM so omp can persist its session, hard-kill
 	// after WaitDelay if it does not exit.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -1458,6 +1464,7 @@ func (r *Runner) checkRemoteMergedAndComplete(candidate task.ReadyTask, repoDir 
 	}); err != nil {
 		return false, err
 	}
+	r.cleanupTaskArtifacts(candidate.FilePath, repoDir)
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "远端已合入，任务完成",
 		fmt.Sprintf("分支 %s 已由人工合入 %s 的 %s 分支", fm.TargetBranch, candidate.Project, defaultBranch), r.cfg.Notifications.Desktop)
 	r.logger.Printf("task %s: manual-mode delivery confirmed: head %s merged into origin/%s", candidate.ID, fm.ApprovedHead, defaultBranch)
@@ -1479,10 +1486,10 @@ func loadMergeChecks(parent context.Context, repoDir, prURL string) (mergeChecks
 		return mergeChecks{}, fmt.Errorf("%s: inspect PR checks: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
 	}
 	var payload struct {
-		HeadRefOID       string `json:"headRefOid"`
-		MergeStateStatus string `json:"mergeStateStatus"`
-		Mergeable        string `json:"mergeable"`
-		URL              string `json:"url"`
+		HeadRefOID        string `json:"headRefOid"`
+		MergeStateStatus  string `json:"mergeStateStatus"`
+		Mergeable         string `json:"mergeable"`
+		URL               string `json:"url"`
 		StatusCheckRollup []struct {
 			Type       string `json:"__typename"`
 			State      string `json:"state"`

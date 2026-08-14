@@ -14,7 +14,7 @@ import (
 func newAutoRegRunner(t *testing.T, vault, skillDir string) *Runner {
 	t.Helper()
 	cfg := &config.Config{
-		ObsidianVault:  vault,
+		ObsidianVault:   vault,
 		SkillInstallDir: skillDir,
 		// Conventional checkout root; the directory does not exist, so
 		// registration must fall back to the vault project dir.
@@ -122,9 +122,9 @@ func TestEnsureProjectRegisteredPrefersRepoCheckout(t *testing.T) {
 	}
 	runner := &Runner{
 		cfg: &config.Config{
-			ObsidianVault:  vault,
+			ObsidianVault:   vault,
 			SkillInstallDir: skillDir,
-			NewProjectRoot: repoRoot,
+			NewProjectRoot:  repoRoot,
 		},
 		logger: log.New(io.Discard, "", 0),
 	}

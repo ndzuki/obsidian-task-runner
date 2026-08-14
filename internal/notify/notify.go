@@ -236,16 +236,65 @@ func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string, notifyEna
 	Send(title, "请在终端中完成交互式 grilling 对话。完成后 daemon 自动继续。", notifyEnabled)
 }
 
+// kittyDebounceDir 返回 grilling debounce 文件目录（XDG cache 下）。
+// 与任务 frontmatter 锁一致：不放在 /tmp——tmpfs 挂载且无 swap 时，
+// 残留文件占不可回收内存（2026-08-14 实测系统 OOM 的直接推手之一）。
+func kittyDebounceDir() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		cacheDir = os.TempDir()
+	}
+	dir := filepath.Join(cacheDir, "otg", "locks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return os.TempDir()
+	}
+	return dir
+}
+
+// CleanStaleKittyDebounceFiles 删除超过 24h 且无人持有的 grilling
+// debounce 文件。debounce 窗口只有 5 分钟，24h 前的文件内容必然已过期
+// （跨重启的 debounce 语义不受影响——删除与否行为一致），flock 探测
+// 防清理瞬间被持有。daemon 启动 + 周期 ticker 调用，防无限累积。
+func CleanStaleKittyDebounceFiles() {
+	dir := kittyDebounceDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "otg-kitty-grilling-") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			continue
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = f.Close()
+			continue // 仍被持有
+		}
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+		_ = os.Remove(path)
+	}
+}
+
 // kittyDebounce uses a file-based timestamp so the debounce survives daemon
 // restarts. Without this, every daemon restart triggers a new tab.
 func kittyDebounceFile(taskID string) string {
 	if user := os.Getenv("USER"); user != "" {
-		return filepath.Join(os.TempDir(), fmt.Sprintf("otg-kitty-grilling-%s-%s.lock", user, taskID))
+		return filepath.Join(kittyDebounceDir(), fmt.Sprintf("otg-kitty-grilling-%s-%s.lock", user, taskID))
 	}
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(homeDir, fmt.Sprintf(".otg-kitty-grilling-%s.lock", taskID))
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("otg-kitty-grilling-%s.lock", taskID))
+	return filepath.Join(kittyDebounceDir(), fmt.Sprintf("otg-kitty-grilling-%s.lock", taskID))
 }
 
 const kittyDebounceInterval = 5 * time.Minute
