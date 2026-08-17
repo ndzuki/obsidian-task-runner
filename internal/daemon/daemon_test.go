@@ -1039,6 +1039,73 @@ func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 	}
 }
 
+// TestEnsureTaskWorktreeSelfHealsExternallyDeleted: an externally deleted
+// worktree directory (manual disk cleanup) leaves a dangling git registration
+// that makes every `git worktree add` fail with "already registered".
+// ensureTaskWorktree must prune the stale registration and recreate the
+// worktree instead of stalling the task forever (seen live: TASK-057/077
+// stuck for hours until a manual `git worktree prune`).
+func TestEnsureTaskWorktreeSelfHealsExternallyDeleted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+
+	worktree, err := ensureTaskWorktree(repo, "heal-del", "")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	// Simulate external deletion of the worktree directory.
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatalf("remove worktree dir: %v", err)
+	}
+	// Without self-healing this fails with "missing but already registered".
+	recreated, err := ensureTaskWorktree(repo, "heal-del", "")
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree after external deletion: %v", err)
+	}
+	if recreated != worktree {
+		t.Fatalf("recreated path = %q, want %q", recreated, worktree)
+	}
+	if _, err := os.Stat(recreated); err != nil {
+		t.Fatalf("recreated worktree missing: %v", err)
+	}
+	if output, err := exec.Command("git", "-C", recreated, "rev-parse", "--is-inside-work-tree").CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "true" {
+		t.Fatalf("recreated worktree invalid: %v: %s", err, output)
+	}
+}
+
+// TestEnsureTaskWorktreeSelfHealsBrokenDirectory: a worktree directory that
+// still exists but lost its git binding (half-removed checkout, deleted .git
+// link) must also be repaired and recreated rather than failing validation.
+func TestEnsureTaskWorktreeSelfHealsBrokenDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+
+	worktree, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	// Break the worktree binding while leaving the directory in place.
+	if err := os.Remove(filepath.Join(worktree, ".git")); err != nil {
+		t.Fatalf("remove worktree .git link: %v", err)
+	}
+	recreated, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken")
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree after broken directory: %v", err)
+	}
+	if recreated != worktree {
+		t.Fatalf("recreated path = %q, want %q", recreated, worktree)
+	}
+	branch, err := gitCurrentBranch(recreated)
+	if err != nil {
+		t.Fatalf("gitCurrentBranch: %v", err)
+	}
+	if branch != "task/heal-broken" {
+		t.Fatalf("branch = %q, want task/heal-broken", branch)
+	}
+}
+
 func TestEnsureTaskWorktreeCreatesAndReusesTargetBranch(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
