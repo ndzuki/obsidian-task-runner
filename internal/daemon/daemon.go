@@ -2484,11 +2484,12 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))
 	path := filepath.Join(home, ".omp", "worktrees", repoHash[:12], "TASK-"+taskID)
 	if _, err := os.Stat(path); err == nil {
-		cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("validate existing worktree %s: %w: %s", path, err, strings.TrimSpace(string(output)))
-		}
-		if targetBranch != "" {
+		if _, err := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree").CombinedOutput(); err != nil {
+			// Directory exists but is not a usable worktree (half-removed
+			// checkout, deleted .git link): repair the stale registration and
+			// recreate from scratch below.
+			repairStaleWorktree(repoDir, path)
+		} else if targetBranch != "" {
 			branch, branchErr := gitCurrentBranch(path)
 			if branchErr != nil {
 				return "", branchErr
@@ -2509,8 +2510,9 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 				return path, nil
 			}
 			return "", fmt.Errorf("existing worktree %s uses branch %q, want %q", path, branch, targetBranch)
+		} else {
+			return path, nil
 		}
-		return path, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat worktree path: %w", err)
 	}
@@ -2518,19 +2520,45 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
 		return "", fmt.Errorf("create worktree parent: %w", err)
 	}
 
-	args := []string{"-C", repoDir, "worktree", "add"}
-	if targetBranch == "" {
-		args = append(args, "--detach", path, "HEAD")
-	} else if gitBranchExists(repoDir, targetBranch) {
-		args = append(args, path, targetBranch)
-	} else {
-		args = append(args, "-b", targetBranch, path, "HEAD")
+	add := func() ([]byte, error) {
+		args := []string{"-C", repoDir, "worktree", "add"}
+		if targetBranch == "" {
+			args = append(args, "--detach", path, "HEAD")
+		} else if gitBranchExists(repoDir, targetBranch) {
+			args = append(args, path, targetBranch)
+		} else {
+			args = append(args, "-b", targetBranch, path, "HEAD")
+		}
+		return exec.Command("git", args...).CombinedOutput()
 	}
-	cmd := exec.Command("git", args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("create worktree: %w: %s", err, strings.TrimSpace(string(output)))
+	output, err := add()
+	if err == nil {
+		return path, nil
 	}
-	return path, nil
+	// Self-heal stale worktree registrations: an externally deleted worktree
+	// directory (manual cleanup) leaves its git registration behind, and every
+	// `git worktree add` then fails with "already registered" — previously the
+	// task stalled forever until a manual `git worktree prune`. Repair only
+	// runs after an add failure and touches only this task-owned worktree
+	// path (a healthy worktree is reused by the stat branch above, never
+	// repaired). All callsites hold the repo lock or run git-atomic commands.
+	repairStaleWorktree(repoDir, path)
+	if _, err2 := add(); err2 == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("create worktree (stale-registration repair attempted): %w: %s", err, strings.TrimSpace(string(output)))
+}
+
+// repairStaleWorktree makes path recreatable after a dangling git worktree
+// registration: prune clears registrations whose directory is gone, remove
+// --force clears one whose (broken) directory still exists, and a leftover
+// directory (registration already pruned) that would block the retry with
+// "already exists" is removed outright. Each step tolerates failure — the
+// repair is best-effort and the retried add reports the real outcome.
+func repairStaleWorktree(repoDir, path string) {
+	exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+	exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).Run()
+	os.RemoveAll(path)
 }
 
 func gitBranchExists(repoDir, branch string) bool {
