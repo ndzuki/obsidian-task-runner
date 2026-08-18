@@ -325,6 +325,15 @@ func (f *mergeFixture) installFakeGH(t *testing.T, script string) {
 	}
 }
 
+func gitRevParse(t *testing.T, repo, rev string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repo, "rev-parse", rev).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v: %s", rev, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // TestProcessMergeTaskReusesExistingPR covers the recovery loop that kept
 // TASK-064 stuck in review: frontmatter pr_url empty while the remote already
 // has an open PR for the branch. The merge must adopt the existing PR, record
@@ -795,6 +804,109 @@ exit 0
 	}
 	if _, err := os.Stat(pushMarker); !os.IsNotExist(err) {
 		t.Fatal("git push must not run when the PR is already merged")
+	}
+}
+
+// TestProcessMergeTaskStaleLegacyPRDoesNotConverge guards the done→refining
+// loop of TASK-069: a merged PR for the same branch from an EARLIER
+// generation (v1, merged before this task's checkpoint existed) must not
+// converge the task to done. The early-convergence path verifies the PR's
+// merge commit contains the checkpoint; when it does not, the merge falls
+// through to the normal path and creates a fresh PR for the current head.
+func TestProcessMergeTaskStaleLegacyPRDoesNotConverge(t *testing.T) {
+	f := newMergeFixture(t)
+	wip := gitRevParse(t, f.repo, mergeFixtureBranch)
+	base := gitRevParse(t, f.repo, mergeFixtureBranch+"~1")
+	if err := yamlfrontmatter.Update(f.taskPath, map[string]interface{}{
+		"pr_url": mergeFixturePR, "checkpoint_commit": wip,
+	}); err != nil {
+		t.Fatalf("set frontmatter: %v", err)
+	}
+	createMarker := filepath.Join(t.TempDir(), "create-called")
+	ghScript := fmt.Sprintf(`#!/bin/sh
+marker=%q
+case "$1" in
+  pr)
+    case "$2" in
+      list) : ;;
+      view)
+        case "$5" in
+          state) echo 'MERGED' ;;
+          mergeCommit) echo '%s' ;;
+          *) echo '{"headRefOid":"%s","mergeStateStatus":"CLEAN","url":"%s","statusCheckRollup":[]}' ;;
+        esac
+        ;;
+      create)
+        : > "$marker"
+        echo '%s'
+        ;;
+      merge) exit 0 ;;
+    esac ;;
+esac
+exit 0
+`, createMarker, base, f.head, mergeFixturePR, mergeFixturePR)
+	f.installFakeGH(t, ghScript)
+
+	if err := f.runner.processMergeTask(f.candidate, f.repo); err != nil {
+		t.Fatalf("processMergeTask: %v", err)
+	}
+	fm := mustParse(t, f.taskPath)
+	if fm.Status != "done" || fm.MergeStatus != "merged" {
+		t.Fatalf("status = %q merge_status = %q, want done/merged", fm.Status, fm.MergeStatus)
+	}
+	if _, err := os.Stat(createMarker); err != nil {
+		t.Fatal("stale legacy PR must not converge; a fresh PR must be created")
+	}
+}
+
+// TestProcessMergeTaskMergedPRWithCheckpointConverges pins the positive side
+// of the checkpoint gate: when the merged PR's merge commit actually contains
+// the task checkpoint, convergence to done stays fast (no push, no create).
+func TestProcessMergeTaskMergedPRWithCheckpointConverges(t *testing.T) {
+	f := newMergeFixture(t)
+	wip := gitRevParse(t, f.repo, mergeFixtureBranch)
+	if err := yamlfrontmatter.Update(f.taskPath, map[string]interface{}{
+		"pr_url": mergeFixturePR, "checkpoint_commit": wip,
+	}); err != nil {
+		t.Fatalf("set frontmatter: %v", err)
+	}
+	binDir := strings.Split(os.Getenv("PATH"), ":")[0]
+	pushMarker := filepath.Join(t.TempDir(), "push-called")
+	gitScript := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-C\" ]; then cd \"$2\" || exit 1; shift 2; fi\n" +
+		"while [ \"$1\" = \"-c\" ]; do shift 2; done\n" +
+		"case \"$1\" in\n" +
+		"  push) touch %q; exit 0 ;;\n" +
+		"esac\n" +
+		"exec /usr/bin/git \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(fmt.Sprintf(gitScript, pushMarker)), 0o755); err != nil {
+		t.Fatalf("write marker git: %v", err)
+	}
+	f.installFakeGH(t, fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  pr)
+    case "$2" in
+      view)
+        case "$5" in
+          state) echo 'MERGED' ;;
+          mergeCommit) echo '%s' ;;
+          *) echo '{}' ;;
+        esac
+        ;;
+    esac ;;
+esac
+exit 0
+`, wip))
+
+	if err := f.runner.processMergeTask(f.candidate, f.repo); err != nil {
+		t.Fatalf("processMergeTask: %v", err)
+	}
+	fm := mustParse(t, f.taskPath)
+	if fm.Status != "done" || fm.MergeStatus != "merged" {
+		t.Fatalf("status = %q merge_status = %q, want done/merged", fm.Status, fm.MergeStatus)
+	}
+	if _, err := os.Stat(pushMarker); !os.IsNotExist(err) {
+		t.Fatal("git push must not run when the merged PR contains the checkpoint")
 	}
 }
 
