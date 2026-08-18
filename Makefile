@@ -25,7 +25,7 @@ lint:
 clean:
 	rm -f $(BINARY) coverage.out coverage.html
 
-install: build
+install: build sync-docs
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
 	cp $(BINARY) $(GOBIN)/$(BINARY)
@@ -66,10 +66,8 @@ sync-docs:
 	@echo "=== Syncing skill docs to ~/.omp/ ==="
 	cp -r obsidian-task-runner/*.md $(HOME)/.omp/skills/obsidian-task-runner/
 	cp -r obsidian-task-runner/skills/ $(HOME)/.omp/skills/obsidian-task-runner/
-	@# docs/workflow.md is the canonical full spec (SKILL.md/reference.md link
-	@# to it); keep the installed copy in lockstep so no tool reads a stale
-	@# version from ~/.omp.
-	cp docs/workflow.md $(HOME)/.omp/skills/obsidian-task-runner/workflow.md
+	@# workflow.md 是仓库 docs/ 的设计文档，不再随技能包安装（处理 5：
+	@# 运行时包只含执行契约 SKILL.md + reference.md；完整规范留在仓库）。
 	@# knowledge-base is an external skill; the repo copy is the versioned
 	@# source for rollback. Only overwrite the installed file, never the
 	@# vault data it reads.

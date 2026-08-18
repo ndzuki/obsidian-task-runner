@@ -408,3 +408,63 @@ func TestRegisterProjectPreservesTeamSettings(t *testing.T) {
 		t.Fatalf("path = %q, want updated path", entry["path"])
 	}
 }
+
+func TestUnregisterProject(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	curated := `{
+  "projects": [
+    {
+      "name": "keep",
+      "path": "/work/keep",
+      "git_remote": "github.com/x/keep"
+    },
+    {
+      "name": "drop",
+      "path": "/work/drop",
+      "git_remote": "github.com/x/drop",
+      "project_type": "team",
+      "merge_mode": "manual"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(mapFile, []byte(curated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("remove returns path", func(t *testing.T) {
+		path, err := UnregisterProject(mapFile, "drop")
+		if err != nil {
+			t.Fatalf("UnregisterProject: %v", err)
+		}
+		if path != "/work/drop" {
+			t.Fatalf("removed path = %q, want /work/drop", path)
+		}
+		raw, _ := os.ReadFile(mapFile)
+		var parsed struct {
+			Projects []map[string]string `json:"projects"`
+		}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		if len(parsed.Projects) != 1 {
+			t.Fatalf("projects = %d, want 1", len(parsed.Projects))
+		}
+		if parsed.Projects[0]["name"] != "keep" {
+			t.Fatalf("remaining entry = %+v, want keep", parsed.Projects[0])
+		}
+	})
+
+	t.Run("not registered returns sentinel", func(t *testing.T) {
+		before, _ := os.ReadFile(mapFile)
+		_, err := UnregisterProject(mapFile, "missing")
+		if err != ErrProjectNotFound {
+			t.Fatalf("UnregisterProject(missing) err = %v, want ErrProjectNotFound", err)
+		}
+		after, _ := os.ReadFile(mapFile)
+		if string(before) != string(after) {
+			t.Error("no-op unregister should not modify file")
+		}
+	})
+}

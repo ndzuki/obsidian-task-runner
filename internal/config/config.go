@@ -12,9 +12,13 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ConfigVersion                int               `json:"config_version"`
-	ObsidianVault                string            `json:"obsidian_vault"`
-	NewProjectRoot               string            `json:"new_project_root"`
+	ConfigVersion  int    `json:"config_version"`
+	ObsidianVault  string `json:"obsidian_vault"`
+	NewProjectRoot string `json:"new_project_root"`
+	// WorktreeBase overrides where task worktrees are created. Empty uses the
+	// default: <repo parent>/.otg-worktrees/<repoHash>/TASK-<runKey>. Must be
+	// an absolute path; relative paths are not expanded.
+	WorktreeBase                 string            `json:"worktree_base,omitempty"`
 	Projects                     []Project         `json:"projects"`
 	Notifications                NotifConfig       `json:"notifications"`
 	PollIntervalMin              int               `json:"poll_interval_minutes"`

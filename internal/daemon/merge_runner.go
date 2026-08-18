@@ -244,7 +244,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// the main checkout, the AI session polluted its index with another
 	// task's staged files, and `git merge --abort` spun forever on
 	// "Entry ... not uptodate").
-	if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(candidate.FilePath), fm.TargetBranch); wdErr != nil {
+	if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(candidate.FilePath), fm.TargetBranch, r.cfg.WorktreeBase); wdErr != nil {
 		// Never fall back to the main checkout: merge performs write
 		// operations (sync three-way merge, checkout, commit, push). A
 		// missing/misbound worktree is an environment defect (e.g. the

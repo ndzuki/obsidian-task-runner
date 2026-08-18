@@ -1014,12 +1014,27 @@ func TestProcessBatchPerProjectConcurrency(t *testing.T) {
 	waitForTasksIdle(t, runner)
 }
 
+func TestWorktreeRootTrailingSlashResolvesParentDir(t *testing.T) {
+	// 尾斜杠 repoDir（vault-map `path` 常见写法）必须解析到父目录而非
+	// repo 自身——filepath.Dir 对尾斜杠路径会返回路径本身（去掉尾斜杠），
+	// 若不先 Clean 会把 .otg-worktrees 嵌套进主 checkout。
+	repoDir := filepath.Join(t.TempDir(), "deployd") + string(filepath.Separator)
+	got := worktreeRoot("", repoDir)
+	want := filepath.Join(filepath.Dir(filepath.Clean(repoDir)), ".otg-worktrees")
+	if got != want {
+		t.Fatalf("worktreeRoot(%q) = %q, want %q", repoDir, got, want)
+	}
+	if strings.HasPrefix(got, filepath.Clean(repoDir)+string(filepath.Separator)) {
+		t.Fatalf("worktreeRoot nested inside repo checkout: %q", got)
+	}
+}
+
 func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	worktree, err := ensureTaskWorktree(repo, "007", "")
+	worktree, err := ensureTaskWorktree(repo, "007", "", "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
@@ -1030,7 +1045,7 @@ func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 		t.Fatalf("validate worktree: %v: %s", err, output)
 	}
 
-	reused, err := ensureTaskWorktree(repo, "007", "")
+	reused, err := ensureTaskWorktree(repo, "007", "", "")
 	if err != nil {
 		t.Fatalf("reuse worktree: %v", err)
 	}
@@ -1050,7 +1065,7 @@ func TestEnsureTaskWorktreeSelfHealsExternallyDeleted(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	worktree, err := ensureTaskWorktree(repo, "heal-del", "")
+	worktree, err := ensureTaskWorktree(repo, "heal-del", "", "")
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
@@ -1059,7 +1074,7 @@ func TestEnsureTaskWorktreeSelfHealsExternallyDeleted(t *testing.T) {
 		t.Fatalf("remove worktree dir: %v", err)
 	}
 	// Without self-healing this fails with "missing but already registered".
-	recreated, err := ensureTaskWorktree(repo, "heal-del", "")
+	recreated, err := ensureTaskWorktree(repo, "heal-del", "", "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree after external deletion: %v", err)
 	}
@@ -1082,7 +1097,7 @@ func TestEnsureTaskWorktreeSelfHealsBrokenDirectory(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	worktree, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken")
+	worktree, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken", "")
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
@@ -1090,7 +1105,7 @@ func TestEnsureTaskWorktreeSelfHealsBrokenDirectory(t *testing.T) {
 	if err := os.Remove(filepath.Join(worktree, ".git")); err != nil {
 		t.Fatalf("remove worktree .git link: %v", err)
 	}
-	recreated, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken")
+	recreated, err := ensureTaskWorktree(repo, "heal-broken", "task/heal-broken", "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree after broken directory: %v", err)
 	}
@@ -1111,7 +1126,7 @@ func TestEnsureTaskWorktreeCreatesAndReusesTargetBranch(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	worktree, err := ensureTaskWorktree(repo, "008", "task/008-feature")
+	worktree, err := ensureTaskWorktree(repo, "008", "task/008-feature", "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
@@ -1123,7 +1138,7 @@ func TestEnsureTaskWorktreeCreatesAndReusesTargetBranch(t *testing.T) {
 		t.Fatalf("branch = %q, want task/008-feature", branch)
 	}
 
-	reused, err := ensureTaskWorktree(repo, "008", "task/008-feature")
+	reused, err := ensureTaskWorktree(repo, "008", "task/008-feature", "")
 	if err != nil {
 		t.Fatalf("reuse target branch worktree: %v", err)
 	}
@@ -1137,10 +1152,10 @@ func TestEnsureTaskWorktreeRejectsMismatchedTargetBranch(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 
-	if _, err := ensureTaskWorktree(repo, "009", "task/009-first"); err != nil {
+	if _, err := ensureTaskWorktree(repo, "009", "task/009-first", ""); err != nil {
 		t.Fatalf("create first target branch worktree: %v", err)
 	}
-	if _, err := ensureTaskWorktree(repo, "009", "task/009-second"); err == nil {
+	if _, err := ensureTaskWorktree(repo, "009", "task/009-second", ""); err == nil {
 		t.Fatal("expected target branch mismatch error")
 	}
 }
@@ -1158,12 +1173,12 @@ func TestEnsureTaskWorktreeBindsDetachedToTargetBranch(t *testing.T) {
 	git(t, "-C", repo, "commit", "--allow-empty", "-m", "feature")
 	git(t, "-C", repo, "checkout", "--detach")
 
-	wt, err := ensureTaskWorktree(repo, "010", "")
+	wt, err := ensureTaskWorktree(repo, "010", "", "")
 	if err != nil {
 		t.Fatalf("create detached worktree: %v", err)
 	}
 	// Reuse with a target branch: the detached worktree must switch onto it.
-	bound, err := ensureTaskWorktree(repo, "010", "task/010-feature")
+	bound, err := ensureTaskWorktree(repo, "010", "task/010-feature", "")
 	if err != nil {
 		t.Fatalf("bind detached worktree to target branch: %v", err)
 	}
@@ -1191,7 +1206,7 @@ func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
 	git(t, "-C", repo, "checkout", "-b", "task/011-feature")
 	git(t, "-C", repo, "commit", "--allow-empty", "-m", "feature")
 
-	wt, err := ensureTaskWorktree(repo, "011", "task/011-feature")
+	wt, err := ensureTaskWorktree(repo, "011", "task/011-feature", "")
 	if err == nil {
 		t.Fatalf("expected error when primary checkout holds the target branch, got worktree %q", wt)
 	}

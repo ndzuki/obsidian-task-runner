@@ -1,8 +1,8 @@
 # Obsidian Task Runner — 目标设计参考
 
-> 规范流程见 [`docs/workflow.md`](../docs/workflow.md)。本文定义状态、frontmatter schema、依赖引用和人工操作。
+> 完整设计规范与实现验收清单见仓库 `docs/workflow.md`（不随技能包安装）；本文定义状态、frontmatter schema、依赖引用和人工操作。
 >
-> 当前 Go 实现未完全满足本文；以 workflow.md 的实现验收清单为准。
+> 当前 Go 实现未完全满足本文；以仓库 docs/workflow.md 的实现验收清单为准。
 
 ## 1. 状态流转
 
@@ -67,7 +67,7 @@ closed -- [终态，不可恢复]
 | `id` | string | 项目内唯一；不同项目可重复 |
 | `title` | string | 任务标题 |
 | `project` | string | vault-map project key |
-| `assignee` | string | vault-map project key |
+| `assignee` | string | vault-map.json 顶层 `models` 的 key（如 `default`） |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
 | `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
@@ -118,7 +118,9 @@ Planning 写 plan-review 前必须复核当前 REQ hash。Hash 变化时不得�
 
 Refining/planning/implementing 第一次失败自动恢复；再次失败转 blocked。阶段成功或人工 resume 后 retry count 清零。
 
-`blocked_by` 上游处于阶段失败阻塞（`blocked_phase` 非空且错误码为 MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED/MODEL_QUOTA_EXHAUSTED 或空）时，daemon 自动设 `resume_approved=true` + `auto_resume_pending=true` 以解开依赖链；`auto_resume_count` 仅在这种自动恢复后再次失败时递增。人工 resume（无 pending 标记）清零计数。`REQ_MISSING` 等非瞬时错误与循环依赖永不自动恢复。
+`blocked_by` 上游处于阶段失败阻塞（`blocked_phase` 非空且错误码为 MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED/MODEL_QUOTA_EXHAUSTED，或空错误码且上游自身无 `blocked_by` 的 legacy 阶段失败）时，daemon 自动设 `resume_approved=true` + `auto_resume_pending=true` 以解开依赖链；`auto_resume_count` 仅在这种自动恢复后再次失败时递增。人工 resume（无 pending 标记）清零计数。`REQ_MISSING` 等非瞬时错误与循环依赖永不自动恢复。
+
+**`recoverBlockedPendingReq`（blocked + pending_req 覆盖）**：阶段失败 blocked 的任务若 REQ 已变更（`pending_req=true`），daemon 每轮 scan 自动转 `refining` 重细化——不复用旧 phase（手动 resume 会拿旧需求重新实现）。转 refining 复用 `transitionToRefining` 基底原子清 grill/plan/merge/`round2_stall_until` 残留。排除：`PREREQUISITE_SMOKE_FAILED` 门禁、`REQ_MISSING` 等非瞬时码、空错误码 + `blocked_by` 非空的入口门禁形态（三者各有专属恢复路径）。
 
 **`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 OMP 收 SIGTERM 保存 session 后退出，任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 自动重新调度，阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
 
@@ -217,7 +219,7 @@ append-only，不覆盖已有条目。daemon 的 `ensureProjectContext`（`inter
 | `priority_urgency` | string | `""` | 紧急程度描述 |
 | `priority_workaround` | string | `""` | 已知变通方案 |
 | `priority_score` | int | `0` | 综合优先级分数 |
-| `priority_confidence` | float | `0.0` | 评定置信度 0.0–1.0 |
+| `priority_confidence` | string | `"0"` | 评定置信度 0.0–1.0（数值以字符串存储） |
 | `priority_reason` | string | `""` | 评定理由 |
 | `priority_recommendation` | string | `""` | 推荐处理策略 |
 | `priority_assessed_value` | string | `""` | 评定结果值 |
@@ -263,7 +265,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 - **可见性**：默认 `private`（`repository_visibility` 可覆盖；daemon 不持续关注仓库性质）。
 - **gh 版本**：`gh ≥2.9x` 要求 `--source` 才能用 `--remote`，两处创建路径（新项目/提升）均以 `--source .` 形式从仓库目录执行。
 - **失败处理**：`gh repo create` 失败 → 探测 `gh repo view`（已存在则补 origin 并记录 URL 继续）；仍失败 → 任务 `blocked` + `REMOTE_PARTIAL_CREATE`（不消耗重试预算，人工 resume 幂等重试）。
-- **既有项目提升路径（`ensureProjectCheckout`）**：已注册项目 path 回退 vault 目录（非 git 根）且配置 `git_remote` 时，`resolveRepo` 自动创建 `new_project_root/<name>` 独立 checkout（README 初始提交）并把 vault-map `path` 更新指向 checkout；远端仓库缺失时同样自动 `gh repo create`（private，description 从 REQ 蒸馏），无需 `remote_create=true`（git_remote 注册即声明仓库归属）。详见 docs/workflow.md §6.5。
+- **既有项目提升路径（`ensureProjectCheckout`）**：已注册项目 path 回退 vault 目录（非 git 根）且配置 `git_remote` 时，`resolveRepo` 自动创建 `new_project_root/<name>` 独立 checkout（README 初始提交）并把 vault-map `path` 更新指向 checkout；远端仓库缺失时同样自动 `gh repo create`（private，description 从 REQ 蒸馏），无需 `remote_create=true`（git_remote 注册即声明仓库归属）。详见仓库 docs/workflow.md §6.5。
 
 #### 4.6.9 文档校验字段
 
@@ -275,7 +277,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 #### 4.6.10 完成审计（独立验证门禁）
 
-`auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 运行**独立只读审计会话**（受限工具面 `read`/`grep`/`bash`，无写工具——实现者不能自证完成）。完整语义见 `docs/workflow.md` §7.4；要点：
+`auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 运行**独立只读审计会话**（受限工具面 `read`/`grep`/`bash`，无写工具——实现者不能自证完成）。完整语义见仓库 docs/workflow.md §7.4；要点：
 
 - **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`；人工已授权或 `audit.enabled=false` 跳过。
 - **会话**：assignee 模型（`audit.model` 覆盖）、`--thinking off`、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
@@ -302,11 +304,11 @@ Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-rev
 </project_context>
 ```
 
-注入内容（控制在 ~600 字节 / ~300 token）：
+注入内容（控制在 ~750 字节 / ~300 token）：
 
 - **Constraints**（始终注入）：`## Development Constraints` 节，截断到 100 字符/条
 - **Anti-patterns**（始终注入）：`## Anti-patterns` 节，仅保留首句
-- **Domain Terms**（动态选择）：`## Language` 节中按 REQ 关键词打分选 Top-N，无命中时 fallback 到前 4 个核心术语；长定义截断到 80 字符
+- **Domain Terms**（动态选择）：`## Language` 节中按 REQ 关键词打分选 Top-N，无命中时 fallback 到核心术语（数量由 `dynamicTermCount` 按预算动态分配 1–6 个）；长定义截断到 80 字符
 - **ADR**（可选）：`Notes/adr/*.md` 中按 REQ 关键词匹配 Top-2，含 title + 一句 decision
 
 术语数量由 `dynamicTermCount` 按剩余 token 预算动态分配。同一项目多次调度缓存 CONTEXT.md 内容（`sync.Map`），避免重复 IO。
@@ -351,7 +353,7 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 
 ### OnReqChanged 状态规则
 
-- blocked：保持 blocked，pending_req=true。
+- blocked：保持 blocked，pending_req=true；阶段失败子集（可恢复错误码 + blocked_phase 非空）由 daemon 自动转 refining（`recoverBlockedPendingReq`），不复用旧 phase。
 - ready：保持 ready，pending_req=true。
 - refining/planning：仅 pending_req=true，不改 live phase。
 - needs-grilling + active owner：不中断会话，只设 pending_req=true。
@@ -390,13 +392,13 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 
 - 同一 Vault watcher/timer 互斥。
 - 不同 Vault 可并行。
-- refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见 workflow.md §6.5）。
+- refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见仓库 docs/workflow.md §6.5）。
 - 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree OMP 隔离，避免被 planning/refining 读锁长期阻塞）。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 - 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ frontmatter 同样每轮 Normalize**（`NormalizeReqFrontmatter` / `syncReqSchemaDefaults`）：稳定字段（created/updated/tags）回填，必填身份与可选决策字段不伪造——旧 REQ 被重拾（done 任务 breaking 重开）时字段演进不静默断链。
 - **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
-- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 OMP 会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 OMP 会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。
+- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 OMP 会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 OMP 会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 生效；`merge` 槽位不可达（merge 任务在门禁段前已提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + in-flight 去重约束）——两 key 置 `0`/调大无效果，属代码追赶项。
 
 ### 8.1 Thinking Mode
 

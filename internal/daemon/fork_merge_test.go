@@ -119,7 +119,7 @@ target_branch: task/001-fork
 	// The task worktree carries the feature branch; processMergeTask must
 	// find and reuse it via the same taskRunKey the daemon uses.
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-fork"); err != nil {
+	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-fork", ""); err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
 
@@ -209,7 +209,7 @@ func TestProcessMergeTaskForkMergeHappyPath(t *testing.T) {
 // merge), then the fork default branch is pushed and the task completes.
 func TestForkMergeConflictAutoResolved(t *testing.T) {
 	repo, origin, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch, "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
@@ -261,7 +261,7 @@ exit 0
 // exhausted (0), a merge conflict hands the task straight back to the human —
 func TestForkMergeConflictBudgetExhausted(t *testing.T) {
 	repo, _, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch, "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestForkMergeConflictBudgetExhausted(t *testing.T) {
 // mirroring the errConflictResolutionInterrupted semantics of the PR flow.
 func TestForkMergeConflictInterruptedKeepsAuthorization(t *testing.T) {
 	repo, _, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), candidate.TargetBranch, "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
