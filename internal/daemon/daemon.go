@@ -835,6 +835,7 @@ func (r *Runner) scanAndProcess() error {
 	r.recoverUnExtractedKnowledge()
 	r.fixBlockedGateErrorCodes()
 	r.resolveBlockedDependencies()
+	r.recoverBlockedPendingReq()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
 	// Discover requirement files the watcher never delivered (new
@@ -1395,7 +1396,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: repo busy, deferring worktree prepare to next scan", t.ID)
 				continue
 			}
-			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch)
+			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch, r.cfg.WorktreeBase)
 			lock.Unlock()
 			if worktreeErr != nil {
 				r.logger.Printf("task %s: prepare worktree: %v", t.ID, worktreeErr)
@@ -1420,7 +1421,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 						r.worktreeCache.Delete(warmKey)
 						return
 					}
-					wtPath, wtErr := ensureTaskWorktree(warmRepo, warmKey, warmBranch)
+					wtPath, wtErr := ensureTaskWorktree(warmRepo, warmKey, warmBranch, r.cfg.WorktreeBase)
 					lock.Unlock()
 					if wtErr != nil {
 						r.logger.Printf("task %s: warm worktree failed: %v", t.ID, wtErr)
@@ -1622,12 +1623,7 @@ func (r *Runner) cleanupTaskArtifacts(taskPath, repoDir string) {
 }
 
 func (r *Runner) removeTaskWorktree(repoDir, runKey, taskID string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))[:12]
-	wtPath := filepath.Join(home, ".omp", "worktrees", repoHash, "TASK-"+runKey)
+	wtPath := taskWorktreePath(r.cfg.WorktreeBase, repoDir, runKey)
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
@@ -1989,6 +1985,73 @@ func (r *Runner) resolveBlockedDependencies() {
 			for _, ref := range fm.BlockedBy {
 				r.autoResumePhaseFailureBlocker(projectsDir, projectEntry.Name(), fm.ID, ref)
 			}
+		}
+	}
+}
+
+// recoverBlockedPendingReq routes phase-failure-blocked tasks whose
+// requirement changed (pending_req) back to refining. OnReqChanged marks a
+// blocked task pending_req=true but leaves status=blocked (skill contract:
+// "blocked 保持 blocked, pending_req=true"); a leaf phase-failure block has no
+// downstream to unwind the chain via resolveBlockedDependencies, so without
+// this pass the stale phase would wait forever for a manual resume that would
+// re-implement the OLD requirement. Entry gates (PREREQUISITE_SMOKE_FAILED)
+// and user-decision blocks (REQ_MISSING and other non-transient codes) keep
+// their own recovery and are deliberately excluded.
+func (r *Runner) recoverBlockedPendingReq() {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return
+	}
+	for _, projectEntry := range projects {
+		if !projectEntry.IsDir() {
+			continue
+		}
+		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
+		entries, err := os.ReadDir(tasksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
+			}
+			taskPath := filepath.Join(tasksDir, entry.Name())
+			data, err := os.ReadFile(taskPath)
+			if err != nil {
+				continue
+			}
+			fm, err := yamlfrontmatter.Parse(data)
+			if err != nil || fm == nil || fm.Status != "blocked" || !fm.PendingReq {
+				continue
+			}
+			// Only a transient phase failure has a stale phase whose resume
+			// would re-implement the old requirement. The empty-code guard
+			// mirrors resolveBlockedDependencies: empty code with a non-empty
+			// blocked_by is the entry-gate form, not a phase failure.
+			if fm.BlockedPhase == "" || !isAutoResumableError(fm.PhaseErrorCode) ||
+				(fm.PhaseErrorCode == "" && len(fm.BlockedBy) > 0) {
+				continue
+			}
+			// Reuse transitionToRefining so every grill/plan/merge residual is
+			// cleared atomically: a stale grill_resolution left on a task that
+			// re-enters needs-grilling would be re-consumed by nextLocalTransition
+			// and re-open the no-op replan loop (TASK-066 lesson).
+			updates := transitionToRefining("pending requirement overrides blocked phase").Updates
+			updates["blocked_phase"] = ""
+			updates["phase_error"] = ""
+			updates["phase_error_code"] = ""
+			updates["phase_log"] = ""
+			updates["resume_approved"] = false
+			updates["auto_resume_pending"] = false
+			updates["round2_stall_until"] = ""
+			if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+				r.logger.Printf("dependency: FAILED to route pending_req TASK-%s to refining: %v", fm.ID, err)
+				continue
+			}
+			notify.SendTaskAction(fm.ID, fm.Title, "🔓", "需求变更恢复",
+				"需求已变更，任务从阶段失败阻塞转 refining 重新细化（无需手动 resume）。", r.cfg.Notifications.Desktop)
 		}
 	}
 }
@@ -2463,8 +2526,65 @@ func isRound2(t task.ReadyTask) bool {
 	return (t.Status == "plan-review" || t.Status == "implementing") && !t.NewProject
 }
 
+// worktreeRoot resolves the directory holding a repository's task worktrees.
+// base is the configured worktree_base override; empty means the default
+// <repo parent>/.otg-worktrees. All create/remove/cleanup paths resolve the
+// location through this function so they agree on where worktrees live.
+func worktreeRoot(base, repoDir string) string {
+	if base != "" {
+		return base
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(repoDir)), ".otg-worktrees")
+}
+
+// repoHashOf returns the worktree sub-directory name for a repository —
+// sha256(Clean(repoDir)) 前 12 位。Clean 让 create/remove/cleanup 对同一仓库
+// 得到同一哈希，尾斜杠等路径表示差异不会失配。
+func repoHashOf(repoDir string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(filepath.Clean(repoDir))))[:12]
+}
+
+// taskWorktreePath returns the worktree directory for one task.
+func taskWorktreePath(base, repoDir, taskID string) string {
+	return filepath.Join(worktreeRoot(base, repoDir), repoHashOf(repoDir), "TASK-"+taskID)
+}
+
+// RemoveProjectWorktrees 注销项目前清理其全部任务 worktree：移除每个 TASK-*
+// 子目录、删除 repoHash 目录、并 prune 主仓库的失效注册。必须在项目条目仍
+// 在 vault-map 时调用（repoDir 已知）；条目删除后 cleanupOrphanWorktrees 不再
+// 遍历该项目，worktree 会变成永久孤儿。base 为 worktree_base 覆盖，空串用
+// 默认布局。返回首个移除失败（继续清理其余），无 worktree 目录时返回 nil。
+func RemoveProjectWorktrees(base, repoDir string) error {
+	dir := filepath.Join(worktreeRoot(base, repoDir), repoHashOf(repoDir))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// 无 worktree 目录：仍 prune，清掉可能残留的失效注册。
+		exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+		return nil
+	}
+	var firstErr error
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "TASK-") {
+			continue
+		}
+		wtPath := filepath.Join(dir, e.Name())
+		if out, err := exec.Command("git", "-C", wtPath, "worktree", "remove", "--force", wtPath).CombinedOutput(); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("remove worktree %s: %w: %s", wtPath, err, strings.TrimSpace(string(out)))
+			}
+			continue
+		}
+		os.RemoveAll(wtPath)
+	}
+	os.Remove(dir)
+	exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+	return firstErr
+}
+
 // ensureTaskWorktree locates or creates the task's isolated worktree under
-// ~/.omp/worktrees/<repoHash>/TASK-<taskID>. The taskID must be the SAME key
+// worktreeRoot(base, repoDir)/<repoHash>/TASK-<taskID> (default
+// <repo parent>/.otg-worktrees, overridable via worktree_base). The taskID
+// must be the SAME key
 // every phase uses — taskRunKey(filePath) — so round2, audit and merge all
 // share one worktree per task (TASK-067: merge looked up TASK-<id> while
 // round2 created TASK-<runkey>, never found it, and fell back to the primary
@@ -2476,13 +2596,8 @@ func isRound2(t task.ReadyTask) bool {
 // into the wrong branch (TASK-051/059). A task whose target branch is checked
 // out by the primary checkout or another worktree therefore fails loudly
 // instead of silently reusing the main checkout.
-func ensureTaskWorktree(repoDir, taskID, targetBranch string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))
-	path := filepath.Join(home, ".omp", "worktrees", repoHash[:12], "TASK-"+taskID)
+func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, error) {
+	path := taskWorktreePath(base, repoDir, taskID)
 	if _, err := os.Stat(path); err == nil {
 		if _, err := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree").CombinedOutput(); err != nil {
 			// Directory exists but is not a usable worktree (half-removed
@@ -3223,6 +3338,37 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					fallbackModel = fm
 				}
 			}
+			// Fallback stale-phase guard: the failed session may have
+			// completed its phase write-back and then hung (post-session
+			// linters / extension timeouts), so the task status can move on
+			// while this dispatch still holds the startup snapshot
+			// (TASK-001: a round1 prompt was restarted against an
+			// implementing task and burned a full fallback timeout on the
+			// wrong phase). Re-check the current status before restarting:
+			// if it no longer routes to this phase, drop the fallback and
+			// let the next scan re-dispatch by the new status. Unreadable
+			// or unparsable task files are transient write windows —
+			// defer the same way (daemon convention).
+			staleSkipStatus := ""
+			if fallbackModel != "" {
+				expected := t.Status
+				if phase == "round2" {
+					// Direct dispatch already promoted plan-review →
+					// implementing before launching the session.
+					expected = "implementing"
+				}
+				if data, err := os.ReadFile(taskPath); err != nil {
+					r.logger.Printf("task %s: skip fallback, cannot re-read task (%v)", t.ID, err)
+					fallbackModel = ""
+				} else if fm, err := yamlfrontmatter.Parse(data); err != nil || fm == nil {
+					r.logger.Printf("task %s: skip fallback, task file unparsable (defer to next scan)", t.ID)
+					fallbackModel = ""
+				} else if fm.Status != expected {
+					r.logger.Printf("task %s: skip fallback, status changed %s → %s (re-dispatch on next scan)", t.ID, expected, fm.Status)
+					staleSkipStatus = fm.Status
+					fallbackModel = ""
+				}
+			}
 
 			// 失败通知（per-task 5 分钟防抖，notifyFailure）：有 fallback 时只发
 			// 一条合并通知（原因 + 切换动作），同一失败事件最多弹一条；反复失败
@@ -3230,6 +3376,13 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			switch {
 			case failureCode == ErrAPIKeyUnavailable:
 				// 已由 notifyKeyUnavailable 全局防抖处理，此处不再发。
+			case staleSkipStatus != "":
+				// The session wrote back a new status before dying, so the
+				// phase actually completed — a "process crashed" toast
+				// would mislead. The fallback was skipped and the next
+				// scan re-dispatches by the new status.
+				r.notifyFailure(taskPath, t.ID, t.Title, "✅", "阶段已完成",
+					fmt.Sprintf("%s 已写回新状态 %s，但会话收尾挂死（%s）；下一轮 scan 按新状态继续", model, staleSkipStatus, reason), failNotifyReason)
 			case fallbackModel != "":
 				failReason := reason
 				if tokenErr != "" {
@@ -3713,10 +3866,11 @@ func (r *Runner) selectModel(assignee string) string {
 
 // cleanupOrphanWorktrees 回收已交付/关闭/孤儿任务的 git worktree。
 //
-// 背景：每个 round2 任务在 ~/.omp/worktrees/<repoHash>/TASK-<runkey> 创建
-// 独立 worktree，此前从不回收——8/14 观察：1052 个 worktree 占用 4GB，
-// 且每个都注册进仓库 git 元数据，拖慢所有 git 操作。本函数在 daemon 启动
-// 和每个 ticker 周期调用，回收满足任一条件的 worktree：
+// 背景：每个 round2 任务在 <repo parent>/.otg-worktrees/<repoHash>/TASK-<runkey>
+// 创建独立 worktree（worktree_base 可覆盖根），此前从不回收——8/14 观察：
+// 1052 个 worktree 占用 4GB，且每个都注册进仓库 git 元数据，拖慢所有 git
+// 操作。本函数在 daemon 启动和每个 ticker 周期调用，回收满足任一条件的
+// worktree：
 //
 //   - 任务文件不存在（任务被删除/项目移除）→ 孤儿
 //   - 任务状态 closed → 绝对终态，不会再调度
@@ -3726,43 +3880,26 @@ func (r *Runner) selectModel(assignee string) string {
 // 非终态任务下次调度直接复用现有 worktree（省重建）。调度保护：taskRuns
 // 中在调度/执行的任务绝不回收（prepareBatch 创建 worktree 先于 taskRuns
 // 注册，但清理判据只回收终态/孤儿，此窗口无害）。
+//
+// worktree 现在按「项目父目录」分散布局，因此不能像旧版那样只扫一个全局
+// 根：遍历当前 vault 配置的每个项目，扫各自 worktree 根。repoHash 与
+// ensureTaskWorktree 一致（Clean 后哈希），尾斜杠等路径表示差异不会让清理
+// 与创建时的哈希失配。
 func (r *Runner) cleanupOrphanWorktrees() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	wtRoot := filepath.Join(home, ".omp", "worktrees")
-	repoDirs, err := os.ReadDir(wtRoot)
-	if err != nil {
-		return
-	}
-	// 只扫描当前 vault 配置中的仓库；其他 vault 的 worktree 不属于本次
-	// daemon，不能因当前 vault 看不到对应 TASK 就误判为孤儿。
-	allowedRepos := make(map[string]bool, len(r.cfg.Projects))
-	for _, project := range r.cfg.Projects {
-		if project.Path == "" {
-			continue
-		}
-		repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(filepath.Clean(project.Path))))[:12]
-		allowedRepos[repoHash] = true
-	}
-	if len(allowedRepos) == 0 {
-		return
-	}
 	active := make(map[string]bool)
 	r.taskRuns.Range(func(key, _ interface{}) bool {
 		active[key.(string)] = true
 		return true
 	})
 	live := r.liveTaskWorktreeKeys()
-	for _, repoDir := range repoDirs {
-		if !repoDir.IsDir() || !allowedRepos[repoDir.Name()] {
+	for _, project := range r.cfg.Projects {
+		if project.Path == "" {
 			continue
 		}
-		dir := filepath.Join(wtRoot, repoDir.Name())
+		dir := filepath.Join(worktreeRoot(r.cfg.WorktreeBase, project.Path), repoHashOf(project.Path))
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			continue // 该项目无 worktree 根
 		}
 		for _, e := range entries {
 			if !e.IsDir() || !strings.HasPrefix(e.Name(), "TASK-") {
@@ -3782,6 +3919,11 @@ func (r *Runner) cleanupOrphanWorktrees() {
 				r.logger.Printf("cleanup: remove worktree dir %s: %v", wtPath, err)
 			}
 			r.worktreeCache.Delete(runKey)
+		}
+		// 回收后若 repoHash 目录已空，删除它，避免累积 4KB 空壳父目录
+		//（旧版只删 TASK-* 子目录）。
+		if remaining, err := os.ReadDir(dir); err == nil && len(remaining) == 0 {
+			os.Remove(dir)
 		}
 	}
 }

@@ -315,7 +315,7 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 	// audit then verifies what it can and the result is still evidence.
 	workDir := repoDir
 	if t.TargetBranch != "" {
-		if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch); wdErr != nil {
+		if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch, r.cfg.WorktreeBase); wdErr != nil {
 			r.logger.Printf("task %s: audit worktree unavailable (%v), falling back to main checkout", t.ID, wdErr)
 		} else {
 			workDir = wd

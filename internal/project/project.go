@@ -2,6 +2,7 @@ package project
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -246,6 +247,58 @@ func RegisterProject(mapFile, name, path, gitRemote string, dryRun bool) error {
 	}
 	obj.Set("projects", list)
 	return writeVaultMap(mapFile, obj, dryRun)
+}
+
+// ErrProjectNotFound is returned by UnregisterProject when the project is not
+// registered in vault-map.json.
+var ErrProjectNotFound = errors.New("project not found in vault-map")
+
+// UnregisterProject removes a project entry from vault-map.json, preserving
+// field order, and returns the removed entry's path. Returns ErrProjectNotFound
+// (and does not modify the file) when the project is not registered. The caller
+// should use the returned path to clean up the project's worktrees before the
+// entry disappears — after removal the daemon no longer iterates the project
+// and cannot reclaim them.
+func UnregisterProject(mapFile, name string) (string, error) {
+	registerMu.Lock()
+	defer registerMu.Unlock()
+	data, err := os.ReadFile(mapFile)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", mapFile, err)
+	}
+	obj, err := jsonorder.Parse(data)
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", mapFile, err)
+	}
+	projects, _ := obj.Get("projects")
+	list, _ := projects.([]any)
+	if list == nil {
+		return "", ErrProjectNotFound
+	}
+	var kept []any
+	var removedPath string
+	found := false
+	for _, p := range list {
+		proj, ok := p.(*jsonorder.OrderedJSON)
+		if ok && projectNameOf(proj) == name {
+			found = true
+			if v, ok := proj.Get("path"); ok {
+				if s, ok := v.(string); ok {
+					removedPath = s
+				}
+			}
+			continue // drop this entry
+		}
+		kept = append(kept, p)
+	}
+	if !found {
+		return "", ErrProjectNotFound
+	}
+	obj.Set("projects", kept)
+	if err := writeVaultMap(mapFile, obj, false); err != nil {
+		return "", err
+	}
+	return removedPath, nil
 }
 
 // projectNameOf returns the "name" field of an ordered project entry.

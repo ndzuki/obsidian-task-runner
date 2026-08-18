@@ -264,7 +264,7 @@ target_branch: %s
 	// The task worktree is created with the same key the daemon uses, so
 	// processMergeTask reuses it instead of creating a second one.
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), mergeFixtureBranch)
+	worktree, err := ensureTaskWorktree(repo, taskRunKey(taskPath), mergeFixtureBranch, "")
 	if err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}

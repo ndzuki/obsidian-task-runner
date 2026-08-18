@@ -320,7 +320,7 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 
 - **implementing / Round 2**：必须先获取所属项目的 implementation slot；每项目同时最多运行 `max_concurrent_tasks_per_project` 个，且全部项目合计不超过 `max_concurrent_tasks`（0 = 不限）。
 - **planning / refining / priority / merge / audit**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 OMP 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
-- **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `~/.omp/worktrees/` 下的任务专属 Git worktree，再释放仓库锁；实际 OMP 在独立 worktree 中运行。
+- **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `<repo parent>/.otg-worktrees/<repoHash>/TASK-<runkey>` 下的任务专属 Git worktree（`worktree_base` 可覆盖根目录），再释放仓库锁；实际 OMP 在独立 worktree 中运行。
 - **新项目 implementing**：虽然不使用 Round 2 worktree，但仍会占用所属项目的 implementation slot，因为同样会使用代码分析和构建资源。
 - **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
 - **空分支字段兼容**：尚未进入 Round 2 的任务可以保留 `target_branch: ""`。daemon 先提供任务专属 worktree，agent 在其中创建 `task/<id>-<slug>`；Round 2 完成后把实际分支写回 `target_branch`。
@@ -505,6 +505,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg status` | 查看守护进程状态、运行中任务数 |
 | `otg config show` | 显示当前配置（含来源标注） |
 | `otg find-ready <vault>` | 输出可执行任务（NDJSON） |
+| `otg unregister-project <name>` | 从 vault-map 移除项目并清理其任务 worktree（checkout 与远端仓库保留） |
 | `otg on-req-changed <vault> <req>` | 手动处理需求变化 |
 | `otg update-status <task> [key=value ...]` | 原子更新任务 frontmatter |
 | `otg review <task>` | 显示任务的 review bundle |

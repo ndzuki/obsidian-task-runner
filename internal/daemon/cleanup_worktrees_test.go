@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -14,13 +12,12 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
-// makeTaskWorktree 在 ~/.omp/worktrees/<repoHash>/TASK-<runkey> 创建真实
-// git worktree（与 ensureTaskWorktree 的命名/位置约定一致）。
+// makeTaskWorktree 在 <repo parent>/.otg-worktrees/<repoHash>/TASK-<runkey>
+// 创建真实 git worktree（复用 taskWorktreePath，与 ensureTaskWorktree 的
+// 命名/位置约定一致）。
 func makeTaskWorktree(t *testing.T, repoDir, taskPath string) string {
 	t.Helper()
-	home := os.Getenv("HOME")
-	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repoDir)))[:12]
-	wtPath := filepath.Join(home, ".omp", "worktrees", repoHash, "TASK-"+taskRunKey(taskPath))
+	wtPath := taskWorktreePath("", repoDir, taskRunKey(taskPath))
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		t.Fatalf("mkdir worktree parent: %v", err)
 	}
@@ -57,8 +54,7 @@ func writeTaskWithFM(t *testing.T, dir, name, fm string) string {
 // 回归背景：worktree 从不清理，8/14 累积 1052 个、4GB。
 func TestCleanupOrphanWorktrees(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir) // cleanupOrphanWorktrees 经 os.UserHomeDir 定位 worktree 根
-
+	t.Setenv("HOME", dir) // createRepository 等 helper 依赖隔离的 HOME
 	vault := filepath.Join(dir, "vault")
 	tasksDir := filepath.Join(vault, "Projects", "demo", "Tasks")
 	repo := createRepository(t, dir)
@@ -73,9 +69,7 @@ func TestCleanupOrphanWorktrees(t *testing.T) {
 	mergedWT := makeTaskWorktree(t, repo, mergedPath)
 	doneWT := makeTaskWorktree(t, repo, donePath)
 	liveWT := makeTaskWorktree(t, repo, livePath)
-	home := os.Getenv("HOME")
-	repoHash := fmt.Sprintf("%x", sha256.Sum256([]byte(repo)))[:12]
-	orphanWT := filepath.Join(home, ".omp", "worktrees", repoHash, "TASK-"+orphanKey)
+	orphanWT := taskWorktreePath("", repo, orphanKey)
 	if err := os.MkdirAll(filepath.Dir(orphanWT), 0o755); err != nil {
 		t.Fatalf("mkdir orphan parent: %v", err)
 	}
@@ -131,5 +125,42 @@ func TestCleanupOrphanWorktrees(t *testing.T) {
 		if strings.Contains(string(out), gone) {
 			t.Errorf("git metadata still references reclaimed worktree %s", gone)
 		}
+	}
+}
+
+func TestRemoveProjectWorktrees(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+
+	wtA := makeTaskWorktree(t, repo, filepath.Join(dir, "vault", "Projects", "demo", "Tasks", "TASK-001-a.md"))
+	wtB := makeTaskWorktree(t, repo, filepath.Join(dir, "vault", "Projects", "demo", "Tasks", "TASK-002-b.md"))
+
+	if err := RemoveProjectWorktrees("", repo); err != nil {
+		t.Fatalf("RemoveProjectWorktrees: %v", err)
+	}
+	for name, wt := range map[string]string{"a": wtA, "b": wtB} {
+		if _, err := os.Stat(wt); !os.IsNotExist(err) {
+			t.Errorf("worktree %s (%s) must be removed, stat err = %v", name, wt, err)
+		}
+	}
+	// repoHash 目录也已删除。
+	repoHash := repoHashOf(repo)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(repo), ".otg-worktrees", repoHash)); !os.IsNotExist(err) {
+		t.Errorf("repoHash dir must be removed, stat err = %v", err)
+	}
+	// git 元数据一致：仓库不再注册被清理的 worktree。
+	out, err := exec.Command("git", "-C", repo, "worktree", "list").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list: %v", err)
+	}
+	for _, wt := range []string{wtA, wtB} {
+		if strings.Contains(string(out), wt) {
+			t.Errorf("git metadata still references removed worktree %s", wt)
+		}
+	}
+	// 无 worktree 目录时幂等：不报错。
+	if err := RemoveProjectWorktrees("", repo); err != nil {
+		t.Fatalf("second RemoveProjectWorktrees should be idempotent: %v", err)
 	}
 }

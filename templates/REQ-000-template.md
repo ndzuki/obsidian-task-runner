@@ -3,10 +3,10 @@ id: ""
 title: ""
 project_id: ""
 priority: ""
-created: ""
-updated: ""
 author: ""
 tags: []
+created: ""
+updated: ""
 # priority: ""                  # 留空由系统自动评定 P1-P4（P0 仅人工）；亦可手工填写
 # stage: ""                    # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；创建 TASK 时继承，PM 拆分时写入
 # appetite: ""                 # 时间预算: small(30m) / medium(2h) / large(6h)。约束 Round 2 实现范围

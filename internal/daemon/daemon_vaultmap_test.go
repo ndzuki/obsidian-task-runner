@@ -206,3 +206,102 @@ exit 0
 		t.Fatalf("fallback args = %q, want 保留 --thinking low", argStr)
 	}
 }
+
+// TestFallbackSkippedWhenStatusChanged guards the fallback stale-phase
+// protection: when the primary session exits after having written a new task
+// status (write-back completed, then the process hung/failed in post-session
+// processing), the fallback restart must NOT reuse the stale phase prompt —
+// it would run the old phase against the new status (TASK-001: a round1
+// prompt restarted against an implementing task). The fallback is dropped
+// and the next scan re-dispatches by the current status.
+func TestFallbackSkippedWhenStatusChanged(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skill")
+	mapFile := writeMapFile(t, skillDir, map[string]interface{}{
+		"models": map[string]string{
+			"default": "gateway/gpt-5.4-mini",
+		},
+		"fallback_models": map[string]string{
+			"default": "deepseek/deepseek-v4-flash",
+		},
+	})
+	cfg, err := config.Load(mapFile)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	argsDir := filepath.Join(dir, "args")
+	countFile := filepath.Join(dir, "count")
+	taskPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-001.md", "planning")
+	omp := filepath.Join(dir, "fake-omp-stale")
+	// First invocation simulates the primary session that completed its
+	// write-back (task moves planning → implementing) and then fails; any
+	// second invocation would be a fallback restart and must not happen.
+	script := `#!/bin/bash
+if [ ! -f "` + countFile + `" ]; then printf '0\n' > "` + countFile + `"; fi
+n=$(cat "` + countFile + `")
+printf '%d\n' "$((n+1))" > "` + countFile + `"
+
+if [ "$n" -eq 0 ]; then
+  sed -i 's/^status: .*/status: implementing/' "` + taskPath + `"
+  exit 1
+fi
+mkdir -p "` + argsDir + `"
+printf '%s\n' "$*" > "` + argsDir + `/attempt-$n"
+exit 0
+`
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake omp: %v", err)
+	}
+
+	cfg.OMPCmd = omp
+	cfg.SkillInstallDir = skillDir
+	cfg.LogDir = filepath.Join(dir, "logs")
+	runner := New(cfg)
+	runner.logger = log.New(io.Discard, "", 0)
+
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "001", Title: "Stale phase task", FilePath: taskPath, Status: "planning", Assignee: "default",
+	}})
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+
+	// Fallback must not restart with the stale phase prompt. runTask runs
+	// in the background, so first wait for the primary invocation
+	// (count=1), then verify the count stays stable across a settle
+	// window — any fallback restart would bump it to 2.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, readErr := os.ReadFile(countFile)
+		if readErr == nil && strings.TrimSpace(string(data)) == "1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("primary OMP invocation not observed (count read err=%v)", readErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stableUntil := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(stableUntil) {
+		data, readErr := os.ReadFile(countFile)
+		if readErr == nil && strings.TrimSpace(string(data)) != "1" {
+			t.Fatalf("fallback OMP invoked after status change (count = %s), want exactly 1 invocation", strings.TrimSpace(string(data)))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	entries, err := os.ReadDir(argsDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read args dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("fallback wrote %d args file(s) with stale phase, want 0", len(entries))
+	}
+
+	// The new status survives untouched: no stale-phase failure write-back
+	// (blocked / retry counters) may be applied to the moved-on task.
+	fm := mustParse(t, taskPath)
+	if fm.Status != "implementing" {
+		t.Fatalf("task status = %q, want implementing", fm.Status)
+	}
+}

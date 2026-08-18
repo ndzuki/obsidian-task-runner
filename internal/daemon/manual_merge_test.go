@@ -99,7 +99,7 @@ target_branch: task/001-manual
 	// The task worktree carries the feature branch; processMergeTask must
 	// find and reuse it via the same taskRunKey the daemon uses.
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-manual"); err != nil {
+	if _, err := ensureTaskWorktree(repo, taskRunKey(taskPath), "task/001-manual", ""); err != nil {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
 	candidate = task.ReadyTask{
