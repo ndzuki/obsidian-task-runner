@@ -154,8 +154,22 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 			return err
 		}
 		if state == "MERGED" {
-			r.logger.Printf("task %s: PR %s already merged, converging to done", candidate.ID, prURL)
-			return r.completeMerge(candidate, repoDir, prURL)
+			// A merged PR converges to done only when it delivered THIS task's
+			// checkpoint. A same-branch legacy PR merged in an earlier
+			// generation carries old commits: converging would freeze the new
+			// increment behind a fake done, and detectStaleDoneReopens reopens
+			// it on the next scan — a done→refining loop (TASK-069: PR #46
+			// merged 2026-07-20 for v1, the v16 checkpoint was never delivered;
+			// observed loop 08-18 17:10 converge → 17:18 reopen). A stale PR
+			// falls through to the normal merge path, which creates a fresh PR
+			// for the current branch head.
+			if fm.CheckpointCommit != "" && !prDeliversCheckpoint(r.daemonCtx, repoDir, prURL, fm.CheckpointCommit) {
+				r.logger.Printf("task %s: PR %s merged but predates checkpoint %s, continuing to normal merge", candidate.ID, prURL, fm.CheckpointCommit)
+				prURL = ""
+			} else {
+				r.logger.Printf("task %s: PR %s already merged, converging to done", candidate.ID, prURL)
+				return r.completeMerge(candidate, repoDir, prURL)
+			}
 		}
 	}
 
@@ -729,6 +743,33 @@ func findAnyPR(parent context.Context, repoDir, targetBranch string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// prDeliversCheckpoint reports whether the merged PR's merge commit has the
+// task checkpoint in its ancestry — i.e. the PR actually carried this task's
+// code. Merged PRs always expose a merge commit; any lookup or ancestry
+// failure resolves conservatively to false so a legacy PR can never fake a
+// delivery the local repository does not confirm (TASK-069: a same-branch v1
+// PR converged the v16 generation to done without delivering its checkpoint,
+// and the stale-done detector reopened it — done→refining loop).
+func prDeliversCheckpoint(parent context.Context, repoDir, prURL, checkpoint string) bool {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "mergeCommit", "--jq", ".mergeCommit.oid")
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	mergeCommit := strings.TrimSpace(string(output))
+	if mergeCommit == "" {
+		return false
+	}
+	anc := exec.CommandContext(ctx, "git", "-C", repoDir, "merge-base", "--is-ancestor", checkpoint, mergeCommit)
+	if err := anc.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 // prState reports the GitHub state (OPEN/CLOSED/MERGED) of a PR.
