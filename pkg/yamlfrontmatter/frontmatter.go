@@ -70,6 +70,13 @@ type Frontmatter struct {
 	PRURL               string   `yaml:"pr_url"`
 	Completed           string   `yaml:"completed"`
 	ReopenCount         int      `yaml:"reopen_count"`
+	// Fencing: generation 是任务的"世代"版本号，每次换代（REQ 变更
+	// reopen、stale-done 重开等）递增；attempt_id / executor_session_id
+	// 记录当前执行 attempt 的身份。阶段回写必须携带期望 generation，
+	// 不匹配视为旧会话晚到写回，拒绝并仅记审计（见 internal/task/store.go）。
+	Generation         int    `yaml:"generation"`
+	AttemptID          string `yaml:"attempt_id"`
+	ExecutorSessionID  string `yaml:"executor_session_id"`
 	AdrApproved         bool     `yaml:"adr_approved"`
 	AdrProposed         any      `yaml:"adr_proposed"`
 	AdrWritten          any      `yaml:"adr_written"`
@@ -317,6 +324,7 @@ var taskFieldOrder = []string{
 	"maturity", "refine_version", "refine_req_hash", "refine_retry_count",
 	"refine_error", "plan_req_hash", "plan_version", "planning_retry_count",
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
+	"generation", "attempt_id", "executor_session_id",
 	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
 	"round2_stall_until",
 	"audit_status", "audit_fail_count", "audit_log",
@@ -400,6 +408,9 @@ var taskFieldDefaults = map[string]interface{}{
 	"completed":            "",
 	"round2_stall_until":   "",
 	"reopen_count":         0,
+	"generation":           1,
+	"attempt_id":           "",
+	"executor_session_id":  "",
 	"task_schema_version":  1,
 	"auto_resume_pending":  false,
 	"auto_resume_count":    0,

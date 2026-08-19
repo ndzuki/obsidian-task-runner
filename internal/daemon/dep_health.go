@@ -280,11 +280,16 @@ func (r *Runner) detectStaleDoneReopens() int {
 				continue
 			}
 			// Stale terminal: reopen like a breaking REQ change.
+			staleGen := fm.Generation
+			if staleGen < 1 {
+				staleGen = 1
+			}
 			updates := map[string]interface{}{
 				"status":              "refining",
 				"pending_req":         true,
 				"merge_approved":      false,
 				"reopen_count":        fm.ReopenCount + 1,
+				"generation":          staleGen + 1,
 				"target_branch":       "",
 				"pr_url":              "",
 				"merge_status":        "",

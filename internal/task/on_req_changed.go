@@ -349,7 +349,12 @@ func requirementChangeUpdates(status string) map[string]interface{} {
 // lesson). Round 2 writes the new branch afterwards and the merge flow
 // creates a fresh PR.
 func generationResetUpdates(fm *yamlfrontmatter.Frontmatter) map[string]interface{} {
+	gen := fm.Generation
+	if gen < 1 {
+		gen = 1 // 兼容从未经 normalize 的旧文档
+	}
 	return map[string]interface{}{
+		"generation":          gen + 1,
 		"merge_approved":      false,
 		"reopen_count":        fm.ReopenCount + 1,
 		"target_branch":       "",
