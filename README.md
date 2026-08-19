@@ -171,11 +171,11 @@ otg install \
   "new_project_root": "/home/you/src",
   "models": {
     "deepseek": "deepseek/deepseek-v4-flash",
-    "gpt": "gateway/gpt-5.6-sol",
+    "gpt": "gateway/deepseek-v4-pro",
     "default": "gateway/gpt-5.4-mini"
   },
   "fallback_models": {
-    "gpt": "deepseek/deepseek-v4-flash",
+    "gpt": "deepseek/deepseek-v4-pro",
     "default": "deepseek/deepseek-v4-flash",
     "deepseek": "deepseek/deepseek-v4-flash"
   },
