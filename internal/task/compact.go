@@ -2,10 +2,10 @@ package task
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // planVersionRE matches a plan version block heading, e.g. "### v12 · 2026-07-31".
@@ -18,20 +18,40 @@ var planVersionRE = regexp.MustCompile(`(?m)^### v(\d+)`)
 // document that every refining/planning session reads into context — TASK
 // docs can reach 30-40KB mostly from historical plan versions.
 // Returns true when the document was rewritten.
+//
+// The write path uses yamlfrontmatter.AtomicReadModifyWrite, which holds the
+// same task-path flock as Update — so compaction cannot lose a concurrent
+// phase state write-back (P0-3).
 func CompactPlanHistory(taskPath string, keep int) (bool, error) {
 	if keep < 1 {
 		keep = 1
 	}
-	data, err := os.ReadFile(taskPath)
+	var changed bool
+	err := yamlfrontmatter.AtomicReadModifyWrite(taskPath, func(data []byte) ([]byte, error) {
+		content := string(data)
+		next, did, err := compactPlanContent(content, keep)
+		if err != nil {
+			return nil, err
+		}
+		if !did {
+			return nil, nil
+		}
+		changed = true
+		return []byte(next), nil
+	})
 	if err != nil {
-		return false, err
+		return changed, err
 	}
-	content := string(data)
+	return changed, nil
+}
 
+// compactPlanContent is the pure content transform behind CompactPlanHistory.
+// It is separate so the folding logic is unit-testable without file I/O.
+func compactPlanContent(content string, keep int) (string, bool, error) {
 	const header = "## 实现计划"
 	start := strings.Index(content, header)
 	if start < 0 {
-		return false, nil
+		return content, false, nil
 	}
 	bodyStart := start + len(header)
 	// Section ends at the next top-level "## " heading (or end of file).
@@ -43,7 +63,7 @@ func CompactPlanHistory(taskPath string, keep int) (bool, error) {
 
 	matches := planVersionRE.FindAllStringSubmatchIndex(section, -1)
 	if len(matches) <= keep {
-		return false, nil
+		return content, false, nil
 	}
 
 	// matches[i] = [fullStart fullEnd verStart verEnd]; block i spans
@@ -61,30 +81,9 @@ func CompactPlanHistory(taskPath string, keep int) (bool, error) {
 		newContent += content[bodyStart+end:]
 	}
 	if newContent == content {
-		return false, nil
+		return content, false, nil
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(taskPath), ".otg-compact-")
-	if err != nil {
-		return false, err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.WriteString(newContent); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmpPath, taskPath); err != nil {
-		return false, err
-	}
-	return true, nil
+	return newContent, true, nil
 }
 
 // prevVersion returns "N-1" for "N" (used for the folded range label).
@@ -106,13 +105,31 @@ var prototypeSectionRE = regexp.MustCompile(`(?m)^## Prototype 建议.*$`)
 // 8+ copies across replans, each tens of KB of repeated evidence. Older
 // copies become a single folded marker — the newest copy keeps the full
 // detail, and git history stays the audit trail.
+//
+// Write path shares the task-path flock via AtomicReadModifyWrite (P0-3).
 func CompactPrototypeHistory(taskPath string) (bool, error) {
-	data, err := os.ReadFile(taskPath)
+	var changed bool
+	err := yamlfrontmatter.AtomicReadModifyWrite(taskPath, func(data []byte) ([]byte, error) {
+		content := string(data)
+		next, did, err := compactPrototypeContent(content)
+		if err != nil {
+			return nil, err
+		}
+		if !did {
+			return nil, nil
+		}
+		changed = true
+		return []byte(next), nil
+	})
 	if err != nil {
-		return false, err
+		return changed, err
 	}
-	content := string(data)
+	return changed, nil
+}
 
+// compactPrototypeContent is the pure content transform behind
+// CompactPrototypeHistory, unit-testable without file I/O.
+func compactPrototypeContent(content string) (string, bool, error) {
 	// Find section starts; a section runs to the next top-level heading.
 	type section struct {
 		start int // index of the "## Prototype" heading line
@@ -131,7 +148,7 @@ func CompactPrototypeHistory(taskPath string) (bool, error) {
 		sections = append(sections, section{start: loc[0], end: end})
 	}
 	if len(sections) <= 1 {
-		return false, nil
+		return content, false, nil
 	}
 
 	// Keep the newest section verbatim; fold everything before it.
@@ -141,29 +158,9 @@ func CompactPrototypeHistory(taskPath string) (bool, error) {
 	folded += content[kept.start:]
 
 	if folded == content {
-		return false, nil
+		return content, false, nil
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(taskPath), ".otg-compact-")
-	if err != nil {
-		return false, err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.WriteString(folded); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmpPath, taskPath); err != nil {
-		return false, err
-	}
-	return true, nil
+	return folded, true, nil
 }
 
 // CompactTaskHistory runs the full set of history-folding passes on a task
