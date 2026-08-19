@@ -93,18 +93,27 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 	for _, kv := range spec.ExtraEnv {
 		cmd.Env = append(os.Environ(), kv)
 	}
-	// Capture stderr into a temp *os.File (not a pipe): dsh headless writes
-	// `dsh: <code>: <message>` on failure and its exit code is only 0/1, so the
-	// failure class (quota/key/empty/context) must be recovered from stderr
-	// (docs/phase5-executor-migration.md §5.6). A *os.File avoids the pipe that
-	// a bytes.Buffer would introduce — a killed child (sh -c 'sleep N') keeps a
-	// pipe's write end open and hangs Wait() on timeout.
+	// Capture stderr and stdout into temp *os.Files (not pipes): dsh headless
+	// writes `dsh: <code>: <message>` on stderr and the final assistant message
+	// on stdout; its exit code is only 0/1, so the failure class and any JSON
+	// output contract must be recovered from the streams
+	// (docs/phase5-executor-migration.md §5.6). *os.File avoids the pipe that
+	// a bytes.Buffer would introduce — a killed child keeps a pipe's write end
+	// open and hangs Wait() on timeout.
 	stderrFile, err := os.CreateTemp("", "dsh-stderr-*.log")
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("dsh stderr temp: %w", err)
 	}
+	stdoutFile, err := os.CreateTemp("", "dsh-stdout-*.log")
+	if err != nil {
+		cancel()
+		_ = stderrFile.Close()
+		_ = os.Remove(stderrFile.Name())
+		return nil, fmt.Errorf("dsh stdout temp: %w", err)
+	}
 	cmd.Stderr = stderrFile
+	cmd.Stdout = stdoutFile
 	// Graceful shutdown: SIGTERM first, hard-kill after WaitDelay (mirrors
 	// the OMP adapter's contract).
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -115,9 +124,11 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 		cancel()
 		_ = stderrFile.Close()
 		_ = os.Remove(stderrFile.Name())
+		_ = stdoutFile.Close()
+		_ = os.Remove(stdoutFile.Name())
 		return nil, fmt.Errorf("dsh start: %w", err)
 	}
-	return &dshHandle{ctx: ctx, cancel: cancel, cmd: cmd, phase: spec.Phase, stderrFile: stderrFile}, nil
+	return &dshHandle{ctx: ctx, cancel: cancel, cmd: cmd, phase: spec.Phase, stderrFile: stderrFile, stdoutFile: stdoutFile}, nil
 }
 
 type dshHandle struct {
@@ -126,6 +137,7 @@ type dshHandle struct {
 	cmd        *exec.Cmd
 	phase      string
 	stderrFile *os.File
+	stdoutFile *os.File
 }
 
 func (h *dshHandle) PID() int {
@@ -139,8 +151,10 @@ func (h *dshHandle) Wait() (*ExecutionResult, error) {
 	defer h.cancel()
 	runErr := h.cmd.Wait()
 
-	// Read the captured stderr and release the temp file regardless of outcome.
+	// Read the captured streams and release the temp files regardless of
+	// outcome.
 	stderrText := ""
+	stdoutText := ""
 	if h.stderrFile != nil {
 		if data, rerr := os.ReadFile(h.stderrFile.Name()); rerr == nil {
 			stderrText = string(data)
@@ -148,18 +162,27 @@ func (h *dshHandle) Wait() (*ExecutionResult, error) {
 		_ = h.stderrFile.Close()
 		_ = os.Remove(h.stderrFile.Name())
 	}
+	if h.stdoutFile != nil {
+		if data, rerr := os.ReadFile(h.stdoutFile.Name()); rerr == nil {
+			stdoutText = string(data)
+		}
+		_ = h.stdoutFile.Close()
+		_ = os.Remove(h.stdoutFile.Name())
+	}
 
 	switch {
 	case runErr == nil:
-		return &ExecutionResult{Phase: h.phase, Code: OutcomeSuccess}, nil
+		return &ExecutionResult{Phase: h.phase, Code: OutcomeSuccess, Stdout: stdoutText}, nil
 	case h.ctx.Err() == context.DeadlineExceeded:
-		return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: runErr.Error()}, nil
+		return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: runErr.Error(), Stdout: stdoutText}, nil
 	case h.ctx.Err() != nil:
-		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: runErr.Error()}, nil
+		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: runErr.Error(), Stdout: stdoutText}, nil
 	default:
 		// dsh exit code is 0/1 only; recover the failure class from the
 		// `dsh: <code>: <message>` stderr line.
-		return dshFailureResult(h.phase, stderrText, runErr), nil
+		res := dshFailureResult(h.phase, stderrText, runErr)
+		res.Stdout = stdoutText
+		return res, nil
 	}
 }
 
