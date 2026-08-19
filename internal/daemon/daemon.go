@@ -3282,6 +3282,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
+		// ── Phase 5 executor seam ──────────────────────────────────────
+		// cfg.Executor == "dsh" routes the phase through the DSH adapter and
+		// returns handled=true after the shared success/failure tail. The OMP
+		// inline block below stays untouched while the default is "omp"; it is
+		// removed in §5.7 after every phase verifies on DSH.
+		if r.cfg.Executor == "dsh" {
+			if r.runDSHPhaseDispatch(t, taskPath, repoDir, phase, model, skillPrompt, logPath) {
+				processed++
+				continue
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
 		if err := setTaskTempEnv(cmd, taskPath); err != nil {

@@ -1,0 +1,85 @@
+package daemon
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/notify"
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
+)
+
+// runDSHPhaseDispatch executes one phase on the DSH backend and routes the
+// stable outcome into the shared success/failure paths. It returns handled=true
+// when the phase was fully processed (success, failure, or interruption), so
+// the caller records the processed task and continues — the inline OMP path is
+// untouched while cfg.Executor stays "omp".
+//
+// Phase 5 seam (docs/phase5-executor-migration.md §5.3): the dsh branch is a
+// deliberate mirror of the OMP success tail (validate→compact→round2 notify→
+// clear) without OMP-specific logging, PID files, empty-stop watch, or the
+// daemon-side fallback loop — those live in the DSH fallback plugin.
+func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase, model, skillPrompt, logPath string) bool {
+	timeout := r.cfg.PhaseTimeout(phase)
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	spec := PhaseSpec{
+		Phase:           phase,
+		Model:           model,
+		ReasoningEffort: ompPhaseThinking(phase),
+		SkillPrompt:     skillPrompt,
+		Timeout:         timeout,
+		WorkingDir:      repoDir,
+	}
+	snap := TaskSnapshot{TaskID: t.ID, TaskPath: taskPath, Project: t.Project, RepoDir: repoDir}
+
+	outcome, code, reason := r.runDSHPhase(r.daemonCtx, spec, snap)
+
+	switch outcome {
+	case OutcomeSuccess:
+		if err := r.validatePhaseDocuments(taskPath, repoDir, t.ID, t.Title, t.Status, phase, logPath); err != nil {
+			r.logger.Printf("task %s: phase documents invalid after %s: %v", t.ID, phase, err)
+			r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrDocumentInvalid, err.Error(), logPath)
+			notify.SendTaskAction(t.ID, t.Title, "📄", "阶段产物文档损坏",
+				"任务文档或阶段产物损坏且无法自动修复，任务已阻断；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+			return true
+		}
+		r.logger.Printf("task %s: completed via DSH", t.ID)
+		r.compactPlanHistory(taskPath, phase)
+		if phase == "round2" {
+			r.recordRound2Completion(taskPath, t.ID)
+			_, stalled := r.round2StallActive(taskPath)
+			if !stalled {
+				if _, statErr := os.Stat(taskPath); statErr == nil {
+					notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+				}
+			}
+		} else if _, statErr := os.Stat(taskPath); statErr == nil {
+			notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
+		}
+		r.clearPhaseRetry(taskPath, phase)
+		r.clearPhaseError(taskPath, t.ID)
+		r.clearMergeRepairBudget(taskPath, phase)
+		return true
+
+	case OutcomeInterrupted:
+		r.logger.Printf("task %s: DSH interrupted by daemon shutdown, status=%s kept for auto-resume", t.ID, t.Status)
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"phase_error_code": string(ErrPhaseInterrupted),
+			"phase_error":      "daemon 重启中断，等待自动恢复",
+			"phase_log":        logPath,
+		}); err != nil {
+			r.logger.Printf("task %s: record interruption: %v", t.ID, err)
+		}
+		return true
+
+	default:
+		r.logger.Printf("task %s: DSH failed (%s): %s", t.ID, code, reason)
+		r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, code, reason, logPath)
+		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败",
+			fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason), failNotifyReason)
+		return true
+	}
+}
