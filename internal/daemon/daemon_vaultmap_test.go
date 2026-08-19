@@ -38,6 +38,7 @@ func TestVaultMapConfigReachesOMPArgs(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skill")
 	mapFile := writeMapFile(t, skillDir, map[string]interface{}{
+		"executor": "omp",
 		"models": map[string]string{
 			"default": "gateway/gpt-5.4-mini",
 			"gpt":     "gateway/deepseek-v4-pro",
@@ -137,6 +138,7 @@ func TestVaultMapFallbackModelUsedOnRetry(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skill")
 	mapFile := writeMapFile(t, skillDir, map[string]interface{}{
+		"executor": "omp",
 		"models": map[string]string{
 			"default": "gateway/gpt-5.4-mini",
 		},
@@ -218,6 +220,7 @@ func TestFallbackSkippedWhenStatusChanged(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "skill")
 	mapFile := writeMapFile(t, skillDir, map[string]interface{}{
+		"executor": "omp",
 		"models": map[string]string{
 			"default": "gateway/gpt-5.4-mini",
 		},
