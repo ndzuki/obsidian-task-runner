@@ -93,6 +93,18 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 	for _, kv := range spec.ExtraEnv {
 		cmd.Env = append(os.Environ(), kv)
 	}
+	// Capture stderr into a temp *os.File (not a pipe): dsh headless writes
+	// `dsh: <code>: <message>` on failure and its exit code is only 0/1, so the
+	// failure class (quota/key/empty/context) must be recovered from stderr
+	// (docs/phase5-executor-migration.md §5.6). A *os.File avoids the pipe that
+	// a bytes.Buffer would introduce — a killed child (sh -c 'sleep N') keeps a
+	// pipe's write end open and hangs Wait() on timeout.
+	stderrFile, err := os.CreateTemp("", "dsh-stderr-*.log")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("dsh stderr temp: %w", err)
+	}
+	cmd.Stderr = stderrFile
 	// Graceful shutdown: SIGTERM first, hard-kill after WaitDelay (mirrors
 	// the OMP adapter's contract).
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -101,16 +113,19 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = stderrFile.Close()
+		_ = os.Remove(stderrFile.Name())
 		return nil, fmt.Errorf("dsh start: %w", err)
 	}
-	return &dshHandle{ctx: ctx, cancel: cancel, cmd: cmd, phase: spec.Phase}, nil
+	return &dshHandle{ctx: ctx, cancel: cancel, cmd: cmd, phase: spec.Phase, stderrFile: stderrFile}, nil
 }
 
 type dshHandle struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	cmd    *exec.Cmd
-	phase  string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	cmd        *exec.Cmd
+	phase      string
+	stderrFile *os.File
 }
 
 func (h *dshHandle) PID() int {
@@ -123,6 +138,17 @@ func (h *dshHandle) PID() int {
 func (h *dshHandle) Wait() (*ExecutionResult, error) {
 	defer h.cancel()
 	runErr := h.cmd.Wait()
+
+	// Read the captured stderr and release the temp file regardless of outcome.
+	stderrText := ""
+	if h.stderrFile != nil {
+		if data, rerr := os.ReadFile(h.stderrFile.Name()); rerr == nil {
+			stderrText = string(data)
+		}
+		_ = h.stderrFile.Close()
+		_ = os.Remove(h.stderrFile.Name())
+	}
+
 	switch {
 	case runErr == nil:
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeSuccess}, nil
@@ -131,8 +157,52 @@ func (h *dshHandle) Wait() (*ExecutionResult, error) {
 	case h.ctx.Err() != nil:
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: runErr.Error()}, nil
 	default:
-		return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: runErr.Error()}, nil
+		// dsh exit code is 0/1 only; recover the failure class from the
+		// `dsh: <code>: <message>` stderr line.
+		return dshFailureResult(h.phase, stderrText, runErr), nil
 	}
+}
+
+// dshFailureResult maps a failed dsh headless run to an ExecutionResult,
+// classifying the stderr `dsh: <code>: <message>` line into the closed
+// ExecOutcome set. Unknown/absent codes fall back to OutcomeFailed with the
+// stderr tail preserved as the error reason.
+func dshFailureResult(phase, stderrText string, runErr error) *ExecutionResult {
+	code, message := parseDshErrorLine(stderrText)
+	reason := message
+	if reason == "" {
+		reason = runErr.Error()
+	}
+	switch code {
+	case "QUOTA":
+		return &ExecutionResult{Phase: phase, Code: OutcomeQuotaExhausted, Error: reason}
+	case "EMPTY_RESPONSE":
+		return &ExecutionResult{Phase: phase, Code: OutcomeEmptyResponse, Error: reason}
+	case "INVALID_CREDENTIAL":
+		return &ExecutionResult{Phase: phase, Code: OutcomeKeyUnavailable, Error: reason}
+	default:
+		return &ExecutionResult{Phase: phase, Code: OutcomeFailed, Error: reason}
+	}
+}
+
+// parseDshErrorLine extracts the machine code and message from a `dsh: <code>:
+// <message>` stderr line (e.g. `dsh: QUOTA: quota exceeded`). Returns ("", "")
+// when no such line exists.
+func parseDshErrorLine(stderrText string) (code, message string) {
+	for _, line := range strings.Split(stderrText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "dsh: ") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "dsh: ")
+		// <code>: <message>
+		if idx := strings.IndexByte(rest, ':'); idx > 0 {
+			return strings.TrimSpace(rest[:idx]), strings.TrimSpace(rest[idx+1:])
+		}
+		// Plain `dsh: <message>` (direct-driver failure, no code).
+		return "", rest
+	}
+	return "", ""
 }
 
 // dshExecutor must satisfy PhaseExecutor.
