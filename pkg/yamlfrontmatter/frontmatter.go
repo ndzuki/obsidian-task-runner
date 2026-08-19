@@ -721,6 +721,41 @@ func Update(path string, updates map[string]interface{}) error {
 	})
 }
 
+// AtomicReadModifyWrite serializes a whole-file read-modify-write against the
+// same task-path flock that Update uses, so body-section rewrites (history
+// compaction, prototype folding) cannot lose updates to concurrent frontmatter
+// state writes. The callback receives the latest full file bytes while the
+// flock is held and returns the new bytes (or nil to abort without writing).
+// The returned bytes are written with the transactional atomic-write path
+// (temp + fsync + rename), preserving crash durability like Update.
+func AtomicReadModifyWrite(path string, mutate func(data []byte) ([]byte, error)) error {
+	cleanPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("resolve task path: %w", err)
+	}
+	unlock, err := acquireTaskLock(cleanPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	newData, err := mutate(data)
+	if err != nil {
+		return err
+	}
+	if newData == nil || bytes.Equal(newData, data) {
+		return nil
+	}
+	if err := atomicWrite(cleanPath, newData); err != nil {
+		return fmt.Errorf("write %s: %w", cleanPath, err)
+	}
+	return nil
+}
+
 // WithLockedFrontmatter serializes all TASK writes for a canonical path.
 // The callback observes the latest frontmatter while the task-path flock is held.
 func WithLockedFrontmatter(path string, mutate func(*Frontmatter) (map[string]interface{}, error)) error {
