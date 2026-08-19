@@ -67,6 +67,27 @@ Executor string `json:"executor"` // "omp"(default) | "dsh"
 | 5.8 | install.go 移除 omp 检查/symlink；skill 目录 ~/.omp → ~/.dsh；systemd unit 改名 | install 测试 + 全新安装冒烟 |
 | 5.9 | 默认 `executor: "dsh"`；删除 omp 分支与 `OMPCmd` | 全链路 DSH 跑通 |
 
+## 5.4 冒烟验证记录
+
+**refining 阶段 —— 已验证 ✅（2026-08-19）**
+
+隔离 vault（`~/.dsh/tmp/smoke-vault`，含完整十章节 REQ + `status: refining` TASK），
+spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
+
+- ✅ skill 正确加载并遵循 `obsidian-task-runner-refining` 指令
+- ✅ 读取 TASK/REQ、预计算 `refine_req_hash`（零 token 回退）
+- ✅ 成熟度门禁 6/6 全通过（`fully_mature`）
+- ✅ 写回 frontmatter：`maturity/refine_version=1/refine_req_hash/refine_error`
+- ✅ body `## 需求成熟度评估` 结构化证据表生成
+- ✅ 退出码 0，输出为结构化执行摘要
+
+**关键依赖确认**：skill 内部调用 `otg update-status` / `otg validate-doc`，
+依赖 `otg` 在 PATH（`/home/nd/go/bin/otg`，dsh headless 继承 daemon 环境，可达）。
+
+**其余阶段**（planning/round2/priority/merge/pm/audit/conventions）待逐阶段冒烟，
+共享同一 dshExecutor 机制，核心风险已由 refining 验证降低；planning/round2
+涉及 git worktree 需额外前置。
+
 ## 5. 关键风险与对策
 
 1. **DSH headless 失败语义未知**：quota/key-unavailable 如何从 `dsh` 进程
