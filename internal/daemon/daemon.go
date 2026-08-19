@@ -72,6 +72,10 @@ type Runner struct {
 	taskIdx            *task.Index           // frontmatter cache: watcher events invalidate, scans reuse
 	conflictPRProbed   sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
 	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
+	// designExecutor is injectable for deterministic Phase 3 tests. Production
+	// uses DSH headless; legacy task phases remain on their frozen OMP path until
+	// each adapter migration is individually verified.
+	designExecutor PhaseExecutor
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -135,6 +139,7 @@ func New(cfg *config.Config) *Runner {
 		taskIdx:            task.NewIndex(),
 		gatedLogged:        map[string]bool{},
 		scanMinInterval:    time.Duration(cfg.ScanMinIntervalSeconds) * time.Second,
+		designExecutor:     newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile),
 	}
 }
 

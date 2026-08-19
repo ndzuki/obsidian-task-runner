@@ -36,12 +36,23 @@ type dshExecutor struct {
 	defaultProfile string
 }
 
-// newDSHExecutor builds the DSH adapter. dshPath empty defaults to "dsh".
+// newDSHExecutor builds the DSH adapter with the default headless profile.
 func newDSHExecutor(dshPath string) *dshExecutor {
+	return newDSHExecutorWithProfile(dshPath, "headless")
+}
+
+// newDSHExecutorWithProfile builds a DSH adapter with an explicit profile.
+// Profiles own model routing because the headless app intentionally exposes no
+// per-invocation --model flag; this keeps the design phase's v4-pro route in
+// configuration rather than pretending PhaseSpec.Model is a CLI option.
+func newDSHExecutorWithProfile(dshPath, profile string) *dshExecutor {
 	if dshPath == "" {
 		dshPath = "dsh"
 	}
-	return &dshExecutor{dsh: dshPath, defaultProfile: "headless"}
+	if profile == "" {
+		profile = "headless"
+	}
+	return &dshExecutor{dsh: dshPath, defaultProfile: profile}
 }
 
 func (e *dshExecutor) Name() string { return "dsh" }
