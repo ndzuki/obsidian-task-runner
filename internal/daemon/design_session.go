@@ -32,7 +32,7 @@ func (r *Runner) runGlobalDesignSession(ctx context.Context, project, taskID, ta
 		}
 	}
 	if r.designExecutor == nil {
-		r.designExecutor = newDSHExecutorWithProfile(r.cfg.DSHCmd, r.cfg.DSHProfile)
+		r.designExecutor = newDSHExecutorWithProfile(r.cfg.DSHCmd, r.cfg.DSHProfile, "")
 	}
 	spec := PhaseSpec{
 		Phase:           "design",

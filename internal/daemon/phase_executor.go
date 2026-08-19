@@ -13,7 +13,7 @@ import (
 // (docs/phase5-executor-migration.md).
 func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 	if cfg.Executor == "dsh" {
-		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile)
+		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
 	}
 	return newOMPExecutor(cfg.OMPCmd)
 }
