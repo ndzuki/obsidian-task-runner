@@ -279,6 +279,38 @@ POST /charges
 	}
 }
 
+func TestLayout_SliceForTaskRelatedMatchesBareID(t *testing.T) {
+	layout, err := Ensure(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(layout.GlossaryPath(), "# Glossary\n")
+	write(filepath.Join(layout.WavesPath(), "wave-0.md"), "---\nschema: wave-v1\nid: wave-0\ntitle: W0\n---\n# Wave 0\n")
+	write(filepath.Join(layout.ContractsPath(), "billing-api.md"), `---
+schema: contract-v1
+id: billing-api
+title: Billing API
+related:
+  - TASK-001
+---
+# Billing API
+`)
+	// Bare id "001" (no TASK- prefix) must match the related TASK-001 entry.
+	slice, err := layout.SliceForTask("001", "unrelated summary text", 64<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(slice, "Billing API") {
+		t.Fatalf("bare task id 001 did not match related TASK-001 contract:\n%s", slice)
+	}
+}
+
 func TestLayout_SliceForTaskCapsBytes(t *testing.T) {
 	layout, err := Ensure(t.TempDir())
 	if err != nil {

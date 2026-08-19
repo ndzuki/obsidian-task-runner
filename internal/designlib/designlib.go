@@ -365,9 +365,10 @@ func (l *Layout) SliceForTask(taskID, reqSummary string, maxBytes int) (string, 
 		}
 	}
 	related := func(rel string) bool {
+		norm := func(id string) string { return strings.TrimPrefix(id, "TASK-") }
 		for _, tok := range strings.FieldsFunc(rel, func(r rune) bool { return r == ',' || r == ' ' }) {
 			tok = strings.TrimSpace(tok)
-			if tok == taskID || tok == strings.TrimPrefix(taskID, "TASK-") {
+			if tok != "" && norm(tok) == norm(taskID) {
 				return true
 			}
 		}

@@ -3223,6 +3223,17 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 					r.logger.Printf("task %s: no project context available", t.ID)
 				}
 			}
+			// Phase 3d: execution phases read their relevant design-library
+			// slice instead of re-deriving global architecture per task. Only
+			// planning/round2 consume it — refining runs before any global
+			// design exists.
+			if phase == "planning" || phase == "round2" {
+				if slice := r.designSliceForTask(t.Project, t.ID, t.ReqDoc); slice != "" {
+					skillPrompt = injectDesignLibrarySlice(skillPrompt, slice)
+					args[4] = skillPrompt
+					r.logger.Printf("task %s: injected design library slice (%d bytes)", t.ID, len(slice))
+				}
+			}
 		}
 		logDir := r.cfg.LogDir
 		if logDir == "" {
