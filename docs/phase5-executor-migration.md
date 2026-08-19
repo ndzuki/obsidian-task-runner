@@ -84,9 +84,29 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 **关键依赖确认**：skill 内部调用 `otg update-status` / `otg validate-doc`，
 依赖 `otg` 在 PATH（`/home/user/go/bin/otg`，dsh headless 继承 daemon 环境，可达）。
 
-**其余阶段**（planning/round2/priority/merge/pm/audit/conventions）待逐阶段冒烟，
-共享同一 dshExecutor 机制，核心风险已由 refining 验证降低；planning/round2
-涉及 git worktree 需额外前置。
+**其余阶段**：
+- **priority —— 已验证 ✅（2026-08-19）**：dsh headless 输出 ```json fenced block，
+  经 extractJSON 提取 + priority.Decode 完整解析（`runPriorityAssessmentDSH` 分流
+  已单测：成功写回 score、中断重置 claim、畸形 stdout 失败）。skill 冒烟（spawn
+  `dsh --profile headless "/obsidian-task-runner-priority <REQ>"`）确认输出形状。
+- planning/round2 涉及 git worktree 需额外前置；merge/pm/audit/conventions
+  有专属 runner，待逐阶段冒烟（共享同一 dshExecutor 机制）。
+
+## 5.5 模型路由（2026-08-19，用户确认）
+
+- **fallback 链**（`~/.dsh/cordis.patch.yml`，fallback.mjs）：
+  - `magic/deepseek-v4-pro` → 官方 `deepseek-official/deepseek-v4-pro`
+  - `magic/gpt-5.4-mini`（=flash）→ 官方 `deepseek-official/deepseek-v4-flash`
+  - 即 magic 免费模型无响应时兜底官方 DeepSeek 直连（web 与 dsh headless 统一由
+    fallback.mjs 完成）。
+- **settings.yaml**：新增 `deepseek-official` provider（官方 API，模型 id 小写
+  `deepseek-v4-pro`/`deepseek-v4-flash`，与 `/models` 实测一致）；`agent-default-model`
+  同步为 `deepseek-official/deepseek-v4-flash`（与运行时/web 一致）。
+- **DSH 已知 bug**：provider 名含 `deepseek` 前缀（`deepseek-official`）时，
+  `agent-default-model` 设为 magic 会 NO_ADAPTER（llm-pi-ai 注册冲突，已实测定位）；
+  默认模型保持官方，magic 作为会话可选模型（fallback from 目标）。
+- **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
+  `gateway/deepseek-v4-pro`（免费），fallback `deepseek/deepseek-v4-pro`（官方）。
 
 ## 5. 关键风险与对策
 
