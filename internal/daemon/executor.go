@@ -98,13 +98,13 @@ type ExecutionResult struct {
 type ExecOutcome string
 
 const (
-	OutcomeSuccess         ExecOutcome = "success"
-	OutcomeFailed          ExecOutcome = "failed"
-	OutcomeTimedOut        ExecOutcome = "timeout"
-	OutcomeInterrupted     ExecOutcome = "interrupted" // daemon shutdown / cancel
-	OutcomeQuotaExhausted  ExecOutcome = "quota_exhausted"
-	OutcomeKeyUnavailable  ExecOutcome = "key_unavailable"
-	OutcomeEmptyResponse   ExecOutcome = "empty_response"
+	OutcomeSuccess        ExecOutcome = "success"
+	OutcomeFailed         ExecOutcome = "failed"
+	OutcomeTimedOut       ExecOutcome = "timeout"
+	OutcomeInterrupted    ExecOutcome = "interrupted" // daemon shutdown / cancel
+	OutcomeQuotaExhausted ExecOutcome = "quota_exhausted"
+	OutcomeKeyUnavailable ExecOutcome = "key_unavailable"
+	OutcomeEmptyResponse  ExecOutcome = "empty_response"
 )
 
 // ExecutionHandle is the live handle returned by Start/Resume.
@@ -128,5 +128,38 @@ func ompPhaseThinking(phase string) string {
 		return "high"
 	default:
 		return "low"
+	}
+}
+
+// mapExecOutcome maps a protocol-neutral ExecutionResult to the daemon's
+// failure-code vocabulary (Phase 5 seam). Success yields an empty code and
+// reason; every other outcome maps to a stable ErrorCode for handlePhaseFailure
+// and a human-readable reason. dshExecutor currently distinguishes
+// success/failed/timeout/interrupted only; quota/key/empty-response outcomes
+// arrive once the DSH exit-code probe lands (docs/phase5-executor-migration.md
+// §5.6), but the mapping is already closed over the full ExecOutcome set.
+func mapExecOutcome(result *ExecutionResult) (ExecOutcome, ErrorCode, string) {
+	if result == nil {
+		return OutcomeFailed, ErrModelFailed, "executor returned no result"
+	}
+	switch result.Code {
+	case OutcomeSuccess:
+		return OutcomeSuccess, "", ""
+	case OutcomeTimedOut:
+		return OutcomeTimedOut, ErrPhaseTimeout, "phase timed out"
+	case OutcomeInterrupted:
+		return OutcomeInterrupted, ErrPhaseInterrupted, "interrupted by daemon shutdown"
+	case OutcomeQuotaExhausted:
+		return OutcomeQuotaExhausted, ErrModelQuotaExhausted, "model quota exhausted"
+	case OutcomeKeyUnavailable:
+		return OutcomeKeyUnavailable, ErrAPIKeyUnavailable, "api key unavailable"
+	case OutcomeEmptyResponse:
+		return OutcomeEmptyResponse, ErrModelFailed, "empty model response"
+	default:
+		reason := result.Error
+		if reason == "" {
+			reason = "phase failed"
+		}
+		return OutcomeFailed, ErrModelFailed, reason
 	}
 }
