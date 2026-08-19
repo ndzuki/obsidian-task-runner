@@ -321,3 +321,29 @@ func TestLoadRejectsNegativePerProjectConcurrency(t *testing.T) {
 		t.Fatal("expected invalid configuration error for negative per-project concurrency")
 	}
 }
+
+func TestExecutorDefaultAndValidation(t *testing.T) {
+	if got := Defaults().Executor; got != "omp" {
+		t.Fatalf("default executor=%q, want omp", got)
+	}
+	// Invalid executor rejected.
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"executor":"bogus"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(mapFile); err == nil {
+		t.Fatal("invalid executor must be rejected")
+	}
+	// dsh executor accepted.
+	if err := os.WriteFile(mapFile, []byte(`{"executor":"dsh"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Executor != "dsh" {
+		t.Fatalf("executor=%q, want dsh", cfg.Executor)
+	}
+}
