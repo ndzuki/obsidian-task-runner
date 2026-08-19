@@ -37,10 +37,11 @@ type Config struct {
 	// remaining phases migrate behind PhaseExecutor incrementally). The
 	// headless app has no per-invocation --model flag, so the selected profile
 	// owns model routing (the default headless profile uses v4-pro here).
-	DSHCmd          string `json:"dsh_cmd"`
-	DSHProfile      string `json:"dsh_profile"`
-	DefaultAssignee string `json:"default_assignee"`
-	LogDir          string `json:"log_dir,omitempty"`
+	DSHCmd              string `json:"dsh_cmd"`
+	DSHProfile          string `json:"dsh_profile"`
+	ReplanGateThreshold int    `json:"replan_gate_threshold"`
+	DefaultAssignee     string `json:"default_assignee"`
+	LogDir              string `json:"log_dir,omitempty"`
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
 	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
@@ -342,6 +343,7 @@ func Defaults() *Config {
 		OMPCmd:                     "omp",
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
+		ReplanGateThreshold:        5,
 		DefaultAssignee:            "",
 		Notifications:              NotifConfig{Desktop: true},
 	}
@@ -483,6 +485,9 @@ func mergeDefaults(cfg *Config) {
 	if cfg.DSHProfile == "" {
 		cfg.DSHProfile = defaults.DSHProfile
 	}
+	if cfg.ReplanGateThreshold == 0 {
+		cfg.ReplanGateThreshold = defaults.ReplanGateThreshold
+	}
 	if cfg.SkillInstallDir == "" {
 		cfg.SkillInstallDir = defaults.SkillInstallDir
 	}
@@ -574,6 +579,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxConcurrentTasksPerProject < 0 {
 		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks_per_project must be >= 0 (0 = default 2)")
+	}
+	if c.ReplanGateThreshold < 0 {
+		return fmt.Errorf("CONFIG_INVALID: replan_gate_threshold must be >= 0 (0 = disabled)")
 	}
 	for phase, limit := range c.PhaseConcurrency {
 		if limit < 0 {

@@ -264,6 +264,7 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 		GrillResolution: fm.GrillResolution, GrillContext: fm.GrillContext,
 		GrillContinue: fm.GrillContinue, GrillParked: fm.GrillParked,
 		PlanVersion:              fm.PlanVersion,
+		DesignReplanVersion:      fm.DesignReplanVersion,
 		PriorityAssessmentStatus: fm.PriorityAssessmentStatus,
 		GrillHeartbeatAt:         fm.GrillHeartbeatAt,
 		GrillTimeoutMinutes:      fm.GrillTimeoutMinutes,
@@ -274,6 +275,6 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 		Maturity:                 fm.Maturity,
 		ReviewFeedback:           fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,
 		ClosureReason: fm.ClosureReason,
-		PlanFiles:                fm.PlanFiles,
+		PlanFiles:     fm.PlanFiles,
 	}
 }

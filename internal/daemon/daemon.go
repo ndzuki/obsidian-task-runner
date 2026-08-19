@@ -3145,6 +3145,25 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			continue
 		}
 
+		// Replanning gate: once a task reaches the configured plan-version
+		// threshold, revise the project Design library before another local
+		// plan. The design session owns this scan iteration; the next scan
+		// dispatches ordinary planning only after its revision marker is durable.
+		if phase == "planning" {
+			handled, gateErr := r.runReplanGate(r.daemonCtx, t, repoDir)
+			if handled {
+				if gateErr != nil {
+					r.logger.Printf("task %s: %v", t.ID, gateErr)
+					r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, "design", ErrDesignSessionFailed, gateErr.Error(), "")
+					notify.SendTaskAction(t.ID, t.Title, "🏛️", "全局设计修订失败", "重规划已达到阈值，但设计库修订未完成；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+				} else {
+					r.logger.Printf("task %s: replan gate passed after global design revision (plan v%d)", t.ID, t.PlanVersion)
+				}
+				processed++
+				continue
+			}
+		}
+
 		// Phase concurrency gate: bounds simultaneous OMP sessions per phase
 		// (refining/planning/merge/priority/pm). Acquired here — not in the
 		// scheduler loop — so every dispatch path is covered, including the
