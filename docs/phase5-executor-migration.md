@@ -89,8 +89,17 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
   经 extractJSON 提取 + priority.Decode 完整解析（`runPriorityAssessmentDSH` 分流
   已单测：成功写回 score、中断重置 claim、畸形 stdout 失败）。skill 冒烟（spawn
   `dsh --profile headless "/obsidian-task-runner-priority <REQ>"`）确认输出形状。
-- planning/round2 涉及 git worktree 需额外前置；merge/pm/audit/conventions
-  有专属 runner，待逐阶段冒烟（共享同一 dshExecutor 机制）。
+- **planning —— 冒烟未通过 ⚠️（2026-08-19）**：
+  - 修复 1（已提交 63bf9b0）：phase skills 带 `disable-model-invocation: true`
+    被 DSH 从模型目录排除，dsh 会话无法加载 → dshExecutor 改为直接注入
+    `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐 omp「daemon 注入正文」机制）。
+  - 残留问题：session 日志显示模型执行了 180 bash + 23 read + 14 step 工具调用，
+    但**跑偏**（读真实 vault 文件 + 仓库代码，生成与 smoke TASK 无关的 plan_files），
+    且**未写回**任务文件。疑为空 smoke vault（无 ADR/CONTEXT）+ 空 git repo 使
+    模型缺乏聚焦上下文而到处探索；真实 vault（有完整结构）下需重新验证。
+  - **未污染真实数据**（已验证真实 vault 5 分钟内无 .md 修改）。
+- round2 涉及 git worktree 需额外前置；merge/pm/audit/conventions 有专属 runner，
+  已做 dsh 分流（5b45d2b）但未真实冒烟。
 
 ## 5.5 模型路由（2026-08-19，用户确认）
 
