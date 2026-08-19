@@ -35,8 +35,8 @@ func Run(opts Options) error {
 		stopDaemon()
 	}
 
-	// 1. Check dependencies
-	for _, bin := range []string{"git", "omp"} {
+	// 1. Check dependencies（omp 已移除：executor 默认 dsh，不再需要 omp 二进制）
+	for _, bin := range []string{"git"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("missing dependency: %s", bin)
 		}
@@ -62,11 +62,6 @@ func Run(opts Options) error {
 	// 4. Generate vault-map.json
 	if err := generateVaultMap(opts); err != nil && !d {
 		return fmt.Errorf("vault-map: %w", err)
-	}
-
-	// 5. Create OMP symlink
-	if err := createOMPSymlink(opts); err != nil && !d {
-		return fmt.Errorf("OMP symlink: %w", err)
 	}
 
 	// 5b. Install skill-doctor (dependency diagnostic tool)
@@ -359,21 +354,6 @@ func generateVaultMap(opts Options) error {
 	return os.WriteFile(mapFile, data, 0644)
 }
 
-func createOMPSymlink(opts Options) error {
-	linkPath := filepath.Join(os.Getenv("HOME"), ".omp", "agent", "skills", "obsidian-task-runner")
-	if opts.DryRun {
-		fmt.Printf("[DRY RUN] Would create symlink %s → %s\n", linkPath, opts.SkillInstallDir)
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
-		return fmt.Errorf("create symlink dir: %w", err)
-	}
-	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove old symlink %s: %w", linkPath, err)
-	}
-	return os.Symlink(opts.SkillInstallDir, linkPath)
-}
-
 // installPhaseSkills copies bundled phase and sidecar skills as top-level skills.
 func installPhaseSkills(opts Options) error {
 	home, _ := os.UserHomeDir()
@@ -567,8 +547,8 @@ func ConfigureSystemd(opts Options) error {
 
 	// Write service files
 	services := map[string]string{
-		"omp-task-runner.service": fmt.Sprintf(`[Unit]
-Description=扫描 Obsidian Vault 并处理可执行的 OMP 任务(兜底轮询,由 timer 触发)
+		"otg-task-runner.service": fmt.Sprintf(`[Unit]
+Description=扫描 Obsidian Vault 并处理可执行任务(兜底轮询,由 timer 触发)
 
 [Service]
 Type=oneshot
@@ -578,7 +558,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/%%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
 ExecStart=%s/.local/bin/otg daemon --once
 `, opts.ObsidianVault, path, home),
-		"omp-task-runner.timer": fmt.Sprintf(`[Unit]
+		"otg-task-runner.timer": fmt.Sprintf(`[Unit]
 Description=Obsidian Task Runner 兜底轮询
 
 [Timer]
@@ -589,8 +569,8 @@ RandomizedDelaySec=10
 [Install]
 WantedBy=timers.target
 `, opts.PollIntervalMin),
-		"omp-task-watcher.service": fmt.Sprintf(`[Unit]
-Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发 OMP 处理
+		"otg-task-watcher.service": fmt.Sprintf(`[Unit]
+Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发任务处理
 
 [Service]
 Type=simple
@@ -618,11 +598,11 @@ WantedBy=default.target
 		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n%s\n", err, out)
 		}
-		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "omp-task-runner.timer").CombinedOutput(); err != nil {
+		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-runner.timer").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: systemctl enable timer failed: %v\n%s\n", err, out)
 		}
 		if _, err := exec.LookPath("inotifywait"); err == nil {
-			if out, err := exec.Command("systemctl", "--user", "enable", "--now", "omp-task-watcher.service").CombinedOutput(); err != nil {
+			if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-watcher.service").CombinedOutput(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: systemctl enable watcher failed: %v\n%s\n", err, out)
 			}
 		}
@@ -777,11 +757,11 @@ func validateRequiredSkills() ([]string, error) {
 
 // stopDaemon gracefully stops any running otg daemon processes.
 func stopDaemon() {
-	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "omp-task-runner.timer")
+	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "otg-task-runner.timer")
 	// Wait for the watcher to finish its graceful shutdown (daemon SIGTERM →
-	// OMP session save → exit). Blocking here also serializes with the later
+	// session save → exit). Blocking here also serializes with the later
 	// enable --now, so the new instance never races the old one.
-	runBestEffort("stop task watcher", "systemctl", "--user", "stop", "omp-task-watcher.service")
+	runBestEffort("stop task watcher", "systemctl", "--user", "stop", "otg-task-watcher.service")
 
 	// Residual daemons not managed by systemd: terminate, then force kill.
 	// (With the systemd stop above completed, these are normally no-ops.)

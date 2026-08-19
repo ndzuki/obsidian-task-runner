@@ -40,10 +40,11 @@ type Config struct {
 	DSHCmd              string `json:"dsh_cmd"`
 	DSHProfile          string `json:"dsh_profile"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
-	// Executor selects the phase-execution backend: "omp" (default, frozen
-	// behavior) or "dsh" (spawn `dsh --profile headless`). The switch is the
-	// Phase 5 migration seam — default stays omp until every phase is verified
-	// on dsh (docs/phase5-executor-migration.md).
+	// Executor selects the phase-execution backend: "dsh" (default, spawn
+	// `dsh --profile headless`) or "omp" (frozen behavior, retained as a
+	// rollback path until the DSH route is fully trusted). The switch is the
+	// Phase 5 migration seam (docs/phase5-executor-migration.md); the default
+	// flipped to dsh after every phase gained a DSH branch (5.3/5.4c/5.5).
 	Executor        string `json:"executor"`
 	DefaultAssignee string `json:"default_assignee"`
 	LogDir          string `json:"log_dir,omitempty"`
@@ -350,7 +351,7 @@ func Defaults() *Config {
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
 		ReplanGateThreshold:        5,
-		Executor:                   "omp",
+		Executor:                   "dsh",
 		DefaultAssignee:            "",
 		Notifications:              NotifConfig{Desktop: true},
 	}
