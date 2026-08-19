@@ -110,6 +110,9 @@ func TestDetectStaleDoneReopens(t *testing.T) {
 		t.Fatalf("stale reopen missing generation reset: pending_req=%v reopen_count=%d merge_status=%q knowledge_extracted=%v",
 			fm.PendingReq, fm.ReopenCount, fm.MergeStatus, fm.KnowledgeExtracted)
 	}
+	if fm.Generation != 2 {
+		t.Fatalf("stale reopen generation = %d, want 2 (legacy doc 0 bumped once)", fm.Generation)
+	}
 	for _, p := range []string{delivered, legacy, nockpt, unmerged, norepo, freshMerged} {
 		if got := statusOf(p); got != "done" {
 			t.Fatalf("task %s must stay done, got %q", filepath.Base(p), got)
