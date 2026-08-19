@@ -84,6 +84,14 @@ func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	// ── Phase 5 executor seam ──────────────────────────────────────────
+	// dsh path recovers the strict JSON from the free-text headless stdout
+	// (extractJSON) before priority.Decode; the OMP path below is untouched
+	// while cfg.Executor stays "omp".
+	if r.cfg.Executor == "dsh" {
+		return r.runPriorityAssessmentDSH(ctx, candidate, reqPath, attempts)
+	}
+
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, "--model", r.cfg.Model("default"), "--auto-approve", "-p", "/obsidian-task-runner-priority "+reqPath)
 	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
 		return fmt.Errorf("create task temp environment: %w", err)
@@ -114,6 +122,61 @@ func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate 
 		return r.recordPriorityFailure(candidate, attempts, decodeErr.Error())
 	}
 	return yamlfrontmatter.Update(candidate.FilePath, priorityUpdates(result, "completed"))
+}
+
+// runPriorityAssessmentDSH executes the priority assessment through the DSH
+// phase executor. DSH headless returns the strict JSON contract as free text
+// (usually a ```json fenced block), so extractJSON isolates the object before
+// priority.Decode. Interruption by daemon shutdown resets the claim for the
+// next scan; other failures burn the attempt budget via recordPriorityFailure.
+func (r *Runner) runPriorityAssessmentDSH(ctx context.Context, candidate task.PriorityTask, reqPath string, attempts int) error {
+	spec := PhaseSpec{
+		Phase:           "priority",
+		Model:           r.cfg.Model("default"),
+		ReasoningEffort: ompPhaseThinking("priority"),
+		SkillPrompt:     "/obsidian-task-runner-priority " + reqPath,
+		Timeout:         5 * time.Minute,
+		WorkingDir:      filepath.Dir(reqPath),
+	}
+	executor := r.phaseExecutor
+	if executor == nil {
+		executor = newPhaseExecutor(r.cfg)
+		r.phaseExecutor = executor
+	}
+	handle, err := executor.Start(ctx, spec, TaskSnapshot{
+		TaskID:   candidate.ID,
+		TaskPath: candidate.FilePath,
+		Project:  candidate.Project,
+	})
+	if err != nil {
+		return r.recordPriorityFailure(candidate, attempts, fmt.Sprintf("priority start: %v", err))
+	}
+	result, err := handle.Wait()
+	if err != nil {
+		return r.recordPriorityFailure(candidate, attempts, err.Error())
+	}
+	if result == nil || result.Code != OutcomeSuccess {
+		if ctx.Err() != nil {
+			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+				"priority_assessment_status": "pending",
+			})
+			return nil
+		}
+		reason := "priority assessment failed"
+		if result != nil && result.Error != "" {
+			reason = result.Error
+		}
+		return r.recordPriorityFailure(candidate, attempts, reason)
+	}
+	jsonBytes, jsonErr := extractJSON(result.Stdout)
+	if jsonErr != nil {
+		return r.recordPriorityFailure(candidate, attempts, jsonErr.Error())
+	}
+	parsed, decodeErr := priority.Decode(jsonBytes)
+	if decodeErr != nil {
+		return r.recordPriorityFailure(candidate, attempts, decodeErr.Error())
+	}
+	return yamlfrontmatter.Update(candidate.FilePath, priorityUpdates(parsed, "completed"))
 }
 
 func (r *Runner) recordPriorityFailure(candidate task.PriorityTask, attempts int, reason string) error {
