@@ -40,7 +40,7 @@ func TestVaultMapConfigReachesOMPArgs(t *testing.T) {
 	mapFile := writeMapFile(t, skillDir, map[string]interface{}{
 		"models": map[string]string{
 			"default": "gateway/gpt-5.4-mini",
-			"gpt":     "gateway/gpt-5.6-sol",
+			"gpt":     "gateway/deepseek-v4-pro",
 			"sonnet":  "anthropic/claude-sonnet-4-20250514", // 自定义 key 应生效
 		},
 		"fallback_models": map[string]string{"gpt": "deepseek/deepseek-v4-flash"},
