@@ -53,13 +53,38 @@ func TestDSHExecutorStartArgs(t *testing.T) {
 }
 
 func TestDSHTaskText(t *testing.T) {
-	got := dshTaskText("/obsidian-task-runner-priority /vault/REQ.md")
+	// 空 skillDir：走 slash 兜底（保留 skill 名），不注入正文。
+	e := newDSHExecutorWithProfile("dsh", "headless", "")
+	got := e.dshTaskText("/obsidian-task-runner-priority /vault/REQ.md")
 	if !strings.Contains(got, "obsidian-task-runner") {
 		t.Errorf("task text missing skill name: %q", got)
 	}
-	empty := dshTaskText("   ")
+	empty := e.dshTaskText("   ")
 	if empty == "" {
 		t.Error("empty skill prompt produced empty task text")
+	}
+}
+
+func TestDSHTaskTextInjectsSkillBody(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "obsidian-task-runner-round1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "obsidian-task-runner-round1", "SKILL.md"), []byte("---\nname: obsidian-task-runner-round1\ndescription: x\n---\n\nStep 1: read TASK\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := newDSHExecutorWithProfile("dsh", "headless", dir)
+	got := e.dshTaskText("/obsidian-task-runner-round1 /vault/TASK-001.md")
+	if !strings.Contains(got, "Step 1: read TASK") {
+		t.Fatalf("task text missing injected skill body: %q", got)
+	}
+	if !strings.Contains(got, "/vault/TASK-001.md") {
+		t.Fatalf("task text missing args: %q", got)
+	}
+	// 完整模板（非 slash）不注入，走兜底。
+	audit := e.dshTaskText("你是独立审计员……输出 JSON")
+	if !strings.Contains(audit, "你是独立审计员") {
+		t.Fatalf("full-template prompt must fall through: %q", audit)
 	}
 }
 

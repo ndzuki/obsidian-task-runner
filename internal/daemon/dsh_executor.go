@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -34,25 +35,43 @@ type dshExecutor struct {
 	dsh string
 	// defaultProfile is the profile to boot ("headless").
 	defaultProfile string
+	// skillDir is where phase SKILL.md bodies live (~/.dsh/skills). The dsh
+	// adapter injects the skill body directly — phase skills are marked
+	// `disable-model-invocation: true` (they are daemon-invoked, not model-
+	// loaded), so the DSH session cannot load them itself; this mirrors the
+	// OMP daemon's behavior of injecting the skill body into the prompt.
+	skillDir string
 }
 
 // newDSHExecutor builds the DSH adapter with the default headless profile.
 func newDSHExecutor(dshPath string) *dshExecutor {
-	return newDSHExecutorWithProfile(dshPath, "headless")
+	return newDSHExecutorWithProfile(dshPath, "headless", "")
 }
 
 // newDSHExecutorWithProfile builds a DSH adapter with an explicit profile.
 // Profiles own model routing because the headless app intentionally exposes no
 // per-invocation --model flag; this keeps the design phase's v4-pro route in
 // configuration rather than pretending PhaseSpec.Model is a CLI option.
-func newDSHExecutorWithProfile(dshPath, profile string) *dshExecutor {
+func newDSHExecutorWithProfile(dshPath, profile, skillDir string) *dshExecutor {
 	if dshPath == "" {
 		dshPath = "dsh"
 	}
 	if profile == "" {
 		profile = "headless"
 	}
-	return &dshExecutor{dsh: dshPath, defaultProfile: profile}
+	if skillDir == "" {
+		skillDir = defaultDSHSkillDir()
+	}
+	return &dshExecutor{dsh: dshPath, defaultProfile: profile, skillDir: skillDir}
+}
+
+// defaultDSHSkillDir resolves the DSH user-skill directory (~/.dsh/skills).
+func defaultDSHSkillDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".dsh", "skills")
 }
 
 func (e *dshExecutor) Name() string { return "dsh" }
@@ -65,22 +84,51 @@ func (e *dshExecutor) Resume(context.Context, string) (ExecutionHandle, error) {
 }
 
 // dshTaskText translates the OMP slash-skill prompt into a DSH headless task.
-// The task asks the DSH session to load the same skill and act on the same
-// target file, preserving the phase contract.
-func dshTaskText(skillPrompt string) string {
+// Phase skills carry `disable-model-invocation: true` (daemon-invoked), so the
+// DSH session cannot load them from its catalog; the adapter therefore reads
+// the SKILL.md body and injects it directly — the same contract the OMP daemon
+// used (skill body in the prompt, target file as the argument).
+func (e *dshExecutor) dshTaskText(skillPrompt string) string {
 	trimmed := strings.TrimSpace(skillPrompt)
 	if trimmed == "" {
 		return "Complete the current task phase following the obsidian-task-runner workflow."
 	}
-	// The OMP slash prompt is "/skill <args>". DSH sessions resolve skills by
-	// name from their catalog; keep the slash form so the model recognizes
-	// the skill and loads it, and append an explicit instruction to follow it.
+	// Extract the leading "/skill-name" token (slash form). Prompts that are
+	// not slash skills (e.g. the audit full-template) fall through unchanged.
+	fields := strings.Fields(trimmed)
+	skillName := ""
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "/") {
+		skillName = strings.TrimPrefix(fields[0], "/")
+	}
+	if skillName != "" && e.skillDir != "" {
+		if body := readSkillBody(e.skillDir, skillName); body != "" {
+			args := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
+			argLine := ""
+			if args != "" {
+				argLine = "\n\n任务参数：" + args
+			}
+			return "执行 obsidian-task-runner 阶段任务。以下是该阶段的 skill 完整指令，必须严格遵循并完成本阶段，将结果写回任务文档。\n\n<skill name=\"" + skillName + "\">\n" + body + "\n</skill>" + argLine
+		}
+	}
+	// Fallback: keep the slash form so the session can still attempt to load
+	// the skill (model-invocable skills resolve this way).
 	return "执行 obsidian-task-runner 阶段任务：\n\n" + trimmed + "\n\n严格遵循该 skill 的指令完成本阶段，并将结果写回任务文档。"
+}
+
+// readSkillBody returns the SKILL.md body for a skill name, or "" when the
+// skill directory does not carry it.
+func readSkillBody(skillDir, skillName string) string {
+	path := filepath.Join(skillDir, skillName, "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecutionHandle, error) {
 	// DSH headless takes the task as a positional argument.
-	taskText := dshTaskText(spec.SkillPrompt)
+	taskText := e.dshTaskText(spec.SkillPrompt)
 	args := []string{"--profile", e.defaultProfile, taskText}
 
 	timeout := spec.Timeout

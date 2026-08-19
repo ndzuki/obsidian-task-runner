@@ -144,7 +144,7 @@ func New(cfg *config.Config) *Runner {
 		taskIdx:            task.NewIndex(),
 		gatedLogged:        map[string]bool{},
 		scanMinInterval:    time.Duration(cfg.ScanMinIntervalSeconds) * time.Second,
-		designExecutor:     newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile),
+		designExecutor:     newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, ""),
 		phaseExecutor:      newPhaseExecutor(cfg),
 	}
 }
