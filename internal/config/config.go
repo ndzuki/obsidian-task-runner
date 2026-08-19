@@ -40,8 +40,13 @@ type Config struct {
 	DSHCmd              string `json:"dsh_cmd"`
 	DSHProfile          string `json:"dsh_profile"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
-	DefaultAssignee     string `json:"default_assignee"`
-	LogDir              string `json:"log_dir,omitempty"`
+	// Executor selects the phase-execution backend: "omp" (default, frozen
+	// behavior) or "dsh" (spawn `dsh --profile headless`). The switch is the
+	// Phase 5 migration seam — default stays omp until every phase is verified
+	// on dsh (docs/phase5-executor-migration.md).
+	Executor        string `json:"executor"`
+	DefaultAssignee string `json:"default_assignee"`
+	LogDir          string `json:"log_dir,omitempty"`
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
 	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
@@ -344,6 +349,7 @@ func Defaults() *Config {
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
 		ReplanGateThreshold:        5,
+		Executor:                   "omp",
 		DefaultAssignee:            "",
 		Notifications:              NotifConfig{Desktop: true},
 	}
@@ -488,6 +494,9 @@ func mergeDefaults(cfg *Config) {
 	if cfg.ReplanGateThreshold == 0 {
 		cfg.ReplanGateThreshold = defaults.ReplanGateThreshold
 	}
+	if cfg.Executor == "" {
+		cfg.Executor = defaults.Executor
+	}
 	if cfg.SkillInstallDir == "" {
 		cfg.SkillInstallDir = defaults.SkillInstallDir
 	}
@@ -582,6 +591,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ReplanGateThreshold < 0 {
 		return fmt.Errorf("CONFIG_INVALID: replan_gate_threshold must be >= 0 (0 = disabled)")
+	}
+	if c.Executor != "omp" && c.Executor != "dsh" {
+		return fmt.Errorf("CONFIG_INVALID: executor must be \"omp\" or \"dsh\", got %q", c.Executor)
 	}
 	for phase, limit := range c.PhaseConcurrency {
 		if limit < 0 {
