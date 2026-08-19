@@ -3,8 +3,11 @@ package vaultweb
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
 //go:embed dashboard.html
@@ -25,6 +28,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /api/vault/projects/{project}/views/{view}", s.handleView)
 	mux.HandleFunc("GET /api/vault/projects/{project}/design", s.handleDesignSummary)
 	mux.HandleFunc("GET /api/vault/projects/{project}/design/{kind}/{name}", s.handleDesignArtifact)
+	mux.HandleFunc("PATCH /api/vault/projects/{project}/tasks/{taskID}", s.handleTaskUpdate)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	mux.HandleFunc("GET /vault", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	return mux
@@ -95,4 +99,25 @@ func (s *Service) handleDesignArtifact(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(content))
+}
+
+func (s *Service) handleTaskUpdate(w http.ResponseWriter, r *http.Request) {
+	var req TaskUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	updated, err := s.UpdateTask(r.PathValue("project"), r.PathValue("taskID"), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotWritable):
+			writeError(w, http.StatusForbidden, err)
+		case errors.Is(err, task.ErrStaleGeneration):
+			writeError(w, http.StatusConflict, err)
+		default:
+			writeError(w, http.StatusNotFound, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }

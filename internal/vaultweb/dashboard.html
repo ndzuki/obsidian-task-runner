@@ -159,6 +159,7 @@ const stClass = (s) => 'st st-' + (s || 'ready').replace(/[^a-z-]/g,'');
 let projects = [];
 let currentProject = null;
 let currentView = 'board';
+let currentTask = null;
 
 function statusDot(s) { return '<span class="' + stClass(s) + '"></span>'; }
 
@@ -308,6 +309,7 @@ async function openTask(id) {
   const tasks = await api('/projects/' + encodeURIComponent(currentProject) + '/tasks');
   const t = tasks.find(x => x.id === id);
   if (!t) return;
+  currentTask = t;
   const drawer = $('#drawer');
   drawer.innerHTML =
     '<span class="close" onclick="closeDrawer()">✕</span>' +
@@ -320,8 +322,33 @@ async function openTask(id) {
       (t.phase_error_code ? kv('Phase error', esc(t.phase_error_code)) : '') +
     '</dl>' +
     (t.blocked_by && t.blocked_by.length ? '<div class="field-block"><h4>Blocked By</h4>' + t.blocked_by.map(b => '<span class="chip">' + esc(b) + '</span>').join('') + '</div>' : '') +
-    (t.req_doc ? '<div class="field-block"><h4>Requirement</h4><div class="muted">' + esc(t.req_doc) + '</div></div>' : '');
+    (t.req_doc ? '<div class="field-block"><h4>Requirement</h4><div class="muted">' + esc(t.req_doc) + '</div></div>' : '') +
+    '<div class="field-block"><h4>操作</h4>' +
+      '<button class="tab active" onclick="patchTask(\'plan_approved\',true)">通过计划</button> ' +
+      '<button class="tab active" onclick="patchTask(\'resume_approved\',true)">恢复</button> ' +
+      '<button class="tab active" onclick="patchTask(\'merge_approved\',true)">通过合并</button> ' +
+    '</div>' +
+    '<div class="field-block"><h4>优先级</h4>' +
+      ['P0','P1','P2','P3','P4'].map(p => '<button class="tab' + (t.priority === p ? ' active':'') + '" onclick="patchTask(\'priority\',\'' + p + '\')">' + p + '</button> ').join('') +
+    '</div>';
   drawer.classList.add('open');
+}
+
+async function patchTask(field, value) {
+  if (!currentTask) return;
+  const resp = await fetch('/api/vault/projects/' + encodeURIComponent(currentProject) + '/tasks/' + encodeURIComponent(currentTask.id), {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ expected_generation: currentTask.generation, updates: { [field]: value } })
+  });
+  if (resp.status === 409) { alert('代际冲突：任务已被更新，请刷新后重试'); return; }
+  if (!resp.ok) {
+    try { const e = await resp.json(); alert('写入失败: ' + (e.error || resp.status)); } catch { alert('写入失败: ' + resp.status); }
+    return;
+  }
+  currentTask = await resp.json();
+  openTask(currentTask.id);
+  if (currentView === 'board') showBoard();
 }
 function kv(k, v) { return '<dt>' + k + '</dt><dd>' + v + '</dd>'; }
 function closeDrawer() { $('#drawer').classList.remove('open'); }

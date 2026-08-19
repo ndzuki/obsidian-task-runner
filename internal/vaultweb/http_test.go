@@ -61,3 +61,38 @@ func TestHTTPProjectsJSONShape(t *testing.T) {
 		t.Fatalf("projects shape wrong: %+v", projects)
 	}
 }
+
+func TestHTTPTaskUpdate(t *testing.T) {
+	s := New(newTestVault(t))
+	h := s.Handler()
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PATCH", "/api/vault/projects/demo/tasks/001", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Successful whitelisted write.
+	rec := patch(`{"expected_generation":1,"updates":{"priority":"P0"}}`)
+	if rec.Code != 200 {
+		t.Fatalf("writable update status=%d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// Stale generation → 409.
+	rec = patch(`{"expected_generation":999,"updates":{"priority":"P0"}}`)
+	if rec.Code != 409 {
+		t.Fatalf("stale update status=%d, want 409", rec.Code)
+	}
+	// System-owned field → 403.
+	rec = patch(`{"expected_generation":1,"updates":{"status":"done"}}`)
+	if rec.Code != 403 {
+		t.Fatalf("system field update status=%d, want 403 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// Unknown task → 404.
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest("PATCH", "/api/vault/projects/demo/tasks/999", strings.NewReader(`{"expected_generation":1,"updates":{"priority":"P1"}}`))
+	h.ServeHTTP(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("unknown task status=%d, want 404", rec.Code)
+	}
+}
