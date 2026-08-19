@@ -248,9 +248,10 @@ func (c *Config) ConcurrencyFor(phase string) int {
 // Keys are assignee names (matching `models` / TASK frontmatter); values are
 // OMP model identifiers. Users may add/remove/override any key in
 // vault-map.json; an empty value disables the fallback for that assignee.
+// gpt 主模型为 gateway 免费 v4-pro，fallback 官方 DeepSeek V4-Pro 直连。
 func DefaultFallbackModels() map[string]string {
 	return map[string]string{
-		"gpt":      "deepseek/deepseek-v4-flash",
+		"gpt":      "deepseek/deepseek-v4-pro",
 		"default":  "deepseek/deepseek-v4-flash",
 		"deepseek": "deepseek/deepseek-v4-flash",
 	}
