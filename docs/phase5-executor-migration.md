@@ -104,18 +104,41 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 ## 5.5 模型路由（2026-08-19，用户确认）
 
 - **fallback 链**（`~/.dsh/cordis.patch.yml`，fallback.mjs）：
-  - `magic/deepseek-v4-pro` → 官方 `deepseek-official/deepseek-v4-pro`
-  - `magic/gpt-5.4-mini`（=flash）→ 官方 `deepseek-official/deepseek-v4-flash`
+  - `magic/deepseek-v4-pro` → 官方 `ds-official/deepseek-v4-pro`
+  - `magic/gpt-5.4-mini`（=flash）→ 官方 `ds-official/deepseek-v4-flash`
   - 即 magic 免费模型无响应时兜底官方 DeepSeek 直连（web 与 dsh headless 统一由
     fallback.mjs 完成）。
-- **settings.yaml**：新增 `deepseek-official` provider（官方 API，模型 id 小写
-  `deepseek-v4-pro`/`deepseek-v4-flash`，与 `/models` 实测一致）；`agent-default-model`
-  同步为 `deepseek-official/deepseek-v4-flash`（与运行时/web 一致）。
-- **DSH 已知 bug**：provider 名含 `deepseek` 前缀（`deepseek-official`）时，
-  `agent-default-model` 设为 magic 会 NO_ADAPTER（llm-pi-ai 注册冲突，已实测定位）；
-  默认模型保持官方，magic 作为会话可选模型（fallback from 目标）。
+- **settings.yaml**：`agent-default-model` = `magic/deepseek-v4-pro`（magic 免费优先）；
+  官方直连 provider 名 **`ds-official`**（模型 id 小写 `deepseek-v4-pro`/`deepseek-v4-flash`，
+  与 `/models` 实测一致）。
+- **DSH 注册 bug（已绕过）**：provider 名含 `deepseek` 前缀（如 `deepseek-official`）
+  且 `agent-default-model` 设为 magic 时，llm-pi-ai 注册冲突 → `NO_ADAPTER`（已实测定位）。
+  官方直连 provider 因此命名 `ds-official`，默认模型可保持 magic 免费优先。
 - **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
   `gateway/deepseek-v4-pro`（免费），fallback `deepseek/deepseek-v4-pro`（官方）。
+- **已知：magic 免费额度可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
+  402 Insufficient Balance`）——fallback.mjs 会切官方，但官方非免费。
+
+## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
+
+omp 的 `--thinking low|high|max` 是 **per-阶段 CLI 参数**，DSH headless 无等价物：
+
+1. **CLI 层**：`dsh --profile headless` 仅 `--profile` + task 文本，无 thinking/reasoning 参数。
+2. **插件 Config 层**：`agent-default-model` 的 Config schema 只有 `{provider, model}`，
+   **不含 reasoningEffort** → profile patch / `--patch` 无法覆盖。
+3. **settings 层**：`reasoningEffort` 只存在于 settings.yaml 的 `agent-default-model`
+   section（全局，所有 profile 共享），无法 per-阶段。
+4. **运行时层**：实测给 settings 加 `reasoningEffort: high` 后，session 日志仍无该
+   字段——dsh-headless 的 `installModelSelection(..., {assembled: void 0})` 未将其传递
+   到 request。
+
+**结论**：spawn 模式（rc.7）下推理强度无法有效传递（既不能 per-阶段，全局设置也
+疑似失效）。omp 的 per-阶段映射（priority=off / planning=high / round2=max / 默认=low）
+在 dsh 路径丢失。
+
+**唯一完整方案**：embed 模式（方案 C）——`ctx.agents.create({agentOptions:{...,
+reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc 稳定后）一并解决。
+本限制可能是 planning 冒烟跑偏的促成因素之一（planning 失去 omp 的 high 推理）。
 
 ## 5. 关键风险与对策
 
