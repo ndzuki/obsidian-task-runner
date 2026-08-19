@@ -143,7 +143,15 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 		}
 	}
 
-	if evt.Op&(fsnotify.Create|fsnotify.Write) == 0 {
+	// P0-2: Remove/Rename events were previously dropped, making REQ-delete
+	// recovery (daemon.go OnReqDeleted → blocked/REQ_MISSING) unreachable at
+	// runtime. A removed/renamed requirement must reach the daemon so the
+	// associated task flips to blocked instead of silently stalling. The
+	// daemon routes by os.Stat existence, so emitting the path with the
+	// standard CREATE/WRITE/DELETE/RENAME op is enough — no daemon change
+	// required. Rename surfaces as both the old name (RENAME) and the new
+	// (CREATE); the old name's path no longer exists, so it routes to delete.
+	if evt.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 		return
 	}
 	base := filepath.Base(path)
@@ -196,8 +204,13 @@ func (w *Watcher) handle(evt fsnotify.Event) {
 	w.mu.Unlock()
 
 	op := "WRITE"
-	if evt.Op&fsnotify.Create != 0 {
+	switch {
+	case evt.Op&fsnotify.Create != 0:
 		op = "CREATE"
+	case evt.Op&fsnotify.Remove != 0:
+		op = "DELETE"
+	case evt.Op&fsnotify.Rename != 0:
+		op = "RENAME"
 	}
 	w.events <- Event{Path: path, Dir: dir, Operation: op}
 }

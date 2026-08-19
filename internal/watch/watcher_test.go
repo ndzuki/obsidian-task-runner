@@ -136,3 +136,59 @@ func TestHandleNewDirThenFileEvent(t *testing.T) {
 		t.Fatalf("event = %+v, want dir=Requirements path=%s", evt, req)
 	}
 }
+
+// TestHandleRoutesReqRemove guards P0-2: a removed REQ must surface as a
+// DELETE event so the daemon's OnReqDeleted path (blocked/REQ_MISSING)
+// becomes reachable at runtime instead of being dead code.
+func TestHandleRoutesReqRemove(t *testing.T) {
+	w := newTestWatcher(t)
+	vault := t.TempDir()
+	req := filepath.Join(vault, "Projects", "010-demo", "Requirements", "REQ-001-demo.md")
+
+	w.handle(fsnotify.Event{Name: req, Op: fsnotify.Remove})
+
+	evt, ok := drainEvent(t, w)
+	if !ok {
+		t.Fatal("expected DELETE event for removed REQ")
+	}
+	if evt.Dir != "Requirements" || evt.Path != req || evt.Operation != "DELETE" {
+		t.Fatalf("event = %+v, want dir=Requirements path=%s op=DELETE", evt, req)
+	}
+}
+
+// TestHandleRoutesReqRename guards P0-2 rename handling: the old path
+// surfaces as RENAME, and since the daemon routes by os.Stat existence, the
+// no-longer-existing path falls into OnReqDeleted.
+func TestHandleRoutesReqRename(t *testing.T) {
+	w := newTestWatcher(t)
+	vault := t.TempDir()
+	req := filepath.Join(vault, "Projects", "010-demo", "Requirements", "REQ-001-demo.md")
+
+	w.handle(fsnotify.Event{Name: req, Op: fsnotify.Rename})
+
+	evt, ok := drainEvent(t, w)
+	if !ok {
+		t.Fatal("expected RENAME event for renamed REQ")
+	}
+	if evt.Dir != "Requirements" || evt.Path != req || evt.Operation != "RENAME" {
+		t.Fatalf("event = %+v, want dir=Requirements path=%s op=RENAME", evt, req)
+	}
+}
+
+// TestHandleRoutesTaskRemove guards that task-file deletion also surfaces
+// (the daemon uses Tasks events to invalidate its frontmatter index cache).
+func TestHandleRoutesTaskRemove(t *testing.T) {
+	w := newTestWatcher(t)
+	vault := t.TempDir()
+	task := filepath.Join(vault, "Projects", "010-demo", "Tasks", "TASK-001-demo.md")
+
+	w.handle(fsnotify.Event{Name: task, Op: fsnotify.Remove})
+
+	evt, ok := drainEvent(t, w)
+	if !ok {
+		t.Fatal("expected DELETE event for removed TASK")
+	}
+	if evt.Dir != "Tasks" || evt.Operation != "DELETE" {
+		t.Fatalf("event = %+v, want dir=Tasks op=DELETE", evt)
+	}
+}
