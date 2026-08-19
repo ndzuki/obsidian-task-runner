@@ -89,15 +89,27 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
   经 extractJSON 提取 + priority.Decode 完整解析（`runPriorityAssessmentDSH` 分流
   已单测：成功写回 score、中断重置 claim、畸形 stdout 失败）。skill 冒烟（spawn
   `dsh --profile headless "/obsidian-task-runner-priority <REQ>"`）确认输出形状。
-- **planning —— 冒烟未通过 ⚠️（2026-08-19）**：
+- **planning —— 冒烟未通过 ⚠️（2026-08-19，两次）**：
   - 修复 1（已提交 63bf9b0）：phase skills 带 `disable-model-invocation: true`
     被 DSH 从模型目录排除，dsh 会话无法加载 → dshExecutor 改为直接注入
     `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐 omp「daemon 注入正文」机制）。
-  - 残留问题：session 日志显示模型执行了 180 bash + 23 read + 14 step 工具调用，
-    但**跑偏**（读真实 vault 文件 + 仓库代码，生成与 smoke TASK 无关的 plan_files），
-    且**未写回**任务文件。疑为空 smoke vault（无 ADR/CONTEXT）+ 空 git repo 使
-    模型缺乏聚焦上下文而到处探索；真实 vault（有完整结构）下需重新验证。
-  - **未污染真实数据**（已验证真实 vault 5 分钟内无 .md 修改）。
+  - 修复 2：fallback 白名单加 `QUOTA`（magic 免费额度耗尽 402 也切官方）。
+  - **真实项目（obsidian-task-runner，10 ADR + 178 行 CONTEXT + git）复测**：
+    - ✅ 聚焦改善：模型正确读 ADR×15、CONTEXT.md、References/INDEX、
+      daemon-stuck-task-patterns（round1 Step 0/-1 要求的步骤），**不再像空
+      smoke vault 那样完全跑偏**。
+    - ❌ **仍未写回**：模型做了 143 read + 97 bash + 6 skill 的合法探索后，
+      **没收敛到「生成计划 + 写回 plan_version/plan_approved」**（TASK 保持
+      planning，plan_version=0）；最后一请求 output 仅 491 tokens，stop 在
+      探索阶段。
+    - ✅ 无污染：真实 TASK 仅 daemon 的 `updated` 时间戳变化，无 plan 字段写入。
+  - **根因（推测）**：planning 需要 omp 的 `--thinking high`，而 spawn 模式推理
+    强度失效（§5.6）→ 复杂多步 planning 推理不足，无法收敛到写回。round1 的
+    多步指令（读 ADR/知识库/生成计划/写回）在无 high 推理 + 无 strict 输出机制
+    的 dsh headless 下不稳定。
+  - **结论**：planning/round2 等复杂多步阶段在 spawn 模式（rc.7）下**不可靠**，
+    是「默认切 dsh 后」的主要风险；需 embed（方案 C，含 reasoningEffort）或
+    更高推理模型才能可靠。
 - round2 涉及 git worktree 需额外前置；merge/pm/audit/conventions 有专属 runner，
   已做 dsh 分流（5b45d2b）但未真实冒烟。
 
