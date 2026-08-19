@@ -175,11 +175,11 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 ## Fallback Model（兜底模型）
 
-三层兜底，按失效形态分工：
+三层兜底，按失效形态分工（`executor=dsh` 默认路径由 DSH 的 fallback.mjs 插件进程内跨模型降级；`executor=omp` 回退路径沿用下列 daemon 侧机制）：
 
-- **进程级失败**（OMP exit / 阶段超时 / quota）由 daemon 按 vault-map.json 顶层 `fallback_models` 重启 OMP：key 为 assignee（对应 `models` 的 key），value 为任意 OMP 模型标识；可增删任意 key、置 `""` 禁用单个 assignee 的兜底。见 ADR-012。**陈旧 phase 防护**：重启前重读任务状态——若 status 已离开原 phase（会话先写回成功再挂死，如 planning 写回 plan-review 后收尾超时），跳过 fallback（日志 `skip fallback, status changed …`）并通知「✅ 阶段已完成」，由下一轮 scan 按新状态重新路由，禁止旧 phase prompt 对已前进任务重跑（TASK-001 教训）；任务文件瞬时不可读/不可解析同样跳过（保守，下轮重试）。
-- **会话内 API 错误兜底**由 omp `config.yml` 的 `retry.fallbackChains`（按 role）承担——注意：daemon 以 `--model <裸模型 ID>` 启动的会话**不匹配任何 role**，该链不生效（子代理有链、主会话无链）。
-- **空响应兜底**（daemon 侧，`watchEmptyStops`）：OMP 日志出现 `empty-stop-handled`（provider 返回 stop 但零内容——第三方 gateway 渠道抖动形态）且 **10 分钟窗口内 2 次** → daemon 取消当前会话（SIGTERM，OMP 保存 session）→ 走进程级 `fallback_models` 重启（官方 deepseek 直连）+ 「🔄 模型切换」通知。单次/窗口外空响应不触发（防偶发抖动浪费兜底预算）。
+- **进程级失败**（执行器退出 / 阶段超时 / quota）：dsh 路径由 fallback.mjs 按链切换（magic → ds-official）；omp 路径由 daemon 按 vault-map.json 顶层 `fallback_models` 重启 omp（key 为 assignee，value 为任意 omp 模型标识）。**陈旧 phase 防护**（两路径共用）：重启前重读任务状态——若 status 已离开原 phase（会话先写回成功再挂死），跳过 fallback 并通知「✅ 阶段已完成」，禁止旧 phase prompt 对已前进任务重跑（TASK-001 教训）；任务文件瞬时不可读/不可解析同样跳过（保守，下轮重试）。
+- **会话内 API 错误兜底**：dsh 路径由 fallback.mjs 的 agent/request-error 接管；omp 路径由 config.yml 的 `retry.fallbackChains`（按 role）承担——注意 daemon 以 `--model <裸模型 ID>` 启动的 omp 会话不匹配任何 role，该链不生效。
+- **空响应兜底**（omp 路径专属，`watchEmptyStops`）：omp 日志出现 `empty-stop-handled`（provider 返回 stop 但零内容——第三方 gateway 渠道抖动形态）且 10 分钟窗口内 2 次 → daemon 取消会话 → 走 `fallback_models` 重启（官方 deepseek 直连）+ 「🔄 模型切换」通知。
 
 ## Frontmatter 字段规范
 

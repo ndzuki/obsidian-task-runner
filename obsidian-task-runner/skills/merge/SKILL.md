@@ -36,7 +36,7 @@ disableModelInvocation: true
 
 ### 0. Automated Repair（daemon 触发，本地模式）
 
-PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动 OMP 会话自动修复。每个计划/交付周期最多 **`max_auto_merge_fixes`** 次自动修复（vault-map 配置，默认 3；daemon 以 `merge_retry_count` 计数），全部失败后交还用户选择：继续 AI 修复（清计数）或 replan（见下方「预算恢复」）。
+PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动执行会话自动修复。每个计划/交付周期最多 **`max_auto_merge_fixes`** 次自动修复（vault-map 配置，默认 3；daemon 以 `merge_retry_count` 计数），全部失败后交还用户选择：继续 AI 修复（清计数）或 replan（见下方「预算恢复」）。
 
 模式由 prompt 第二参数决定：
 
@@ -54,7 +54,7 @@ PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动 OM
 
 ### 1. Standard Merge（daemon 执行，本会话不涉及）
 
-本 Skill 的 OMP 会话**只执行 Step 0 本地冲突解决**。push、PR 创建/复用、CI checks 评估与 `gh pr merge` 全部由 daemon（Go 代码）在会话结束后执行：AI 解决成功并提交后，daemon push 新 head、重新评估 checks、通过后合并。本会话任何情况下都不得执行远程操作（见 Step 0 第 5 条本地模式铁律）。
+本 Skill 的执行会话**只执行 Step 0 本地冲突解决**。push、PR 创建/复用、CI checks 评估与 `gh pr merge` 全部由 daemon（Go 代码）在会话结束后执行：AI 解决成功并提交后，daemon push 新 head、重新评估 checks、通过后合并。本会话任何情况下都不得执行远程操作（见 Step 0 第 5 条本地模式铁律）。
 
 ## Success Write-back（成功写回）
 
