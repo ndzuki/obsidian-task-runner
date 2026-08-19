@@ -284,11 +284,19 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	}
 
 	prompt := "/obsidian-task-runner-pm " + mode + " " + strings.Join(args, " ")
-	cmd := exec.CommandContext(runCtx, r.cfg.OMPCmd,
-		"--model", r.cfg.Model("default"), "--auto-approve", "-p", prompt)
-	// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 30 * time.Second
+	// ── Phase 5 executor seam ──────────────────────────────────────────
+	// The dsh path spawns the PM skill via phaseExecutor inside the same
+	// async goroutine, so in-flight dedup and notification semantics are
+	// unchanged; only the process invocation differs.
+	useDSH := r.cfg.Executor == "dsh"
+	var cmd *exec.Cmd
+	if !useDSH {
+		cmd = exec.CommandContext(runCtx, r.cfg.OMPCmd,
+			"--model", r.cfg.Model("default"), "--auto-approve", "-p", prompt)
+		// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = 30 * time.Second
+	}
 	go func() {
 		defer cancel()
 		if inflightKey != "" {
@@ -305,7 +313,7 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 				}
 			}
 		}
-		output, runErr := cmd.Output()
+		output, runErr := r.execPMSession(useDSH, runCtx, cmd, prompt, mode, args)
 		if runErr != nil {
 			if runCtx.Err() != nil && ctx.Err() != nil {
 				// Interrupted by daemon shutdown; retry on next scan.
@@ -374,6 +382,54 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 		}
 	}()
 	return nil
+}
+
+// execPMSession runs one PM coordinator session and returns its stdout plus
+// any process error. On the dsh path it goes through phaseExecutor (async
+// semantics unchanged); on the omp path it is the direct exec + Output().
+func (r *Runner) execPMSession(useDSH bool, runCtx context.Context, cmd *exec.Cmd, prompt, mode string, args []string) ([]byte, error) {
+	if !useDSH {
+		return cmd.Output()
+	}
+	spec := PhaseSpec{
+		Phase:       "pm",
+		Model:       r.cfg.Model("default"),
+		SkillPrompt: prompt,
+		Timeout:     runCtxTimeout(runCtx),
+	}
+	executor := r.phaseExecutor
+	if executor == nil {
+		executor = newPhaseExecutor(r.cfg)
+		r.phaseExecutor = executor
+	}
+	handle, err := executor.Start(runCtx, spec, TaskSnapshot{})
+	if err != nil {
+		return nil, err
+	}
+	result, err := handle.Wait()
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.Code != OutcomeSuccess {
+		if runCtx.Err() != nil {
+			return nil, runCtx.Err()
+		}
+		reason := "pm session failed"
+		if result != nil && result.Error != "" {
+			reason = result.Error
+		}
+		return nil, errors.New(reason)
+	}
+	return []byte(result.Stdout), nil
+}
+
+// runCtxTimeout derives the deadline remaining from a context (best-effort;
+// zero means no deadline).
+func runCtxTimeout(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return 0
 }
 
 // grillingDecisionListPath resolves the project decision list path, or ""

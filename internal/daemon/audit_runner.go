@@ -330,6 +330,11 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 	ctx, cancel := context.WithTimeout(parent, r.auditTimeout())
 	defer cancel()
 
+	// ── Phase 5 executor seam ──────────────────────────────────────────
+	if r.cfg.Executor == "dsh" {
+		return r.runAuditSessionDSH(ctx, t, repoDir, workDir, model, prompt)
+	}
+
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd,
 		"--model", model, "--auto-approve", "-p", prompt,
 		"--thinking", "off", "--tools", "read,grep,bash")
@@ -352,6 +357,52 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 		return nil, "", fmt.Errorf("parse audit result: %w", decodeErr)
 	}
 	return result, string(output), nil
+}
+
+// runAuditSessionDSH executes the read-only verification through the DSH
+// phase executor. DSH headless returns the STRICT-JSON verdict as free text;
+// parseAuditResult already isolates the object from surrounding prose/fences.
+// ToolPolicy (read,grep,bash) is carried in the spec; exact enforcement on the
+// DSH side is verified in the audit smoke pass (docs/phase5-executor-migration.md
+// §5.5).
+func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoDir, workDir, model, prompt string) (*auditResult, string, error) {
+	spec := PhaseSpec{
+		Phase:           "audit",
+		Model:           model,
+		ReasoningEffort: "off",
+		SkillPrompt:     prompt,
+		ToolPolicy:      "read,grep,bash",
+		Timeout:         r.auditTimeout(),
+		WorkingDir:      workDir,
+	}
+	executor := r.phaseExecutor
+	if executor == nil {
+		executor = newPhaseExecutor(r.cfg)
+		r.phaseExecutor = executor
+	}
+	handle, err := executor.Start(ctx, spec, TaskSnapshot{TaskID: t.ID, TaskPath: t.FilePath, Project: t.Project, RepoDir: repoDir})
+	if err != nil {
+		return nil, "", fmt.Errorf("audit start: %w", err)
+	}
+	result, err := handle.Wait()
+	if err != nil {
+		return nil, "", fmt.Errorf("audit wait: %w", err)
+	}
+	if result == nil || result.Code != OutcomeSuccess {
+		if ctx.Err() != nil {
+			return nil, "", fmt.Errorf("audit session interrupted")
+		}
+		reason := "audit session failed"
+		if result != nil && result.Error != "" {
+			reason = result.Error
+		}
+		return nil, "", errors.New(reason)
+	}
+	parsed, decodeErr := parseAuditResult([]byte(result.Stdout))
+	if decodeErr != nil {
+		return nil, "", fmt.Errorf("parse audit result: %w", decodeErr)
+	}
+	return parsed, result.Stdout, nil
 }
 
 // writeAuditLog persists the raw audit session output under the task log
