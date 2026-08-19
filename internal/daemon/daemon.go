@@ -76,6 +76,11 @@ type Runner struct {
 	// uses DSH headless; legacy task phases remain on their frozen OMP path until
 	// each adapter migration is individually verified.
 	designExecutor PhaseExecutor
+	// phaseExecutor is the processBatchSequential phase-dispatch backend,
+	// selected by cfg.Executor ("omp" default / "dsh"). It is injectable in
+	// tests; New() builds it from config. Distinct from designExecutor, which
+	// is always DSH (the global design session never runs on OMP).
+	phaseExecutor PhaseExecutor
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -140,6 +145,7 @@ func New(cfg *config.Config) *Runner {
 		gatedLogged:        map[string]bool{},
 		scanMinInterval:    time.Duration(cfg.ScanMinIntervalSeconds) * time.Second,
 		designExecutor:     newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile),
+		phaseExecutor:      newPhaseExecutor(cfg),
 	}
 }
 
