@@ -52,3 +52,11 @@ type DesignSummaryDTO struct {
 	Waves       []string `json:"waves"`
 	HasGlossary bool     `json:"has_glossary"`
 }
+
+// TaskUpdateRequest is a whitelisted, generation-fenced write. Updates may
+// only contain writableFields keys; System-owned fields are rejected by the
+// service layer.
+type TaskUpdateRequest struct {
+	ExpectedGeneration int            `json:"expected_generation"`
+	Updates            map[string]any `json:"updates"`
+}
