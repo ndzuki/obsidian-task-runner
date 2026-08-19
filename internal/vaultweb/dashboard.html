@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vault 看板</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --panel: #161a22;
+  --panel-2: #1c212b;
+  --border: #262c37;
+  --text: #e5e9f0;
+  --text-dim: #8b94a3;
+  --accent: #7aa2f7;
+  --accent-dim: #3b4a6b;
+  --red: #f7768e;
+  --green: #9ece6a;
+  --yellow: #e0af68;
+  --blue: #7aa2f7;
+  --purple: #bb9af7;
+  --cyan: #7dcfff;
+  --gray: #565f89;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+#layout { display: flex; height: 100vh; }
+
+#sidebar {
+  width: 260px; min-width: 260px; overflow-y: auto;
+  background: var(--panel); border-right: 1px solid var(--border);
+  padding: 16px 12px;
+}
+#sidebar h1 { font-size: 14px; margin: 0 0 12px; color: var(--text-dim); letter-spacing: .05em; }
+.project { display: block; padding: 8px 10px; border-radius: 6px; color: var(--text); margin-bottom: 2px; }
+.project:hover { background: var(--panel-2); text-decoration: none; }
+.project.active { background: var(--accent-dim); }
+.project .name { font-weight: 600; }
+.project .counts { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+#main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#toolbar {
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  background: var(--panel);
+}
+#toolbar .crumb { font-size: 15px; font-weight: 600; }
+.tabs { display: flex; gap: 4px; }
+.tab {
+  padding: 5px 12px; border-radius: 6px; color: var(--text-dim); cursor: pointer;
+  border: 1px solid transparent; font-size: 13px; background: none;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--accent-dim); border-color: var(--accent); }
+
+#content { flex: 1; overflow-y: auto; padding: 20px; }
+
+/* board */
+.board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 12px; }
+.col { min-width: 220px; width: 220px; background: var(--panel); border-radius: 8px; padding: 10px; }
+.col h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); display: flex; justify-content: space-between; }
+.col h3 .n { color: var(--accent); }
+.card {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 6px; cursor: pointer;
+}
+.card:hover { border-color: var(--accent); }
+.card .id { font-size: 11px; color: var(--text-dim); }
+.card .title { font-weight: 600; margin: 2px 0; }
+.card .meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 8px; }
+
+/* status colors */
+.st { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.st-refining { background: var(--purple); }
+.st-planning { background: var(--cyan); }
+.st-implementing { background: var(--blue); }
+.st-review, .st-conflict { background: var(--yellow); }
+.st-blocked { background: var(--red); }
+.st-done, .st-closed { background: var(--green); }
+.st-ready { background: var(--gray); }
+.st-needs-grilling { background: var(--yellow); }
+.st-plan-review { background: var(--cyan); }
+
+/* table views */
+table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+th { color: var(--text-dim); font-weight: 600; background: var(--panel-2); }
+tr:last-child td { border-bottom: none; }
+
+/* design library */
+.design-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; min-width: 120px; }
+.kpi .v { font-size: 22px; font-weight: 700; }
+.kpi .l { font-size: 12px; color: var(--text-dim); }
+.badge-ok { color: var(--green); }
+.badge-bad { color: var(--red); }
+
+.artifact-list { display: flex; gap: 24px; }
+.artifact-group { flex: 1; }
+.artifact-group h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); }
+.artifact { display: block; padding: 4px 8px; border-radius: 4px; color: var(--text); cursor: pointer; }
+.artifact:hover { background: var(--panel-2); }
+.artifact.active { background: var(--accent-dim); }
+.artifact-body { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+
+/* drawer */
+#drawer {
+  position: fixed; top: 0; right: -420px; width: 420px; height: 100vh;
+  background: var(--panel); border-left: 1px solid var(--border);
+  transition: right .18s ease; z-index: 50; padding: 20px; overflow-y: auto;
+}
+#drawer.open { right: 0; }
+#drawer .close { float: right; cursor: pointer; color: var(--text-dim); font-size: 18px; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 8px 0; }
+.kv dt { color: var(--text-dim); font-size: 12px; }
+.kv dd { margin: 0; font-size: 13px; word-break: break-word; }
+.field-block { margin-top: 16px; }
+.field-block h4 { margin: 0 0 6px; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: var(--accent-dim); color: var(--text); margin: 2px; }
+
+.empty { color: var(--text-dim); padding: 30px; text-align: center; }
+.muted { color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div id="layout">
+  <aside id="sidebar">
+    <h1>VAULT PROJECTS</h1>
+    <div id="projectList"><div class="muted">加载中…</div></div>
+  </aside>
+  <main id="main">
+    <div id="toolbar">
+      <span class="crumb" id="crumb">项目</span>
+      <div class="tabs" id="tabs"></div>
+    </div>
+    <div id="content"><div class="muted">请选择左侧项目</div></div>
+  </main>
+</div>
+<div id="drawer"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const api = (p) => fetch('/api/vault' + p).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
+const STATUS_ORDER = ['refining','planning','plan-review','implementing','review','conflict','blocked','needs-grilling','done','closed'];
+const STATUS_LABEL = {
+  refining:'Refining', planning:'Planning', 'plan-review':'Plan Review', implementing:'Implementing',
+  review:'Review', conflict:'Conflict', blocked:'Blocked', 'needs-grilling':'Needs Grilling',
+  done:'Done', closed:'Closed', ready:'Ready'
+};
+const stClass = (s) => 'st st-' + (s || 'ready').replace(/[^a-z-]/g,'');
+
+let projects = [];
+let currentProject = null;
+let currentView = 'board';
+
+function statusDot(s) { return '<span class="' + stClass(s) + '"></span>'; }
+
+async function loadProjects() {
+  projects = await api('/projects');
+  const el = $('#projectList');
+  if (!projects.length) { el.innerHTML = '<div class="muted">无项目</div>'; return; }
+  el.innerHTML = projects.map(p => {
+    const counts = Object.entries(p.by_status || {}).map(([s,n]) => n + ' ' + (STATUS_LABEL[s]||s)).join(' · ');
+    return '<a class="project' + (currentProject === p.name ? ' active':'') + '" href="#/projects/' + encodeURIComponent(p.name) + '">' +
+      '<div class="name">' + esc(p.name) + '</div>' +
+      '<div class="counts">' + p.task_count + ' tasks' + (counts ? ' · ' + counts : '') + '</div></a>';
+  }).join('');
+  renderProjectListActive();
+}
+
+function renderProjectListActive() {
+  document.querySelectorAll('.project').forEach(a => {
+    a.classList.toggle('active', a.hash === '#/projects/' + encodeURIComponent(currentProject));
+  });
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function showProjects() {
+  currentProject = null;
+  currentView = 'board';
+  $('#crumb').textContent = '项目';
+  $('#tabs').innerHTML = '';
+  $('#content').innerHTML = projects.map(p => {
+    const counts = Object.entries(p.by_status || {}).map(([s,n]) => statusDot(s) + n + ' ' + (STATUS_LABEL[s]||s)).join('&nbsp;&nbsp;');
+    return '<div class="card" style="cursor:pointer;padding:14px" onclick="location.hash=\'#/projects/' + encodeURIComponent(p.name) + '\'">' +
+      '<div class="title">' + esc(p.dir_name) + '</div>' +
+      '<div class="meta">' + p.task_count + ' tasks · ' + counts + '</div></div>';
+  }).join('');
+  renderProjectListActive();
+}
+
+async function showProject(name) {
+  currentProject = name;
+  currentView = 'board';
+  $('#crumb').textContent = name;
+  renderProjectListActive();
+  renderTabs();
+  await showBoard();
+}
+
+function renderTabs() {
+  $('#tabs').innerHTML = [
+    ['board','看板'], ['overview','总览'], ['blocked','阻塞'], ['running','执行中'], ['design','设计库']
+  ].map(([id,label]) =>
+    '<button class="tab' + (currentView === id ? ' active':'') + '" onclick="setView(\'' + id + '\')">' + label + '</button>'
+  ).join('');
+}
+
+function setView(v) {
+  currentView = v;
+  renderTabs();
+  const fns = { board:showBoard, overview:showOverview, blocked:showBlocked, running:showRunning, design:showDesign };
+  fns[v]();
+}
+
+async function showBoard() {
+  const tasks = await api('/projects/' + encodeURIComponent(currentProject) + '/tasks');
+  const cols = {};
+  for (const s of STATUS_ORDER) cols[s] = [];
+  for (const t of tasks) { (cols[t.status] || (cols['ready'] = cols['ready']||[])).push(t); }
+  // group unknown statuses under ready
+  const known = new Set(STATUS_ORDER);
+  const extra = tasks.filter(t => !known.has(t.status) && t.status !== 'ready');
+  if (extra.length) { cols['ready'] = (cols['ready']||[]).concat(extra); }
+
+  $('#content').innerHTML = '<div class="board">' + STATUS_ORDER.filter(s => cols[s] && cols[s].length).map(s =>
+    '<div class="col"><h3>' + statusDot(s) + (STATUS_LABEL[s]||s) + ' <span class="n">' + cols[s].length + '</span></h3>' +
+    cols[s].map(cardHTML).join('') + '</div>'
+  ).join('') + '</div>';
+}
+
+function cardHTML(t) {
+  return '<div class="card" onclick="openTask(\'' + esc(t.id) + '\')">' +
+    '<div class="id">' + esc(t.id) + '</div>' +
+    '<div class="title">' + esc(t.title || '(untitled)') + '</div>' +
+    '<div class="meta"><span>' + esc(t.priority || '—') + '</span><span>plan v' + t.plan_version + '</span><span>gen ' + t.generation + '</span></div>' +
+    '</div>';
+}
+
+async function showOverview() {
+  const v = await api('/projects/' + encodeURIComponent(currentProject) + '/views/tasks-overview');
+  renderTable(v);
+}
+async function showBlocked() {
+  const v = await api('/projects/' + encodeURIComponent(currentProject) + '/views/tasks-blocked');
+  renderTable(v);
+}
+async function showRunning() {
+  const v = await api('/projects/' + encodeURIComponent(currentProject) + '/views/tasks-running');
+  renderTable(v);
+}
+
+function renderTable(v) {
+  if (!v.rows.length) { $('#content').innerHTML = '<div class="empty">无数据</div>'; return; }
+  const head = v.columns.map(c => '<th>' + esc(c.label) + '</th>').join('');
+  const body = v.rows.map(r => '<tr>' + v.columns.map(c => {
+    const val = r[c.key];
+    return '<td>' + (c.key === 'status' ? statusDot(val) + esc(val) : esc(val === undefined ? '' : val)) + '</td>';
+  }).join('') + '</tr>').join('');
+  $('#content').innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+async function showDesign() {
+  try {
+    const sum = await api('/projects/' + encodeURIComponent(currentProject) + '/design');
+    const kpi = [
+      ['revision', sum.revision],
+      ['valid', '<span class="' + (sum.valid ? 'badge-ok':'badge-bad') + '">' + (sum.valid ? '✓ valid':'✗ invalid') + '</span>'],
+      ['contracts', sum.contracts.length],
+      ['decisions', sum.decisions.length],
+      ['waves', sum.waves.length],
+      ['glossary', sum.has_glossary]
+    ].map(([l,v]) => '<div class="kpi"><div class="v">' + v + '</div><div class="l">' + l + '</div></div>').join('');
+
+    const groups = [['contracts','Contracts',sum.contracts,'contract'], ['decisions','Decisions',sum.decisions,'decision'], ['waves','Waves',sum.waves,'wave']]
+      .map(([key,label,files,kind]) => '<div class="artifact-group"><h4>' + label + '</h4>' +
+        (files.length ? files.map(f => '<a class="artifact" href="javascript:loadArtifact(\'' + kind + '\',\'' + esc(f) + '\')">' + esc(f) + '</a>').join('') : '<div class="muted">无</div>') +
+        '</div>').join('');
+
+    let glossary = sum.has_glossary ? '<a class="artifact" href="javascript:loadArtifact(\'glossary\',\'\')">glossary.md</a>' : '<div class="muted">无</div>';
+
+    $('#content').innerHTML =
+      '<div class="design-summary">' + kpi + '</div>' +
+      '<div class="artifact-list">' + groups + '<div class="artifact-group"><h4>Glossary</h4>' + glossary + '</div></div>' +
+      '<div id="artifactBody"></div>';
+  } catch (e) {
+    $('#content').innerHTML = '<div class="empty">设计库为空或不可用</div>';
+  }
+}
+
+async function loadArtifact(kind, name) {
+  const el = $('#artifactBody');
+  if (!el) return;
+  el.innerHTML = '<div class="muted">加载中…</div>';
+  const content = await api('/projects/' + encodeURIComponent(currentProject) + '/design/' + kind + '/' + encodeURIComponent(name));
+  el.innerHTML = '<div class="artifact-body">' + esc(content) + '</div>';
+}
+
+async function openTask(id) {
+  const tasks = await api('/projects/' + encodeURIComponent(currentProject) + '/tasks');
+  const t = tasks.find(x => x.id === id);
+  if (!t) return;
+  const drawer = $('#drawer');
+  drawer.innerHTML =
+    '<span class="close" onclick="closeDrawer()">✕</span>' +
+    '<h2>' + statusDot(t.status) + esc(t.title || '(untitled)') + '</h2>' +
+    '<div class="id muted">' + esc(t.id) + '</div>' +
+    '<dl class="kv">' +
+      kv('状态', esc(t.status)) + kv('优先级', esc(t.priority || '—')) + kv('Assignee', esc(t.assignee || '—')) +
+      kv('Plan version', t.plan_version) + kv('Generation', t.generation) + kv('Stage', esc(t.stage || '—')) +
+      kv('更新', esc(t.updated || '—')) +
+      (t.phase_error_code ? kv('Phase error', esc(t.phase_error_code)) : '') +
+    '</dl>' +
+    (t.blocked_by && t.blocked_by.length ? '<div class="field-block"><h4>Blocked By</h4>' + t.blocked_by.map(b => '<span class="chip">' + esc(b) + '</span>').join('') + '</div>' : '') +
+    (t.req_doc ? '<div class="field-block"><h4>Requirement</h4><div class="muted">' + esc(t.req_doc) + '</div></div>' : '');
+  drawer.classList.add('open');
+}
+function kv(k, v) { return '<dt>' + k + '</dt><dd>' + v + '</dd>'; }
+function closeDrawer() { $('#drawer').classList.remove('open'); }
+
+function route() {
+  const h = location.hash.slice(1) || '/';
+  const m = h.match(/^\/projects\/([^/]+)(?:\/(design))?/);
+  if (m) {
+    const name = decodeURIComponent(m[1]);
+    currentProject = name;
+    if (m[2] === 'design') { currentView = 'design'; }
+    showProject(name).then(() => { if (currentView === 'design') showDesign(); });
+  } else {
+    showProjects();
+  }
+}
+
+window.addEventListener('hashchange', route);
+loadProjects().then(route);
+</script>
+</body>
+</html>
