@@ -87,6 +87,10 @@ type ExecutionResult struct {
 	Code ExecOutcome
 	// Error is the human-readable failure reason (empty on success).
 	Error string
+	// Stdout carries the process stdout (the DSH headless final assistant
+	// message). Phases that parse a JSON output contract (priority) read this;
+	// file-writing phases ignore it.
+	Stdout string
 	// LogPath is where the session's transcript was written.
 	LogPath string
 	// ResumeToken is a durable identity for re-attaching after restart
