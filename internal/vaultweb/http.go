@@ -1,0 +1,80 @@
+package vaultweb
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+// Handler returns the read-only vault dashboard HTTP API. All routes are GET;
+// writes arrive in Phase 4c behind TaskStore.Apply fencing.
+func (s *Service) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/vault/projects", s.handleProjects)
+	mux.HandleFunc("GET /api/vault/projects/{project}/tasks", s.handleTasks)
+	mux.HandleFunc("GET /api/vault/projects/{project}/views", s.handleViews)
+	mux.HandleFunc("GET /api/vault/projects/{project}/views/{view}", s.handleView)
+	mux.HandleFunc("GET /api/vault/projects/{project}/design", s.handleDesignSummary)
+	mux.HandleFunc("GET /api/vault/projects/{project}/design/{kind}/{name}", s.handleDesignArtifact)
+	return mux
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Service) handleProjects(w http.ResponseWriter, _ *http.Request) {
+	projects, err := s.Projects()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projects)
+}
+
+func (s *Service) handleTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.Tasks(r.PathValue("project"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tasks)
+}
+
+func (s *Service) handleViews(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.Views())
+}
+
+func (s *Service) handleView(w http.ResponseWriter, r *http.Request) {
+	view, err := s.View(r.PathValue("project"), r.PathValue("view"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Service) handleDesignSummary(w http.ResponseWriter, r *http.Request) {
+	sum, err := s.DesignSummary(r.PathValue("project"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
+func (s *Service) handleDesignArtifact(w http.ResponseWriter, r *http.Request) {
+	content, err := s.DesignArtifact(r.PathValue("project"), r.PathValue("kind"), r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(content))
+}
