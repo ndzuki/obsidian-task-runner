@@ -226,8 +226,9 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 | **Phase 3** | 设计库（contracts/decisions/waves/glossary）+ v4-pro 全局设计会话 + 重规划门禁 | 设计库 schema 测试 + 全局设计会话产物验证 | 同上 |
 | **Phase 4** | Vault Web 看板插件（白名单 viewId DTO + 读写分层） | DSH Web 启动 + 视图数据正确性 + 安全测试 | 独立插件仓库或本仓库 dsh.client 包 |
 | **Phase 5** | 移除 omp 依赖（install 检查、fallback、日志尾随、skill-doctor） | 全链路用 dsh headless 跑通 | 同上 |
+| **Phase 6（最后）** | 审查从 omp 迁移到 DSH 的所有 skill，评估描述是否需要优化并给出方案（含 phase skills、knowledge-base、grilling、wayfinder、codebase-design、omp-tools 等；优化方向：去除 omp 专属工具引用、对齐 DSH 触发词、skill 描述单一事实源、结构化输出契约） | skill 描述清单审查报告 + 优化方案；改动后 `dsh-upgrade-check --full` + skill catalog 校验 | 同上 |
 
-每阶段独立可验证、可回滚；先 Phase 1（seam）再决策层（Phase 3）——seam 是地基，设计库是价值。
+每阶段独立可验证、可回滚；先 Phase 1（seam）再决策层（Phase 3）——seam 是地基，设计库是价值。Phase 6（skill 审查）按用户要求排到最后做。
 
 ---
 
