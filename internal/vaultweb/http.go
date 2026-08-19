@@ -1,13 +1,23 @@
 package vaultweb
 
 import (
+	"embed"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 )
 
-// Handler returns the read-only vault dashboard HTTP API. All routes are GET;
-// writes arrive in Phase 4c behind TaskStore.Apply fencing.
+//go:embed dashboard.html
+var dashboardFS embed.FS
+
+// Handler returns the vault dashboard HTTP API plus the zero-build SPA. All
+// data routes are GET; writes arrive in Phase 4c behind TaskStore.Apply
+// fencing. The SPA is served at / and /vault from the embedded single file.
 func (s *Service) Handler() http.Handler {
+	dashboard, err := fs.ReadFile(dashboardFS, "dashboard.html")
+	if err != nil {
+		panic("vaultweb: embedded dashboard.html missing: " + err.Error())
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/vault/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/vault/projects/{project}/tasks", s.handleTasks)
@@ -15,7 +25,15 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /api/vault/projects/{project}/views/{view}", s.handleView)
 	mux.HandleFunc("GET /api/vault/projects/{project}/design", s.handleDesignSummary)
 	mux.HandleFunc("GET /api/vault/projects/{project}/design/{kind}/{name}", s.handleDesignArtifact)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
+	mux.HandleFunc("GET /vault", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	return mux
+}
+
+func serveDashboard(w http.ResponseWriter, dashboard []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(dashboard)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
