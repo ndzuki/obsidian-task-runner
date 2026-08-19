@@ -162,10 +162,23 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 
 ### 3.7 Vault Web 展示插件（独立交付线）
 
-- **后端白名单视图 DTO**：把 9 组 Dataview 视图编译为固定 viewId 查询，禁止任意 DQL（安全）。
-- **页面**：`/vault/overview`、`/projects/:id`、`/requirements/:id`、`/tasks/:id`、`/stages`、`/knowledge`。
-- **读写分层**：Human-owned 可写、Shared 有条件写、System-owned 只读展示（`status`/`phase_error*`/`merge_status` 等绝不由 Web 改）。
-- **安全**：canonicalize 路径防逃逸；不返回本机绝对路径（`phase_log` 只回文件名/错误码）；不读 secrets。
+**交付形态（Phase 4，用户确认）**：`otg web serve`（Go）提供零构建单文件 SPA
+看板 + 只读 JSON API；DSH Web 通过 `/vault` slash command（`~/.dsh/plugins/vault.mjs`）
+作为轻量入口指向看板。DSH 原生 client 插件（npm 包 + `dsh.client` 元数据 + build）
+推迟到 rc 稳定后升级为内嵌 iframe。
+
+- **后端白名单视图 DTO**：固定 viewId 查询（tasks-overview/blocked/running/
+  design-library-status），禁止任意 DQL（安全）。
+- **页面**：`/`（SPA）→ 项目导航、按状态分列看板、视图表格、设计库 KPI+产物、
+  任务详情抽屉。哈希路由 `#/projects/:name`。
+- **读写分层**：`writableFields` 白名单——Human-owned（priority/assignee/due_date/
+  title/off_peak_only/auto_approve/auto_merge）与 Shared gate（plan/merge/resume/
+  close/adr_approved）可写；System-owned（`status`/`phase_error*`/`merge_status`/
+  `generation`/`attempt_id`/`plan_version` 等）绝不由 Web 改。
+- **fencing**：写操作走 `task.TaskStore.Apply` 代际 CAS，`expected_generation`
+  不匹配返回 409 且不落盘。
+- **安全**：路径一律从目录列举推导（客户端字符串仅作查找键）；`safeBasename`
+  拒绝分隔符/`..`；HTTP 层由 ServeMux 清洗 `..`；不读 secrets。
 
 ---
 
@@ -206,13 +219,17 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 
 ### 关键性能数据（实测）
 
-| 指标 | otg daemon | omp headless | dsh headless |
-|---|---|---|---|
-| 常驻/峰值内存 | 34.8MB | 830MB | **227MB** |
-| 纯启动 | 0.01s | 3.92s | **0.04s** |
-| 完整调用（含推理） | — | 22.3s | **7.4s** |
+| 指标 | otg daemon | omp headless | dsh headless | otg web serve（Vault 看板） |
+|---|---|---|---|---|
+| 常驻/峰值内存 | 34.8MB | 830MB | **227MB** | **≈21–23MB**（50+100 次请求后 GC 稳定，无泄漏） |
+| 纯启动 | 0.01s | 3.92s | **0.04s** | — |
+| 完整调用（含推理） | — | 22.3s | **7.4s** | — |
 
 并发上限继续由 Go 控制面（phase_concurrency / max_concurrent_tasks）决定；真正瓶颈是 LLM API 速率/token 预算，与语言无关。
+
+Vault 看板内存验收（Phase 4d）：`otg web serve` 作为独立 Go 进程稳定 RSS ≈ 22MB，
+150 次混合只读请求后无单调增长；这验证了「Go 控制面解析 Vault + DSH 只拿 DTO」
+的设计——若让 DSH Node 全量解析 Markdown/AST 会放大到 +50–150MB（详见 §3.7）。
 
 ---
 
