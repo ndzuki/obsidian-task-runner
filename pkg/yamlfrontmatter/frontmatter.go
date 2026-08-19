@@ -49,34 +49,35 @@ type Frontmatter struct {
 	CloseApproved  bool     `yaml:"close_approved"`
 
 	// System-owned lifecycle fields.
-	Status              string   `yaml:"status"`
-	Maturity            string   `yaml:"maturity"`
-	RefineVersion       int      `yaml:"refine_version"`
-	RefineReqHash       string   `yaml:"refine_req_hash"`
-	RefineRetryCount    int      `yaml:"refine_retry_count"`
-	AutoResumeCount     int      `yaml:"auto_resume_count"`
-	AutoResumePending   bool     `yaml:"auto_resume_pending"`
-	RefineError         string   `yaml:"refine_error"`
-	PlanReqHash         string   `yaml:"plan_req_hash"`
-	PlanVersion         int      `yaml:"plan_version"`
-	PlanningRetryCount  int      `yaml:"planning_retry_count"`
-	PhaseError          string   `yaml:"phase_error"`
-	PhaseErrorCode      string   `yaml:"phase_error_code"`
-	PhaseLog            string   `yaml:"phase_log"`
-	BlockedPhase        string   `yaml:"blocked_phase"`
-	PendingReq          bool     `yaml:"pending_req"`
-	CheckpointCommit    string   `yaml:"checkpoint_commit"`
-	TargetBranch        string   `yaml:"target_branch"`
-	PRURL               string   `yaml:"pr_url"`
-	Completed           string   `yaml:"completed"`
-	ReopenCount         int      `yaml:"reopen_count"`
+	Status              string `yaml:"status"`
+	Maturity            string `yaml:"maturity"`
+	RefineVersion       int    `yaml:"refine_version"`
+	RefineReqHash       string `yaml:"refine_req_hash"`
+	RefineRetryCount    int    `yaml:"refine_retry_count"`
+	AutoResumeCount     int    `yaml:"auto_resume_count"`
+	AutoResumePending   bool   `yaml:"auto_resume_pending"`
+	RefineError         string `yaml:"refine_error"`
+	PlanReqHash         string `yaml:"plan_req_hash"`
+	PlanVersion         int    `yaml:"plan_version"`
+	DesignReplanVersion int    `yaml:"design_replan_version"`
+	PlanningRetryCount  int    `yaml:"planning_retry_count"`
+	PhaseError          string `yaml:"phase_error"`
+	PhaseErrorCode      string `yaml:"phase_error_code"`
+	PhaseLog            string `yaml:"phase_log"`
+	BlockedPhase        string `yaml:"blocked_phase"`
+	PendingReq          bool   `yaml:"pending_req"`
+	CheckpointCommit    string `yaml:"checkpoint_commit"`
+	TargetBranch        string `yaml:"target_branch"`
+	PRURL               string `yaml:"pr_url"`
+	Completed           string `yaml:"completed"`
+	ReopenCount         int    `yaml:"reopen_count"`
 	// Fencing: generation 是任务的"世代"版本号，每次换代（REQ 变更
 	// reopen、stale-done 重开等）递增；attempt_id / executor_session_id
 	// 记录当前执行 attempt 的身份。阶段回写必须携带期望 generation，
 	// 不匹配视为旧会话晚到写回，拒绝并仅记审计（见 internal/task/store.go）。
-	Generation         int    `yaml:"generation"`
-	AttemptID          string `yaml:"attempt_id"`
-	ExecutorSessionID  string `yaml:"executor_session_id"`
+	Generation          int      `yaml:"generation"`
+	AttemptID           string   `yaml:"attempt_id"`
+	ExecutorSessionID   string   `yaml:"executor_session_id"`
 	AdrApproved         bool     `yaml:"adr_approved"`
 	AdrProposed         any      `yaml:"adr_proposed"`
 	AdrWritten          any      `yaml:"adr_written"`
@@ -322,7 +323,7 @@ var taskFieldOrder = []string{
 	"created", "updated",
 	// Lifecycle (daemon-maintained).
 	"maturity", "refine_version", "refine_req_hash", "refine_retry_count",
-	"refine_error", "plan_req_hash", "plan_version", "planning_retry_count",
+	"refine_error", "plan_req_hash", "plan_version", "design_replan_version", "planning_retry_count",
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
 	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
@@ -389,31 +390,32 @@ var taskFieldDefaults = map[string]interface{}{
 	"pending_req":     false,
 
 	// System lifecycle fields (template ⚪ section).
-	"status":               "blocked",
-	"maturity":             "",
-	"refine_version":       0,
-	"refine_req_hash":      "",
-	"refine_retry_count":   0,
-	"refine_error":         "",
-	"plan_req_hash":        "",
-	"plan_version":         0,
-	"planning_retry_count": 0,
-	"blocked_phase":        "",
-	"phase_error":          "",
-	"phase_error_code":     "",
-	"phase_log":            "",
-	"checkpoint_commit":    "",
-	"target_branch":        "",
-	"pr_url":               "",
-	"completed":            "",
-	"round2_stall_until":   "",
-	"reopen_count":         0,
-	"generation":           1,
-	"attempt_id":           "",
-	"executor_session_id":  "",
-	"task_schema_version":  1,
-	"auto_resume_pending":  false,
-	"auto_resume_count":    0,
+	"status":                "blocked",
+	"maturity":              "",
+	"refine_version":        0,
+	"refine_req_hash":       "",
+	"refine_retry_count":    0,
+	"refine_error":          "",
+	"plan_req_hash":         "",
+	"plan_version":          0,
+	"design_replan_version": 0,
+	"planning_retry_count":  0,
+	"blocked_phase":         "",
+	"phase_error":           "",
+	"phase_error_code":      "",
+	"phase_log":             "",
+	"checkpoint_commit":     "",
+	"target_branch":         "",
+	"pr_url":                "",
+	"completed":             "",
+	"round2_stall_until":    "",
+	"reopen_count":          0,
+	"generation":            1,
+	"attempt_id":            "",
+	"executor_session_id":   "",
+	"task_schema_version":   1,
+	"auto_resume_pending":   false,
+	"auto_resume_count":     0,
 
 	// Merge loop fields.
 	"merge_status":      "",
