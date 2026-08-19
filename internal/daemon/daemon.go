@@ -1474,6 +1474,20 @@ func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
 	return nil
 }
 
+// validatePhaseDocuments is the post-phase document validation gate (P1-3).
+// It validates the task document itself plus every git-tracked .md modified in
+// the working tree by the phase session. Any damage that auto-repair cannot
+// fix returns an error; the caller must escalate to a DOCUMENT_INVALID phase
+// failure and stop advancing — no more "validate, log, and march on" fake
+// success (previously both validators only logged/notified and the phase
+// proceeded to compact/clear-error/status-notify regardless).
+func (r *Runner) validatePhaseDocuments(taskPath, repoDir, taskID, taskTitle, taskStatus, phase, logPath string) error {
+	if err := r.validatePhaseCompletion(taskPath, taskID, phase); err != nil {
+		return err
+	}
+	return r.validateChangedDocs(repoDir, taskID, taskTitle, taskStatus, phase, logPath)
+}
+
 // validateChangedDocs scans git-tracked .md files modified in the working tree
 // since the last commit and validates them with ValidateDocument. Salvageable
 // corruption is auto-repaired with Repair (agent output leaked into the YAML
@@ -1483,17 +1497,22 @@ func (r *Runner) validatePhaseCompletion(taskPath, taskID, phase string) error {
 // vault repository, whose diff paths are repo-root-relative — joining them
 // under repoDir fabricates wrong paths and false "damaged" notifications
 // (observed for vault-only demo projects).
-func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
+//
+// It returns an error listing the unfixable damaged documents so the caller
+// can block the phase (P1-3); the per-document debounced notification still
+// fires so the user knows exactly which file needs attention.
+func (r *Runner) validateChangedDocs(repoDir, taskID, taskTitle, taskStatus, phase, logPath string) error {
 	top, err := gitTopLevel(repoDir)
 	if err != nil || filepath.Clean(top) != filepath.Clean(repoDir) {
 		r.logger.Printf("task %s: skip doc validation after %s (repoDir %s is not a git root)", taskID, phase, repoDir)
-		return
+		return nil
 	}
 	files, err := gitDiffNameOnly(repoDir)
 	if err != nil {
 		r.logger.Printf("task %s: git diff scan failed: %v", taskID, err)
-		return
+		return nil
 	}
+	var damaged []string
 	for _, f := range files {
 		if !strings.HasSuffix(f, ".md") {
 			continue
@@ -1513,10 +1532,16 @@ func (r *Runner) validateChangedDocs(repoDir, taskID, phase string) {
 			// Debounced per document (notifyFailure): validateChangedDocs
 			// runs after every phase session; an unfixed damaged document
 			// would otherwise re-toast on each session completion.
-			r.notifyFailure(absPath, taskID, "", "📄", "文档损坏",
-				fmt.Sprintf("%s 在 %s 阶段后被修改且无法自动修复，需要人工处理: %v", f, phase, err), failNotifyReason)
+			r.notifyFailure(absPath, taskID, taskTitle, "📄", "文档损坏",
+				fmt.Sprintf("%s 在 %s 阶段后被修改且无法自动修复，需要人工处理: %v", f, phase, err), failNotifyBlocked)
+			damaged = append(damaged, f)
 		}
 	}
+	if len(damaged) > 0 {
+		return fmt.Errorf("task %s: %d damaged document(s) after %s: %s (task status kept, blocked for manual repair)",
+			taskID, len(damaged), phase, strings.Join(damaged, ", "))
+	}
+	return nil
 }
 
 // gitTopLevel returns the absolute git repository root containing dir.
@@ -3478,11 +3503,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						}
 					} else {
 						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
-						if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
-							r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
+						if err := r.validatePhaseDocuments(taskPath, repoDir, t.ID, t.Title, t.Status, phase, logPath); err != nil {
+							r.logger.Printf("task %s: phase documents invalid after %s: %v", t.ID, phase, err)
+							r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrDocumentInvalid, err.Error(), logPath)
+							notify.SendTaskAction(t.ID, t.Title, "📄", "阶段产物文档损坏",
+								"任务文档或阶段产物损坏且无法自动修复，任务已阻断；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+							processed++
+							continue
 						}
 						r.compactPlanHistory(taskPath, phase)
-						r.validateChangedDocs(repoDir, t.ID, phase)
 						fbNotify := true
 						if phase == "round2" {
 							r.recordRound2Completion(taskPath, t.ID)
@@ -3518,14 +3547,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				continue
 			}
 			r.logger.Printf("task %s: completed", t.ID)
-			if err := r.validatePhaseCompletion(taskPath, t.ID, phase); err != nil {
-				r.logger.Printf("task %s: phase validation failed: %v", t.ID, err)
+			if err := r.validatePhaseDocuments(taskPath, repoDir, t.ID, t.Title, t.Status, phase, logPath); err != nil {
+				r.logger.Printf("task %s: phase documents invalid after %s: %v", t.ID, phase, err)
+				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrDocumentInvalid, err.Error(), logPath)
+				notify.SendTaskAction(t.ID, t.Title, "📄", "阶段产物文档损坏",
+					"任务文档或阶段产物损坏且无法自动修复，任务已阻断；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+				processed++
+				continue
 			}
 			// A successful planning round folds the plan-history section down
 			// to the newest versions — large TASK docs are mostly historical
 			// plan blocks that every later session would otherwise re-read.
 			r.compactPlanHistory(taskPath, phase)
-			r.validateChangedDocs(repoDir, t.ID, phase)
 			if phase == "round2" && t.TargetBranch == "" {
 				if branch, err := gitCurrentBranch(repoDir); err == nil && branch != "" && branch != "HEAD" {
 					if updateErr := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{"target_branch": branch}); updateErr != nil {

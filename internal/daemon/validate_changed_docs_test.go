@@ -61,7 +61,9 @@ func TestValidateChangedDocsSkipsNonGitRoot(t *testing.T) {
 
 	var buf bytes.Buffer
 	runner := newValidateRunner(t, &buf)
-	runner.validateChangedDocs(sub, "001", "refining")
+	if err := runner.validateChangedDocs(sub, "001", "T1", "refining", "refining", ""); err != nil {
+		t.Fatalf("non-git-root dir must skip validation, got error: %v", err)
+	}
 
 	logs := buf.String()
 	if strings.Contains(logs, "damaged") {
@@ -97,7 +99,9 @@ assignee: "default"
 
 	var buf bytes.Buffer
 	runner := newValidateRunner(t, &buf)
-	runner.validateChangedDocs(repo, "001", "refining")
+	if err := runner.validateChangedDocs(repo, "001", "T1", "refining", "refining", ""); err != nil {
+		t.Fatalf("salvageable corruption must not block: %v", err)
+	}
 
 	logs := buf.String()
 	if strings.Contains(logs, "damaged") {
@@ -128,8 +132,11 @@ status: refining
 
 	var buf bytes.Buffer
 	runner := newValidateRunner(t, &buf)
-	runner.validateChangedDocs(repo, "001", "round2")
+	err := runner.validateChangedDocs(repo, "001", "T1", "refining", "round2", "")
 
+	if err == nil {
+		t.Fatal("unrepairable document must return an error so the phase blocks (P1-3)")
+	}
 	if got := buf.String(); !strings.Contains(got, "damaged") {
 		t.Fatalf("unrepairable document must be reported, got: %s", got)
 	}
@@ -148,10 +155,36 @@ status: refining
 
 	var buf bytes.Buffer
 	runner := newValidateRunner(t, &buf)
-	runner.validateChangedDocs(repo, "002", "refining")
+	err := runner.validateChangedDocs(repo, "002", "T2", "refining", "refining", "")
 
+	if err == nil {
+		t.Fatal("unclosed frontmatter must return an error so the phase blocks (P1-3)")
+	}
 	if got := buf.String(); !strings.Contains(got, "damaged") {
 		t.Fatalf("unclosed frontmatter must be reported, got: %s", got)
+	}
+}
+
+// TestValidatePhaseDocumentsBlocksOnTaskCorruption is the P1-3 gate test: a
+// corrupted task document after a phase must surface as an error through the
+// combined gate (the caller escalates it to DOCUMENT_INVALID and stops
+// advancing — previously this only logged and the phase marched on).
+func TestValidatePhaseDocumentsBlocksOnTaskCorruption(t *testing.T) {
+	dir := t.TempDir()
+	repo := createRepository(t, dir)
+	taskPath := filepath.Join(repo, "TASK-001-demo.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"001\"\nstatus: refining\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	runner := newValidateRunner(t, &buf)
+	err := runner.validatePhaseDocuments(taskPath, repo, "001", "T1", "implementing", "round2", "")
+	if err == nil {
+		t.Fatal("corrupt task document must block the phase gate")
+	}
+	if !strings.Contains(err.Error(), "frontmatter corrupt") && !strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("unexpected gate error: %v", err)
 	}
 }
 

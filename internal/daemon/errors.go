@@ -83,6 +83,14 @@ func recoveryForPhase(phase string, code ErrorCode) recoveryPolicy {
 	if code == ErrAPIKeyUnavailable {
 		return recoveryBlock
 	}
+	// DOCUMENT_INVALID means a phase artifact is corrupted past auto-repair:
+	// retrying or falling back re-runs the session but cannot fix an already
+	// damaged document (Repair was already attempted), so block immediately
+	// and let a human repair then resume (P1-3: no more "validate, log, and
+	// march on" fake success).
+	if code == ErrDocumentInvalid {
+		return recoveryBlock
+	}
 	switch phase {
 	case "priority":
 		return recoveryPriorityFallback
