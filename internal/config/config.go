@@ -212,7 +212,7 @@ type NotifConfig struct {
 func DefaultModels() map[string]string {
 	return map[string]string{
 		"deepseek": "deepseek/deepseek-v4-flash",
-		"gpt":      "gateway/gpt-5.6-sol",
+		"gpt":      "gateway/deepseek-v4-pro",
 		"default":  "gateway/gpt-5.4-mini",
 		"gemini":   "google/gemini-2.5-pro",
 		"claude":   "anthropic/claude-sonnet-4-20250514",
@@ -265,8 +265,8 @@ func ModelReference() string {
 	return fmt.Sprintf(`| key | 模型标识 | 用途 |
 |----------|---------|------|
 | default  | %s | refining、planning、round2 日常任务（gpt-5.4-mini，Agent 能力大幅增强） |
-| deepseek | %s | deepseek assignee 主模型 |
-| gpt      | %s | 高推理任务主力 |
+| deepseek | %s | deepseek assignee 主模型（官方直连） |
+| gpt      | %s | 高推理任务主力（gateway 免费 v4-pro） |
 | gemini   | %s | 可选 |
 | claude   | %s | 可选 |
 | minimax  | %s | 可选 |
