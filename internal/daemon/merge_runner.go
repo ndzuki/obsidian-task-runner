@@ -1388,6 +1388,12 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	}
 	ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 	defer cancel()
+
+	// ── Phase 5 executor seam ──────────────────────────────────────────
+	if r.cfg.Executor == "dsh" {
+		return r.runMergeAISessionDSH(ctx, candidate, repoDir, mode, model, skillPrompt, timeout)
+	}
+
 	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
 	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
 		return fmt.Errorf("create task temp environment: %w", err)
@@ -1423,6 +1429,54 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 		}
 		return fmt.Errorf("merge fix session %s failed: %w", mode, err)
 	}
+	return nil
+}
+
+// runMergeAISessionDSH executes a merge/CI-fix AI session through the DSH
+// phase executor. The session writes files and git state itself (no stdout
+// contract to parse); interruption semantics mirror the OMP path — an
+// OutcomeInterrupted or cancelled ctx keeps the merge authorized for resume.
+func (r *Runner) runMergeAISessionDSH(ctx context.Context, candidate task.ReadyTask, repoDir string, mode mergeFixMode, model, skillPrompt string, timeout time.Duration) error {
+	spec := PhaseSpec{
+		Phase:           "merge",
+		Model:           model,
+		ReasoningEffort: "high",
+		SkillPrompt:     skillPrompt,
+		Timeout:         timeout,
+		WorkingDir:      repoDir,
+	}
+	executor := r.phaseExecutor
+	if executor == nil {
+		executor = newPhaseExecutor(r.cfg)
+		r.phaseExecutor = executor
+	}
+	handle, err := executor.Start(ctx, spec, TaskSnapshot{
+		TaskID:   candidate.ID,
+		TaskPath: candidate.FilePath,
+		Project:  candidate.Project,
+		RepoDir:  repoDir,
+	})
+	if err != nil {
+		return fmt.Errorf("merge fix session %s start: %w", mode, err)
+	}
+	result, err := handle.Wait()
+	if err != nil {
+		return fmt.Errorf("merge fix session %s wait: %w", mode, err)
+	}
+	if result != nil && result.Code == OutcomeInterrupted {
+		return errConflictResolutionInterrupted
+	}
+	if result == nil || result.Code != OutcomeSuccess {
+		if ctx.Err() != nil {
+			return errConflictResolutionInterrupted
+		}
+		reason := "merge fix session failed"
+		if result != nil && result.Error != "" {
+			reason = result.Error
+		}
+		return fmt.Errorf("merge fix session %s failed: %s", mode, reason)
+	}
+	r.logger.Printf("task %s: merge fix session %s via DSH ok", candidate.ID, mode)
 	return nil
 }
 
