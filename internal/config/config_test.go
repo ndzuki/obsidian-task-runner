@@ -44,11 +44,13 @@ func TestDefaultModelsUsesDefaultAssignee(t *testing.T) {
 	}
 }
 
-func TestFallbackModelDefaultsToFlash(t *testing.T) {
+func TestFallbackModelDefaults(t *testing.T) {
 	cfg := Defaults()
-	if got := cfg.FallbackModelFor("gpt"); got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("FallbackModelFor(gpt) = %q, want %q", got, "deepseek/deepseek-v4-flash")
+	// gpt 主模型是 gateway 免费 v4-pro → fallback 官方 DeepSeek V4-Pro。
+	if got := cfg.FallbackModelFor("gpt"); got != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("FallbackModelFor(gpt) = %q, want %q", got, "deepseek/deepseek-v4-pro")
 	}
+	// default 主模型 gateway/gpt-5.4-mini(=flash) → fallback 官方 V4-Flash。
 	if got := cfg.FallbackModelFor("default"); got != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("FallbackModelFor(default) = %q, want %q", got, "deepseek/deepseek-v4-flash")
 	}
