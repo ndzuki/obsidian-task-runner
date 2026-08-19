@@ -33,8 +33,14 @@ type Config struct {
 	Models                       map[string]string `json:"models"`
 	FallbackModels               map[string]string `json:"fallback_models"`
 	OMPCmd                       string            `json:"omp_cmd"`
-	DefaultAssignee              string            `json:"default_assignee"`
-	LogDir                       string            `json:"log_dir,omitempty"`
+	// DSHCmd / DSHProfile drive DSH-native phases (global design first;
+	// remaining phases migrate behind PhaseExecutor incrementally). The
+	// headless app has no per-invocation --model flag, so the selected profile
+	// owns model routing (the default headless profile uses v4-pro here).
+	DSHCmd          string `json:"dsh_cmd"`
+	DSHProfile      string `json:"dsh_profile"`
+	DefaultAssignee string `json:"default_assignee"`
+	LogDir          string `json:"log_dir,omitempty"`
 
 	// Automation tuning (configurable, no hardcoded magic numbers).
 	ScanMinIntervalSeconds     int `json:"scan_min_interval_seconds"`     // watcher scan throttle floor
@@ -313,7 +319,7 @@ func Defaults() *Config {
 		MaxConcurrentTasks:           0,
 		MaxConcurrentTasksPerProject: 2,
 		PhaseConcurrency:             DefaultPhaseConcurrency(),
-		PhaseTimeoutMinutes:          map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15},
+		PhaseTimeoutMinutes:          map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15, "design": 90},
 		ShutdownGraceSeconds:         30,
 		OffPeakTimezone:              "Asia/Shanghai",
 		OffPeakWindows:               []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
@@ -334,6 +340,8 @@ func Defaults() *Config {
 		Models:                     DefaultModels(),
 		FallbackModels:             DefaultFallbackModels(),
 		OMPCmd:                     "omp",
+		DSHCmd:                     "dsh",
+		DSHProfile:                 "headless",
 		DefaultAssignee:            "",
 		Notifications:              NotifConfig{Desktop: true},
 	}
@@ -469,6 +477,12 @@ func mergeDefaults(cfg *Config) {
 	if cfg.OMPCmd == "" {
 		cfg.OMPCmd = defaults.OMPCmd
 	}
+	if cfg.DSHCmd == "" {
+		cfg.DSHCmd = defaults.DSHCmd
+	}
+	if cfg.DSHProfile == "" {
+		cfg.DSHProfile = defaults.DSHProfile
+	}
 	if cfg.SkillInstallDir == "" {
 		cfg.SkillInstallDir = defaults.SkillInstallDir
 	}
@@ -523,6 +537,12 @@ func applyEnvironment(cfg *Config) {
 	}
 	if value := firstNonEmptyEnv("OTG_OMP_CMD", "OMP_CMD"); value != "" {
 		cfg.OMPCmd = value
+	}
+	if value := os.Getenv("OTG_DSH_CMD"); value != "" {
+		cfg.DSHCmd = value
+	}
+	if value := os.Getenv("OTG_DSH_PROFILE"); value != "" {
+		cfg.DSHProfile = value
 	}
 	if value := os.Getenv("OTG_MAX_CONCURRENT_TASKS"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
