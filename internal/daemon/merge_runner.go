@@ -1159,7 +1159,7 @@ func (r *Runner) mergePIDFileGuard(candidate task.ReadyTask) error {
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	taskLogDir := filepath.Join(logDir, "tasks")
 	if err := os.MkdirAll(taskLogDir, 0o700); err != nil {
@@ -1356,7 +1356,7 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	taskLogDir := filepath.Join(logDir, "tasks")
 	if err := os.MkdirAll(taskLogDir, 0o700); err != nil {
