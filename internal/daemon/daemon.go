@@ -1348,7 +1348,8 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// are written back to the list and the daemon's answer-hash
 				// change detection auto-distributes.
 				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 && !grillingListPaused(listPath) {
-					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault)
+					gp, gm := mapDSHModel(r.cfg.Model("default"))
+					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm)
 				}
 				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
 				continue
@@ -1361,7 +1362,8 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 					}
 				}
 				r.grillNotified.Store(t.ID, time.Now())
-				notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.Notifications.Desktop)
+				gp, gm := mapDSHModel(r.cfg.Model("default"))
+				notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm, r.cfg.Notifications.Desktop)
 				continue
 			}
 		}

@@ -151,7 +151,7 @@ exit 1
 	t.Setenv("KITTY_LISTEN_ON", "unix:test")
 	t.Setenv("KITTY_LAUNCH_MARKER", marker)
 
-	if handled := tryKittyTab("066", "分阶段端到端测试", "", ""); handled {
+	if handled := tryKittyTab("066", "分阶段端到端测试", "", "", "", "", ""); handled {
 		t.Fatal("tryKittyTab() = true, want false so desktop fallback remains available")
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -188,7 +188,7 @@ exit 1
 	t.Setenv("KITTY_LISTEN_ON", "unix:test")
 	t.Setenv("KITTY_LAUNCH_MARKER", marker)
 
-	if handled := tryKittyTab("066", "分阶段端到端测试", "", ""); handled {
+	if handled := tryKittyTab("066", "分阶段端到端测试", "", "", "", "", ""); handled {
 		t.Fatal("tryKittyTab() = true, want false so desktop fallback remains available")
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
