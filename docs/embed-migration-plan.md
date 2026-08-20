@@ -159,8 +159,17 @@ dsh-embed 具备生产可用性。
 3. **并发**——agent-server 需支持并发 agent（agents service 天然多 agent；Go 侧连接池）。
 4. **内存**——长驻 agent-server ≈ 单次 spawn 峰值（227MB）+ 会话残留；相比 spawn 每阶段峰值相同，但长驻不释放。可接受（对比 web 653MB）。
 
-## 7. 结论
+## 8. 真实生产验证（2026-08-20）
 
-embed 是**最终形态**：解决推理强度 + resume + 启动开销三个 spawn 短板。
-E1（agent-server 插件）+ E2（Go HTTP client）是**现在能直接做**的地基，
-且不破坏现有 spawn/OMP 回退（executor 取值扩展，默认仍 dsh spawn）。
+把 dsh-embed 部署到真实 daemon（release-manager 73 任务 vault），观察真实工作：
+
+- ✅ **接替 omp**：新 otg（dsh-embed 默认）安装 + daemon 重启，agent-server 正常
+  拉起，真实任务走 dsh 派发。
+- ✅ **TASK-057 真实流程**：audit 会话通过（`audit_status=passed`）→ merge 会话
+  深度执行（`auto-fix-ci`，CI 修复诊断中，正常耗时）。
+- ✅ **deployd 项目**：split / pm / refining 会话在派发（新项目首 REQ 拆分等）。
+- 🔧 **发现并修复 agent-server 端口冲突**：daemon 重启时旧 agent-server 残留占用
+  8799，新 agent-server 的 `server.listen` EADDRINUSE 失败但 dsh 进程不退出，健康
+  检查连到旧实例造成假健康。修复：`server.on("error", EADDRINUSE → process.exit(1))`，
+  让 daemon 健康检查失败并重试。（`~/.dsh/plugins/agent-server.mjs`，非 git）
+- ⏳ 观察中：057 merge 会话（CI 修复）完成 + 写回；其他 ready 任务持续派发。
