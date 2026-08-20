@@ -82,6 +82,9 @@ type Runner struct {
 	// child process the dsh-embed executor talks to. Non-nil only when
 	// cfg.Executor == "dsh-embed"; the daemon lifecycle owns start/stop.
 	agentServerCmd *exec.Cmd
+	// vaultWebServer is the in-process read-only vault dashboard HTTP server
+	// (Phase 4), started/stopped alongside the daemon lifecycle.
+	vaultWebServer *http.Server
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -182,6 +185,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("start agent-server: %w", err)
 	}
 	defer r.stopAgentServer()
+	// Phase 4: 内嵌只读 vault 看板 HTTP API，供 DSH web 的 vault-dashboard 插件
+	// 使用。与 agent-server 同属 daemon 生命周期托管。
+	if err := r.startVaultWeb(); err != nil {
+		return fmt.Errorf("start vault web: %w", err)
+	}
+	defer r.stopVaultWeb()
 
 	// Start the filesystem watcher before acquiring the lock: events buffered
 	// while the --once fallback runner holds the flock are consumed immediately
