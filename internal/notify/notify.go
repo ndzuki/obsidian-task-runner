@@ -139,7 +139,7 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 
 	cmd := exec.Command("notify-send",
 		"--urgency="+urgency,
-		"--app-name=OMP Task Runner",
+		"--app-name=Obsidian Task Runner",
 		"--icon="+icon,
 		title, body,
 	)
@@ -183,7 +183,7 @@ func Send(title, body string, notifyEnabled bool) {
 		return
 	}
 	cmd := exec.Command("notify-send",
-		"--app-name=OMP Task Runner",
+		"--app-name=Obsidian Task Runner",
 		title, body,
 	)
 	if err := cmd.Run(); err != nil {
@@ -211,7 +211,7 @@ func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string, notif
 	if taskTitle != "" {
 		title = fmt.Sprintf("🟡 T%s %s 需要需求对齐", taskID, taskTitle)
 	}
-	body := fmt.Sprintf("需求文档: %s\n请在 OMP 中输入：对 %s 进行需求详细化", reqDoc, reqDoc)
+	body := fmt.Sprintf("需求文档: %s\n请在 DSH 会话中发起：对 %s 进行需求详细化", reqDoc, reqDoc)
 
 	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
 		return
@@ -438,7 +438,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ║
 ║  需求文档: %s
 ║
-║  OMP 正在加载 requirement-elaborator 并主动向你提问…
+║  DSH 正在加载 requirement-elaborator 并主动向你提问…
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
