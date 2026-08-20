@@ -73,13 +73,60 @@ POST /agent/run
 
 ## 5. 分步实施（每步可独立验证）
 
-| 步 | 内容 | 验证 | 可立即做 |
+| 步 | 内容 | 验证 | 状态 |
 |---|---|---|---|
-| E1 | DSH 侧 agent-server.mjs 插件 + profile | `curl POST /agent/run` 跑通一个任务，断言 reasoningEffort 生效 + sessionId 持久化 | ✅ 是 |
-| E2 | Go 侧 dshEmbedExecutor（HTTP client） | 单测（httptest stub server）+ 与 E1 联调 | ✅ 是 |
-| E3 | daemon 生命周期（启动/关闭 agent-server） | daemon 启停冒烟 | 依赖 E1/E2 |
-| E4 | resume 路径（sessionId 持久化到 frontmatter executor_session_id） | 中断后 resume 一致 | 依赖 E2 |
-| E5 | 默认切 dsh-embed + planning 复测（验证推理强度解决跑偏） | planning 真实冒烟 | 依赖 E1-E4 |
+| E1 | DSH 侧 agent-server.mjs 插件 + profile | `curl POST /agent/run` 跑通一个任务，断言 reasoningEffort 生效 + sessionId 持久化 | ✅ **已完成（2026-08-20）** |
+| E2 | Go 侧 dshEmbedExecutor（HTTP client） | 单测（httptest stub server）+ 与 E1 联调 | ✅ **已完成（2026-08-20）** |
+| E3 | daemon 生命周期（启动/关闭 agent-server） | daemon 启停冒烟 | ✅ **已完成（2026-08-20）** |
+| E4 | resume 路径（sessionId 持久化到 frontmatter executor_session_id） | 中断后 resume 一致 | ⏸️ 暂缓（见下） |
+| E5 | 默认切 dsh-embed + planning 复测（验证推理强度解决跑偏） | planning 真实冒烟 | ✅ **planning 复测通过（2026-08-20）** |
+
+### E5 planning 复测记录（2026-08-20，里程碑）
+
+用隔离 smoke-vault 的合法 TASK-001（独立 REQ-001，status=planning + maturity=
+fully_mature）经 agent-server `/agent/run` 跑 round1，`reasoningEffort=high`：
+
+- ✅ **reasoningEffort 传入**：session 日志确认 `"reasoningEffort":"high"`（embed
+  的 per-request 推理强度生效，解决 spawn 模式的 §5.6 短板）。
+- ✅ **planning 首次完整成功**（此前所有 spawn 冒烟均失败）：
+  - `status: planning → plan-review`
+  - `plan_version: 0 → 1`（计划 v1 生成）
+  - `plan_req_hash` 与 refine_req_hash 一致（Step 4 门禁通过）
+  - 正文含完整计划（AC-1~AC-4、风险、变更记录、成熟度评估）
+- 耗时约 90s（high 推理强度下模型深度探索：读 otg 源码理解 update-status 写回机制）。
+
+**结论**：推理强度失效是 planning 收敛失败（§5.4/§5.6）的**根因**；embed 的
+`agentOptions.reasoningEffort` 完整还原 omp `--thinking` per-阶段语义，planning
+在 dsh-embed 下可靠收敛。可以推进「默认切 dsh-embed + 替换 omp」。
+
+### E3 验证记录（2026-08-20）
+
+- config 新增 `agent_server_addr`（默认 `127.0.0.1:8799`）+ executor 取值加
+  `dsh-embed`（validate/mergeDefaults/defaults 三处）。
+- `newPhaseExecutor` 选 dsh-embed 返回 dshEmbedExecutor。
+- Runner 加 `agentServerCmd` + `daemon_agent_server.go`：startAgentServer 拉起
+  `dsh --profile headless-agent-server` + 30s 健康检查；stopAgentServer SIGTERM
+  →10s→SIGKILL。Run/RunOnce 挂载（dsh-embed 时启动/收口，其他 executor no-op）。
+
+### E4 决策：暂缓 resume 接通（2026-08-20）
+
+实测确认 `phaseExecutor.Resume` **从未被 daemon 调用**（daemon 重启后靠 frontmatter
+状态重派发，spawn/omp 皆如此）。接通 durable resume 需要在 processBatchSequential
+增加「重启检测 executor_session_id → Resume」的恢复逻辑，属独立工程，且**非替换
+omp 的前提**。dshEmbedExecutor 已把 sessionId 写入 `ExecutionResult.ResumeToken`
+（E2），未来接通 resume 时直接可用；当前 daemon 重启后与 spawn 一样走 frontmatter
+重派发（可接受，非 blocker）。
+
+### E1 验证记录（2026-08-20，rc.8）
+
+- `GET /health` → `{"ok":true}`；`POST /agent/run`（无 effort）→ `completed` + sessionId。
+- reasoningEffort 传递链路（agent/request prepend → llm-pi-ai）实测生效：
+  - 前提：settings.yaml 的模型须配 `reasoningEfforts`（THINKING_LEVELS → wire），
+    否则 llm-pi-ai 报 `UNSUPPORTED_REASONING_EFFORT`（模型 `reasoning: false`）。
+  - 已配 `low/medium/high/xhigh` → wire `low/medium/high/max`（对齐 omp
+    `reasoningEffortMap`）。`off` 不支持（未声明），Go 侧映射为「不传 effort」。
+- 实测：`low`/`high`/`xhigh` 均 `completed`；`off` 需 Go 侧跳过。
+- **omp → DSH effort 映射**（E2 实现）：`off→不传`、`low→low`、`high→high`、`max→xhigh`。
 
 ## 6. 风险与对策
 
