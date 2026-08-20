@@ -1373,8 +1373,9 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 		return fmt.Errorf("create merge fix log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	header := fmt.Sprintf("# TASK-%s %s\n# model=%s phase=%s time=%s\n\n",
-		candidate.ID, candidate.Title, model, logSuffix, time.Now().Format(time.RFC3339))
+	provider, dshModel := mapDSHModel(model)
+	header := fmt.Sprintf("# TASK-%s %s\n# model=%s/%s phase=%s time=%s\n\n",
+		candidate.ID, candidate.Title, provider, dshModel, logSuffix, time.Now().Format(time.RFC3339))
 	if _, err := f.WriteString(header); err != nil {
 		return fmt.Errorf("write merge fix log header: %w", err)
 	}

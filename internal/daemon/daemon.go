@@ -2985,12 +2985,12 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			phase = "conventions"
 			model = r.cfg.Model("default")
 			skillPrompt = "/obsidian-task-runner-conventions " + t.FilePath
-			r.logger.Printf("task %s: team project %q conventions review (model=%s)", t.ID, t.Project, model)
+			r.logger.Printf("task %s: team project %q conventions review (model=%s)", t.ID, t.Project, dshModelLabel(model))
 		case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
 			phase = "priority"
 			model = r.cfg.Model("default")
 			skillPrompt = "/obsidian-task-runner-priority " + t.FilePath
-			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, model)
+			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, dshModelLabel(model))
 		case t.Status == "refining":
 			model = r.cfg.Model("default")
 			// ── Refining early-out: skip to planning when the maturity gate
@@ -3012,7 +3012,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			} else {
 				phase = "refining"
 				skillPrompt = "/obsidian-task-runner-refining " + t.FilePath
-				r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, model)
+				r.logger.Printf("task %s: maturity gate (model=%s)", t.ID, dshModelLabel(model))
 			}
 		case t.Status == "planning":
 			phase = "planning"
@@ -3140,7 +3140,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.logger.Printf("task %s: create task log: %v", t.ID, createErr)
 		}
 		if f != nil {
-			header := fmt.Sprintf("# TASK-%s %s\n# model=%s phase=%s time=%s\n\n", t.ID, t.Title, model, phase, time.Now().Format(time.RFC3339))
+			provider, dshModel := mapDSHModel(model)
+			header := fmt.Sprintf("# TASK-%s %s\n# model=%s/%s phase=%s time=%s\n\n", t.ID, t.Title, provider, dshModel, phase, time.Now().Format(time.RFC3339))
 			if _, writeErr := f.WriteString(header); writeErr != nil {
 				r.logger.Printf("task %s: write task log header: %v", t.ID, writeErr)
 			}
