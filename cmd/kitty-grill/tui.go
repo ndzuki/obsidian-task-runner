@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // qModel is the Bubble Tea model for the batch questionnaire: one decision
@@ -127,20 +128,27 @@ func (m qModel) allAnswered() bool {
 	return true
 }
 
-// wrap breaks s into lines no wider than width runes. CJK text has no spaces,
-// so it wraps per rune; ASCII text also wraps per rune (acceptable for option
-// labels that are mostly short phrases).
+// wrap breaks s into lines no wider than width display columns. It uses
+// runewidth so CJK/emoji (2 columns each) are counted correctly — a naive
+// rune count would let a 64-rune Chinese label render 128 columns wide and
+// overflow the terminal.
 func wrap(s string, width int) string {
-	if width <= 0 || len([]rune(s)) <= width {
+	if width <= 0 {
 		return s
 	}
-	runes := []rune(s)
 	var b strings.Builder
-	for i := 0; i < len(runes); i++ {
-		if i > 0 && i%width == 0 {
-			b.WriteString("\n")
+	lineW := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if w < 1 {
+			w = 1
 		}
-		b.WriteRune(runes[i])
+		if lineW > 0 && lineW+w > width {
+			b.WriteString("\n")
+			lineW = 0
+		}
+		b.WriteRune(r)
+		lineW += w
 	}
 	return b.String()
 }

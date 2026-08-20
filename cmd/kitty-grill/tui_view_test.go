@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // 验证 View 渲染输出包含关键交互元素（问题、选项、推荐、理由、帮助栏）。
@@ -49,8 +51,23 @@ func TestWrapBreaksLongText(t *testing.T) {
 		t.Fatalf("wrap 应换行，实际: %q", out)
 	}
 	for _, l := range lines {
-		if len([]rune(l)) > 10 {
-			t.Errorf("换行后单行超宽: %q", l)
+		if runewidth.StringWidth(l) > 10 {
+			t.Errorf("换行后单行超宽: %q (宽度 %d)", l, runewidth.StringWidth(l))
+		}
+	}
+}
+
+// 验证 emoji（双列宽）也被正确计入宽度。
+func TestWrapCountsEmojiWidth(t *testing.T) {
+	s := "⭐⭐⭐⭐⭐⭐" // 6 个 emoji = 12 列
+	out := wrap(s, 8)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("emoji 应按显示宽度换行，实际: %q", out)
+	}
+	for _, l := range lines {
+		if runewidth.StringWidth(l) > 8 {
+			t.Errorf("emoji 行超宽: %q (宽度 %d)", l, runewidth.StringWidth(l))
 		}
 	}
 }
