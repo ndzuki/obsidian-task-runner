@@ -37,14 +37,18 @@ type Config struct {
 	// remaining phases migrate behind PhaseExecutor incrementally). The
 	// headless app has no per-invocation --model flag, so the selected profile
 	// owns model routing (the default headless profile uses v4-pro here).
-	DSHCmd              string `json:"dsh_cmd"`
-	DSHProfile          string `json:"dsh_profile"`
+	DSHCmd     string `json:"dsh_cmd"`
+	DSHProfile string `json:"dsh_profile"`
+	// AgentServerAddr is the long-lived `dsh --profile headless-agent-server`
+	// address used by the dsh-embed executor (host:port; docs/embed-migration-
+	// plan.md). The daemon manages the child process lifecycle itself.
+	AgentServerAddr     string `json:"agent_server_addr"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
 	// Executor selects the phase-execution backend: "dsh" (default, spawn
-	// `dsh --profile headless`) or "omp" (frozen behavior, retained as a
-	// rollback path until the DSH route is fully trusted). The switch is the
-	// Phase 5 migration seam (docs/phase5-executor-migration.md); the default
-	// flipped to dsh after every phase gained a DSH branch (5.3/5.4c/5.5).
+	// `dsh --profile headless`), "dsh-embed" (long-lived agent-server RPC),
+	// or "omp" (frozen behavior, retained as a rollback path). The switch is
+	// the Phase 5/embed migration seam (docs/phase5-executor-migration.md,
+	// docs/embed-migration-plan.md).
 	Executor        string `json:"executor"`
 	DefaultAssignee string `json:"default_assignee"`
 	LogDir          string `json:"log_dir,omitempty"`
@@ -350,6 +354,7 @@ func Defaults() *Config {
 		OMPCmd:                     "omp",
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
+		AgentServerAddr:            "127.0.0.1:8799",
 		ReplanGateThreshold:        5,
 		Executor:                   "dsh",
 		DefaultAssignee:            "",
@@ -493,6 +498,9 @@ func mergeDefaults(cfg *Config) {
 	if cfg.DSHProfile == "" {
 		cfg.DSHProfile = defaults.DSHProfile
 	}
+	if cfg.AgentServerAddr == "" {
+		cfg.AgentServerAddr = defaults.AgentServerAddr
+	}
 	if cfg.ReplanGateThreshold == 0 {
 		cfg.ReplanGateThreshold = defaults.ReplanGateThreshold
 	}
@@ -594,8 +602,8 @@ func (c *Config) Validate() error {
 	if c.ReplanGateThreshold < 0 {
 		return fmt.Errorf("CONFIG_INVALID: replan_gate_threshold must be >= 0 (0 = disabled)")
 	}
-	if c.Executor != "omp" && c.Executor != "dsh" {
-		return fmt.Errorf("CONFIG_INVALID: executor must be \"omp\" or \"dsh\", got %q", c.Executor)
+	if c.Executor != "omp" && c.Executor != "dsh" && c.Executor != "dsh-embed" {
+		return fmt.Errorf("CONFIG_INVALID: executor must be \"omp\", \"dsh\" or \"dsh-embed\", got %q", c.Executor)
 	}
 	for phase, limit := range c.PhaseConcurrency {
 		if limit < 0 {
