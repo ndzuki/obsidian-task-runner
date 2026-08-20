@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1656,14 +1655,6 @@ func (r *Runner) removeTaskWorktree(repoDir, runKey, taskID string) {
 
 func taskPIDFile(taskLogDir, taskID, taskPath string) string {
 	return filepath.Join(taskLogDir, fmt.Sprintf("TASK-%s-%s.pid", taskID, taskRunKey(taskPath)))
-}
-
-func (r *Runner) findReadyTasks() ([]task.ReadyTask, error) {
-	tasks, err := r.taskIdx.Scan(r.cfg.ObsidianVault)
-	if err != nil {
-		return nil, err
-	}
-	return tasks, nil
 }
 
 func (r *Runner) taskLogDir() string {
@@ -3622,26 +3613,6 @@ func SignalContext() context.Context {
 		}
 	}()
 	return ctx
-}
-
-// tokenQuotaPatterns matches log lines indicating token quota exhaustion.
-var tokenQuotaPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)insufficient_quota`),
-	regexp.MustCompile(`(?i)rate_limit_exceeded`),
-	regexp.MustCompile(`(?i)\bquota\b.*\b(exceeded|exhausted|insufficient|limit)\b`),
-	regexp.MustCompile(`(?i)\bbilling\b`),
-	regexp.MustCompile(`(?i)余额不足`),
-	regexp.MustCompile(`(?i)充值`),
-	regexp.MustCompile(`(?i)tokens?\s*(limit|quota|exhausted)`),
-	regexp.MustCompile(`(?i)429\s`),
-}
-
-// keyUnavailablePatterns matches OMP log lines indicating the provider API key
-// could not be resolved (typically KeePassXC/secret service locked or missing).
-var keyUnavailablePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)no api key found`),
-	regexp.MustCompile(`(?i)no api key`),
-	regexp.MustCompile(`(?i)missing.*api[_-]?key`),
 }
 
 // notifyKeyUnavailable sends one debounced desktop toast for an API-key
