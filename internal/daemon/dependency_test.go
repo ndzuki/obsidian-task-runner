@@ -1764,7 +1764,7 @@ req_doc: Projects/001-test/Requirements/REQ-083.md
 }
 
 // TestDaemonShutdownSignalsRunningOMP verifies that cancelling the daemon
-// context (systemd stop / shutdown) sends SIGTERM to the running OMP session
+// context (systemd stop / shutdown) sends SIGTERM to the running execution session
 // (graceful exit) instead of leaving it until a hard kill.
 func TestDaemonShutdownSignalsRunningOMP(t *testing.T) {
 	dir := t.TempDir()

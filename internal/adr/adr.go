@@ -119,7 +119,7 @@ func BuildCoverage(projectDir string) error {
 			continue
 		}
 		for _, task := range listValues(string(data), "tasks") {
-			taskADRs[task] = append(taskADRs[task], "[["+strings.TrimSuffix(entry.Name(), ".md")+"]]" )
+			taskADRs[task] = append(taskADRs[task], "[["+strings.TrimSuffix(entry.Name(), ".md")+"]]")
 		}
 	}
 	var tasks []string

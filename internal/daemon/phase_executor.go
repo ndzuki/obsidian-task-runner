@@ -21,9 +21,9 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 
 // runDSHPhase executes one phase through the configured phaseExecutor and maps
 // the stable ExecutionResult to the daemon's failure-code vocabulary. It is the
-// Phase 5 replacement for the inline OMP exec block: the caller routes
+// Phase 5 replacement for the inline exec block: the caller routes
 // outcome/code/reason into the existing failure/fallback/notification path
-// without touching OMP-specific logging, PID files, or empty-stop watch.
+// without touching executor-specific logging, PID files, or empty-stop watch.
 func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecOutcome, ErrorCode, string) {
 	executor := r.phaseExecutor
 	if executor == nil {

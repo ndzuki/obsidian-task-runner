@@ -54,7 +54,7 @@ func NewEmbeddingClient(cfg *config.KBEmbeddingConfig) *EmbeddingClient {
 		return nil
 	}
 	return &EmbeddingClient{
-		cfg: cfg,
+		cfg:    cfg,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }

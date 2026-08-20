@@ -147,7 +147,7 @@ type KBChatConfig struct {
 }
 
 // AuditConfig configures the independent completion audit for auto-merge
-// review tasks: a restricted read-only OMP session re-verifies each AC with
+// review tasks: a restricted read-only execution session re-verifies each AC with
 // raw evidence before merge authorization (implementation and verification
 // run in separate sessions so the implementer cannot rubber-stamp its own
 // completion).
@@ -224,12 +224,12 @@ func DefaultModels() map[string]string {
 	}
 }
 
-// DefaultPhaseConcurrency returns the per-phase OMP concurrency ceilings.
+// DefaultPhaseConcurrency returns the per-phase phase concurrency ceilings.
 // Keys are phase names (refining/planning/merge/priority/pm/audit); a missing
 // key or 0 means unlimited. round2 is governed by
 // max_concurrent_tasks_per_project (per-project cap, default 2) plus
 // max_concurrent_tasks (optional global total cap, 0 = unlimited). These caps
-// bound simultaneous OMP sessions to protect API rate limits, token spend,
+// bound simultaneous execution sessions to protect API rate limits, token spend,
 // and local CPU/memory.
 func DefaultPhaseConcurrency() map[string]int {
 	return map[string]int{
@@ -601,7 +601,7 @@ func (c *Config) PhaseTimeout(phase string) time.Duration {
 	return time.Duration(c.PhaseTimeoutMinutes[phase]) * time.Minute
 }
 
-// Model returns the OMP model identifier for an assignee key.
+// Model returns the model identifier for an assignee key.
 // Falls back to the "default" model if the assignee is unknown.
 func (c *Config) Model(assignee string) string {
 	if m, ok := c.Models[assignee]; ok && m != "" {

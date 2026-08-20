@@ -239,7 +239,7 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 	return dispatched
 }
 
-// runGrillingPM invokes one OMP session running the PM coordinator skill.
+// runGrillingPM invokes one execution session running the PM coordinator skill.
 // Sessions run ASYNC — a consolidate/distribute/stage-review session takes
 // 3-10 minutes, and running it synchronously stalls the scan loop (no
 // scans, no logs, daemon looks hung; observed repeatedly during stage-plan

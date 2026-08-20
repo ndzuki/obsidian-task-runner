@@ -19,8 +19,8 @@ type ApplyResult struct {
 
 // ApplyOptions tunes a staging run.
 type ApplyOptions struct {
-	Force bool      // rewrite Stage-Plan.md from scratch and re-derive every in-flight task
-	DryRun bool     // compute phases only; write nothing
+	Force  bool      // rewrite Stage-Plan.md from scratch and re-derive every in-flight task
+	DryRun bool      // compute phases only; write nothing
 	Now    time.Time // clock injection for tests (zero = time.Now)
 }
 

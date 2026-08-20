@@ -18,7 +18,7 @@ type ExtractResult struct {
 	ADRCount     int
 	NewRefs      int
 	UpdatedRefs  int
-	Duplicates   int // pitfall/practice notes skipped as already recorded
+	Duplicates   int      // pitfall/practice notes skipped as already recorded
 	Unclassified []string // ADR ids auto-archived under References/uncategorized/
 	Touched      []string // absolute paths of knowledge files created/updated
 	Errors       []string

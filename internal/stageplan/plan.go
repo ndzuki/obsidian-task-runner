@@ -14,7 +14,7 @@ import (
 
 // TaskInfo is the minimal frontmatter projection needed for phasing.
 type TaskInfo struct {
-	ID        string   // task numeric id, e.g. "018"
+	ID        string // task numeric id, e.g. "018"
 	Title     string
 	Epic      string
 	Priority  string

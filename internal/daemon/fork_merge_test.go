@@ -334,7 +334,7 @@ exit 0
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// Daemon shutdown: cancel the context, killing the OMP session.
+	// Daemon shutdown: cancel the context, killing the execution session.
 	cancel()
 	select {
 	case err := <-done:

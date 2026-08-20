@@ -2,7 +2,7 @@ package daemon
 
 import "sync"
 
-// phaseGate bounds concurrent OMP sessions for one phase (refining, planning,
+// phaseGate bounds concurrent execution sessions for one phase (refining, planning,
 // merge, priority, pm). Unlike implementationGate it has no adoption concept —
 // PID adoption exists only for implementing, whose gate is
 // max_concurrent_tasks_per_project (+ optional max_concurrent_tasks global

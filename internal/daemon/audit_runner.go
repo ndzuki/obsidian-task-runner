@@ -3,7 +3,7 @@
 //
 // The implementer's session must not be the sole verifier of its own
 // completion ("the bamboozle trap"): an auto_merge review task passes a
-// restricted read-only OMP session (read/grep/bash only, no write/edit) that
+// restricted read-only execution session (read/grep/bash only, no write/edit) that
 // re-verifies every AC with raw command output before the merge is
 // authorized. A fail verdict routes the task back to implementing (bounded
 // retries), and the audit log is persisted for the implementer to consume.

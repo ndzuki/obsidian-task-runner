@@ -50,7 +50,7 @@ func ExitCode(err error) int {
 var rootCmd = &cobra.Command{
 	Use:   "otg",
 	Short: "Obsidian Task Runner — Go edition",
-	Long:  "Task lifecycle automation for Obsidian vaults. Watches project directories, drives OMP skills, and manages git worktrees.",
+	Long:  "Task lifecycle automation for Obsidian vaults. Watches project directories, drives phase skills, and manages git worktrees.",
 }
 
 var versionCmd = &cobra.Command{
@@ -171,6 +171,7 @@ func init() {
 	rootCmd.AddCommand(repairDocCmd)
 	rootCmd.AddCommand(ensureContextTermCmd)
 }
+
 var validateDocCmd = &cobra.Command{
 	Use:   "validate-doc <path>",
 	Short: "Validate any document (TASK/REQ/ADR) frontmatter and body",

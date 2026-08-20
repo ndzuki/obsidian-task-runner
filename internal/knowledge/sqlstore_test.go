@@ -441,14 +441,14 @@ func TestRemovalWarningThresholds(t *testing.T) {
 		stored int
 		want   bool
 	}{
-		{"single-doc store fully removed", 1, 1, false},     // tiny store: no noise
-		{"two-doc store half removed", 1, 2, false},         // tiny store: no noise
-		{"three-doc store two removed", 2, 3, true},         // bulk removal on real store
-		{"three-doc store one removed", 1, 3, false},        // normal deletion
-		{"empty store", 0, 0, false},                        // nothing to compare
-		{"ten-doc store nine removed", 9, 10, true},         // near-wipe
-		{"ten-doc store five removed", 5, 10, false},        // exactly half: not > half
-		{"ten-doc store six removed", 6, 10, true},          // just over half
+		{"single-doc store fully removed", 1, 1, false}, // tiny store: no noise
+		{"two-doc store half removed", 1, 2, false},     // tiny store: no noise
+		{"three-doc store two removed", 2, 3, true},     // bulk removal on real store
+		{"three-doc store one removed", 1, 3, false},    // normal deletion
+		{"empty store", 0, 0, false},                    // nothing to compare
+		{"ten-doc store nine removed", 9, 10, true},     // near-wipe
+		{"ten-doc store five removed", 5, 10, false},    // exactly half: not > half
+		{"ten-doc store six removed", 6, 10, true},      // just over half
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

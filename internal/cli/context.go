@@ -16,7 +16,7 @@ var ensureContextTermCmd = &cobra.Command{
 section. If the term already exists, it is a no-op. Otherwise,
 the term is appended in **Term**: definition format.
 
-Called by OMP skills (round1, ADR write) to auto-maintain the
+Called by phase skills (round1, ADR write) to auto-maintain the
 shared domain vocabulary.`,
 	Args: cobra.ExactArgs(3),
 	RunE: runEnsureContextTerm,

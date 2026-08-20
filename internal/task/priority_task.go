@@ -11,13 +11,13 @@ import (
 )
 
 type PriorityTask struct {
-	ID        string
-	Title     string
-	Project   string
-	ReqDoc    string
-	FilePath  string
-	Attempts  int
-	Takeover  bool
+	ID       string
+	Title    string
+	Project  string
+	ReqDoc   string
+	FilePath string
+	Attempts int
+	Takeover bool
 }
 
 func FindPriorityTasks(vaultPath string, now time.Time) ([]PriorityTask, error) {
@@ -57,7 +57,7 @@ func FindPriorityTasks(vaultPath string, now time.Time) ([]PriorityTask, error) 
 			// blocked (waiting for fields/deps), ready, refining, or
 			// needs-grilling. A task already in planning or later has passed
 			// the point where priority drives scheduling — assessing it here
-			// would spawn a wasted OMP session per scan (observed: planning
+			// would spawn a wasted execution session per scan (observed: planning
 			// fixture tasks launching a second OMP in scan tests).
 			switch fm.Status {
 			case "blocked", "ready", "refining", "needs-grilling":
