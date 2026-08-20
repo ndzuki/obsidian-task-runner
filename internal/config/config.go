@@ -44,11 +44,12 @@ type Config struct {
 	// plan.md). The daemon manages the child process lifecycle itself.
 	AgentServerAddr     string `json:"agent_server_addr"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
-	// Executor selects the phase-execution backend: "dsh" (default, spawn
-	// `dsh --profile headless`), "dsh-embed" (long-lived agent-server RPC),
-	// or "omp" (frozen behavior, retained as a rollback path). The switch is
-	// the Phase 5/embed migration seam (docs/phase5-executor-migration.md,
-	// docs/embed-migration-plan.md).
+	// Executor selects the phase-execution backend: "dsh-embed" (default,
+	// long-lived agent-server RPC with per-phase reasoningEffort), "dsh"
+	// (spawn `dsh --profile headless`), or "omp" (frozen behavior, retained as
+	// a rollback path). The switch is the Phase 5/embed migration seam
+	// (docs/phase5-executor-migration.md, docs/embed-migration-plan.md). The
+	// default flipped to dsh-embed after planning verified on it (E5).
 	Executor        string `json:"executor"`
 	DefaultAssignee string `json:"default_assignee"`
 	LogDir          string `json:"log_dir,omitempty"`
@@ -356,7 +357,7 @@ func Defaults() *Config {
 		DSHProfile:                 "headless",
 		AgentServerAddr:            "127.0.0.1:8799",
 		ReplanGateThreshold:        5,
-		Executor:                   "dsh",
+		Executor:                   "dsh-embed",
 		DefaultAssignee:            "",
 		Notifications:              NotifConfig{Desktop: true},
 	}
