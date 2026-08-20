@@ -188,3 +188,14 @@ reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc �
   权威源 + `npm view ... dist-tags.next` 交叉确认。
 - **推理强度失效（§5.6）在 rc.8 未解决**：spawn 模式仍无 per-调用 reasoningEffort；
   rc.8 的「推理内容回传修复」是传输层修复，非 per-request 强度能力。
+- **planning 收敛修复 ✅（rc.8 实测，2026-08-20）**：重跑 planning 冒烟，模型
+  **完整执行了 round1 流程**（rc.7 时只探索不写回）——读 ADR/CONTEXT/REQ → 校验
+  canonical 不变量 → 发现隔离 TASK-005 是非法夹具（`req_doc` 重复关联 REQ-004 的
+  Canonical TASK，违反 CONTEXT.md 一对一契约）→ 正确 **fail-closed** 写回
+  `status: blocked` + `phase_error_code: VALIDATION_FAILED`（非瞬时码，daemon 不自动
+  恢复），并给出三选一决策入口。
+  - **结论**：rc.8 的「推理内容回传修复」**确实解决了 planning 的收敛失败**
+    （之前 §5.4 的「未写回」根因正是推理内容在 rc.7 传输层丢失）。dsh 路径的
+    planning 复杂多步流程在 rc.8 下可正确收敛，fail-closed 逻辑按契约工作。
+  - **未验证**：正常 planning 生成计划 + 写回 `plan_version` 的路径（冒烟用了非法
+    夹具，模型正确拒绝而非生成计划）；需一个合法 REQ 再验一次。
