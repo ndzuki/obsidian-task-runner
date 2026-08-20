@@ -253,3 +253,22 @@ low/medium/high/xhigh 四档）：
 - daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，
   完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描
   /tmp/kitty-*）。
+
+### E4 durable resume 完整闭环（2026-08-20 实测补齐）
+
+真实生产验证（deployd TASK-001）暴露两个 durable resume 边界，已修复：
+
+1. **中断瞬间 sessionId 持久化**：原 sessionId 由 agent-server 内部生成，中断
+   （/agent/run 响应未返回）时 daemon 拿不到 sessionId → executor_session_id 空
+   → resume 退化 fresh start。修复：`dshEmbedExecutor.Start` 用 crypto/rand
+   **预分配 sessionId**，Wait/doRequest 的 interrupted 分支用它编码 ResumeToken。
+
+2. **session not found 回退**：agent-server 把「sessionId 非空」一律当 resume，
+   daemon 预分配的 sessionId（create 未完成 / agent-server 重启丢会话）报
+   `session not found` → daemon 误判 MODEL_FAILED 卡 blocked。修复两处：
+   - agent-server（`~/.dsh/plugins/agent-server.mjs`）acquireAgent：resume 失败
+     → 用预分配 sessionId **create**（而非报错）；
+   - Go `runDSHPhase`：resume 只有 `OutcomeSuccess` 才复用结果，否则回退
+     fresh start（不再把「会话已失效」当阶段失败）。
+
+实测：TASK-001 resume → 不再 MODEL_FAILED → implementing 正常重派发 round2。
