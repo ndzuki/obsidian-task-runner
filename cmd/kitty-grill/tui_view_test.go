@@ -16,7 +16,7 @@ func TestQModelViewRenders(t *testing.T) {
 	}}
 	m := newQModel(d)
 	v := m.View()
-	for _, want := range []string{"D1", "服务归属", "release-manager", "⭐推荐", "推荐理由", "j/k", "Enter/Space 确认", "h/l"} {
+	for _, want := range []string{"D1", "服务归属", "release-manager", "⭐推荐", "推荐理由", "↓/j", "↑/k", "Enter/Space 确认", "←/h", "→/l"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("View 缺少 %q", want)
 		}
