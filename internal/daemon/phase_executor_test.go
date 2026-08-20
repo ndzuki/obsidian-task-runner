@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
@@ -20,6 +22,21 @@ func (e phaseExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (Exec
 	if e.err != nil {
 		return nil, e.err
 	}
+	return phaseHandleStub{result: e.result}, nil
+}
+
+// resumeExecutorStub 支持 Resume，记录是否被调用，用于验证 durable resume 接通。
+type resumeExecutorStub struct {
+	result       *ExecutionResult
+	resumeCalled bool
+}
+
+func (e *resumeExecutorStub) Name() string { return "resume-stub" }
+func (e *resumeExecutorStub) Resume(context.Context, string) (ExecutionHandle, error) {
+	e.resumeCalled = true
+	return phaseHandleStub{result: e.result}, nil
+}
+func (e *resumeExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
 	return phaseHandleStub{result: e.result}, nil
 }
 
@@ -68,5 +85,47 @@ func TestRunDSHPhaseStartError(t *testing.T) {
 	_, out, code, reason := r.runDSHPhase(context.Background(), PhaseSpec{}, TaskSnapshot{})
 	if out != OutcomeFailed || code != ErrModelFailed || reason == "" {
 		t.Fatalf("start error mapping = (%q, %q, %q), want failed/MODEL_FAILED/non-empty", out, code, reason)
+	}
+}
+
+func TestReadExecutorSessionID(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-001.md")
+	content := "---\nid: \"001\"\nexecutor_session_id: '{\"sessionId\":\"s-1\"}'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readExecutorSessionID(taskPath); got != `{"sessionId":"s-1"}` {
+		t.Fatalf("readExecutorSessionID = %q", got)
+	}
+	if got := readExecutorSessionID(filepath.Join(dir, "missing.md")); got != "" {
+		t.Fatalf("missing file should return empty, got %q", got)
+	}
+}
+
+func TestRunDSHPhaseResumesWhenTokenPresent(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-001.md")
+	content := "---\nid: \"001\"\nexecutor_session_id: 'tok-abc'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(&config.Config{Executor: "dsh-embed"})
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+	r.runDSHPhase(context.Background(), PhaseSpec{Phase: "round2"}, TaskSnapshot{TaskID: "001", TaskPath: taskPath})
+	if !stub.resumeCalled {
+		t.Fatal("有 executor_session_id 时应走 Resume，而非 fresh Start")
+	}
+}
+
+func TestRunDSHPhaseFreshStartWhenNoToken(t *testing.T) {
+	r := New(&config.Config{Executor: "dsh-embed"})
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+	r.runDSHPhase(context.Background(), PhaseSpec{Phase: "round2"}, TaskSnapshot{TaskID: "001"}) // 无 TaskPath
+	if stub.resumeCalled {
+		t.Fatal("无 executor_session_id 时应走 fresh Start，而非 Resume")
 	}
 }

@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"os"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // newPhaseExecutor selects the phase-dispatch backend from cfg.Executor.
@@ -20,20 +23,31 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 }
 
 // runDSHPhase executes one phase through the configured phaseExecutor and maps
-// the stable ExecutionResult to the daemon's failure-code vocabulary. It is the
-// Phase 5 replacement for the inline exec block: the caller routes
-// outcome/code/reason into the existing failure/fallback/notification path
-// without touching executor-specific logging, PID files, or empty-stop watch.
-// runDSHPhase executes one phase through the configured phaseExecutor. It
-// returns the full ExecutionResult (so the caller can persist ResumeToken for
-// durable resume) plus the mapped outcome/code/reason the caller routes into
-// the failure/notification path.
+// the stable ExecutionResult to the daemon's failure-code vocabulary. When the
+// task frontmatter carries a persisted executor_session_id (an interrupted
+// dsh-embed session), it resumes that session first; a failed/unsupported
+// resume falls back to a fresh Start.
 func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (*ExecutionResult, ExecOutcome, ErrorCode, string) {
 	executor := r.phaseExecutor
 	if executor == nil {
 		executor = newPhaseExecutor(r.cfg)
 		r.phaseExecutor = executor
 	}
+
+	// durable resume：上次中断会话（executor_session_id 持久化在 frontmatter）。
+	if token := readExecutorSessionID(snap.TaskPath); token != "" {
+		if handle, err := executor.Resume(ctx, token); err == nil {
+			if result, err := handle.Wait(); err == nil {
+				outcome, code, reason := mapExecOutcome(result)
+				return result, outcome, code, reason
+			} else {
+				r.logger.Printf("task %s: resume wait failed (%v), falling back to fresh start", snap.TaskID, err)
+			}
+		} else if !errors.Is(err, ErrResumeUnsupported) {
+			r.logger.Printf("task %s: resume failed (%v), falling back to fresh start", snap.TaskID, err)
+		}
+	}
+
 	handle, err := executor.Start(ctx, spec, snap)
 	if err != nil {
 		return nil, OutcomeFailed, ErrModelFailed, err.Error()
@@ -44,4 +58,21 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	}
 	outcome, code, reason := mapExecOutcome(result)
 	return result, outcome, code, reason
+}
+
+// readExecutorSessionID reads the persisted durable-resume token from the task
+// frontmatter. Returns "" when absent or unreadable (fresh start).
+func readExecutorSessionID(taskPath string) string {
+	if taskPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return ""
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return ""
+	}
+	return fm.ExecutorSessionID
 }
