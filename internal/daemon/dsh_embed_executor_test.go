@@ -109,8 +109,9 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	if res.Stdout != "plan written" {
 		t.Errorf("stdout = %q, want plan written", res.Stdout)
 	}
-	if res.ResumeToken != "session-abc" {
-		t.Errorf("resumeToken = %q, want session-abc", res.ResumeToken)
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil || tok.SessionID != "session-abc" {
+		t.Errorf("resumeToken = %q, want JSON with sessionId=session-abc (err=%v)", res.ResumeToken, err)
 	}
 	if gotReq.Provider != "deepseek_magic" || gotReq.Model != "deepseek-v4-pro" {
 		t.Errorf("request provider/model = %q/%q, want deepseek_magic/deepseek-v4-pro", gotReq.Provider, gotReq.Model)
@@ -205,5 +206,78 @@ func TestDSHEmbedExecutorUnreachable(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Error("error must be non-empty on unreachable agent-server")
+	}
+}
+
+// TestDSHEmbedExecutorResumeTokenRoundTrip 断言 dispatch 返回的 ResumeToken
+// 是 JSON 编码（sessionId + provider/model/skillPrompt/effort），且 Resume
+// 能解码并带 sessionId 重新发 /agent/run。
+func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
+	var gotReqs []agentRunRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req agentRunRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotReqs = append(gotReqs, req)
+		_ = json.NewEncoder(w).Encode(agentRunResponse{Text: "done", Outcome: "completed", SessionID: "session-resume-1"})
+	}))
+	defer srv.Close()
+
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	spec := PhaseSpec{
+		Phase:           "planning",
+		Model:           "gateway/deepseek-v4-pro",
+		ReasoningEffort: "high",
+		SkillPrompt:     "/obsidian-task-runner-round1 /vault/TASK.md",
+		Timeout:         30 * time.Second,
+	}
+	h, err := e.Start(context.Background(), spec, TaskSnapshot{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	res, err := h.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if res.ResumeToken == "" {
+		t.Fatal("ResumeToken must be non-empty after a durable session")
+	}
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil {
+		t.Fatalf("ResumeToken must be valid JSON: %v (got %q)", err, res.ResumeToken)
+	}
+	if tok.SessionID != "session-resume-1" || tok.Provider != "deepseek_magic" || tok.Model != "deepseek-v4-pro" || tok.SkillPrompt != spec.SkillPrompt || tok.ReasoningEffort != "high" {
+		t.Fatalf("resume token fields wrong: %+v", tok)
+	}
+
+	// Resume 用 token 重新发请求，带 sessionId。
+	h2, err := e.Resume(context.Background(), res.ResumeToken)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := h2.Wait(); err != nil {
+		t.Fatalf("Resume Wait: %v", err)
+	}
+	if len(gotReqs) != 2 {
+		t.Fatalf("request count = %d, want 2 (start + resume)", len(gotReqs))
+	}
+	if gotReqs[1].SessionID != "session-resume-1" {
+		t.Errorf("resume sessionId = %q, want session-resume-1", gotReqs[1].SessionID)
+	}
+	if gotReqs[1].Provider != "deepseek_magic" || gotReqs[1].Model != "deepseek-v4-pro" {
+		t.Errorf("resume provider/model = %q/%q, want deepseek_magic/deepseek-v4-pro", gotReqs[1].Provider, gotReqs[1].Model)
+	}
+}
+
+// TestDSHEmbedExecutorResumeRejectsBadToken 断言 Resume 拒绝空/畸形 token。
+func TestDSHEmbedExecutorResumeRejectsBadToken(t *testing.T) {
+	e := newDSHEmbedExecutor("127.0.0.1:8799", t.TempDir())
+	if _, err := e.Resume(context.Background(), ""); err == nil {
+		t.Error("Resume(empty) must fail")
+	}
+	if _, err := e.Resume(context.Background(), "not-json"); err == nil {
+		t.Error("Resume(not-json) must fail")
+	}
+	if _, err := e.Resume(context.Background(), `{"sessionId":"","provider":"p","model":"m"}`); err == nil {
+		t.Error("Resume(missing sessionId) must fail")
 	}
 }

@@ -54,7 +54,7 @@ func TestRunDSHPhaseMapsOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := New(&config.Config{Executor: "dsh"})
 			r.phaseExecutor = phaseExecutorStub{result: tt.result}
-			_, code, _ := r.runDSHPhase(context.Background(), PhaseSpec{Phase: "refining"}, TaskSnapshot{TaskID: "001"})
+			_, _, code, _ := r.runDSHPhase(context.Background(), PhaseSpec{Phase: "refining"}, TaskSnapshot{TaskID: "001"})
 			if code != tt.wantCode {
 				t.Fatalf("code=%q, want %q", code, tt.wantCode)
 			}
@@ -65,7 +65,7 @@ func TestRunDSHPhaseMapsOutcome(t *testing.T) {
 func TestRunDSHPhaseStartError(t *testing.T) {
 	r := New(&config.Config{Executor: "dsh"})
 	r.phaseExecutor = phaseExecutorStub{err: context.DeadlineExceeded}
-	out, code, reason := r.runDSHPhase(context.Background(), PhaseSpec{}, TaskSnapshot{})
+	_, out, code, reason := r.runDSHPhase(context.Background(), PhaseSpec{}, TaskSnapshot{})
 	if out != OutcomeFailed || code != ErrModelFailed || reason == "" {
 		t.Fatalf("start error mapping = (%q, %q, %q), want failed/MODEL_FAILED/non-empty", out, code, reason)
 	}

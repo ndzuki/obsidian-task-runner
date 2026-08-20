@@ -24,7 +24,11 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 // Phase 5 replacement for the inline exec block: the caller routes
 // outcome/code/reason into the existing failure/fallback/notification path
 // without touching executor-specific logging, PID files, or empty-stop watch.
-func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecOutcome, ErrorCode, string) {
+// runDSHPhase executes one phase through the configured phaseExecutor. It
+// returns the full ExecutionResult (so the caller can persist ResumeToken for
+// durable resume) plus the mapped outcome/code/reason the caller routes into
+// the failure/notification path.
+func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (*ExecutionResult, ExecOutcome, ErrorCode, string) {
 	executor := r.phaseExecutor
 	if executor == nil {
 		executor = newPhaseExecutor(r.cfg)
@@ -32,11 +36,12 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	}
 	handle, err := executor.Start(ctx, spec, snap)
 	if err != nil {
-		return OutcomeFailed, ErrModelFailed, err.Error()
+		return nil, OutcomeFailed, ErrModelFailed, err.Error()
 	}
 	result, err := handle.Wait()
 	if err != nil {
-		return OutcomeFailed, ErrModelFailed, err.Error()
+		return nil, OutcomeFailed, ErrModelFailed, err.Error()
 	}
-	return mapExecOutcome(result)
+	outcome, code, reason := mapExecOutcome(result)
+	return result, outcome, code, reason
 }

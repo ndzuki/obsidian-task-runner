@@ -43,11 +43,37 @@ func (e *dshEmbedExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskS
 	return e.dispatch(ctx, spec, "")
 }
 
-// Resume re-attaches to a durable session by its sessionId (E4). Until the
-// frontmatter executor_session_id plumbing lands, resume is unsupported and the
-// daemon falls back to frontmatter re-dispatch (same as spawn today).
-func (e *dshEmbedExecutor) Resume(context.Context, string) (ExecutionHandle, error) {
-	return nil, ErrResumeUnsupported
+// embedResumeToken encodes everything Resume needs to re-attach a durable
+// session: the agent-server sessionId plus the request fields (provider/model/
+// skillPrompt/effort) required to rebuild the /agent/run payload. The daemon
+// persists this JSON as the task's executor_session_id.
+type embedResumeToken struct {
+	SessionID       string `json:"sessionId"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	SkillPrompt     string `json:"skillPrompt"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
+// Resume re-attaches to a durable session by decoding the resume token
+// (JSON) and re-issuing /agent/run with the recorded sessionId. The agent-
+// server resumes the session rather than starting a new one, so model
+// context carries across a daemon restart.
+func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string) (ExecutionHandle, error) {
+	if resumeToken == "" {
+		return nil, fmt.Errorf("dsh-embed resume: empty resume token")
+	}
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(resumeToken), &tok); err != nil {
+		return nil, fmt.Errorf("dsh-embed resume: invalid resume token: %w", err)
+	}
+	if tok.SessionID == "" || tok.Provider == "" || tok.Model == "" {
+		return nil, fmt.Errorf("dsh-embed resume: token missing sessionId/provider/model")
+	}
+	// provider/model are already in DSH route form (recorded at dispatch);
+	// skillPrompt is the original slash prompt, re-injected here.
+	taskText := e.dshTaskText(tok.SkillPrompt)
+	return e.startRequest(ctx, "resume", tok.Provider, tok.Model, taskText, tok.ReasoningEffort, tok.SessionID, tok.SkillPrompt, 30*time.Minute)
 }
 
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract
@@ -70,11 +96,18 @@ type agentRunResponse struct {
 func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, sessionID string) (ExecutionHandle, error) {
 	provider, model := mapDSHModel(spec.Model)
 	taskText := e.dshTaskText(spec.SkillPrompt)
-
+	effort := mapDSHEffort(spec.ReasoningEffort)
 	timeout := spec.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
+	return e.startRequest(ctx, spec.Phase, provider, model, taskText, effort, sessionID, spec.SkillPrompt, timeout)
+}
+
+// startRequest builds and launches the /agent/run request. dispatch maps the
+// OMP model/effort and injects the skill body; Resume re-uses it with the
+// already-mapped provider/model and re-injected task text.
+func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, provider, model, taskText, effort, sessionID, skillPrompt string, timeout time.Duration) (ExecutionHandle, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 
 	h := &embedHandle{
@@ -82,15 +115,21 @@ func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, session
 		cancel: cancel,
 		client: e.client,
 		addr:   e.addr,
-		phase:  spec.Phase,
+		phase:  phase,
 		req: agentRunRequest{
 			Task:            taskText,
 			Provider:        provider,
 			Model:           model,
-			ReasoningEffort: mapDSHEffort(spec.ReasoningEffort),
+			ReasoningEffort: effort,
 			SessionID:       sessionID,
 		},
-		result: make(chan *ExecutionResult, 1),
+		// Fields recorded to build the resume token once the session id is
+		// known (after the /agent/run response).
+		provider:    provider,
+		model:       model,
+		effort:      effort,
+		skillPrompt: skillPrompt,
+		result:      make(chan *ExecutionResult, 1),
 	}
 	go h.run()
 	return h, nil
@@ -143,7 +182,13 @@ type embedHandle struct {
 	addr   string
 	phase  string
 	req    agentRunRequest
-	result chan *ExecutionResult
+	// provider/model/effort/skillPrompt are recorded at dispatch so the
+	// resume token can be built once the session id arrives in the response.
+	provider    string
+	model       string
+	effort      string
+	skillPrompt string
+	result      chan *ExecutionResult
 }
 
 func (h *embedHandle) PID() int { return 0 }
@@ -206,12 +251,32 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 		Code:        mapEmbedOutcome(parsed.Outcome, parsed.ErrorCode),
 		Error:       parsed.ErrorCode,
 		Stdout:      parsed.Text,
-		ResumeToken: parsed.SessionID,
+		ResumeToken: h.buildResumeToken(parsed.SessionID),
 	}
 	if res.Code != OutcomeSuccess && res.Error == "" {
 		res.Error = "agent-server outcome " + parsed.Outcome
 	}
 	return res
+}
+
+// buildResumeToken encodes the durable session id plus the request fields
+// needed to re-attach it. Returns "" when the session id is empty (the
+// agent-server did not open a durable session).
+func (h *embedHandle) buildResumeToken(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	tok := embedResumeToken{
+		SessionID:       sessionID,
+		Provider:        h.provider,
+		Model:           h.model,
+		SkillPrompt:     h.skillPrompt,
+		ReasoningEffort: h.effort,
+	}
+	if b, err := json.Marshal(tok); err == nil {
+		return string(b)
+	}
+	return sessionID
 }
 
 // mapEmbedOutcome maps the agent-server outcome string to the closed ExecOutcome
