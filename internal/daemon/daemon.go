@@ -546,7 +546,7 @@ func (r *Runner) initLogging() error {
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	logPath := filepath.Join(logDir, "otg-daemon.log")
 
@@ -1661,7 +1661,7 @@ func (r *Runner) taskLogDir() string {
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	return filepath.Join(logDir, "tasks")
 }
@@ -3122,7 +3122,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		logDir := r.cfg.LogDir
 		if logDir == "" {
 			home, _ := os.UserHomeDir()
-			logDir = filepath.Join(home, ".omp", "logs")
+			logDir = filepath.Join(home, ".dsh", "logs")
 		}
 		taskLogDir := filepath.Join(logDir, "tasks")
 		if err := os.MkdirAll(taskLogDir, 0o700); err != nil {
@@ -3571,7 +3571,7 @@ func (r *Runner) cleanupOldLogs() {
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	taskLogDir := filepath.Join(logDir, "tasks")
 	entries, err := os.ReadDir(taskLogDir)
@@ -3676,10 +3676,10 @@ func init() {
 }
 
 // apiKeyAvailable probes whether any provider API key is reachable: either an
-// env var override (DEEPSEEK_API_KEY / CODEX_API_KEY as used by
-// ~/.omp/get-api-key.sh) or the KeePassXC database password in the secret
-// service. The probe is cheap (sub-second) and runs before dispatching a
-// session so key-less runs never start a headless session.
+// env var override (DEEPSEEK_API_KEY / CODEX_API_KEY) or the KeePassXC
+// database password in the secret service. The probe is cheap (sub-second)
+// and runs before dispatching a session so key-less runs never start a
+// headless session.
 func apiKeyAvailable() bool {
 	probe, ok := apiKeyProbe.Load().(func() bool)
 	if !ok {

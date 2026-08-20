@@ -106,11 +106,3 @@ func TestConfigureSystemdWritesMiseShimsPath(t *testing.T) {
 		}
 	}
 }
-
-// TestLinkTopLevelSkills guards the agent-discovery registration: every
-// top-level skill under ~/.omp/skills/ gets a symlink in
-// ~/.omp/agent/skills/ (dependency skills like knowledge-base were never
-// registered by installPhaseSkills, so skill:// resolution failed in agent
-// sessions while skill-doctor still found them). Idempotent: existing
-// entries are preserved and a second run links nothing; DryRun writes
-// nothing.

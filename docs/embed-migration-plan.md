@@ -173,3 +173,39 @@ dsh-embed 具备生产可用性。
   检查连到旧实例造成假健康。修复：`server.on("error", EADDRINUSE → process.exit(1))`，
   让 daemon 健康检查失败并重试。（`~/.dsh/plugins/agent-server.mjs`，非 git）
 - ⏳ 观察中：057 merge 会话（CI 修复）完成 + 写回；其他 ready 任务持续派发。
+
+## 9. reasoning effort 审查（2026-08-20，对照官方 handbook）
+
+参考 `sandbaseai/deepseek-harness-handbook` 的 headless-reasoning-effort 指南，
+审查 otg 各阶段映射：
+
+| 阶段 | omp --thinking | mapDSHEffort | 审查结论 |
+|---|---|---|---|
+| priority | off | `""`（不传） | ⚠️ DSH 无 off 选择（实测 reasoningEffort:"off" → UNSUPPORTED），不传=用 provider 默认 |
+| round2 | max | `xhigh` | ✅ xhigh wire=max，对齐 omp |
+| planning | high | `high` | ✅ |
+| 默认（refining/merge/pm/conventions） | low | `low` | ✅ |
+| audit | off | `""`（不传） | ⚠️ 同上 |
+| design（全局设计） | max | `xhigh` | ✅ |
+| merge（冲突解决） | high | `high` | ✅ |
+
+**官方要点**（对照后确认）：
+- DSH headless 无 `--thinking` flag——embed 用 `agentOptions.reasoningEffort`
+  （request/selection 层）是**正确**的 per-请求方案。
+- `reasoningEfforts` 是**声明**（模型支持的 levels），`reasoning` 是 provider
+  默认，`reasoningEffort` 是 selection——三层语义已正确区分。
+- **off 不是可选择 effort**：实测 `off: null` 声明后仍 UNSUPPORTED（llm-pi-ai
+  的 thinkingLevelMap 不含 off）。off（关闭推理）只能通过 provider `reasoning:
+  false` 或不传（omission 用默认）实现。当前 `mapDSHEffort(off)=""` 是**合理
+  近似**（不传用默认），但语义是「用默认」而非「关闭推理」——priority/audit
+  若需真正关闭推理省 token，需 provider 级 `reasoning` 配置（后续 backlog）。
+
+## 10. systemd 服务名 + 日志路径去 omp 化（2026-08-20）
+
+- **systemd**：停用 + 禁用 + 删除 `omp-task-runner.service/timer` 与
+  `omp-task-watcher.service`（旧名，5.8 已改 install.go 的 unit 名为 otg-*，
+  但运行时旧 unit 仍在）。daemon 重启后发现 `omp-task-runner.service` 被
+  systemd 自动拉起（activating），与手动 dsh-embed daemon 冲突——已彻底清除。
+- **日志路径**：`~/.omp/logs` → `~/.dsh/logs`（daemon/merge/audit/cli 共 7 处）。
+- **注释**：`~/.omp/get-api-key.sh` 历史引用移除。
+- 代码层 `~/.omp` 引用清零。
