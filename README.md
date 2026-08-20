@@ -2,7 +2,7 @@
 
 > 在 Obsidian 写需求，自动生成任务、制定计划、实现代码、创建 PR 并合并——你只负责写需求、把握方向，最后验收产品。
 
-Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求入口，把项目代码目录当作执行目标。你只需要写需求、在两处确认、最后验收产品，其他步骤（计划、实现、测试、PR、合并）由 OMP Agent 和守护进程自动完成。
+Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求入口，把项目代码目录当作执行目标。你只需要写需求、在两处确认、最后验收产品，其他步骤（计划、实现、测试、PR、合并）由 DSH Agent 和守护进程自动完成。
 
 ## 适合谁
 
@@ -10,7 +10,7 @@ Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求�
 - 需要保留计划、实现记录、验收结果和决策记忆，方便追溯。
 - 希望全程自动化：从需求到计划、实现、PR 创建与合并都由系统完成，只保留「需求方向」和「最终产品验收」两个人工节点。
 
-> 当前版本面向 Linux + systemd + OMP。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
+> 当前版本面向 Linux + systemd + DSH。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
 
 ## 工作方式：你只需确认方向并验收产品
 
@@ -103,7 +103,7 @@ flowchart TD
 
 - Go 1.24 或更高版本（从源码构建时需要）。
 - `git`。
-- `omp` 命令，并已配置可用模型。
+- `dsh` 命令，并已配置可用模型。
 - Linux 下建议使用 `systemd --user`。
 - **推荐**：Kitty 终端（`allow_remote_control yes`）用于 Grilling 通知时自动创建新 tab。同一 TASK 只会保留一个活跃 Grilling tab；daemon 会跨 Kitty 窗口按任务 ID 去重，任务标题变化或 daemon 重启不会重复创建。
 - 桌面通知还需要 `notify-send` 和通知服务。`kitty @ ls` 失败时 daemon 使用本次尝试写入的 5 分钟 debounce 阻止重复创建；Kitty JSON 无法解析时也不会冒险创建 tab，而是使用桌面通知 fallback 并等待后续扫描重试。
@@ -154,7 +154,7 @@ otg install \
 编辑：
 
 ```text
-~/.omp/skills/obsidian-task-runner/config/vault-map.json
+~/.dsh/skills/obsidian-task-runner/config/vault-map.json
 ```
 
 最小配置示例：
@@ -174,11 +174,6 @@ otg install \
     "gpt": "gateway/deepseek-v4-pro",
     "default": "gateway/gpt-5.4-mini"
   },
-  "fallback_models": {
-    "gpt": "deepseek/deepseek-v4-pro",
-    "default": "deepseek/deepseek-v4-flash",
-    "deepseek": "deepseek/deepseek-v4-flash"
-  },
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
   "max_concurrent_tasks": 0,
@@ -192,7 +187,7 @@ otg install \
 
 ### 阶段并发上限（`phase_concurrency`）
 
-`max_concurrent_tasks` / `max_concurrent_tasks_per_project` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 OMP 会话导致 token 快速消耗、API 限速或资源抢占：
+`max_concurrent_tasks` / `max_concurrent_tasks_per_project` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 dsh 会话导致 token 快速消耗、API 限速或资源抢占：
 
 ```json
 "phase_concurrency": {
@@ -312,15 +307,15 @@ llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-serve
 
 ### 会话结束知识提炼（自动）
 
-交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库：`.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作时注入提炼指令，agent 委派 subagent 分析会话转录并按 `knowledge-base` Step 0.7 流程入库（`otg kb absorb` / 新建 References 文档）。安装：复制到 `~/.omp/agent/extensions/`（已随本仓库提供，用户级全项目生效）；禁用：`config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。手动触发：直接说"提炼本次会话"。
+交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库：`.dsh/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作时注入提炼指令，agent 委派 subagent 分析会话转录并按 `knowledge-base` Step 0.7 流程入库（`otg kb absorb` / 新建 References 文档）。安装：复制到 `~/.dsh/agent/extensions/`（已随本仓库提供，用户级全项目生效）；禁用：`config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。手动触发：直接说"提炼本次会话"。
 
 ### 并发任务
 
 `max_concurrent_tasks_per_project` 是**每项目**同时运行的 **implementing（Round 2）任务**上限，默认 `2`：N 个项目最多同时运行 N×2 个实现会话，一个项目的满负荷不会饿死其它项目。`max_concurrent_tasks` 是可选的**全局总封顶**（`0` = 不限，默认 `0`；旧配置里的显式值按全局封顶保留，仅此一项的配置行为不变）。两个上限同时生效，取更严格者。该限制覆盖同一 daemon 内所有批次和扫描周期，避免多个实现任务同时占用过多 LSP、debug adapter、编译器以及本机 CPU/内存资源。
 
 - **implementing / Round 2**：必须先获取所属项目的 implementation slot；每项目同时最多运行 `max_concurrent_tasks_per_project` 个，且全部项目合计不超过 `max_concurrent_tasks`（0 = 不限）。
-- **planning / refining / priority / merge / audit**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 OMP 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
-- **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `<repo parent>/.otg-worktrees/<repoHash>/TASK-<runkey>` 下的任务专属 Git worktree（`worktree_base` 可覆盖根目录），再释放仓库锁；实际 OMP 在独立 worktree 中运行。
+- **planning / refining / priority / merge / audit**：受 `phase_concurrency` 各自上限约束（见下），避免 20+ 个 dsh 会话同时启动导致 token 快速消耗、API 限速和 CPU/内存抢占。
+- **同一仓库的 Round 2**：daemon 先在仓库短锁内创建或复用 `<repo parent>/.otg-worktrees/<repoHash>/TASK-<runkey>` 下的任务专属 Git worktree（`worktree_base` 可覆盖根目录），再释放仓库锁；实际 dsh 在独立 worktree 中运行。
 - **新项目 implementing**：虽然不使用 Round 2 worktree，但仍会占用所属项目的 implementation slot，因为同样会使用代码分析和构建资源。
 - **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
 - **空分支字段兼容**：尚未进入 Round 2 的任务可以保留 `target_branch: ""`。daemon 先提供任务专属 worktree，agent 在其中创建 `task/<id>-<slug>`；Round 2 完成后把实际分支写回 `target_branch`。
@@ -360,18 +355,20 @@ flowchart TD
 
 人工在 forge UI 合并了交还任务的 PR 后，daemon 每任务 5 分钟冷却探测并自动收口 `done`（`autoCloseMergedConflictPRs`），无需手动改 frontmatter。
 
-### 思考模式（Thinking Mode）
+### 推理强度（Reasoning Effort）
 
-DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `--thinking`，无需手动配置：
+DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自动传入 `reasoningEffort`（dsh-embed 经 agentOptions 传，无需手动配置）：
 
-| 阶段 | thinking | 理由 |
+| 阶段 | effort | 理由 |
 | ------ | ---------- | ------ |
-| priority | `off` | 快速 JSON 评估 |
-| refining | `low` | 对话式，轻推理 |
+| priority | `medium` | 优先级评估（理解任务影响/依赖） |
+| refining / conventions / audit / pm | `low` | 对话/整理类，轻推理 |
 | planning | `high` | 深度思维链，提升计划质量 |
-| round2 | `max` | 最深推理，代码质量优先 |
+| round2 | `max`（映射 xhigh） | 最深推理，代码质量优先 |
+| merge | `high` | 冲突解决需推理 |
+| design（全局设计库） | `max` | 跨需求架构决策 |
 
-`deepseek/deepseek-v4-flash` 与 `deepseek/deepseek-v4-pro` 均支持 `max`；fallback 时保持相同 thinking 档位。兜底由 vault-map.json 的 `fallback_models` 映射配置：key 是 assignee（对应 `models` 的 key），value 是任意 OMP 模型标识。默认 `gpt`/`default`/`deepseek` 均指向 `deepseek/deepseek-v4-flash`；可增删 key（如给 `gemini` 也配兜底）、改任意模型（如切回 `deepseek/deepseek-v4-pro` 做深度推理兜底）、置 `""` 禁用单个 assignee 的兜底——全部无需改代码。模型标识不再使用 `:xhigh` 等后缀，推理强度完全由 `--thinking` 控制。
+模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。兜底由 DSH 的 fallback.mjs 插件（`~/.dsh/cordis.patch.yml`）按链切换 `deepseek_magic → ds-official`（免费网关失败/配额耗尽自动切官方直连），daemon 侧无 fallback 层。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
 
 ### 阻塞依赖自动恢复
 
@@ -384,15 +381,15 @@ daemon 每次扫描会检查 `blocked` 任务的 `blocked_by` 上游：若上游
 
 ### API Key 不可用（KeePassXC 未解锁）
 
-当 OMP 因无法获取模型 API Key（`No API key found`，通常 KeePassXC/secret service 未解锁）而失败时，任务以 `phase_error_code=API_KEY_UNAVAILABLE` 进入 `blocked`：
+当 dsh 因无法获取模型 API Key（`No API key found`，通常 KeePassXC/secret service 未解锁）而失败时，任务以 `phase_error_code=API_KEY_UNAVAILABLE` 进入 `blocked`：
 
 - **不重试、不 fallback**：所有 provider 共用同一 key 来源，重复尝试无意义；也不消耗 `planning_retry_count` 等重试预算。
-- **自动拾起**：daemon 每次扫描先探测 key 可用性（环境变量 `DEEPSEEK_API_KEY`/`CODEX_API_KEY`，或 `secret-tool lookup app keepassxc type db-password`），不可用则不启动 OMP 并保持 `blocked`；可用后自动还原 `blocked_phase` 继续执行，无需手动 `resume_approved`。
+- **自动拾起**：daemon 每次扫描先探测 key 可用性（环境变量 `DEEPSEEK_API_KEY`/`CODEX_API_KEY`，或 `secret-tool lookup app keepassxc type db-password`），不可用则不启动 dsh 并保持 `blocked`；可用后自动还原 `blocked_phase` 继续执行，无需手动 `resume_approved`。
 - systemd 单元需要 `XDG_RUNTIME_DIR=/run/user/%U` 与 `DBUS_SESSION_BUS_ADDRESS` 才能访问 keyring；KeePassXC 未随桌面会话解锁时 key 不可达。
 
 ### 优雅停机
 
-daemon 收到 SIGTERM（`systemctl stop`/重启/`otg install`）时，运行中的 OMP 会话先收 SIGTERM 保存 session 后退出，30 秒内未退出则强制终止；停机期间不会启动 fallback 模型。被中断的任务**不视为失败**：保持原状态并标记 `phase_error_code=PHASE_INTERRUPTED`，重启后下一轮扫描自动拾起继续执行（无 `blocked`、无需手动 `resume_approved`）；阶段成功后标记自动清除。`otg install` 的 stopDaemon 阻塞等待优雅停机完成，不与新实例竞态。
+daemon 收到 SIGTERM（`systemctl stop`/重启/`otg install`）时，长驻 agent-server 由 daemon SIGTERM（10 秒内未退出则 SIGKILL），被中断会话的 executor_session_id 持久化；停机期间不会启动 fallback 模型。被中断的任务**不视为失败**：保持原状态并标记 `phase_error_code=PHASE_INTERRUPTED`，重启后下一轮扫描自动拾起继续执行（无 `blocked`、无需手动 `resume_approved`）；阶段成功后标记自动清除。`otg install` 的 stopDaemon 阻塞等待优雅停机完成，不与新实例竞态。
 
 ### 知识库（KB v2）：自动沉淀 + 主动检索
 
@@ -406,7 +403,7 @@ flowchart LR
     SINK --> KB[(References/ KB v2)]
     EXTRACT --> KB
     KB -->|RebuildINDEX 摘要层| IDX[(INDEX.md)]
-    IDX -->|Round 1/2 检索| AGENT[OMP agent]
+    IDX -->|Round 1/2 检索| AGENT[DSH agent]
     AGENT -->|加载 knowledge-base| KB
     AGENT -->|新踩坑写回| KB
 ```
@@ -423,9 +420,9 @@ flowchart LR
 ### 5. 确认服务状态
 
 ```bash
-systemctl --user status omp-task-watcher.service
-systemctl --user list-timers | grep omp-task-runner
-journalctl --user -u omp-task-watcher.service -n 50
+systemctl --user status otg-task-watcher.service
+systemctl --user list-timers | grep otg-task-runner
+journalctl --user -u otg-task-watcher.service -n 50
 ```
 
 如果暂时不想安装常驻服务，可以手动运行一次扫描：
@@ -482,7 +479,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`docs/data
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；fact/auto 自动收敛，成熟后自动进入 planning，仅真争议进 needs-grilling |
 | `needs-refining` | 旧版状态（已废弃） | daemon 自动迁移为 needs-grilling 后正常处理 |
-| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 OMP 对话，完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答；清单 `status=paused` 是项目级暂停开关——该项目的 grilling 流程整体暂停（不提醒、不分发、不 consolidate、parked 不解除），仅你手动改回 `open` 或关联 REQ 更新（daemon 自动激活）才恢复 |
+| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 DSH 光标问卷交互，完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答；清单 `status=paused` 是项目级暂停开关——该项目的 grilling 流程整体暂停（不提醒、不分发、不 consolidate、parked 不解除），仅你手动改回 `open` 或关联 REQ 更新（daemon 自动激活）才恢复 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | auto_approve 默认 true → 自动批准进入实现；`auto_approve: false` 时需审阅计划 + ADR 提议，设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
@@ -525,17 +522,17 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | ------ | ------ |
 | `~/.local/bin/otg` | Go 二进制（systemd 守护进程使用） |
 | `~/go/bin/otg` | Go 二进制（终端直接调用） |
-| `~/.omp/skills/obsidian-task-runner/` | Agent Skill、参考文档和配置 |
-| `~/.omp/skills/obsidian-task-runner/config/vault-map.json` | Vault 与项目映射、模型映射 |
-| `~/.omp/logs/` | daemon 和任务审计日志 |
+| `~/.dsh/skills/obsidian-task-runner/` | Agent Skill、参考文档和配置 |
+| `~/.dsh/skills/obsidian-task-runner/config/vault-map.json` | Vault 与项目映射、模型映射 |
+| `~/.dsh/logs/` | daemon 和任务审计日志 |
 | `~/Vault/Projects/<project>/Requirements/` | 你编写的需求 |
 | `~/Vault/Projects/<project>/Tasks/` | Agent 自动创建和更新的任务 |
 
 ## 故障排查
 
-1. **没有生成 TASK**：确认文件名是 `REQ-<id>-<slug>.md`，并查看 `~/.omp/logs/otg-daemon.log`。
+1. **没有生成 TASK**：确认文件名是 `REQ-<id>-<slug>.md`，并查看 `~/.dsh/logs/otg-daemon.log`。
 2. **TASK 一直是 `blocked`**：检查 `project` 是否存在于 `vault-map.json`，`assignee` 是否填写且是有效 model key，`blocked_by` 是否为空。
-3. **没有自动执行**：查看 `systemctl --user status` 和 `~/.omp/logs/otg-daemon.log`；也可运行 `otg daemon --once` 验证配置。
+3. **没有自动执行**：查看 `systemctl --user status` 和 `~/.dsh/logs/otg-daemon.log`；也可运行 `otg daemon --once` 验证配置。
 4. **计划或代码没有继续**：确认对应 gate 字段已设为 `true`，保存任务文件后等待下一次扫描。
 5. **看板为空**：确认已安装并启用 Dataview，查询来源目录是 `Projects`，任务位于 `Projects/<project>/Tasks/`，然后在 Obsidian 中重新加载索引。
 6. **任务 frontmatter 损坏（"parse error"）**：运行 `otg validate-doc <task>` 诊断（现在会同时检查必填字段），`otg repair-doc <task>` 修复（可恢复块标量、列表，并将损坏的双引号标量转为块标量）。修复后 `validate-doc` 应输出 `frontmatter OK`。
