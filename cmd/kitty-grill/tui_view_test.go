@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,5 +59,39 @@ func TestWrapShortTextUnchanged(t *testing.T) {
 	s := "短文本"
 	if wrap(s, 10) != s {
 		t.Errorf("短文本不应换行")
+	}
+}
+
+// 验证 prefetchContext 注入需求文档 + 引用的 ADR 全文。
+func TestPrefetchContextInjectsReqAndADR(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	reqPath := filepath.Join(vault, "Projects", "001", "Requirements", "REQ-001.md")
+	adrDir := filepath.Join(vault, "Notes", "adr")
+	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(adrDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reqContent := "需求：实现同步服务\n详见 ADR-005 和 ADR-006 的约束。"
+	if err := os.WriteFile(reqPath, []byte(reqContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adrDir, "ADR-005-build.md"), []byte("ADR-005 内容"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := prefetchContext(vault, "Projects/001/Requirements/REQ-001.md")
+	for _, want := range []string{"需求：实现同步服务", "ADR-005", "ADR-005 内容"} {
+		if !strings.Contains(ctx, want) {
+			t.Errorf("prefetch 缺少 %q，完整:\n%s", want, ctx)
+		}
+	}
+}
+
+func TestPrefetchContextEmptyWhenNoReq(t *testing.T) {
+	if prefetchContext("", "") != "" {
+		t.Error("无 req 时应返回空")
 	}
 }
