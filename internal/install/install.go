@@ -491,28 +491,6 @@ func ConfigureSystemd(opts Options) error {
 
 	// Write service files
 	services := map[string]string{
-		"otg-task-runner.service": fmt.Sprintf(`[Unit]
-Description=扫描 Obsidian Vault 并处理可执行任务(兜底轮询,由 timer 触发)
-
-[Service]
-Type=oneshot
-Environment=OBSIDIAN_VAULT=%s
-Environment=PATH=%s
-Environment=XDG_RUNTIME_DIR=/run/user/%%U
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
-ExecStart=%s/.local/bin/otg daemon --once
-`, opts.ObsidianVault, path, home),
-		"otg-task-runner.timer": fmt.Sprintf(`[Unit]
-Description=Obsidian Task Runner 兜底轮询
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=%dmin
-RandomizedDelaySec=10
-
-[Install]
-WantedBy=timers.target
-`, opts.PollIntervalMin),
 		"otg-task-watcher.service": fmt.Sprintf(`[Unit]
 Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发任务处理
 
@@ -542,15 +520,10 @@ WantedBy=default.target
 		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n%s\n", err, out)
 		}
-		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-runner.timer").CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: systemctl enable timer failed: %v\n%s\n", err, out)
+		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-watcher.service").CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: systemctl enable watcher failed: %v\n%s\n", err, out)
 		}
-		if _, err := exec.LookPath("inotifywait"); err == nil {
-			if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-watcher.service").CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: systemctl enable watcher failed: %v\n%s\n", err, out)
-			}
-		}
-		fmt.Println("systemd units installed and enabled")
+		fmt.Println("systemd unit installed and enabled")
 	}
 	return nil
 }

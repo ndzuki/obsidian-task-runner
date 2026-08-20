@@ -96,7 +96,7 @@ func TestConfigureSystemdWritesMiseShimsPath(t *testing.T) {
 	if err := ConfigureSystemd(Options{ObsidianVault: "/vault", PollIntervalMin: 30}); err != nil {
 		t.Fatalf("ConfigureSystemd: %v", err)
 	}
-	for _, name := range []string{"otg-task-runner.service", "otg-task-watcher.service"} {
+	for _, name := range []string{"otg-task-watcher.service"} {
 		data, err := os.ReadFile(filepath.Join(home, ".config", "systemd", "user", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
