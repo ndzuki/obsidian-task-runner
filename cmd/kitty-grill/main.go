@@ -119,22 +119,6 @@ type option struct {
 	Label string `json:"label"`
 }
 
-// ansi helpers for rendering the questionnaire in the terminal.
-const (
-	ansiReset  = "\x1b[0m"
-	ansiBold   = "\x1b[1m"
-	ansiDim    = "\x1b[2m"
-	ansiCyan   = "\x1b[36m"
-	ansiGreen  = "\x1b[32m"
-	ansiYellow = "\x1b[33m"
-)
-
-func bold(s string) string   { return ansiBold + s + ansiReset }
-func dim(s string) string    { return ansiDim + s + ansiReset }
-func cyan(s string) string   { return ansiCyan + s + ansiReset }
-func green(s string) string  { return ansiGreen + s + ansiReset }
-func yellow(s string) string { return ansiYellow + s + ansiReset }
-
 // extractJSON pulls the first ```json fenced block out of the model reply.
 // It returns the trimmed inner text and whether a block was found.
 func extractJSON(text string) (string, bool) {
@@ -151,27 +135,6 @@ func extractJSON(text string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(text[start : start+end]), true
-}
-
-// renderQuestionnaire formats the structured questionnaire as a scannable
-// option list: each decision gets a highlighted header, its options with
-// letter keys, and a dimmed recommendation line.
-func renderQuestionnaire(q questionnaire) string {
-	var b strings.Builder
-	for _, d := range q.Decisions {
-		b.WriteString("\n" + bold(yellow("═══ "+d.ID+": "+d.Question+" ═══")) + "\n")
-		for _, o := range d.Options {
-			mark := "  "
-			if o.ID == d.Recommended && d.Recommended != "" {
-				mark = " ⭐推荐"
-			}
-			b.WriteString(fmt.Sprintf("   %s  %s%s\n", bold(cyan("["+o.ID+"]")), o.Label, green(mark)))
-		}
-		if d.Reason != "" {
-			b.WriteString(dim("    理由: "+d.Reason) + "\n")
-		}
-	}
-	return b.String()
 }
 func repl(addr, provider, model, prompt string) error {
 	sessionID := ""
@@ -191,67 +154,82 @@ func repl(addr, provider, model, prompt string) error {
 	}
 	sessionID = resp.SessionID
 
-	// 优先解析结构化 JSON 问卷并渲染；解析失败则回退打印原始文本。
-	if raw, ok := extractJSON(resp.Text); ok {
-		var q questionnaire
-		if err := json.Unmarshal([]byte(raw), &q); err == nil && len(q.Decisions) > 0 {
-			fmt.Println(renderQuestionnaire(q))
-			fmt.Println()
-			fmt.Println(bold("请一轮填写所有决策，格式：") + cyan("D1=A D2=B …") + dim("（可多行，空行提交）"))
-		} else {
-			fmt.Println(resp.Text)
-		}
-	} else {
+	// 解析结构化 JSON 问卷；失败则回退打印原始文本 + 手动填写。
+	raw, ok := extractJSON(resp.Text)
+	if !ok {
 		fmt.Println(resp.Text)
+		return manualFill(addr, provider, model, sessionID)
 	}
-	fmt.Println()
-
-	in := bufio.NewReader(os.Stdin)
-	for {
-		// 阶段 2：收集一轮答案（多行，空行提交）。
-		var answers []string
-		for {
-			fmt.Print("✍️  你的决策 > ")
-			line, err := in.ReadString('\n')
-			if err == io.EOF {
-				fmt.Println()
-				if len(answers) == 0 {
-					return nil
-				}
-				break
-			}
-			if err != nil {
-				return err
-			}
-			msg := strings.TrimSpace(line)
-			if msg == "" {
-				if len(answers) > 0 {
-					break // 空行 = 提交本轮
-				}
-				continue
-			}
-			if msg == "/quit" || msg == "/exit" {
-				return nil
-			}
-			answers = append(answers, msg)
-		}
-
-		if len(answers) == 0 {
-			return nil
-		}
-
-		// 提交本轮答案。
-		fmt.Print("\n⏳ 正在根据你的决策写回需求文档…\n\n")
-		resp, err := chat(addr, provider, model, sessionID, strings.Join(answers, "\n"))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "grill: %v\n", err)
-			continue
-		}
+	var q questionnaire
+	if err := json.Unmarshal([]byte(raw), &q); err != nil || len(q.Decisions) == 0 {
 		fmt.Println(resp.Text)
-		fmt.Println()
-		// 一轮完成即退出（如有待澄清，模型已在总结里列出，用户可另开 tab）。
+		return manualFill(addr, provider, model, sessionID)
+	}
+
+	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
+	answers, aborted := runQuestionnaire(q.Decisions)
+	if aborted {
 		return nil
 	}
+
+	// 组装 D1=A D2=B … 提交。
+	var parts []string
+	for i, d := range q.Decisions {
+		if i < len(answers) && answers[i] != "" {
+			parts = append(parts, fmt.Sprintf("%s=%s", d.ID, answers[i]))
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+
+	fmt.Print("\n⏳ 正在根据你的决策写回需求文档…\n\n")
+	resp, err = chat(addr, provider, model, sessionID, strings.Join(parts, " "))
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.Text)
+	fmt.Println()
+	return nil
+}
+
+// manualFill is the fallback when the model does not emit a parseable JSON
+// questionnaire: print the raw reply and read one multi-line round of answers.
+func manualFill(addr, provider, model, sessionID string) error {
+	fmt.Println()
+	in := bufio.NewReader(os.Stdin)
+	var answers []string
+	for {
+		fmt.Print("✍️  你的决策 > ")
+		line, err := in.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		msg := strings.TrimSpace(line)
+		if msg == "" {
+			if len(answers) > 0 {
+				break
+			}
+			continue
+		}
+		if msg == "/quit" || msg == "/exit" {
+			return nil
+		}
+		answers = append(answers, msg)
+	}
+	if len(answers) == 0 {
+		return nil
+	}
+	resp, err := chat(addr, provider, model, sessionID, strings.Join(answers, "\n"))
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.Text)
+	fmt.Println()
+	return nil
 }
 
 // chat sends one message to the agent-server and returns the model reply.
