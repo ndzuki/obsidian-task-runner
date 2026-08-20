@@ -325,8 +325,8 @@ func TestLoadRejectsNegativePerProjectConcurrency(t *testing.T) {
 }
 
 func TestExecutorDefaultAndValidation(t *testing.T) {
-	if got := Defaults().Executor; got != "dsh" {
-		t.Fatalf("default executor=%q, want dsh", got)
+	if got := Defaults().Executor; got != "dsh-embed" {
+		t.Fatalf("default executor=%q, want dsh-embed", got)
 	}
 	// Invalid executor rejected.
 	dir := t.TempDir()
