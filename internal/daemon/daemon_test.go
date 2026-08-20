@@ -1145,17 +1145,6 @@ exit 1
 	}
 	return omp, startDir, releaseFile
 }
-func waitForFileRemoval(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("file was not removed: %s", path)
-}
 
 func writeTaskFile(t *testing.T, dir, name, status string) string {
 	t.Helper()

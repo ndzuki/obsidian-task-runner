@@ -5,26 +5,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
-
-// TestSetTaskTempEnv 验证任务子进程获得专属临时目录：TMPDIR/TMP/TEMP/
-// GOTMPDIR 全部指向 ~/.cache/otg/tasks/<runkey>，且原值被替换而非追加。
-// 回归背景：go test/go build/mktemp 的临时产物此前落在全局 /tmp，
-// 任务终态后无法按任务归属回收。
-
-func envValue(env []string, key string) string {
-	prefix := key + "="
-	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	return ""
-}
 
 // TestCleanupTaskArtifacts 验证终态任务清理：done+merged 任务移除其专属
 // 临时目录与 PID 文件；非终态任务（implementing）不受影响。
