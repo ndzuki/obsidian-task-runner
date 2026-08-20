@@ -140,10 +140,10 @@ func repl(addr, provider, model, prompt string) error {
 	sessionID := ""
 
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  🟡 需求对齐 — grilling（批量问卷）\n")
+	fmt.Printf("║  🟡 需求对齐 — grilling（光标问卷）\n")
 	fmt.Printf("║\n")
-	fmt.Printf("║  模型会一次性列出所有决策点与选项，你一轮填写完即可。\n")
-	fmt.Printf("║  填写格式：D1=A D2=B …（可多行，空行提交；/quit 结束）\n")
+	fmt.Printf("║  模型列出所有决策点，你用 ↑↓ 选择、Enter 确认，一轮完成。\n")
+	fmt.Printf("║  ←→ 切题 · Tab 跳到未答 · q 提交写回 · Ctrl+C 退出\n")
 	fmt.Printf("╚══════════════════════════════════════════════════════════════╝\n\n")
 
 	// 阶段 1：生成问卷。
