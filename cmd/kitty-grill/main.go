@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -66,11 +67,79 @@ func main() {
 	}
 	if prompt == "" {
 		prompt = buildGrillingPrompt(*taskID, *taskTitle, *reqDoc, *vaultPath)
+		// 预取需求文档 + 引用 ADR 全文注入，模型不再逐文件 read（省 60-70% 时间）。
+		if ctx := prefetchContext(*vaultPath, *reqDoc); ctx != "" {
+			prompt += "\n\n" + ctx
+		}
 	}
 	if err := repl(*addr, *provider, *model, *effort, prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "kitty-grill: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// adrRefRe matches ADR-<digits> references in requirement text.
+var adrRefRe = regexp.MustCompile(`ADR-\d+`)
+
+// prefetchContext reads the requirement doc and any ADRs it explicitly
+// references, returning them as a context block the model can consume directly
+// instead of issuing read tool calls one file at a time. Returns "" when there
+// is nothing to prefetch.
+func prefetchContext(vaultPath, reqDoc string) string {
+	if vaultPath == "" || reqDoc == "" {
+		return ""
+	}
+	reqContent, err := os.ReadFile(filepath.Join(vaultPath, reqDoc))
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("以下是需求文档与相关 ADR 的全文（已提供，无需再 read）：\n\n")
+	b.WriteString("=== " + reqDoc + " ===\n")
+	b.WriteString(string(reqContent))
+	b.WriteString("\n")
+
+	seen := map[string]bool{}
+	for _, m := range adrRefRe.FindAllString(string(reqContent), -1) {
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		if p := findADRFile(vaultPath, m); p != "" {
+			if c, err := os.ReadFile(p); err == nil {
+				b.WriteString("\n=== " + m + " ===\n")
+				b.WriteString(string(c))
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
+// findADRFile locates an ADR markdown file by its ID (e.g. ADR-005) under the
+// vault's Notes/adr or any Projects/*/Notes/adr directory.
+func findADRFile(vaultPath, adrID string) string {
+	dirs := []string{filepath.Join(vaultPath, "Notes", "adr")}
+	if entries, err := os.ReadDir(filepath.Join(vaultPath, "Projects")); err == nil {
+		for _, p := range entries {
+			dirs = append(dirs, filepath.Join(vaultPath, "Projects", p.Name(), "Notes", "adr"))
+		}
+	}
+	prefixes := []string{adrID + "-", strings.ToLower(adrID) + "-"}
+	for _, d := range dirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			for _, pre := range prefixes {
+				if strings.HasPrefix(e.Name(), pre) {
+					return filepath.Join(d, e.Name())
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // buildGrillingPrompt constructs the batch-questionnaire prompt: the model does
