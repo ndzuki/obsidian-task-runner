@@ -15,10 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
@@ -330,33 +328,8 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 	ctx, cancel := context.WithTimeout(parent, r.auditTimeout())
 	defer cancel()
 
-	// ── Phase 5 executor seam ──────────────────────────────────────────
-	if r.cfg.Executor == "dsh" {
-		return r.runAuditSessionDSH(ctx, t, repoDir, workDir, model, prompt)
-	}
-
-	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd,
-		"--model", model, "--auto-approve", "-p", prompt,
-		"--thinking", "off", "--tools", "read,grep,bash")
-	if err := setTaskTempEnv(cmd, t.FilePath); err != nil {
-		return nil, "", fmt.Errorf("create task temp environment: %w", err)
-	}
-	cmd.Dir = workDir
-	// Graceful shutdown: SIGTERM first, hard-kill after WaitDelay.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 30 * time.Second
-	output, runErr := cmd.Output()
-	if runErr != nil {
-		if ctx.Err() != nil {
-			return nil, "", fmt.Errorf("audit session interrupted: %w", runErr)
-		}
-		return nil, "", fmt.Errorf("audit session failed: %w", runErr)
-	}
-	result, decodeErr := parseAuditResult(output)
-	if decodeErr != nil {
-		return nil, "", fmt.Errorf("parse audit result: %w", decodeErr)
-	}
-	return result, string(output), nil
+	// 审计会话统一走 DSH executor（只读验证 + STRICT-JSON 输出）。
+	return r.runAuditSessionDSH(ctx, t, repoDir, workDir, model, prompt)
 }
 
 // runAuditSessionDSH executes the read-only verification through the DSH

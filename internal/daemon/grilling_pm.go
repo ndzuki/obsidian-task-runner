@@ -6,12 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
@@ -284,19 +282,6 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	}
 
 	prompt := "/obsidian-task-runner-pm " + mode + " " + strings.Join(args, " ")
-	// ── Phase 5 executor seam ──────────────────────────────────────────
-	// The dsh path spawns the PM skill via phaseExecutor inside the same
-	// async goroutine, so in-flight dedup and notification semantics are
-	// unchanged; only the process invocation differs.
-	useDSH := r.cfg.Executor == "dsh"
-	var cmd *exec.Cmd
-	if !useDSH {
-		cmd = exec.CommandContext(runCtx, r.cfg.OMPCmd,
-			"--model", r.cfg.Model("default"), "--auto-approve", "-p", prompt)
-		// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
-		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-		cmd.WaitDelay = 30 * time.Second
-	}
 	go func() {
 		defer cancel()
 		if inflightKey != "" {
@@ -313,7 +298,7 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 				}
 			}
 		}
-		output, runErr := r.execPMSession(useDSH, runCtx, cmd, prompt, mode, args)
+		output, runErr := r.execPMSession(runCtx, prompt, mode, args)
 		if runErr != nil {
 			if runCtx.Err() != nil && ctx.Err() != nil {
 				// Interrupted by daemon shutdown; retry on next scan.
@@ -384,13 +369,9 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	return nil
 }
 
-// execPMSession runs one PM coordinator session and returns its stdout plus
-// any process error. On the dsh path it goes through phaseExecutor (async
-// semantics unchanged); on the omp path it is the direct exec + Output().
-func (r *Runner) execPMSession(useDSH bool, runCtx context.Context, cmd *exec.Cmd, prompt, mode string, args []string) ([]byte, error) {
-	if !useDSH {
-		return cmd.Output()
-	}
+// execPMSession runs one PM coordinator session through the DSH phase
+// executor and returns its stdout plus any process error.
+func (r *Runner) execPMSession(runCtx context.Context, prompt, mode string, args []string) ([]byte, error) {
 	spec := PhaseSpec{
 		Phase:       "pm",
 		Model:       r.cfg.Model("default"),

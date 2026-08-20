@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -94,7 +93,7 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read OMP args: %v", err)
 	}
-	wantPrompt := "/obsidian-task-runner-refining " + taskPath
+	wantPrompt := "obsidian-task-runner-refining"
 	if !strings.Contains(string(args), wantPrompt) {
 		t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
 	}
@@ -175,13 +174,13 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 			name:      "audit current, req changed since plan → planning",
 			refine:    currentHash,
 			plan:      staleHash,
-			wantPhase: "/obsidian-task-runner-round1",
+			wantPhase: "obsidian-task-runner-round1",
 		},
 		{
 			name:      "audit stale, req changed after audit → gate re-runs",
 			refine:    staleHash,
 			plan:      staleHash,
-			wantPhase: "/obsidian-task-runner-refining",
+			wantPhase: "obsidian-task-runner-refining",
 		},
 	}
 
@@ -218,7 +217,7 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read OMP args: %v", err)
 			}
-			wantPrompt := tt.wantPhase + " " + taskPath
+			wantPrompt := tt.wantPhase
 			if !strings.Contains(string(args), wantPrompt) {
 				t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
 			}
@@ -390,51 +389,6 @@ func TestProcAliveRejectsZombie(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("child did not enter zombie state")
-}
-
-func TestProcessBatchUsesTaskPathForImplementingPIDRecovery(t *testing.T) {
-	dir := t.TempDir()
-	projectOne := filepath.Join(dir, "project-one")
-	projectTwo := filepath.Join(dir, "project-two")
-	for _, project := range []string{projectOne, projectTwo} {
-		if err := os.MkdirAll(project, 0o755); err != nil {
-			t.Fatalf("create project directory: %v", err)
-		}
-	}
-
-	skillDir := writeVaultMap(t, dir, map[string]string{
-		"project-one": projectOne,
-		"project-two": projectTwo,
-	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
-	t.Setenv("START_DIR", startDir)
-	t.Setenv("RELEASE_FILE", releaseFile)
-
-	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-001.md", "implementing")
-	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-001.md", "implementing")
-	logDir := filepath.Join(dir, "logs")
-	taskLogDir := filepath.Join(logDir, "tasks")
-	if err := os.MkdirAll(taskLogDir, 0755); err != nil {
-		t.Fatalf("create task log directory: %v", err)
-	}
-	if err := os.WriteFile(taskPIDFile(taskLogDir, "001", taskOne), []byte(fmt.Sprint(os.Getpid())), 0644); err != nil {
-		t.Fatalf("write live PID file: %v", err)
-	}
-
-	runner := newTestRunner(skillDir, omp, logDir, 2)
-	done := runBatch(runner, []task.ReadyTask{
-		{ID: "001", Title: "Blocked by live PID", Project: "project-one", FilePath: taskOne, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "default"},
-		{ID: "001", Title: "Must resume", Project: "project-two", FilePath: taskTwo, Status: "implementing", PlanApproved: true, NewProject: true, Assignee: "default"},
-	})
-	waitForStartCount(t, startDir, 1)
-	releaseBarrier(t, releaseFile)
-	// processBatch is dispatch-only: both tasks are dispatched; the live-PID
-	// task skips its OMP inside runTask (start count stays 1), the other runs.
-	if processed := waitForBatch(t, done); processed != 2 {
-		t.Fatalf("dispatched = %d, want 2", processed)
-	}
-	waitForTasksIdle(t, runner)
-	assertStartCount(t, startDir, 1)
 }
 
 func TestSurvivingImplementationsConsumeCapacityAfterRestart(t *testing.T) {
@@ -1339,7 +1293,8 @@ func newTestRunner(skillDir, omp, logDir string, limit int) *Runner {
 func newTestRunnerLimits(skillDir, omp, logDir string, limit, perProject int) *Runner {
 	runner := New(&config.Config{
 		SkillInstallDir:              skillDir,
-		OMPCmd:                       omp,
+		Executor:                     "dsh",
+		DSHCmd:                       omp,
 		LogDir:                       logDir,
 		MaxConcurrentTasks:           limit,
 		MaxConcurrentTasksPerProject: perProject,
@@ -1654,7 +1609,8 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 
 	cfg := &config.Config{
 		SkillInstallDir:    skillDir,
-		OMPCmd:             omp,
+		Executor:           "dsh",
+		DSHCmd:             omp,
 		LogDir:             filepath.Join(dir, "logs"),
 		MaxConcurrentTasks: 4,
 		PhaseConcurrency:   map[string]int{"refining": 2},
@@ -1881,50 +1837,3 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 // alive, no context cancellation) is treated as an interrupted attempt — the
 // one-shot AI budget is preserved and the merge resumes on the next scan —
 // rather than a genuine resolution failure.
-func TestResolveMergeConflictExternalKillTreatedAsInterrupted(t *testing.T) {
-	dir := t.TempDir()
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
-	t.Setenv("START_DIR", startDir)
-	t.Setenv("RELEASE_FILE", releaseFile)
-
-	taskPath := writeTaskFile(t, dir, "TASK-000.md", "review")
-	runner := newTestRunner(filepath.Join(dir, "skill"), omp, filepath.Join(dir, "logs"), 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	runner.daemonCtx = ctx // not cancelled: parent stays alive while the session is killed
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runner.resolveMergeConflict(task.ReadyTask{
-			ID: "000", Title: "Merge", FilePath: taskPath, Assignee: "default",
-		}, dir)
-	}()
-
-	// Wait for the barrier-held OMP session. The barrier script writes its
-	// PID as the START_DIR file name (content is $PWD).
-	var sessionPID int
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, err := os.ReadDir(startDir)
-		if err == nil && len(entries) > 0 {
-			if _, scanErr := fmt.Sscanf(entries[0].Name(), "%d", &sessionPID); scanErr == nil {
-				break
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if sessionPID == 0 {
-		t.Fatal("merge resolution session did not start")
-	}
-
-	_ = syscall.Kill(sessionPID, syscall.SIGTERM)
-	select {
-	case err := <-done:
-		if !errors.Is(err, errConflictResolutionInterrupted) {
-			t.Fatalf("err = %v, want errConflictResolutionInterrupted", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("resolveMergeConflict did not return after killing the session")
-	}
-	releaseBarrier(t, releaseFile)
-}

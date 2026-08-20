@@ -31,11 +31,11 @@ func (h phaseHandleStub) Wait() (*ExecutionResult, error) { return h.result, nil
 func (phaseHandleStub) PID() int                          { return 0 }
 
 func TestNewPhaseExecutorSelection(t *testing.T) {
-	if got := newPhaseExecutor(&config.Config{Executor: "omp", OMPCmd: "omp"}).Name(); got != "omp" {
-		t.Fatalf("omp default executor name=%q, want omp", got)
-	}
 	if got := newPhaseExecutor(&config.Config{Executor: "dsh", DSHCmd: "dsh", DSHProfile: "headless"}).Name(); got != "dsh" {
 		t.Fatalf("dsh executor name=%q, want dsh", got)
+	}
+	if got := newPhaseExecutor(&config.Config{Executor: "dsh-embed", AgentServerAddr: "127.0.0.1:8799"}).Name(); got != "dsh-embed" {
+		t.Fatalf("dsh-embed executor name=%q, want dsh-embed", got)
 	}
 }
 

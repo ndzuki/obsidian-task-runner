@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
@@ -1355,7 +1353,6 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 			r.logger.Printf("task %s: merge fix session %s: injected project context (%d bytes)", candidate.ID, mode, len(ctx))
 		}
 	}
-	args := []string{"--model", model, "--auto-approve", "-p", skillPrompt, "--thinking", "high"}
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
@@ -1389,47 +1386,8 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
 	defer cancel()
 
-	// ── Phase 5 executor seam ──────────────────────────────────────────
-	if r.cfg.Executor == "dsh" {
-		return r.runMergeAISessionDSH(ctx, candidate, repoDir, mode, model, skillPrompt, timeout)
-	}
-
-	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
-	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
-		return fmt.Errorf("create task temp environment: %w", err)
-	}
-	// Graceful shutdown: SIGTERM so omp can persist its session, hard-kill
-	// after WaitDelay if it does not exit.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 30 * time.Second
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Dir = repoDir
-	cmd.Stdout = io.MultiWriter(f, os.Stderr)
-	cmd.Stderr = io.MultiWriter(f, os.Stderr)
-
-	r.logger.Printf("task %s: merge fix session %s via OMP (model=%s, timeout=%v, log=%s)", candidate.ID, mode, model, timeout, logPath)
-	if err := cmd.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return errConflictResolutionInterrupted
-		}
-		// Session killed by an external SIGTERM (operator kill of a session
-		// that outlived a --once parent) surfaces as exit 143 or
-		// signal-terminated. With no timeout/cancel pending, treat it like an
-		// interrupted attempt: keep the merge authorized so it resumes on the
-		// next scan instead of burning the one-shot AI resolution budget.
-		// Timeout exits are excluded (ctx.Err() != nil) — those are genuine
-		// resolution failures handed back to the user.
-		if ctx.Err() == nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				if code := exitErr.ExitCode(); code == 143 || code == -1 {
-					return errConflictResolutionInterrupted
-				}
-			}
-		}
-		return fmt.Errorf("merge fix session %s failed: %w", mode, err)
-	}
-	return nil
+	// 合并冲突/CI 修复会话统一走 DSH executor。
+	return r.runMergeAISessionDSH(ctx, candidate, repoDir, mode, model, skillPrompt, timeout)
 }
 
 // runMergeAISessionDSH executes a merge/CI-fix AI session through the DSH

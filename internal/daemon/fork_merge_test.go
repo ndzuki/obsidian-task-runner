@@ -214,20 +214,22 @@ func TestForkMergeConflictAutoResolved(t *testing.T) {
 		t.Fatalf("ensureTaskWorktree: %v", err)
 	}
 	makeForkConflict(t, worktree, repo)
-	// Fake OMP resolves the in-progress merge by taking the feature side
+	// Fake DSH resolves the in-progress merge by taking the feature side
 	// (--theirs = the merged branch) and committing — completing the merge
 	// commit, like the real AI session would after editing markers out.
-	omp := filepath.Join(t.TempDir(), "fake-omp-resolve")
+	fake := filepath.Join(t.TempDir(), "fake-dsh-resolve")
 	script := `#!/bin/sh
 git checkout --theirs base.txt 2>/dev/null || true
 git add -A
 git commit --no-edit >/dev/null 2>&1
 exit 0
 `
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runner.cfg.OMPCmd = omp
+	runner.cfg.Executor = "dsh"
+	runner.cfg.DSHCmd = fake
+	runner.phaseExecutor = newDSHExecutorWithProfile(fake, "headless", "")
 	// Bump the AI-fix budget so the single conflict resolution fits.
 	runner.cfg.MaxAutoMergeFixes = 1
 
@@ -296,19 +298,21 @@ func TestForkMergeConflictInterruptedKeepsAuthorization(t *testing.T) {
 	makeForkConflict(t, worktree, repo)
 	runner.cfg.MaxAutoMergeFixes = 1
 
-	// Fake OMP blocks until released (like a real AI session that outlives
+	// Fake DSH blocks until released (like a real AI session that outlives
 	// the daemon); the test cancels the daemon context to kill it.
 	releaseFile := filepath.Join(t.TempDir(), "release")
 	t.Setenv("RELEASE_FILE", releaseFile)
-	omp := filepath.Join(t.TempDir(), "fake-omp-block")
+	fake := filepath.Join(t.TempDir(), "fake-dsh-block")
 	script := `#!/bin/sh
 while [ ! -f "$RELEASE_FILE" ]; do sleep 0.01; done
 exit 0
 `
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runner.cfg.OMPCmd = omp
+	runner.cfg.Executor = "dsh"
+	runner.cfg.DSHCmd = fake
+	runner.phaseExecutor = newDSHExecutorWithProfile(fake, "headless", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	runner.daemonCtx = ctx
 

@@ -1,14 +1,11 @@
 package daemon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -3219,26 +3216,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			r.ensureReqHash(taskPath, t.ReqDoc)
 		}
 
-		var thinking string
-		switch phase {
-		case "priority":
-			thinking = "off"
-		case "round2":
-			thinking = "max"
-		case "planning":
-			thinking = "high"
-		default:
-			thinking = "low"
-		}
-
-		args := []string{"--model", model, "--auto-approve", "-p", skillPrompt, "--thinking", thinking}
-
 		if needsContextInjection(t.Status) {
 			if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, t.Project); projDir != "" {
 				reqPath := filepath.Join(r.cfg.ObsidianVault, t.ReqDoc)
 				if ctx := BuildProjectContext(projDir, reqPath); ctx != "" {
 					skillPrompt = fmt.Sprintf("%s\n\n<project_context>\n## 项目上下文（daemon 自动注入，配合 skill://knowledge-base 交叉引用 References）\n项目: %s\n\n%s\n</project_context>", skillPrompt, t.Project, ctx)
-					args[4] = skillPrompt
 					r.logger.Printf("task %s: injected project context (%d bytes)", t.ID, len(ctx))
 				} else {
 					r.logger.Printf("task %s: no project context available", t.ID)
@@ -3251,7 +3233,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if phase == "planning" || phase == "round2" {
 				if slice := r.designSliceForTask(t.Project, t.ID, t.ReqDoc); slice != "" {
 					skillPrompt = injectDesignLibrarySlice(skillPrompt, slice)
-					args[4] = skillPrompt
 					r.logger.Printf("task %s: injected design library slice (%d bytes)", t.ID, len(slice))
 				}
 			}
@@ -3284,379 +3265,10 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		if timeout <= 0 {
 			timeout = 30 * time.Minute
 		}
-		pidFile := taskPIDFile(taskLogDir, t.ID, t.FilePath)
-		if phase == "priority" || phase == "refining" || phase == "planning" || phase == "round2" {
-			if data, err := os.ReadFile(pidFile); err == nil {
-				var existingPID int
-				if _, scanErr := fmt.Sscanf(string(data), "%d", &existingPID); scanErr == nil {
-					if procAlive(existingPID) {
-						r.logger.Printf("task %s: OMP already running (PID %d), skipping", t.ID, existingPID)
-						continue
-					}
-				}
-			}
-		}
-
-		// ── Phase 5 executor seam ──────────────────────────────────────
-		// cfg.Executor == "dsh" routes the phase through the DSH adapter and
-		// returns handled=true after the shared success/failure tail. The OMP
-		// inline block below stays untouched while the default is "omp"; it is
-		// removed in §5.7 after every phase verifies on DSH.
-		if r.cfg.Executor == "dsh" {
-			if r.runDSHPhaseDispatch(t, taskPath, repoDir, phase, model, skillPrompt, logPath) {
-				processed++
-				continue
-			}
-		}
-
-		ctx, cancel := context.WithTimeout(r.daemonCtx, timeout)
-		cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, args...)
-		if err := setTaskTempEnv(cmd, taskPath); err != nil {
-			r.logger.Printf("task %s: create child temp environment: %v", t.ID, err)
-			cancel()
-			continue
-		}
-		// Graceful shutdown: on ctx cancellation (daemon stop or phase timeout)
-		// send SIGTERM so omp can persist its session, then hard-kill after
-		// WaitDelay if it does not exit.
-		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-		cmd.WaitDelay = 30 * time.Second
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Dir = repoDir
-		if f != nil {
-			cmd.Stdout = io.MultiWriter(f, os.Stderr)
-			cmd.Stderr = io.MultiWriter(f, os.Stderr)
-		} else {
-			cmd.Stdout = os.Stderr
-			cmd.Stderr = os.Stderr
-		}
-
-		// Tail OMP's own log into the task log for full implementation trace
-		ompLogPath := filepath.Join(logDir, "omp."+time.Now().Format("2006-01-02")+".log")
-		tailDone := make(chan struct{})
-		go tailOMPLog(ompLogPath, f, tailDone)
-		// Empty-stop watch: a provider that replies stop with zero content
-		// makes OMP retry the same flaky model (minutes lost per empty reply).
-		// Two empty stops inside the window cancel this session; the runErr
-		// path below then falls back to fallback_models (deepseek official).
-		var emptyStopTriggered atomic.Bool
-		emptyStopDone := make(chan struct{})
-		if f != nil {
-			go watchEmptyStops(ompLogPath, func() {
-				if emptyStopTriggered.CompareAndSwap(false, true) {
-					r.logger.Printf("task %s: repeated empty model responses, cancelling session for fallback", t.ID)
-					cancel()
-				}
-			}, emptyStopDone)
-		}
-		// Start OMP and write PID file for crash recovery.
-		if startErr := cmd.Start(); startErr != nil {
-			r.logger.Printf("task %s: OMP start failed: %v", t.ID, startErr)
-			cancel()
-			close(tailDone)
-			close(emptyStopDone)
-			continue
-		}
-		if err := os.WriteFile(pidFile, []byte(formatPIDRecord(cmd.Process.Pid)), 0o644); err != nil {
-			r.logger.Printf("task %s: write PID file: %v", t.ID, err)
-		}
-		defer func() {
-			if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-				r.logger.Printf("task %s: remove PID file: %v", t.ID, err)
-			}
-		}()
-
-		r.logger.Printf("task %s: executing OMP (model=%s, phase=%s, timeout=%v, log=%s)", t.ID, model, phase, timeout, logPath)
-		runErr := cmd.Wait()
-		// Capture shutdown state BEFORE cancel(): context.Canceled after
-		// cancel() is indistinguishable from a real daemon shutdown, and any
-		// non-zero OMP exit would be misrouted as "interrupted by shutdown",
-		// skipping failure recovery (fallback/blocked/retry) entirely.
-		shutdownInterrupt := r.daemonCtx.Err() != nil
-		cancel()
-		close(tailDone)      // signal tail goroutine to stop
-		close(emptyStopDone) // signal empty-stop watcher to stop
-
-		if runErr != nil && shutdownInterrupt {
-			// Daemon-initiated shutdown (ctx canceled): the OMP was killed by
-			// our own SIGTERM, not a genuine failure. Keep the task status
-			// untouched and skip failure/fallback handling — the pid file is
-			// already removed, so the next scan re-dispatches the task
-			// automatically. Deploy-time daemon restarts are therefore
-			// lossless: no blocked state, no manual resume_approved.
-			r.logger.Printf("task %s: OMP interrupted by daemon shutdown, status=%s kept for auto-resume", t.ID, t.Status)
-			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-				"phase_error_code": string(ErrPhaseInterrupted),
-				"phase_error":      "daemon 重启中断，等待自动恢复",
-				"phase_log":        logPath,
-			}); err != nil {
-				r.logger.Printf("task %s: record interruption: %v", t.ID, err)
-			}
-		} else if runErr != nil {
-			reason := "异常退出"
-			failureCode := ErrModelFailed
-			signalKilled := false
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				reason = fmt.Sprintf("超时（%v 无响应）", timeout)
-				failureCode = ErrPhaseTimeout
-			} else if emptyStopTriggered.Load() {
-				// Cancelled by the empty-stop watch: the provider keeps
-				// returning empty completions. signalKilled stays false so
-				// the fallback path below switches to fallback_models
-				// (deepseek official) instead of treating this as an
-				// external kill.
-				reason = "模型连续返回空响应（渠道抖动），切换兜底模型"
-			} else if exitErr, ok := runErr.(*exec.ExitError); ok && exitErr.ExitCode() == -1 {
-				reason = "进程被终止（内存不足或系统信号）"
-				signalKilled = true
-			}
-			r.logger.Printf("task %s: OMP failed (%s): %v", t.ID, reason, runErr)
-
-			var tokenErr string
-			if keyErr := checkAPIKeyUnavailable(logPath); keyErr != "" {
-				failureCode = ErrAPIKeyUnavailable
-				// Debounced: one toast per 5 minutes, not one per failing task.
-				r.notifyKeyUnavailable()
-			} else {
-				tokenErr = checkTokenQuota(logPath, model)
-				if tokenErr != "" {
-					failureCode = ErrModelQuotaExhausted
-				}
-			}
-
-			// Fallback 模型决定：通知与执行共用同一结论，避免两处计算漂移。
-			fallbackModel := ""
-			if !signalKilled && failureCode != ErrAPIKeyUnavailable {
-				if fm := r.cfg.FallbackModelFor(t.Assignee); fm != "" && fm != model {
-					fallbackModel = fm
-				}
-			}
-			// Fallback stale-phase guard: the failed session may have
-			// completed its phase write-back and then hung (post-session
-			// linters / extension timeouts), so the task status can move on
-			// while this dispatch still holds the startup snapshot
-			// (TASK-001: a round1 prompt was restarted against an
-			// implementing task and burned a full fallback timeout on the
-			// wrong phase). Re-check the current status before restarting:
-			// if it no longer routes to this phase, drop the fallback and
-			// let the next scan re-dispatch by the new status. Unreadable
-			// or unparsable task files are transient write windows —
-			// defer the same way (daemon convention).
-			staleSkipStatus := ""
-			if fallbackModel != "" {
-				expected := t.Status
-				if phase == "round2" {
-					// Direct dispatch already promoted plan-review →
-					// implementing before launching the session.
-					expected = "implementing"
-				}
-				if data, err := os.ReadFile(taskPath); err != nil {
-					r.logger.Printf("task %s: skip fallback, cannot re-read task (%v)", t.ID, err)
-					fallbackModel = ""
-				} else if fm, err := yamlfrontmatter.Parse(data); err != nil || fm == nil {
-					r.logger.Printf("task %s: skip fallback, task file unparsable (defer to next scan)", t.ID)
-					fallbackModel = ""
-				} else if fm.Status != expected {
-					r.logger.Printf("task %s: skip fallback, status changed %s → %s (re-dispatch on next scan)", t.ID, expected, fm.Status)
-					staleSkipStatus = fm.Status
-					fallbackModel = ""
-				}
-			}
-
-			// 失败通知（per-task 5 分钟防抖，notifyFailure）：有 fallback 时只发
-			// 一条合并通知（原因 + 切换动作），同一失败事件最多弹一条；反复失败
-			// 时同一任务 5 分钟最多一条，主模型持续不可用时不再轰炸桌面。
-			switch {
-			case failureCode == ErrAPIKeyUnavailable:
-				// 已由 notifyKeyUnavailable 全局防抖处理，此处不再发。
-			case staleSkipStatus != "":
-				// The session wrote back a new status before dying, so the
-				// phase actually completed — a "process crashed" toast
-				// would mislead. The fallback was skipped and the next
-				// scan re-dispatches by the new status.
-				r.notifyFailure(taskPath, t.ID, t.Title, "✅", "阶段已完成",
-					fmt.Sprintf("%s 已写回新状态 %s，但会话收尾挂死（%s）；下一轮 scan 按新状态继续", model, staleSkipStatus, reason), failNotifyReason)
-			case fallbackModel != "":
-				failReason := reason
-				if tokenErr != "" {
-					failReason = fmt.Sprintf("token 配额已耗尽：%s", tokenErr)
-				}
-				r.notifyFailure(taskPath, t.ID, t.Title, "🔄", "模型切换",
-					fmt.Sprintf("%s 不可用（%s），自动切换到 %s 继续执行", model, failReason, fallbackModel), failNotifySwitch)
-			case tokenErr != "":
-				r.notifyFailure(taskPath, t.ID, t.Title, "💰", "Token 不足",
-					fmt.Sprintf("%s 模型的 token 配额已耗尽，%s", model, tokenErr), failNotifyReason)
-			case failureCode == ErrPhaseTimeout:
-				r.notifyFailure(taskPath, t.ID, t.Title, "⏰", "执行超时",
-					fmt.Sprintf("%s 模型 %v 无响应，任务自动超时", model, timeout), failNotifyReason)
-			default:
-				r.notifyFailure(taskPath, t.ID, t.Title, "💥", "进程异常",
-					fmt.Sprintf("%s: %v", reason, runErr), failNotifyReason)
-			}
-
-			fellback := false
-			// Do not start a fallback while the daemon is shutting down — the
-			// OMP would be killed right after. Phase timeout still falls back:
-			// the fallback command gets its own fresh timeout budget.
-			// (This branch is only reachable when shutdownInterrupt is false,
-			// so the old ctx.Err()==Canceled check — always true after
-			// cancel() — silently disabled fallback forever.)
-			if fallbackModel != "" {
-				r.logger.Printf("task %s: retrying with fallback model %s", t.ID, fallbackModel)
-
-				fallbackArgs := []string{"--model", fallbackModel}
-				fallbackArgs = append(fallbackArgs, args[2:]...)
-				fbCtx, fbCancel := context.WithTimeout(r.daemonCtx, timeout)
-				retryCmd := exec.CommandContext(fbCtx, r.cfg.OMPCmd, fallbackArgs...)
-				if err := setTaskTempEnv(retryCmd, taskPath); err != nil {
-					// 临时目录创建失败属环境故障：不启动 fallback，直接按主模型
-					// 失败记录（blocked/重试路径），避免每轮 scan 静默重试。
-					r.logger.Printf("task %s: create fallback temp environment: %v", t.ID, err)
-					fbCancel()
-					r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
-					continue
-				}
-				retryCmd.Cancel = func() error { return retryCmd.Process.Signal(syscall.SIGTERM) }
-				retryCmd.WaitDelay = 30 * time.Second
-				retryCmd.Dir = repoDir
-				if f != nil {
-					retryCmd.Stdout = io.MultiWriter(f, os.Stderr)
-					retryCmd.Stderr = io.MultiWriter(f, os.Stderr)
-				} else {
-					retryCmd.Stdout = os.Stderr
-					retryCmd.Stderr = os.Stderr
-				}
-				fbTailDone := make(chan struct{})
-				go tailOMPLog(ompLogPath, f, fbTailDone)
-				if fbStartErr := retryCmd.Start(); fbStartErr != nil {
-					r.logger.Printf("task %s: fallback OMP start failed: %v", t.ID, fbStartErr)
-					fbShutdown := r.daemonCtx.Err() != nil
-					fbCancel()
-					close(fbTailDone)
-					if !fbShutdown {
-						fellback = true
-					} else {
-						// Shutdown raced the fallback start: keep status, auto-resume later.
-						r.logger.Printf("task %s: fallback interrupted by daemon shutdown, status=%s kept", t.ID, t.Status)
-					}
-				} else {
-					if err := os.WriteFile(pidFile, []byte(formatPIDRecord(retryCmd.Process.Pid)), 0o600); err != nil {
-						r.logger.Printf("task %s: write fallback PID file: %v", t.ID, err)
-					}
-					retryErr := retryCmd.Wait()
-					fbShutdown := r.daemonCtx.Err() != nil
-					fbCancel()
-					close(fbTailDone)
-					if retryErr != nil {
-						if fbShutdown {
-							// Shutdown interrupted the running fallback: keep status.
-							r.logger.Printf("task %s: fallback interrupted by daemon shutdown (main failure: %s), status=%s kept", t.ID, reason, t.Status)
-							if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-								"phase_error_code": string(ErrPhaseInterrupted),
-								"phase_error":      "daemon 重启中断，等待自动恢复",
-								"phase_log":        logPath,
-							}); err != nil {
-								r.logger.Printf("task %s: record interruption: %v", t.ID, err)
-							}
-						} else {
-							fbReason := "异常退出"
-							if errors.Is(fbCtx.Err(), context.DeadlineExceeded) {
-								fbReason = "超时"
-								failureCode = ErrPhaseTimeout
-							}
-							r.logger.Printf("task %s: fallback OMP also failed (%s): %v", t.ID, fbReason, retryErr)
-							r.notifyFailure(taskPath, t.ID, t.Title, "❌", "全部失败",
-								fmt.Sprintf("%s 和 %s 均不可用（%s），请检查网络和 API 状态", model, fallbackModel, fbReason), failNotifyBlocked)
-							fellback = true
-						}
-					} else {
-						r.logger.Printf("task %s: completed via fallback model %s", t.ID, fallbackModel)
-						if err := r.validatePhaseDocuments(taskPath, repoDir, t.ID, t.Title, t.Status, phase, logPath); err != nil {
-							r.logger.Printf("task %s: phase documents invalid after %s: %v", t.ID, phase, err)
-							r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrDocumentInvalid, err.Error(), logPath)
-							notify.SendTaskAction(t.ID, t.Title, "📄", "阶段产物文档损坏",
-								"任务文档或阶段产物损坏且无法自动修复，任务已阻断；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
-							processed++
-							continue
-						}
-						r.compactPlanHistory(taskPath, phase)
-						fbNotify := true
-						if phase == "round2" {
-							r.recordRound2Completion(taskPath, t.ID)
-							_, fbStalledNow := r.round2StallActive(taskPath)
-							fbNotify = !fbStalledNow
-						}
-						if fbNotify {
-							if _, statErr := os.Stat(taskPath); statErr == nil {
-								notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
-							}
-						}
-						r.clearPhaseRetry(taskPath, phase)
-						r.clearPhaseError(taskPath, t.ID)
-						r.clearMergeRepairBudget(taskPath, phase)
-					}
-				}
-			}
-			noFallback := r.cfg.FallbackModelFor(t.Assignee) == "" || r.cfg.FallbackModelFor(t.Assignee) == model
-			if fellback || noFallback {
-				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, failureCode, reason, logPath)
-			}
-		} else {
-			if phase == "conventions" && !r.conventionsReviewed(t.Project) {
-				// Session exited cleanly but the review artifact is missing
-				// (the model skipped the mandated write). Treat it as a
-				// failure: a silent success would re-trigger the gate every
-				// scan and burn sessions without ever converging.
-				reason := "conventions 会话正常退出但未生成 Notes/PROJECT-CONVENTIONS.md"
-				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrConventionsReviewFailed, reason, logPath)
-				notify.SendTaskAction(t.ID, t.Title, "⛔", "项目规范审查失败",
-					"团队项目首次自动化前的规范审查未产出 PROJECT-CONVENTIONS.md；修复后 resume_approved=true 重跑", r.cfg.Notifications.Desktop)
-				processed++
-				continue
-			}
-			r.logger.Printf("task %s: completed", t.ID)
-			if err := r.validatePhaseDocuments(taskPath, repoDir, t.ID, t.Title, t.Status, phase, logPath); err != nil {
-				r.logger.Printf("task %s: phase documents invalid after %s: %v", t.ID, phase, err)
-				r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, ErrDocumentInvalid, err.Error(), logPath)
-				notify.SendTaskAction(t.ID, t.Title, "📄", "阶段产物文档损坏",
-					"任务文档或阶段产物损坏且无法自动修复，任务已阻断；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
-				processed++
-				continue
-			}
-			// A successful planning round folds the plan-history section down
-			// to the newest versions — large TASK docs are mostly historical
-			// plan blocks that every later session would otherwise re-read.
-			r.compactPlanHistory(taskPath, phase)
-			if phase == "round2" && t.TargetBranch == "" {
-				if branch, err := gitCurrentBranch(repoDir); err == nil && branch != "" && branch != "HEAD" {
-					if updateErr := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{"target_branch": branch}); updateErr != nil {
-						r.logger.Printf("task %s: write target_branch: %v", t.ID, updateErr)
-					}
-				}
-			}
-			// A no-progress Round 2 completion (entry-gate re-verification)
-			// enters the cooldown; suppress the status notification for it —
-			// the user already knows the task waits on an upstream fact, and
-			// the cooldown log records the retry window. Notify only when
-			// the session was not round2 or made progress (the task left
-			// implementing or wrote a checkpoint).
-			doNotify := true
-			if phase == "round2" {
-				r.recordRound2Completion(taskPath, t.ID)
-				// A no-progress completion re-enters the cooldown; a
-				// progressed completion (checkpoint/status change) does not.
-				_, stalledNow := r.round2StallActive(taskPath)
-				doNotify = !stalledNow
-			}
-			if doNotify {
-				if _, statErr := os.Stat(taskPath); statErr == nil {
-					notify.StatusNotify(taskPath, r.cfg.Notifications.Desktop)
-				}
-			}
-			r.clearPhaseRetry(taskPath, phase)
-			r.clearPhaseError(taskPath, t.ID)
-			r.clearMergeRepairBudget(taskPath, phase)
-		}
+		// 阶段派发统一走 DSH executor（dsh-embed 长驻 agent-server 或 dsh spawn）。
+		// runDSHPhaseDispatch 内部处理成功/失败的 shared tail（写回 + 通知），
+		// 返回 handled=true 表示本阶段已完整处理。
+		r.runDSHPhaseDispatch(t, taskPath, repoDir, phase, model, skillPrompt, logPath)
 		if f != nil {
 			if err := f.Close(); err != nil {
 				r.logger.Printf("task %s: close task log: %v", t.ID, err)
@@ -4191,31 +3803,6 @@ func (r *Runner) notifyFailure(taskPath, taskID, taskTitle, emoji, title, desc s
 	return true
 }
 
-// checkAPIKeyUnavailable scans the OMP log for missing API key errors.
-// Returns a human-readable message if found, empty string otherwise.
-func checkAPIKeyUnavailable(logPath string) string {
-	f, err := os.Open(logPath)
-	if err != nil {
-		return ""
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Printf("close key log %s: %v", logPath, err)
-		}
-	}()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		for _, pat := range keyUnavailablePatterns {
-			if pat.MatchString(line) {
-				return "OMP 无法获取模型 API Key（KeePassXC 未解锁或 key 未配置）"
-			}
-		}
-	}
-	return ""
-}
-
 // apiKeyProbe is the pluggable key-availability check; tests override it via
 // apiKeyProbe.Store. Atomic so concurrent task goroutines (async dispatch)
 // can read it while a test replaces it — a plain variable races when a
@@ -4229,8 +3816,8 @@ func init() {
 // apiKeyAvailable probes whether any provider API key is reachable: either an
 // env var override (DEEPSEEK_API_KEY / CODEX_API_KEY as used by
 // ~/.omp/get-api-key.sh) or the KeePassXC database password in the secret
-// service. The probe is cheap (sub-second) and runs before dispatching OMP so
-// key-less runs never start a headless session.
+// service. The probe is cheap (sub-second) and runs before dispatching a
+// session so key-less runs never start a headless session.
 func apiKeyAvailable() bool {
 	probe, ok := apiKeyProbe.Load().(func() bool)
 	if !ok {
@@ -4247,160 +3834,6 @@ func defaultAPIKeyProbe() bool {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "secret-tool", "lookup", "app", "keepassxc", "type", "db-password").Output()
 	return err == nil && len(bytes.TrimSpace(out)) > 0
-}
-
-// checkTokenQuota scans the OMP log for token quota exhaustion errors.
-// Returns a human-readable message if found, empty string otherwise.
-func checkTokenQuota(logPath, model string) string {
-	f, err := os.Open(logPath)
-	if err != nil {
-		return ""
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Printf("close quota log %s: %v", logPath, err)
-		}
-	}()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		for _, pat := range tokenQuotaPatterns {
-			if pat.MatchString(line) {
-				provider := detectProvider(model)
-				return fmt.Sprintf("请前往 %s 平台充值后续航", provider)
-			}
-		}
-	}
-	return ""
-}
-
-// detectProvider returns a human-readable provider name from a model ID.
-func detectProvider(model string) string {
-	if strings.Contains(model, "deepseek") {
-		return "DeepSeek"
-	}
-	if strings.Contains(model, "gpt") || strings.Contains(model, "openai") {
-		return "OpenAI"
-	}
-	if strings.Contains(model, "claude") || strings.Contains(model, "anthropic") {
-		return "Anthropic"
-	}
-	if strings.Contains(model, "gemini") {
-		return "Google Gemini"
-	}
-	return model
-}
-
-// noisePatterns match noisy OMP debug lines to exclude from task logs.
-var noisePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`TTSR ast match reported parse errors`),
-	regexp.MustCompile(`Auto-compaction threshold decision`),
-}
-
-// tailOMPLog reads new lines from OMP's structured log and writes non-noisy lines to the task log.
-func tailOMPLog(logPath string, taskLog *os.File, done <-chan struct{}) {
-	if taskLog == nil || logPath == "" {
-		return
-	}
-	f, err := os.Open(logPath)
-	if err != nil {
-		return
-	}
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		log.Printf("seek OMP log %s: %v", logPath, err)
-		return
-	}
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	scanner := bufio.NewScanner(f)
-	for {
-		select {
-		case <-done:
-			for scanner.Scan() {
-				if !isNoise(scanner.Text()) {
-					if _, err := taskLog.Write(append(scanner.Bytes(), '\n')); err != nil {
-						log.Printf("write tailed OMP log: %v", err)
-					}
-				}
-			}
-			return
-		case <-ticker.C:
-			for scanner.Scan() {
-				if !isNoise(scanner.Text()) {
-					if _, err := taskLog.Write(append(scanner.Bytes(), '\n')); err != nil {
-						log.Printf("write tailed OMP log: %v", err)
-					}
-				}
-			}
-		}
-	}
-}
-
-// emptyStopWindow bounds the "consecutive empty responses" detection: two
-// empty-stop replies within this window trip the fallback; older empty
-// replies (rare one-offs) do not waste the fallback budget.
-var emptyStopWindow = 10 * time.Minute
-
-// watchEmptyStops scans OMP's structured log for empty model responses —
-// provider returns stop with zero content blocks (gateway/gpt-5.6-sol
-// exhibited this on 2026-08-13: two empty replies cost the TASK-067 planning
-// session 5+ minutes each while OMP retried the same model). On the second
-// empty stop inside the window, trigger() is called so runTask can cancel
-// the session and re-enter the existing fallback path with the
-// fallback_models model (deepseek official direct), instead of burning more
-// time on the flaky channel.
-func watchEmptyStops(logPath string, trigger func(), done <-chan struct{}) {
-	if logPath == "" {
-		return
-	}
-	f, err := os.Open(logPath)
-	if err != nil {
-		return
-	}
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		log.Printf("seek OMP log for empty-stop watch: %v", logPath)
-		return
-	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	scanner := bufio.NewScanner(f)
-	firstEmpty := time.Time{}
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			for scanner.Scan() {
-				line := scanner.Text()
-				if !strings.Contains(line, "empty-stop-handled") {
-					continue
-				}
-				now := time.Now()
-				if firstEmpty.IsZero() {
-					firstEmpty = now
-					continue
-				}
-				if now.Sub(firstEmpty) > emptyStopWindow {
-					firstEmpty = now
-					continue
-				}
-				trigger()
-				return
-			}
-		}
-	}
-}
-
-func isNoise(line string) bool {
-	for _, pat := range noisePatterns {
-		if pat.MatchString(line) {
-			return true
-		}
-	}
-	return false
 }
 
 func acquireLock(cfg *config.Config) (func(), error) {

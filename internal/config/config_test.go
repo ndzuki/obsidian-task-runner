@@ -44,80 +44,11 @@ func TestDefaultModelsUsesDefaultAssignee(t *testing.T) {
 	}
 }
 
-func TestFallbackModelDefaults(t *testing.T) {
-	cfg := Defaults()
-	// gpt 主模型是 gateway 免费 v4-pro → fallback 官方 DeepSeek V4-Pro。
-	if got := cfg.FallbackModelFor("gpt"); got != "deepseek/deepseek-v4-pro" {
-		t.Fatalf("FallbackModelFor(gpt) = %q, want %q", got, "deepseek/deepseek-v4-pro")
-	}
-	// default 主模型 gateway/gpt-5.4-mini(=flash) → fallback 官方 V4-Flash。
-	if got := cfg.FallbackModelFor("default"); got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("FallbackModelFor(default) = %q, want %q", got, "deepseek/deepseek-v4-flash")
-	}
-	if got := cfg.FallbackModelFor("deepseek"); got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("FallbackModelFor(deepseek) = %q, want %q", got, "deepseek/deepseek-v4-flash")
-	}
-	for _, assignee := range []string{"unknown", "gemini", "claude", "minimax"} {
-		if got := cfg.FallbackModelFor(assignee); got != "" {
-			t.Fatalf("FallbackModelFor(%s) = %q, want empty", assignee, got)
-		}
-	}
-}
-
-func TestFallbackModelsAreConfigurable(t *testing.T) {
-	dir := t.TempDir()
-	mapFile := filepath.Join(dir, "vault-map.json")
-	data := []byte(`{"fallback_models": {"gpt": "deepseek/deepseek-v4-pro", "gemini": "deepseek/deepseek-v4-flash"}}`)
-	if err := os.WriteFile(mapFile, data, 0644); err != nil {
-		t.Fatalf("write vault map: %v", err)
-	}
-	cfg, err := Load(mapFile)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	// Per-assignee override wins.
-	if got := cfg.FallbackModelFor("gpt"); got != "deepseek/deepseek-v4-pro" {
-		t.Fatalf("FallbackModelFor(gpt) = %q, want %q", got, "deepseek/deepseek-v4-pro")
-	}
-	// New assignee key gets a fallback without code changes.
-	if got := cfg.FallbackModelFor("gemini"); got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("FallbackModelFor(gemini) = %q, want %q", got, "deepseek/deepseek-v4-flash")
-	}
-	// Unlisted keys keep the built-in defaults (JSON merges into Defaults).
-	if got := cfg.FallbackModelFor("default"); got != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("FallbackModelFor(default) = %q, want %q", got, "deepseek/deepseek-v4-flash")
-	}
-	if got := cfg.FallbackModelFor("unknown"); got != "" {
-		t.Fatalf("FallbackModelFor(unknown) = %q, want empty", got)
-	}
-}
-
-func TestFallbackModelDisabledByEmptyValue(t *testing.T) {
-	dir := t.TempDir()
-	mapFile := filepath.Join(dir, "vault-map.json")
-	data := []byte(`{"fallback_models": {"gpt": ""}}`)
-	if err := os.WriteFile(mapFile, data, 0644); err != nil {
-		t.Fatalf("write vault map: %v", err)
-	}
-	cfg, err := Load(mapFile)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := cfg.FallbackModelFor("gpt"); got != "" {
-		t.Fatalf("FallbackModelFor(gpt) = %q, want empty (disabled)", got)
-	}
-}
-
 func TestModelReferenceTracksDefaultModels(t *testing.T) {
 	ref := ModelReference()
 	for _, model := range DefaultModels() {
 		if !strings.Contains(ref, model) {
 			t.Fatalf("ModelReference() missing default model %q", model)
-		}
-	}
-	for _, model := range DefaultFallbackModels() {
-		if !strings.Contains(ref, model) {
-			t.Fatalf("ModelReference() missing fallback model %q", model)
 		}
 	}
 }
