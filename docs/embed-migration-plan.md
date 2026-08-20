@@ -99,6 +99,24 @@ fully_mature）经 agent-server `/agent/run` 跑 round1，`reasoningEffort=high`
 `agentOptions.reasoningEffort` 完整还原 omp `--thinking` per-阶段语义，planning
 在 dsh-embed 下可靠收敛。可以推进「默认切 dsh-embed + 替换 omp」。
 
+### round2 冒烟记录（2026-08-20，dsh-embed 全阶段验证闭环）
+
+用同一个 smoke-vault TASK-001（plan-review + plan_approved=true + plan_files=
+go.mod/main.go/main_test.go）经 agent-server `/agent/run` 跑 round2，
+`reasoningEffort=xhigh`（max → xhigh 映射）：
+
+- ✅ **完整实现**：Tracer Bullet 逐 AC 实现——`go.mod`（module demo）+ `main.go`
+  （`normalize` 纯函数：TrimSpace + Fields/Join 折叠空白 + `ErrEmptyInput`/
+  `ErrInputTooLong` + `maxInputRunes=256`）+ `main_test.go`（table-driven）。
+- ✅ **测试通过**：`go test ./...` → `ok demo`。
+- ✅ **commit + 写回**：`ea72999 feat: ...`；status `implementing → review`。
+- 耗时约 4 分钟（xhigh 深度实现：Pre-flight → Tracer Bullet → AC 实现 → commit）。
+
+**结论**：dsh-embed 全阶段验证闭环——refining（spawn 时代已验证）+ priority
+（spawn 已验证）+ planning（E5，high）+ **round2（xhigh，本轮）** 全部在 dsh 下
+可靠工作。per-阶段推理强度（`ompPhaseThinking` → `mapDSHEffort`）完整生效，
+dsh-embed 具备生产可用性。
+
 ### E3 验证记录（2026-08-20）
 
 - config 新增 `agent_server_addr`（默认 `127.0.0.1:8799`）+ executor 取值加
