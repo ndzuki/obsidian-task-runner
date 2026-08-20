@@ -221,7 +221,7 @@ sources. Requires kb_embedding (retrieval) and kb_chat (generation).`,
 var kbAbsorbCmd = &cobra.Command{
 	Use:   "absorb",
 	Short: "Sink interactive-session lessons into the knowledge base",
-	Long: `Sinks a lesson from an interactive OMP session into References/:
+	Long: `Sinks a lesson from an interactive execution session into References/:
 - default mode expects a 踩坑记录 block on stdin:
     ### 2026-08-07: {phenomenon}
     - 现象: ...
@@ -423,7 +423,7 @@ var kbIndexCmd = &cobra.Command{
 }
 
 var (
-	kbSearchLimit   int
+	kbSearchLimit    int
 	kbSearchArchived bool
 )
 

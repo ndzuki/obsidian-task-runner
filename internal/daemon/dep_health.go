@@ -485,7 +485,7 @@ func (r *Runner) validateDependencyRefs() {
 					continue
 				}
 				if unparsable[id] {
-					// 目标文件存在但 frontmatter 当前解析失败（如 OMP 会话写回
+					// 目标文件存在但 frontmatter 当前解析失败（如 执行会话写回
 					// 的瞬时坏窗口）——不是悬空引用，跳过本轮，下一轮重新校验；
 					// 避免把短暂解析失败误报为"引用不存在的任务"。
 					r.logger.Printf("health %s: TASK-%s blocked_by references TASK-%s which exists but failed to parse; deferring", projectEntry.Name(), fm.ID, id)

@@ -161,11 +161,11 @@ func newStatusCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			payload := map[string]interface{}{
-				"daemon_lock":  "unknown",
-				"recent_scan":  "unknown",
+				"daemon_lock":   "unknown",
+				"recent_scan":   "unknown",
 				"running_tasks": []interface{}{},
-				"queue_length": 0,
-				"blocked":      []interface{}{},
+				"queue_length":  0,
+				"blocked":       []interface{}{},
 			}
 			if jsonOutput {
 				return writeJSON(cmd.OutOrStdout(), payload)

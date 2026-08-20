@@ -63,7 +63,7 @@ func TestValidateDependencyRefsSurfacesBrokenRefs(t *testing.T) {
 
 // TestValidateDependencyRefsSkipsUnparsableRefs guards the transient-write
 // window: a blocked_by referencing a task whose file exists but currently
-// fails to parse must NOT be reported as a broken reference — OMP sessions
+// fails to parse must NOT be reported as a broken reference — execution sessions
 // rewrite frontmatter in place, and a partial write can briefly produce
 // duplicate keys / invalid YAML (observed with refine_version). The check
 // defers to the next scan instead of firing a false "missing task" toast.

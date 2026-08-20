@@ -25,9 +25,9 @@ type RefEntry struct {
 	Level    string   // beginner|intermediate|advanced|reference
 	Updated  string   // ISO 8601
 	Verified bool
-	Noisy    bool   // contains non-knowledge content (chat links, project file lists)
-	Activity string // high|normal|low — usage frequency, metadata not directory
-	Hits     int    // successful-application count — retrieval ranking boost
+	Noisy    bool     // contains non-knowledge content (chat links, project file lists)
+	Activity string   // high|normal|low — usage frequency, metadata not directory
+	Hits     int      // successful-application count — retrieval ranking boost
 	Projects []string // projects referencing this doc via TASK knowledge_refs (sorted)
 }
 

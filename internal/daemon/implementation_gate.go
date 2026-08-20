@@ -2,7 +2,7 @@ package daemon
 
 import "sync"
 
-// implementationGate bounds concurrent implementing (Round 2) OMP sessions.
+// implementationGate bounds concurrent implementing (Round 2) execution sessions.
 // Capacity is granted per project (perLimit) with an optional global cap
 // (global, 0 = unlimited) across all projects, so N projects run up to
 // N*perLimit sessions in parallel — each project's work cannot starve the

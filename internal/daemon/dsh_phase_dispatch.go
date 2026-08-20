@@ -18,7 +18,7 @@ import (
 //
 // Phase 5 seam (docs/phase5-executor-migration.md §5.3): the dsh branch is a
 // deliberate mirror of the OMP success tail (validate→compact→round2 notify→
-// clear) without OMP-specific logging, PID files, empty-stop watch, or the
+// clear) without executor-specific logging, PID files, empty-stop watch, or the
 // daemon-side fallback loop — those live in the DSH fallback plugin.
 func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase, model, skillPrompt, logPath string) bool {
 	timeout := r.cfg.PhaseTimeout(phase)

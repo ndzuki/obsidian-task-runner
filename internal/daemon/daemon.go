@@ -175,7 +175,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
 	// Bind task execution to the daemon lifecycle so shutdown cancels running
-	// OMP sessions (graceful SIGTERM) instead of leaving them until systemd's
+	// execution sessions (graceful SIGTERM) instead of leaving them until systemd's
 	// TimeoutStopSec hard-kills the process tree.
 	r.daemonCtx = ctx
 	// dsh-embed: 拉起长驻 agent-server 并等待健康检查；daemon 退出时收口。
@@ -526,7 +526,7 @@ func (r *Runner) RunOnce() error {
 	notify.CleanStaleKittyDebounceFiles()
 	_ = r.scanAndProcess()
 	// A --once run has no resident scan loop to pick up completed tasks, so
-	// wait for the dispatched OMP sessions here (same synchronous semantics
+	// wait for the dispatched execution sessions here (same synchronous semantics
 	// as the pre-async processBatch). On SIGTERM the OMP children get a
 	// graceful SIGTERM via daemonCtx; give their PHASE_INTERRUPTED
 	// write-backs a bounded window before exiting.
@@ -916,7 +916,7 @@ func (r *Runner) scanAndProcess() error {
 }
 
 // processBatch dispatches every schedulable task and returns immediately —
-// it never waits for the dispatched work. OMP sessions (up to 1h for
+// it never waits for the dispatched work. execution sessions (up to 1h for
 // Round 2) run in their own goroutines tracked by runTask; a completed task
 // triggers the next scan via requestScan, so batches can no longer freeze
 // the scan loop (previously one long Round 2 stalled every plan-review
@@ -1204,7 +1204,7 @@ func (r *Runner) hasCanonicalTask(reqRel string) bool {
 // round2 is governed by implementationGate (max_concurrent_tasks_per_project
 // per project + optional max_concurrent_tasks global cap) and the
 // needs-grilling/plan-review interactive stages are unbounded — they do not
-// start OMP sessions (or run Kitty, which is out-of-band).
+// start execution sessions (or run Kitty, which is out-of-band).
 func phaseGateKey(t task.ReadyTask) string {
 	switch {
 	case t.Status == "refining":
@@ -1231,7 +1231,7 @@ func (r *Runner) runTask(p preparedTask) {
 	defer r.unlockRepo(p.repoDir, p.lockMode)
 	defer r.activePlanFiles.Delete(p.task.FilePath)
 	// New-project tasks opting into remote creation get their GitHub remote
-	// (name/description/README) before the OMP session starts; failure blocks
+	// (name/description/README) before the execution session starts; failure blocks
 	// the task with an actionable error instead of failing the session.
 	if p.task.Status == "implementing" && p.task.NewProject {
 		if err := r.ensureRemoteRepository(p.task.FilePath, p.repoDir); err != nil {
@@ -1254,7 +1254,7 @@ func (r *Runner) runTask(p preparedTask) {
 
 // prepareBatch resolves repositories and creates Round 2 worktrees before
 // dispatching OMP.  Worktree setup is serialized per repository but does not
-// consume an OMP concurrency slot.
+// consume an phase concurrency slot.
 //
 // Grilling tasks (ready / needs-grilling) are handled inline — they do not
 // need a repository and must not be blocked by repo resolution failures.
@@ -1401,7 +1401,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			// main checkout, so no repo lock is needed — blocking on the
 			// write lock would stall merges behind every planning/refining
 			// read lock (up to 30-60min), freezing authorized merges.
-			// Worktree OMP sessions already run lock-free for the same
+			// Worktree execution sessions already run lock-free for the same
 			// isolation reason. Auto-reauthorizable fallbacks (TASK-051/059:
 			// conflict + auto_merge + REQ 未变 + 预算未耗尽) take the same
 			// lock-free path — otherwise a busy repo write lock starves them
@@ -1775,7 +1775,7 @@ func (r *Runner) normRemember(path string) {
 // TASK-019, 8/11 — the round2 session wrote status=blocked with an empty
 // phase_error_code, so the dependency resolver treated the gate as a generic
 // phase failure and auto-resumed it repeatedly: completed → blocked → resume
-// → re-run loop, 10+ rounds of wasted OMP sessions). A blocked task with a
+// → re-run loop, 10+ rounds of wasted execution sessions). A blocked task with a
 // non-empty blocked_phase, no error code and a non-empty blocked_by is an
 // entry gate by construction: the fact-based recovery branch
 // (prereqDepsSatisfied) is the only correct exit. Runs before
@@ -3073,7 +3073,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
-		// Phase concurrency gate: bounds simultaneous OMP sessions per phase
+		// Phase concurrency gate: bounds simultaneous execution sessions per phase
 		// (refining/planning/merge/priority/pm). Acquired here — not in the
 		// scheduler loop — so every dispatch path is covered, including the
 		// in-place restores (API-key recovery, resume, grill_continue) that
@@ -3088,7 +3088,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			}
 		}
 
-		// API key preflight: never launch an OMP session that will fail on a
+		// API key preflight: never launch an execution session that will fail on a
 		// missing key. The task keeps its status and retries on the next
 		// scan — no failure write-back, no retry budget spent. The toast is
 		// debounced to one per 5 minutes instead of one per failing task

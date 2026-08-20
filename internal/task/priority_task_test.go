@@ -56,7 +56,7 @@ priority_assessment_status: completed
 // TestFindPriorityTasksSkipsLateStageTasks guards the state filter: a task
 // already in planning (or later) must not be picked up for assessment —
 // priority drives scheduling only in the early stages, and assessing late
-// tasks would spawn a wasted OMP session per scan.
+// tasks would spawn a wasted execution session per scan.
 func TestFindPriorityTasksSkipsLateStageTasks(t *testing.T) {
 	vault := t.TempDir()
 	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")

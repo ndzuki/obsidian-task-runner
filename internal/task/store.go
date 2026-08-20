@@ -44,9 +44,8 @@ func (TaskStore) Apply(taskPath string, expectedGeneration int, mutate func(*yam
 // 返回 attemptID 与绑定的 generation。之后该 attempt 的阶段回写必须用
 // 返回的 generation 作为 expected，否则在任务换代后会被 Apply 拒绝。
 //
-// executorSessionID 是执行器会话的持久身份（OMP 的 PID 文件身份、
-// DSH 的 durable session id）；空值允许（调用方无会话身份时生成内部
-// attempt id 仍可 fencing generation）。
+// executorSessionID 是执行器会话的持久身份（DSH 的 durable session id）；
+// 空值允许（调用方无会话身份时生成内部 attempt id 仍可 fencing generation）。
 func (TaskStore) BeginAttempt(taskPath, executorSessionID string) (attemptID string, generation int, err error) {
 	attemptID, err = newAttemptID()
 	if err != nil {
@@ -59,9 +58,9 @@ func (TaskStore) BeginAttempt(taskPath, executorSessionID string) (attemptID str
 			gen = 1
 		}
 		return map[string]interface{}{
-			"attempt_id":           attemptID,
-			"executor_session_id":  executorSessionID,
-			"generation":           gen,
+			"attempt_id":          attemptID,
+			"executor_session_id": executorSessionID,
+			"generation":          gen,
 		}, nil
 	})
 	if err != nil {

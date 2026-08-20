@@ -1318,7 +1318,7 @@ const (
 	mergeFixCI        mergeFixMode = "ci-fix"
 )
 
-// resolveMergeConflict runs one OMP session that loads the merge skill's
+// resolveMergeConflict runs one execution session that loads the merge skill's
 // Automated Conflict Resolution step (skill://resolving-merge-conflicts) to
 // resolve PR conflicts locally. The AI may commit a resolution; the daemon
 // pushes and re-evaluates checks afterwards. The session is local-only —
@@ -1327,7 +1327,7 @@ func (r *Runner) resolveMergeConflict(candidate task.ReadyTask, repoDir string) 
 	return r.runMergeAISession(candidate, repoDir, mergeFixConflicts)
 }
 
-// resolveMergeChecksFailure runs one OMP session that loads the merge skill's
+// resolveMergeChecksFailure runs one execution session that loads the merge skill's
 // CI-fix step: diagnose failed checks, fix the underlying tests/code in the
 // feature branch, commit locally. The daemon pushes and re-evaluates. Local
 // only, like conflict resolution.

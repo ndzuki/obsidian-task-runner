@@ -456,7 +456,7 @@ exec "%s" %s`, tid, ttl, rd, ompExecPath(), fmt.Sprintf("%q", prompt))
 	return true
 }
 
-// TryKittyDecisionTab opens a Kitty tab with an interactive OMP session that
+// TryKittyDecisionTab opens a Kitty tab with an interactive execution session that
 // walks the user through the pending decision points of the project-level
 // Grilling-Decisions.md — answers are written back to the list file directly,
 // and the daemon's answer-hash change detection picks them up for automatic

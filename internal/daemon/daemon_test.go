@@ -1372,7 +1372,7 @@ func TestBlockedPhaseValidation(t *testing.T) {
 // TestProcessBatchReturnsOnDaemonCancel verifies that processBatch stops
 // waiting for in-flight task goroutines when the daemon context is cancelled
 // (systemd stop), so the event loop can reach ctx.Done promptly instead of
-// blocking behind a long-running OMP session.
+// blocking behind a long-running execution session.
 func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
@@ -1507,7 +1507,7 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	runner.daemonCtx = ctx
 
 	// First round: all 3 tasks dispatch (gate lives at the OMP launch
-	// point), but only 2 OMP sessions actually start — the third hits the
+	// point), but only 2 execution sessions actually start — the third hits the
 	// full refining gate inside processBatchSequential and defers.
 	done := runBatch(runner, tasks)
 	if got := waitForBatch(t, done); got != 3 {

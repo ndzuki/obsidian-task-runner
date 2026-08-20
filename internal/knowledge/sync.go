@@ -14,13 +14,13 @@ import (
 
 // SyncStats summarizes one incremental sync of the retrieval store.
 type SyncStats struct {
-	TotalDocs        int  // documents now in the store
+	TotalDocs        int // documents now in the store
 	Added            int
 	Updated          int
 	Removed          int
-	TotalChunks      int  // vector chunks now in the store
-	VectorsRefreshed bool // at least one document was embedded
-	VecSkipped       bool // embedding not configured — FTS-only sync (not an error)
+	TotalChunks      int   // vector chunks now in the store
+	VectorsRefreshed bool  // at least one document was embedded
+	VecSkipped       bool  // embedding not configured — FTS-only sync (not an error)
 	VecError         error // first embedding failure; docs/FTS sync still committed
 }
 
