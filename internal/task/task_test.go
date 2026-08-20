@@ -492,12 +492,12 @@ func TestCreateTaskForReqWithVaultMap(t *testing.T) {
 	t.Setenv("HOME", dir)
 
 	// Set up vault-map with "release-manager" project
-	ompDir := filepath.Join(dir, ".omp", "skills", "obsidian-task-runner", "config")
-	if err := os.MkdirAll(ompDir, 0755); err != nil {
+	dshDir := filepath.Join(dir, ".dsh", "skills", "obsidian-task-runner", "config")
+	if err := os.MkdirAll(dshDir, 0755); err != nil {
 		t.Fatalf("create config directory: %v", err)
 	}
 	vaultMap := `{"projects":[{"name":"release-manager","path":"/tmp/release-manager"}],"new_project_root":"/tmp"}`
-	if err := os.WriteFile(filepath.Join(ompDir, "vault-map.json"), []byte(vaultMap), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dshDir, "vault-map.json"), []byte(vaultMap), 0644); err != nil {
 		t.Fatalf("write vault map: %v", err)
 	}
 

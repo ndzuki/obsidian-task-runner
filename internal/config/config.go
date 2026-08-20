@@ -332,7 +332,7 @@ func Defaults() *Config {
 		UpstreamStallDays:          3,  // upstream idle warning (TASK-067: month-long silent blockage)
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
-		SkillInstallDir:            filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
+		SkillInstallDir:            filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
 		Models:                     DefaultModels(),
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
@@ -349,7 +349,7 @@ func Load(mapPath string) (*Config, error) {
 	cfg := Defaults()
 	if mapPath == "" {
 		home, _ := os.UserHomeDir()
-		mapPath = filepath.Join(home, ".omp", "skills", "obsidian-task-runner", "config", "vault-map.json")
+		mapPath = filepath.Join(home, ".dsh", "skills", "obsidian-task-runner", "config", "vault-map.json")
 	}
 	cfg.ConfigPath = mapPath
 

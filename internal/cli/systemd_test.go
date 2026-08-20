@@ -99,7 +99,7 @@ func TestResolveInstallPoll(t *testing.T) {
 func TestInstallSystemdDryRun(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	skillDir := filepath.Join(homeDir, ".omp", "skills", "obsidian-task-runner")
+	skillDir := filepath.Join(homeDir, ".dsh", "skills", "obsidian-task-runner")
 	writeVaultMap(t, skillDir, "/vault/cli", 33)
 	t.Setenv("SKILL_INSTALL_DIR", skillDir)
 	t.Setenv("OBSIDIAN_VAULT", "")

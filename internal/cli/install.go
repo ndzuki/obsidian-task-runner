@@ -22,8 +22,8 @@ var (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install skill to ~/.omp/skills/ and configure systemd",
-	Long: `Installs the obsidian-task-runner skill to ~/.omp/skills/,
+	Short: "Install skill to ~/.dsh/skills/ and configure systemd",
+	Long: `Installs the obsidian-task-runner skill to ~/.dsh/skills/,
 creates the OMP agent symlink, generates vault-map.json, configures
 shell environment, and optionally registers systemd units.
 
@@ -38,7 +38,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 
 	skillDir := os.Getenv("SKILL_INSTALL_DIR")
 	if skillDir == "" {
-		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
+		skillDir = filepath.Join(home, ".dsh", "skills", "obsidian-task-runner")
 	}
 
 	vault := resolveInstallVault(skillDir, installVault)

@@ -678,7 +678,7 @@ func resolveProjectField(projectDir string) string {
 	if err != nil {
 		return projectDir
 	}
-	mapFile := filepath.Join(home, ".omp", "skills", "obsidian-task-runner", "config", "vault-map.json")
+	mapFile := filepath.Join(home, ".dsh", "skills", "obsidian-task-runner", "config", "vault-map.json")
 	if mapped := project_pkg.MatchVaultDir(mapFile, projectDir); mapped != "" {
 		return mapped
 	}
