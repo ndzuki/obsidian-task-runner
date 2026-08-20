@@ -26,8 +26,7 @@ func TestGenerateVaultMapUsesDefaultModelKey(t *testing.T) {
 		t.Fatalf("read vault map: %v", err)
 	}
 	var config struct {
-		Models         map[string]string `json:"models"`
-		FallbackModels map[string]string `json:"fallback_models"`
+		Models map[string]string `json:"models"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatalf("parse vault map: %v", err)
@@ -37,11 +36,6 @@ func TestGenerateVaultMapUsesDefaultModelKey(t *testing.T) {
 	}
 	if _, ok := config.Models["flash"]; ok {
 		t.Fatal("legacy flash model must not be generated")
-	}
-	for _, assignee := range []string{"gpt", "default", "deepseek"} {
-		if got := config.FallbackModels[assignee]; got != "deepseek/deepseek-v4-flash" {
-			t.Fatalf("fallback model for %s = %q, want %q", assignee, got, "deepseek/deepseek-v4-flash")
-		}
 	}
 }
 

@@ -23,9 +23,9 @@ import (
 //     adapter from the task assignee (vault-map models), matching DSH's
 //     provider/model route form.
 //   - Reasoning effort maps to DSH's effort enum (off/low/high/max → the
-//     DSH adapter default set). DSH's own cross-model fallback plugin covers
-//     provider failure; the daemon-side fallback_models path is retained as a
-//     second layer until the DSH route is fully trusted.
+//     DSH adapter default set). DSH's own cross-model fallback plugin
+//     (fallback.mjs) covers provider failure; there is no daemon-side fallback
+//     layer — that OMP-era mechanism was removed with OMP itself.
 //   - Future: replace spawn-per-phase with ctx.agents.create/resume for
 //     durable, resumable sessions (Phase 3+). Until then, resume is
 //     unsupported and daemon restart re-dispatches from frontmatter state,

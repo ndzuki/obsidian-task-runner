@@ -175,11 +175,11 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 ## Fallback Model（兜底模型）
 
-三层兜底，按失效形态分工（`executor=dsh` 默认路径由 DSH 的 fallback.mjs 插件进程内跨模型降级；`executor=omp` 回退路径沿用下列 daemon 侧机制）：
+模型兜底统一由 DSH 的 fallback.mjs 插件处理（`~/.dsh/cordis.patch.yml` 配置链，magic → ds-official）：
 
-- **进程级失败**（执行器退出 / 阶段超时 / quota）：dsh 路径由 fallback.mjs 按链切换（magic → ds-official）；omp 路径由 daemon 按 vault-map.json 顶层 `fallback_models` 重启 omp（key 为 assignee，value 为任意 omp 模型标识）。**陈旧 phase 防护**（两路径共用）：重启前重读任务状态——若 status 已离开原 phase（会话先写回成功再挂死），跳过 fallback 并通知「✅ 阶段已完成」，禁止旧 phase prompt 对已前进任务重跑（TASK-001 教训）；任务文件瞬时不可读/不可解析同样跳过（保守，下轮重试）。
-- **会话内 API 错误兜底**：dsh 路径由 fallback.mjs 的 agent/request-error 接管；omp 路径由 config.yml 的 `retry.fallbackChains`（按 role）承担——注意 daemon 以 `--model <裸模型 ID>` 启动的 omp 会话不匹配任何 role，该链不生效。
-- **空响应兜底**（omp 路径专属，`watchEmptyStops`）：omp 日志出现 `empty-stop-handled`（provider 返回 stop 但零内容——第三方 gateway 渠道抖动形态）且 10 分钟窗口内 2 次 → daemon 取消会话 → 走 `fallback_models` 重启（官方 deepseek 直连）+ 「🔄 模型切换」通知。
+- **进程内跨模型降级**：magic 免费模型失败 / 配额耗尽 → 自动切官方 `ds-official`（`deepseek-v4-pro` / `deepseek-v4-flash`）。
+- **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
+- daemon 侧无 fallback 层——OMP 时代的 `fallback_models` / `watchEmptyStops` 已随 OMP 移除。
 
 ## Frontmatter 字段规范
 

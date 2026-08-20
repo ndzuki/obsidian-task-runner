@@ -1,10 +1,5 @@
 {
   "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。字段顺序可自由调整（daemon 保序维护、只追加缺失字段）；建议 projects 置末——追加新项目是最频繁的手工编辑。",
-  "fallback_models": {
-    "deepseek": "deepseek/deepseek-v4-flash",
-    "default": "deepseek/deepseek-v4-flash",
-    "gpt": "deepseek/deepseek-v4-flash"
-  },
   "kb_chat": {
     "_comment": "知识库问答（可选，otg kb ask 的生成模型）。需 kb_embedding（检索是 RAG 的 R）；ollama 需 ollama pull qwen3:1.7b。",
     "backend": "ollama",
@@ -36,11 +31,11 @@
   "models": {
     "_comment": "assignee → OMP 模型标识。通过 dev/null 禁用模型。",
     "deepseek": "deepseek/deepseek-v4-flash",
-    "gpt":      "gateway/deepseek-v4-pro",
-    "default":  "deepseek/deepseek-v4-flash",
-    "gemini":   "google/gemini-2.5-pro",
-    "claude":   "anthropic/claude-sonnet-4-20250514",
-    "minimax":  "minimax/minimax-m1"
+    "gpt": "gateway/deepseek-v4-pro",
+    "default": "deepseek/deepseek-v4-flash",
+    "gemini": "google/gemini-2.5-pro",
+    "claude": "anthropic/claude-sonnet-4-20250514",
+    "minimax": "minimax/minimax-m1"
   },
   "new_project_root": "/home/you/src",
   "notifications": {
