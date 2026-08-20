@@ -1609,34 +1609,6 @@ func taskTempDirForKey(runKey string) string {
 	return filepath.Join(cacheDir, "otg", "tasks", runKey)
 }
 
-// setTaskTempEnv gives a child process an isolated temporary directory.
-func setTaskTempEnv(cmd *exec.Cmd, taskPath string) error {
-	dir := taskTempDirForKey(taskRunKey(taskPath))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create task temp directory: %w", err)
-	}
-	base := os.Environ()
-	env := make([]string, 0, len(base)+4)
-	keys := []string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR"}
-	for _, entry := range base {
-		skip := false
-		for _, key := range keys {
-			if strings.HasPrefix(entry, key+"=") {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			env = append(env, entry)
-		}
-	}
-	for _, key := range keys {
-		env = append(env, key+"="+dir)
-	}
-	cmd.Env = env
-	return nil
-}
-
 // cleanupTaskArtifacts removes task-owned temporary state after a terminal
 // write-back. Task logs remain as the audit trail; the private temp directory,
 // stale PID file, and terminal worktree are disposable resources.
@@ -1691,17 +1663,7 @@ func (r *Runner) findReadyTasks() ([]task.ReadyTask, error) {
 	if err != nil {
 		return nil, err
 	}
-	adopted := r.adoptSurvivingImplementations()
-	if len(adopted) == 0 {
-		return tasks, nil
-	}
-	filtered := tasks[:0]
-	for _, candidate := range tasks {
-		if _, running := adopted[taskRunKey(candidate.FilePath)]; !running {
-			filtered = append(filtered, candidate)
-		}
-	}
-	return filtered, nil
+	return tasks, nil
 }
 
 func (r *Runner) taskLogDir() string {
@@ -2470,77 +2432,6 @@ func (r *Runner) findTaskPath(projDir, id string) string {
 		return path
 	}
 	return ""
-}
-
-func (r *Runner) adoptSurvivingImplementations() map[string]struct{} {
-	adopted := make(map[string]struct{})
-	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
-	projects, err := os.ReadDir(projectsDir)
-	if err != nil {
-		return adopted
-	}
-	taskLogDir := r.taskLogDir()
-	for _, projectEntry := range projects {
-		if !projectEntry.IsDir() {
-			continue
-		}
-		tasksDir := filepath.Join(projectsDir, projectEntry.Name(), "Tasks")
-		entries, err := os.ReadDir(tasksDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
-				continue
-			}
-			taskPath := filepath.Join(tasksDir, entry.Name())
-			data, err := os.ReadFile(taskPath)
-			if err != nil {
-				continue
-			}
-			fm, err := yamlfrontmatter.Parse(data)
-			if err != nil || fm == nil || fm.Status != "implementing" {
-				continue
-			}
-			pidFile := taskPIDFile(taskLogDir, fm.ID, taskPath)
-			pidData, err := os.ReadFile(pidFile)
-			if err != nil {
-				continue
-			}
-			pid, startTime, recordedCmd := parsePIDRecord(pidData)
-			if pid == 0 || !procAlive(pid) {
-				if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-					r.logger.Printf("task %s: remove stale PID file: %v", fm.ID, err)
-				}
-				continue
-			}
-			if !startTime.IsZero() && !pidMatchesTask(pid, startTime, recordedCmd) {
-				r.logger.Printf("task %s: PID %d reused by different process — ignoring", fm.ID, pid)
-				if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-					r.logger.Printf("task %s: remove stale PID file: %v", fm.ID, err)
-				}
-				continue
-			}
-			adopted[taskRunKey(taskPath)] = struct{}{}
-			if r.implementationGate.adopt(pid, projectEntry.Name()) {
-				r.logger.Printf("task %s: adopted surviving implementation PID %d", fm.ID, pid)
-				go r.watchAdoptedImplementation(pid, pidFile)
-			}
-		}
-	}
-	return adopted
-}
-
-func (r *Runner) watchAdoptedImplementation(pid int, pidFile string) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for procExists(pid) {
-		<-ticker.C
-	}
-	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
-		r.logger.Printf("remove adopted PID file %s: %v", pidFile, err)
-	}
-	r.implementationGate.releaseAdopted(pid)
 }
 func (r *Runner) repoLock(repoDir string) *sync.RWMutex {
 	lock, _ := r.repoLocks.LoadOrStore(repoDir, &sync.RWMutex{})
@@ -3870,11 +3761,6 @@ func procAlive(pid int) bool {
 			return false
 		}
 	}
-	return procExists(pid)
-}
-
-// procExists checks if a PID exists via signal 0.
-func procExists(pid int) bool {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
@@ -4003,35 +3889,4 @@ func procStartTime(pid int) (time.Time, error) {
 	startSec := float64(startTicks) / float64(syscall.Getpagesize()/4096*100)
 	bootTime := time.Now().Add(-time.Duration(uptimeSec * float64(time.Second)))
 	return bootTime.Add(time.Duration(startSec * float64(time.Second))), nil
-}
-
-func parsePIDRecord(data []byte) (int, time.Time, string) {
-	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 3)
-	if len(lines) == 0 {
-		return 0, time.Time{}, ""
-	}
-	pid, err := strconv.Atoi(lines[0])
-	if err != nil {
-		return 0, time.Time{}, ""
-	}
-	if len(lines) < 3 {
-		return pid, time.Time{}, ""
-	}
-	const longForm = "2006-01-02 15:04:05 -0700"
-	startTime, err := time.Parse(longForm, lines[1])
-	if err != nil {
-		return pid, time.Time{}, lines[2]
-	}
-	return pid, startTime, lines[2]
-}
-
-func pidMatchesTask(pid int, recordedStart time.Time, recordedCmd string) bool {
-	if recordedStart.IsZero() || recordedCmd == "" {
-		return true
-	}
-	actualStart, err := procStartTime(pid)
-	if err != nil {
-		return false
-	}
-	return actualStart.Equal(recordedStart)
 }
