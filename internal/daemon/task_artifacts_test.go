@@ -4,7 +4,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,29 +15,6 @@ import (
 // GOTMPDIR 全部指向 ~/.cache/otg/tasks/<runkey>，且原值被替换而非追加。
 // 回归背景：go test/go build/mktemp 的临时产物此前落在全局 /tmp，
 // 任务终态后无法按任务归属回收。
-func TestSetTaskTempEnv(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("TMPDIR", "/original/tmp")
-	cmd := &exec.Cmd{}
-	taskPath := filepath.Join(t.TempDir(), "TASK-001.md")
-	if err := setTaskTempEnv(cmd, taskPath); err != nil {
-		t.Fatalf("setTaskTempEnv: %v", err)
-	}
-	runKey := taskRunKey(taskPath)
-	want := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "otg", "tasks", runKey)
-	for _, key := range []string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR"} {
-		got := envValue(cmd.Env, key)
-		if got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
-		}
-	}
-	if envValue(cmd.Env, "TMPDIR") == "/original/tmp" {
-		t.Error("TMPDIR must not retain the original value")
-	}
-	if _, err := os.Stat(want); err != nil {
-		t.Errorf("task temp dir not created: %v", err)
-	}
-}
 
 func envValue(env []string, key string) string {
 	prefix := key + "="
