@@ -180,7 +180,10 @@ func buildOTGBinary(opts Options) error {
 	}
 	ldflags := fmt.Sprintf("-X main.Version=%s -X main.Commit=%s", version, commit)
 	tmp := dest + ".tmp"
-	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", tmp, "./cmd/otg/")
+	// -tags sqlite_fts5 是强制项：知识库检索库依赖 SQLite FTS5（mattn/go-sqlite3
+	// 的 opt-in 编译宏），漏掉 tag 的二进制能编译能跑但所有 kb 命令报
+	// "no such module: fts5"。与 Makefile build 目标保持强制一致。
+	cmd := exec.Command("go", "build", "-tags", "sqlite_fts5", "-ldflags", ldflags, "-o", tmp, "./cmd/otg/")
 	output, buildErr := cmd.CombinedOutput()
 	if buildErr != nil {
 		_ = os.Remove(tmp)
