@@ -157,6 +157,13 @@ func mapDSHModel(ompModel string) (provider, model string) {
 	return "deepseek_magic", ompModel
 }
 
+// dshModelLabel renders a vault-map model identity in DSH route form
+// ("provider/model"), for log headers and diagnostics.
+func dshModelLabel(model string) string {
+	provider, m := mapDSHModel(model)
+	return provider + "/" + m
+}
+
 // mapDSHEffort maps omp --thinking to the DSH reasoningEffort the model profile
 // declares. off and empty mean "no explicit effort" (model default) — the
 // agent-server rejects "off" as UNSUPPORTED_REASONING_EFFORT because the profile
