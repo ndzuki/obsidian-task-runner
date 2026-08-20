@@ -92,8 +92,8 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 	return fmt.Sprintf(`%s（遵循 skill://requirement-elaborator 的方法论：事实从环境查，决策由用户定）。
 
 交互方式改为「批量问卷」，不要逐问：
-1. 深度勘察：读需求文档 + 项目上下文（CONTEXT.md、现有 REQ、ADRs、PROJECT-CONVENTIONS.md、相关代码/协议）
-2. 一次性提炼所有需要决策的技术点，合并同类项，控制在 5-15 个
+1. 勘察（精简）：读需求文档正文；仅当需求正文明确引用某 ADR / 契约 / 上游 REQ 时，再读那些被引用的文件。不要遍历 CONTEXT.md 全量术语、不要读代码实现——它们会在实现阶段按需加载。
+2. 一次性提炼所有需要决策的技术点，合并同类项，控制在 5-12 个
 3. 输出一个 JSON 对象（放在一个 %c%c%cjson 代码块里，代码块外不要任何文字），结构：
 {
   "decisions": [
