@@ -503,13 +503,19 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 		log.Printf("decision tab: kitty @ ls failed for %s: %v", project, lsErr)
 	}
 
-	prompt := fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点。
+	prompt := fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点（「决策:」为空或占位符的 D-n）。
 
-逐项向用户提问并填写答案：
-1. 读取清单中「决策:」为空或占位符（{用户填写}）的决策点（D-n），以及「拆分:」「评审决策:」未填项；
-2. 逐一向用户展示问题（含冲突背景与建议方向），用户回答后把答案写入清单对应「- 决策: {答案}」行（直接编辑文件正文，保持格式与顺序）；
-3. 全部问完后总结已填项；不要设置 grill_continue、不要修改 frontmatter —— daemon 检测到答案变化后会自动分发；
-4. 用户中途关闭 tab 无妨：已填答案保留，全部填完后 daemon 自动完成分发与文档更新。`, listPath)
+输出一个 JSON 问卷（放在一个 `+"```json"+` 代码块里，代码块外不要任何文字），结构：
+{"decisions":[
+  {"id":"D-14","question":"一句话问题（冲突核心）","options":[{"id":"A","label":"选项说明（从建议提炼）"},{"id":"B","label":"..."}],"recommended":"A","reason":"推荐理由（一句话）"},
+  ...
+]}
+每个待答决策点一个条目：id 用清单的 D-n；options 从该点的「建议」提炼 2-4 个选项，recommended 用建议里标「推荐」的那项。
+
+用户会一轮回复所有决策（格式 D-14=A D-15=B …）。你收到后：
+1. 把每个决策写回清单对应「- 决策: {答案}」行（直接编辑文件正文，保持格式与顺序）；
+2. 全部填完设 frontmatter grill_continue: true（daemon 据此自动分发）；
+3. 输出「决策总结」逐项列出已填项。`, listPath)
 	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
