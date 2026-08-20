@@ -37,7 +37,7 @@ func runInstallSystemd(cmd *cobra.Command, _ []string) error {
 	home, _ := os.UserHomeDir()
 	skillDir := os.Getenv("SKILL_INSTALL_DIR")
 	if skillDir == "" {
-		skillDir = filepath.Join(home, ".omp", "skills", "obsidian-task-runner")
+		skillDir = filepath.Join(home, ".dsh", "skills", "obsidian-task-runner")
 	}
 
 	vault := resolveInstallVault(skillDir, installSystemdVault)
