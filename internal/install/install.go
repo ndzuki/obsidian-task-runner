@@ -283,7 +283,6 @@ func generateVaultMap(opts Options) error {
 		"new_project_root":      opts.NewProjectRoot,
 		"projects":              []interface{}{},
 		"models":                map[string]string{"default": "gateway/gpt-5.4-mini"},
-		"fallback_models":       map[string]string{"gpt": "deepseek/deepseek-v4-flash", "default": "deepseek/deepseek-v4-flash", "deepseek": "deepseek/deepseek-v4-flash"},
 		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes": opts.PollIntervalMin,
 		// max_concurrent_tasks: 0 = no global cap (per-project governs);
@@ -298,7 +297,7 @@ func generateVaultMap(opts Options) error {
 	// most editors) with "projects" pinned last — appending a new project is
 	// the most frequent manual edit, so the array stays at the bottom.
 	orderedKeys := []string{
-		"config_version", "fallback_models", "max_concurrent_tasks",
+		"config_version", "max_concurrent_tasks",
 		"max_concurrent_tasks_per_project", "models",
 		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
 		"off_peak_windows", "phase_timeouts_minutes", "poll_interval_minutes",
