@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,7 +42,20 @@ func newDSHEmbedExecutor(addr, skillDir string) *dshEmbedExecutor {
 func (e *dshEmbedExecutor) Name() string { return "dsh-embed" }
 
 func (e *dshEmbedExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecutionHandle, error) {
-	return e.dispatch(ctx, spec, "")
+	// 预生成 sessionId：daemon 侧持有它，中断时即使 /agent/run 响应未返回，
+	// 也能用它持久化 executor_session_id 供 durable resume（否则 sessionId 由
+	// agent-server 内部生成，中断瞬间拿不到，resume 退化为 fresh start）。
+	return e.dispatch(ctx, spec, newSessionID())
+}
+
+// newSessionID 生成一个 agent-server 可接受的会话 id（daemon 侧预分配，
+// 供 durable resume 持久化）。
+func newSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err == nil {
+		return "session-" + hex.EncodeToString(b)
+	}
+	return fmt.Sprintf("session-%d", time.Now().UnixNano())
 }
 
 // embedResumeToken encodes everything Resume needs to re-attach a durable
@@ -211,7 +226,7 @@ func (h *embedHandle) Wait() (*ExecutionResult, error) {
 		if h.ctx.Err() == context.DeadlineExceeded {
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: "agent-server request timed out"}, nil
 		}
-		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: "agent-server request cancelled"}, nil
+		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: "agent-server request cancelled", ResumeToken: h.buildResumeToken(h.req.SessionID)}, nil
 	}
 }
 
@@ -234,7 +249,7 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 		case context.DeadlineExceeded:
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: err.Error()}
 		case context.Canceled:
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: err.Error()}
+			return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		default:
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server unreachable: " + err.Error()}
 		}

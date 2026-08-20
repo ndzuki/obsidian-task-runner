@@ -122,8 +122,8 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	if gotReq.Task == "" {
 		t.Error("task must be non-empty (skill body injected)")
 	}
-	if gotReq.SessionID != "" {
-		t.Errorf("sessionId = %q, want empty on first dispatch", gotReq.SessionID)
+	if gotReq.SessionID == "" || !strings.HasPrefix(gotReq.SessionID, "session-") {
+		t.Errorf("sessionId = %q, want daemon-preallocated session- prefix (durable resume)", gotReq.SessionID)
 	}
 }
 
@@ -279,5 +279,40 @@ func TestDSHEmbedExecutorResumeRejectsBadToken(t *testing.T) {
 	}
 	if _, err := e.Resume(context.Background(), `{"sessionId":"","provider":"p","model":"m"}`); err == nil {
 		t.Error("Resume(missing sessionId) must fail")
+	}
+}
+
+// TestDSHEmbedExecutorInterruptedPersistsResumeToken 断言中断时（ctx cancel、
+// /agent/run 响应未返回）也能持久化 ResumeToken——daemon 预分配 sessionId，
+// 使 durable resume 在 daemon 重启中断场景真正可用。
+func TestDSHEmbedExecutorInterruptedPersistsResumeToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &embedHandle{
+		ctx:         ctx,
+		cancel:      cancel,
+		phase:       "round2",
+		req:         agentRunRequest{SessionID: "session-daemon-allocated", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
+		provider:    "deepseek_magic",
+		model:       "deepseek-v4-pro",
+		effort:      "high",
+		skillPrompt: "/obsidian-task-runner-round2 /vault/TASK.md",
+	}
+	cancel() // 模拟 daemon shutdown 中断
+	res, err := h.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if res.Code != OutcomeInterrupted {
+		t.Fatalf("code = %q, want interrupted", res.Code)
+	}
+	if res.ResumeToken == "" {
+		t.Fatal("中断时应持久化 ResumeToken（daemon 预分配 sessionId）")
+	}
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil {
+		t.Fatalf("ResumeToken 应为合法 JSON: %v", err)
+	}
+	if tok.SessionID != "session-daemon-allocated" || tok.Model != "deepseek-v4-pro" {
+		t.Fatalf("resume token 字段错误: %+v", tok)
 	}
 }
