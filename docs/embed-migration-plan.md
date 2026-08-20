@@ -209,3 +209,47 @@ dsh-embed 具备生产可用性。
 - **日志路径**：`~/.omp/logs` → `~/.dsh/logs`（daemon/merge/audit/cli 共 7 处）。
 - **注释**：`~/.omp/get-api-key.sh` 历史引用移除。
 - 代码层 `~/.omp` 引用清零。
+
+## 11. grilling 交互平替 + effort 分级（2026-08-20）
+
+### grilling 交互（kitty tab 光标问卷）
+
+omp 的 grilling 交互（`exec "omp" <prompt>` 逐问 TUI）替换为自研 kitty-grill：
+
+- **agent-server `/agent/chat`**：多轮交互端点（sessionId 命中 liveAgents 复用
+  同一 agent 保持上下文，否则 create/resume），与 `/agent/run` 共用 acquireAgent。
+- **kitty-grill**（`cmd/kitty-grill/`）：Bubble Tea 光标问卷——模型输出结构化
+  JSON 问卷（decisions[]: id/question/options/recommended/reason），用户
+  `j/k` 选选项、`Enter` 确认、`h/l` 切题、`q` 一轮提交；ANSI/lipgloss 渲染
+  （进度 + 光标 ❯ + ⭐推荐 + 推荐理由），runewidth 按显示宽度换行（中文/emoji
+  各占 2 列）。
+- **预取注入**：kitty-grill 读需求文档全文 + 扫描 ADR-\d+ 引用读对应 ADR，
+  作为上下文注入 prompt——勘察从 10-20 轮 read 降到 0 轮，省 60-70% 时间。
+- **prompt-env**：决策清单 prompt 经环境变量传（避免 bash 反引号转义）。
+- daemon 集成：tryKittyTab（需求详细化）/TryKittyDecisionTab（决策清单）从
+  `exec omp` 改为 `exec kitty-grill`；ompExecPath → grillExecPath。
+
+### reasoning effort 分级
+
+参考官方 headless-reasoning-effort 设计审查，按阶段性质分级（模型声明
+low/medium/high/xhigh 四档）：
+
+| 阶段 | effort | 性质 |
+| --- | --- | --- |
+| priority | medium | 评估判断 |
+| refining/conventions/audit/pm | low | 对话/整理 |
+| planning | high | 深度规划 |
+| round2 | max（xhigh） | 最深实现 |
+| merge | high | 冲突解决 |
+| design | max | 全局设计 |
+| grilling 需求详细化 | high | 理解需求 + 技术判断 |
+| grilling 决策清单 | low | 信息整理 |
+
+### 配置与持久化
+
+- agent-default-model 修复为 `deepseek_magic/deepseek-v4-pro`（magic 免费优先，
+  fallback ds-official 官方兜底），reasoningEffort=high。
+- `omp-commands` 插件改名 `dsh-commands`。
+- daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，
+  完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描
+  /tmp/kitty-*）。
