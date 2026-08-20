@@ -269,8 +269,12 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		// retries on every scan while the environment is broken, and a
 		// bare SendTaskAction would re-toast each round (TASK-067
 		// notification storm).
+		remedy := ""
+		if occupied := worktreePathFromError(wdErr.Error()); occupied != "" {
+			remedy = fmt.Sprintf("\n执行清理：git -C %s worktree remove --force %s", repoDir, occupied)
+		}
 		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "🚫", "Merge 工作区不可用",
-			fmt.Sprintf("任务 worktree 无法绑定分支 %s（%v）。请确认主 checkout 不在该分支上、无残留 worktree 占用，修复后 daemon 自动重试", fm.TargetBranch, wdErr), failNotifyReason)
+			fmt.Sprintf("任务 worktree 无法绑定分支 %s（%v）。%s", fm.TargetBranch, wdErr, remedy), failNotifyReason)
 		return fmt.Errorf("merge worktree unavailable: %w", wdErr)
 	} else {
 		repoDir = wd

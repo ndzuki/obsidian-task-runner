@@ -1710,3 +1710,13 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 // alive, no context cancellation) is treated as an interrupted attempt — the
 // one-shot AI budget is preserved and the merge resumes on the next scan —
 // rather than a genuine resolution failure.
+
+func TestWorktreePathFromError(t *testing.T) {
+	err := "fatal: 'task/057-web-operation-timeline' is already used by worktree at '/home/nd/.otg-worktrees/task057-cifix'"
+	if got := worktreePathFromError(err); got != "/home/nd/.otg-worktrees/task057-cifix" {
+		t.Fatalf("worktreePathFromError = %q", got)
+	}
+	if got := worktreePathFromError("some other error"); got != "" {
+		t.Fatalf("non-worktree error should return empty, got %q", got)
+	}
+}
