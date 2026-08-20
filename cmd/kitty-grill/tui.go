@@ -127,11 +127,39 @@ func (m qModel) allAnswered() bool {
 	return true
 }
 
+// wrap breaks s into lines no wider than width runes. CJK text has no spaces,
+// so it wraps per rune; ASCII text also wraps per rune (acceptable for option
+// labels that are mostly short phrases).
+func wrap(s string, width int) string {
+	if width <= 0 || len([]rune(s)) <= width {
+		return s
+	}
+	runes := []rune(s)
+	var b strings.Builder
+	for i := 0; i < len(runes); i++ {
+		if i > 0 && i%width == 0 {
+			b.WriteString("\n")
+		}
+		b.WriteRune(runes[i])
+	}
+	return b.String()
+}
+
 func (m qModel) View() string {
 	if m.aborted {
 		return ""
 	}
 	var b strings.Builder
+
+	// 终端宽度（未收到 WindowSizeMsg 时用 80 兜底）。
+	width := m.width
+	if width < 40 {
+		width = 80
+	}
+	labelW := width - 16 // 前缀 "❯   A. " + 后缀 " ⭐推荐" + 边距
+	if labelW < 20 {
+		labelW = 20
+	}
 
 	// 顶部进度条。
 	answered := 0
@@ -144,7 +172,7 @@ func (m qModel) View() string {
 	b.WriteString("\n")
 
 	d := m.decisions[m.idx]
-	b.WriteString(questionStyle.Render(fmt.Sprintf("D%d · %s", m.idx+1, d.Question)))
+	b.WriteString(questionStyle.Render(wrap(fmt.Sprintf("D%d · %s", m.idx+1, d.Question), width-4)))
 	b.WriteString("\n\n")
 
 	for i, o := range d.Options {
@@ -156,7 +184,7 @@ func (m qModel) View() string {
 		if o.ID == d.Recommended {
 			rec = " ⭐推荐"
 		}
-		line := fmt.Sprintf("%s%s. %s%s", mark, o.ID, o.Label, rec)
+		line := fmt.Sprintf("%s%s. %s%s", mark, o.ID, wrap(o.Label, labelW), rec)
 		if i == m.cursor {
 			b.WriteString(cursorStyle.Render("❯ " + line))
 		} else if m.answers[m.idx] == o.ID {
@@ -169,7 +197,7 @@ func (m qModel) View() string {
 
 	if d.Reason != "" {
 		b.WriteString("\n")
-		b.WriteString(reasonStyle.Render("  推荐理由: " + d.Reason))
+		b.WriteString(reasonStyle.Render(wrap("  推荐理由: "+d.Reason, width-4)))
 		b.WriteString("\n")
 	}
 
