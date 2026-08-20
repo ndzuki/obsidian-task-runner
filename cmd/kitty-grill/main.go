@@ -47,6 +47,7 @@ func main() {
 		provider  = flag.String("provider", "deepseek_magic", "DSH provider")
 		model     = flag.String("model", "deepseek-v4-pro", "DSH model")
 		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
+		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
 	)
 	flag.Parse()
 
@@ -56,6 +57,11 @@ func main() {
 	}
 
 	prompt := *custom
+	if *promptEnv != "" {
+		if v := os.Getenv(*promptEnv); v != "" {
+			prompt = v
+		}
+	}
 	if prompt == "" {
 		prompt = buildGrillingPrompt(*taskID, *taskTitle, *reqDoc, *vaultPath)
 	}

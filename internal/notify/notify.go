@@ -527,14 +527,14 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec %s --prompt %s --addr %s --provider %s --model %s`, project, listPath, grillExecPath(),
-		fmt.Sprintf("%q", prompt), fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
+exec %s --prompt-env KITTY_GRILL_PROMPT --addr %s --provider %s --model %s`, project, listPath, grillExecPath(),
+		fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
 		"bash", "-c", script,
 	)
-	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
+	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath, "KITTY_GRILL_PROMPT="+prompt)
 	if err := cmd.Run(); err != nil {
 		log.Printf("decision tab: kitty @ launch failed for %s: %v", project, err)
 		return false
