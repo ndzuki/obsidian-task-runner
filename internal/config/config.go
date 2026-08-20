@@ -40,7 +40,11 @@ type Config struct {
 	// AgentServerAddr is the long-lived `dsh --profile headless-agent-server`
 	// address used by the dsh-embed executor (host:port; docs/embed-migration-
 	// plan.md). The daemon manages the child process lifecycle itself.
-	AgentServerAddr     string `json:"agent_server_addr"`
+	AgentServerAddr string `json:"agent_server_addr"`
+	// VaultWebAddr is the read-only vault dashboard HTTP API address (host:port)
+	// served in-process by the daemon for the DSH web vault-dashboard plugin
+	// (Phase 4). Empty disables the embedded server.
+	VaultWebAddr        string `json:"vault_web_addr"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
 	// Executor selects the phase-execution backend: "dsh-embed" (default,
 	// long-lived agent-server RPC with per-phase reasoningEffort), "dsh"
@@ -337,6 +341,7 @@ func Defaults() *Config {
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
 		AgentServerAddr:            "127.0.0.1:8799",
+		VaultWebAddr:               "127.0.0.1:8787",
 		ReplanGateThreshold:        5,
 		Executor:                   "dsh-embed",
 		DefaultAssignee:            "",
