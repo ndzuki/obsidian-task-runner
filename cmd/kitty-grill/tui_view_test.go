@@ -37,3 +37,25 @@ func TestQModelViewMarksSelected(t *testing.T) {
 		t.Error("已确认选项应显示 ✓ 标记")
 	}
 }
+
+// 验证 wrap 按宽度换行，长文本不再溢出。
+func TestWrapBreaksLongText(t *testing.T) {
+	s := "这是一个很长的选项说明，超过宽度应该换行而不是被截断看不到"
+	out := wrap(s, 10)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("wrap 应换行，实际: %q", out)
+	}
+	for _, l := range lines {
+		if len([]rune(l)) > 10 {
+			t.Errorf("换行后单行超宽: %q", l)
+		}
+	}
+}
+
+func TestWrapShortTextUnchanged(t *testing.T) {
+	s := "短文本"
+	if wrap(s, 10) != s {
+		t.Errorf("短文本不应换行")
+	}
+}
