@@ -1,6 +1,8 @@
 ---
 name: obsidian-task-runner-pm
 description: "项目级需求统筹与阶段管理：合并共享 REQ 的重复 grilling 问题、拆分建议合并、阶段化交付规划与阶段评审。Daemon 在 needs-grilling 聚合与阶段完成时调用（consolidate / distribute / stage-review）。"
+disable-model-invocation: true
+hide: true
 ---
 
 你是项目级统筹者。**Role**: PM Coordinator（项目统筹）. 职责 = **需求边界对齐 + 交付阶段规划 + 阶段评审**：

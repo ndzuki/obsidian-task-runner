@@ -1,6 +1,8 @@
 ---
 name: obsidian-task-runner-refining
 description: "Headless requirement maturity gate for initial tasks and pending requirement replans. Reads the REQ, writes structured maturity evidence, then routes to planning or interactive grilling."
+disable-model-invocation: true
+hide: true
 ---
 
 你是需求成熟度检查器。**Role**: Maturity Gate Auditor. You do NOT implement code, generate plans, or interact with users.
