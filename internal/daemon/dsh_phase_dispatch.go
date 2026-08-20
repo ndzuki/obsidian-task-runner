@@ -35,7 +35,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 	}
 	snap := TaskSnapshot{TaskID: t.ID, TaskPath: taskPath, Project: t.Project, RepoDir: repoDir}
 
-	outcome, code, reason := r.runDSHPhase(r.daemonCtx, spec, snap)
+	result, outcome, code, reason := r.runDSHPhase(r.daemonCtx, spec, snap)
 
 	switch outcome {
 	case OutcomeSuccess:
@@ -47,6 +47,8 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 			return true
 		}
 		r.logger.Printf("task %s: completed via DSH", t.ID)
+		// 会话完成：清空持久化的 resume token（无未完成会话可恢复）。
+		r.clearExecutorSessionID(taskPath)
 		r.compactPlanHistory(taskPath, phase)
 		if phase == "round2" {
 			r.recordRound2Completion(taskPath, t.ID)
@@ -66,11 +68,16 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 
 	case OutcomeInterrupted:
 		r.logger.Printf("task %s: DSH interrupted by daemon shutdown, status=%s kept for auto-resume", t.ID, t.Status)
-		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		updates := map[string]interface{}{
 			"phase_error_code": string(ErrPhaseInterrupted),
 			"phase_error":      "daemon 重启中断，等待自动恢复",
 			"phase_log":        logPath,
-		}); err != nil {
+		}
+		// 持久化 resume token：daemon 重启后可用它恢复未完成的会话。
+		if result != nil && result.ResumeToken != "" {
+			updates["executor_session_id"] = result.ResumeToken
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 			r.logger.Printf("task %s: record interruption: %v", t.ID, err)
 		}
 		return true
@@ -81,5 +88,14 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败",
 			fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason), failNotifyReason)
 		return true
+	}
+}
+
+// clearExecutorSessionID clears the persisted resume token after a phase
+// completes, so a later scan does not mistake the finished session for an
+// in-flight one to resume.
+func (r *Runner) clearExecutorSessionID(taskPath string) {
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"executor_session_id": ""}); err != nil {
+		r.logger.Printf("clear executor_session_id: %v", err)
 	}
 }
