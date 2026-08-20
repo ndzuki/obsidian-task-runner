@@ -35,14 +35,16 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	}
 
 	// durable resume：上次中断会话（executor_session_id 持久化在 frontmatter）。
+	// 只有 resume 真正成功（OutcomeSuccess）才复用会话结果；否则（session not
+	// found——中断发生在 agent-server create 之前、或 agent-server 重启丢会话）
+	// 一律回退 fresh start，避免把「会话已失效」误判为阶段失败（MODEL_FAILED）。
 	if token := readExecutorSessionID(snap.TaskPath); token != "" {
 		if handle, err := executor.Resume(ctx, token); err == nil {
-			if result, err := handle.Wait(); err == nil {
+			if result, err := handle.Wait(); err == nil && result.Code == OutcomeSuccess {
 				outcome, code, reason := mapExecOutcome(result)
 				return result, outcome, code, reason
-			} else {
-				r.logger.Printf("task %s: resume wait failed (%v), falling back to fresh start", snap.TaskID, err)
 			}
+			r.logger.Printf("task %s: resume not successful, falling back to fresh start", snap.TaskID)
 		} else if !errors.Is(err, ErrResumeUnsupported) {
 			r.logger.Printf("task %s: resume failed (%v), falling back to fresh start", snap.TaskID, err)
 		}
