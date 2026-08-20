@@ -206,14 +206,14 @@ func SendTaskAction(taskID, taskTitle, emoji, title, description string, notifyE
 // SendGrillingNotification notifies the user that a task needs interactive
 // grilling. Tries Kitty tab first (always); falls back to desktop notification
 // only if Kitty is unavailable and desktop notifications are enabled.
-func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string, notifyEnabled bool) {
+func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model string, notifyEnabled bool) {
 	title := fmt.Sprintf("🟡 T%s 需要需求对齐", taskID)
 	if taskTitle != "" {
 		title = fmt.Sprintf("🟡 T%s %s 需要需求对齐", taskID, taskTitle)
 	}
 	body := fmt.Sprintf("需求文档: %s\n请在 DSH 会话中发起：对 %s 进行需求详细化", reqDoc, reqDoc)
 
-	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
+	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model) {
 		return
 	}
 	// Fallback to desktop notification
@@ -222,8 +222,8 @@ func SendGrillingNotification(taskID, taskTitle, reqDoc, vaultPath string, notif
 
 // SendGrillingReminder re-notifies the user that a task is still waiting for grilling.
 // Kitty always attempted; desktop only if enabled.
-func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath string, notifyEnabled bool) {
-	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath) {
+func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model string, notifyEnabled bool) {
+	if tryKittyTab(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model) {
 		return
 	}
 	if !notifyEnabled {
@@ -305,15 +305,16 @@ func kittyAvailable() bool {
 	return err == nil
 }
 
-// ompExecPath resolves the absolute path of the omp binary so tabs launched
-// via kitty @ launch survive the kitty server's own environment: launched
-// children inherit the kitty instance's PATH (not the daemon's), which often
-// lacks omp. Falls back to the bare name when omp is not resolvable here.
-func ompExecPath() string {
-	path, err := exec.LookPath("omp")
+// grillExecPath resolves the absolute path of the kitty-grill client so tabs
+// launched via kitty @ launch survive the kitty server's own environment:
+// launched children inherit the kitty instance's PATH (not the daemon's),
+// which often lacks kitty-grill. Falls back to the bare name when not
+// resolvable here.
+func grillExecPath() string {
+	path, err := exec.LookPath("kitty-grill")
 	if err != nil {
-		log.Printf("grilling tab: omp not in daemon PATH: %v (falling back to bare omp)", err)
-		return "omp"
+		log.Printf("grilling tab: kitty-grill not in daemon PATH: %v (falling back to bare kitty-grill)", err)
+		return "kitty-grill"
 	}
 	return path
 }
@@ -341,7 +342,7 @@ func kittyLaunchEnv() []string {
 	return kittyEnv
 }
 
-func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
+func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model string) bool {
 	// Acquire file lock to prevent concurrent tab creation
 	lockFile, err := os.OpenFile(kittyDebounceFile(taskID), os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -412,13 +413,6 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 		return true
 	}
 
-	var prompt string
-	if reqDoc != "" {
-		prompt = fmt.Sprintf("对 %s 进行需求详细化。请使用 skill://requirement-elaborator 加载需求文档，识别其中的模糊点和未明确的技术决策，逐一向我提问以达成共识。", filepath.Join(vaultPath, reqDoc))
-	} else {
-		prompt = "请使用 skill://requirement-elaborator 帮我进行需求详细化。先询问我要实现什么功能，然后逐一向我追问技术细节以达成共识。"
-	}
-
 	tid := taskID
 	if tid == "" {
 		tid = "?"
@@ -442,7 +436,9 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath string) bool {
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec "%s" %s`, tid, ttl, rd, ompExecPath(), fmt.Sprintf("%q", prompt))
+exec %s --task %s --title %s --req %s --vault %s --addr %s --provider %s --model %s`, tid, ttl, rd, grillExecPath(),
+		fmt.Sprintf("%q", tid), fmt.Sprintf("%q", ttl), fmt.Sprintf("%q", rd), fmt.Sprintf("%q", vaultPath),
+		fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
@@ -462,7 +458,7 @@ exec "%s" %s`, tid, ttl, rd, ompExecPath(), fmt.Sprintf("%q", prompt))
 // and the daemon's answer-hash change detection picks them up for automatic
 // distribution. One tab per project (debounce key = decisions-<project>), so
 // parked tasks share a single interaction surface instead of one per task.
-func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
+func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model string) bool {
 	if !kittyAvailable() {
 		return false
 	}
@@ -521,11 +517,12 @@ func TryKittyDecisionTab(project, listPath, vaultPath string) bool {
 ║
 ║  %s
 ║
-║  OMP 正在逐项向你提问待答决策点…
+║  DSH 正在逐项向你提问待答决策点…
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec "%s" %s`, project, listPath, ompExecPath(), fmt.Sprintf("%q", prompt))
+exec %s --prompt %s --addr %s --provider %s --model %s`, project, listPath, grillExecPath(),
+		fmt.Sprintf("%q", prompt), fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
 	cmd := exec.Command("kitty", "@", "launch",
 		"--type=tab",
 		"--title", tabTitle,
