@@ -272,3 +272,18 @@ low/medium/high/xhigh 四档）：
      fresh start（不再把「会话已失效」当阶段失败）。
 
 实测：TASK-001 resume → 不再 MODEL_FAILED → implementing 正常重派发 round2。
+
+## 12. Agent 并发监控面板（2026-08-20）
+
+token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
+
+- **agent-server `/agents`**：遍历 liveAgents（活跃 agent 会话），返回 JSON 摘要
+  （sessionId / phase / task / status / elapsed）。phase 从 task 文本的
+  `obsidian-task-runner-XXX` 提取，task 从 `TASK-\d+` 提取，status 从最近
+  session 事件（tool/call → 工具名、reasoning → thinking、text → writing）。
+- **agent-server `/monitor`**：单文件 HTML 面板（零构建 SPA），轮询 /agents
+  每 2 秒，DiceBear Bottts SVG 机器人（seed=sessionId，每 agent 一个独特角色）
+  + Emoji 状态 + CSS 动画（呼吸/脉冲/弹跳）。
+- **vault.mjs 加 `/agents` 命令**：dsh web 对话里输入 `/agents` 打开监控面板。
+- 资源占用：面板单文件 ~5KB + 每活跃 agent 一个 ~1KB SVG（懒加载）+ 几行 CSS，
+  无前端框架、无大图、无重动画循环；轮询只在面板打开时进行。
