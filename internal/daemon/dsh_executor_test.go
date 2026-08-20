@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+// writeFakeExecutable writes an executable script that echoes its args to a
+// log file and exits with the given code. Used to verify adapter contract
+// without spawning a real agent.
+func writeFakeExecutable(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	return p
+}
+
 // fakeDshBody echoes argv to $FAKE_LOG and exits 0.
 const fakeDshBody = `echo "$@" >> "$FAKE_LOG"`
 

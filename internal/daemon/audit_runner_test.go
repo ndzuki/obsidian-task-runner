@@ -49,7 +49,8 @@ func newAuditRunner(t *testing.T, skillDir, omp, logDir string) *Runner {
 	t.Helper()
 	runner := New(&config.Config{
 		SkillInstallDir:    skillDir,
-		OMPCmd:             omp,
+		Executor:           "dsh",
+		DSHCmd:             omp,
 		LogDir:             logDir,
 		MaxConcurrentTasks: 1,
 		Models:             config.DefaultModels(),
@@ -134,11 +135,8 @@ func TestReviewAuditPassProceedsToMergeAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit args: %v", err)
 	}
-	if !strings.Contains(string(args), "--tools read,grep,bash") {
-		t.Fatalf("audit args = %q, want restricted --tools read,grep,bash", args)
-	}
-	if !strings.Contains(string(args), "--thinking off") {
-		t.Fatalf("audit args = %q, want --thinking off (cheap verification)", args)
+	if !strings.Contains(string(args), "read / grep / bash") {
+		t.Fatalf("audit args = %q, want restricted read / grep / bash", args)
 	}
 	// Audit log must be persisted for the implementer/user.
 	if fm.AuditLog == "" {
@@ -431,7 +429,7 @@ func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit args: %v", err)
 	}
-	if !strings.Contains(string(args), "--tools read,grep,bash") {
+	if !strings.Contains(string(args), "read / grep / bash") {
 		t.Fatalf("audit args = %q, want restricted tools", args)
 	}
 }

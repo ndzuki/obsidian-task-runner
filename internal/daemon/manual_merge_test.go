@@ -416,7 +416,7 @@ req_doc: Projects/001-team-app/Requirements/REQ-001-x.md
 	if err != nil {
 		t.Fatalf("read args: %v", err)
 	}
-	if !strings.Contains(args, "/obsidian-task-runner-conventions") {
+	if !strings.Contains(args, "obsidian-task-runner-conventions") {
 		t.Fatalf("first team task must dispatch conventions review, got: %s", args)
 	}
 
@@ -450,7 +450,7 @@ req_doc: Projects/001-team-app/Requirements/REQ-001-x.md
 	if err != nil {
 		t.Fatalf("read args: %v", err)
 	}
-	if strings.Contains(args2, "/obsidian-task-runner-conventions") {
+	if strings.Contains(args2, "obsidian-task-runner-conventions") {
 		t.Fatalf("gate must release after artifact exists, got: %s", args2)
 	}
 }

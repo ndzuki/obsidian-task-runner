@@ -30,7 +30,8 @@ func TestRunPriorityAssessmentWritesNormalizedResult(t *testing.T) {
 		t.Fatalf("write OMP: %v", err)
 	}
 
-	runner := &Runner{cfg: &config.Config{OMPCmd: omp, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
+	runner := &Runner{cfg: &config.Config{Executor: "dsh",
+		DSHCmd: omp, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)
 	apiKeyProbe.Store(func() bool { return true })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
@@ -93,7 +94,8 @@ req_doc: %s
 	t.Setenv("CALLS", calls)
 	runner := New(&config.Config{
 		ObsidianVault: vault,
-		OMPCmd:        omp,
+		Executor:      "dsh",
+		DSHCmd:        omp,
 		Models:        config.DefaultModels(),
 	})
 	runner.logger = log.New(os.Stderr, "", 0)

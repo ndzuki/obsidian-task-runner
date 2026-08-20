@@ -110,9 +110,9 @@ func TestExecutorSelectionIsRespected(t *testing.T) {
 	if r.phaseExecutor == nil || r.phaseExecutor.Name() != "dsh" {
 		t.Fatalf("dsh runner phaseExecutor=%v, want dsh adapter", r.phaseExecutor)
 	}
-	r2 := New(&config.Config{Executor: "omp", ObsidianVault: dir})
-	if r2.phaseExecutor == nil || r2.phaseExecutor.Name() != "omp" {
-		t.Fatalf("omp runner phaseExecutor=%v, want omp adapter", r2.phaseExecutor)
+	r2 := New(&config.Config{Executor: "dsh-embed", ObsidianVault: dir})
+	if r2.phaseExecutor == nil || r2.phaseExecutor.Name() != "dsh-embed" {
+		t.Fatalf("dsh-embed runner phaseExecutor=%v, want dsh-embed adapter", r2.phaseExecutor)
 	}
 	_ = context.Background()
 }

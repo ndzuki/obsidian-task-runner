@@ -31,8 +31,6 @@ type Config struct {
 	OffPeakWindows               []TimeWindow      `json:"off_peak_windows"`
 	StarvationWarningDays        map[string]int    `json:"starvation_warning_days"`
 	Models                       map[string]string `json:"models"`
-	FallbackModels               map[string]string `json:"fallback_models"`
-	OMPCmd                       string            `json:"omp_cmd"`
 	// DSHCmd / DSHProfile drive DSH-native phases (global design first;
 	// remaining phases migrate behind PhaseExecutor incrementally). The
 	// headless app has no per-invocation --model flag, so the selected profile
@@ -250,25 +248,11 @@ func (c *Config) ConcurrencyFor(phase string) int {
 	return c.PhaseConcurrency[phase]
 }
 
-// DefaultFallbackModels returns the built-in assignee → fallback model map.
-// Keys are assignee names (matching `models` / TASK frontmatter); values are
-// OMP model identifiers. Users may add/remove/override any key in
-// vault-map.json; an empty value disables the fallback for that assignee.
-// gpt 主模型为 gateway 免费 v4-pro，fallback 官方 DeepSeek V4-Pro 直连。
-func DefaultFallbackModels() map[string]string {
-	return map[string]string{
-		"gpt":      "deepseek/deepseek-v4-pro",
-		"default":  "deepseek/deepseek-v4-flash",
-		"deepseek": "deepseek/deepseek-v4-flash",
-	}
-}
-
 // ModelReference returns a human-readable model reference table.
-// Model identifiers are sourced from DefaultModels/DefaultFallbackModels so
-// the table never drifts from the shipped defaults.
+// Model identifiers are sourced from DefaultModels so the table never drifts
+// from the shipped defaults.
 func ModelReference() string {
 	d := DefaultModels()
-	fb := DefaultFallbackModels()
 	return fmt.Sprintf(`| key | 模型标识 | 用途 |
 |----------|---------|------|
 | default  | %s | refining、planning、round2 日常任务（gpt-5.4-mini，Agent 能力大幅增强） |
@@ -277,8 +261,7 @@ func ModelReference() string {
 | gemini   | %s | 可选 |
 | claude   | %s | 可选 |
 | minimax  | %s | 可选 |
-| fallback_models | 映射（默认 gpt/default/deepseek → %s） | 各 assignee 失败兜底；可增删任意 key、改任意模型标识，置 "" 禁用 |
-`, d["default"], d["deepseek"], d["gpt"], d["gemini"], d["claude"], d["minimax"], fb["gpt"])
+`, d["default"], d["deepseek"], d["gpt"], d["gemini"], d["claude"], d["minimax"])
 }
 
 // DefaultKBEmbedding returns the shipped embedding defaults (ollama, bge-m3,
@@ -351,8 +334,6 @@ func Defaults() *Config {
 		StageMaxPhases:             4,
 		SkillInstallDir:            filepath.Join(home, ".omp", "skills", "obsidian-task-runner"),
 		Models:                     DefaultModels(),
-		FallbackModels:             DefaultFallbackModels(),
-		OMPCmd:                     "omp",
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
 		AgentServerAddr:            "127.0.0.1:8799",
@@ -433,9 +414,6 @@ func mergeDefaults(cfg *Config) {
 	if cfg.Models == nil {
 		cfg.Models = DefaultModels()
 	}
-	if cfg.FallbackModels == nil {
-		cfg.FallbackModels = defaults.FallbackModels
-	}
 	if cfg.KBEmbedding != nil {
 		d := DefaultKBEmbedding()
 		if cfg.KBEmbedding.Backend == "" {
@@ -489,9 +467,6 @@ func mergeDefaults(cfg *Config) {
 		if cfg.KBChat.Temperature == 0 {
 			cfg.KBChat.Temperature = d.Temperature
 		}
-	}
-	if cfg.OMPCmd == "" {
-		cfg.OMPCmd = defaults.OMPCmd
 	}
 	if cfg.DSHCmd == "" {
 		cfg.DSHCmd = defaults.DSHCmd
@@ -560,9 +535,6 @@ func applyEnvironment(cfg *Config) {
 	if value := firstNonEmptyEnv("OTG_OBSIDIAN_VAULT", "OBSIDIAN_VAULT"); value != "" {
 		cfg.ObsidianVault = value
 	}
-	if value := firstNonEmptyEnv("OTG_OMP_CMD", "OMP_CMD"); value != "" {
-		cfg.OMPCmd = value
-	}
 	if value := os.Getenv("OTG_DSH_CMD"); value != "" {
 		cfg.DSHCmd = value
 	}
@@ -603,8 +575,8 @@ func (c *Config) Validate() error {
 	if c.ReplanGateThreshold < 0 {
 		return fmt.Errorf("CONFIG_INVALID: replan_gate_threshold must be >= 0 (0 = disabled)")
 	}
-	if c.Executor != "omp" && c.Executor != "dsh" && c.Executor != "dsh-embed" {
-		return fmt.Errorf("CONFIG_INVALID: executor must be \"omp\", \"dsh\" or \"dsh-embed\", got %q", c.Executor)
+	if c.Executor != "dsh" && c.Executor != "dsh-embed" {
+		return fmt.Errorf("CONFIG_INVALID: executor must be \"dsh\" or \"dsh-embed\", got %q", c.Executor)
 	}
 	for phase, limit := range c.PhaseConcurrency {
 		if limit < 0 {
@@ -640,14 +612,6 @@ func (c *Config) Model(assignee string) string {
 		return defaultModel
 	}
 	return DefaultModels()["default"]
-}
-
-// FallbackModelFor returns the configured fallback model for an assignee.
-// Lookup is pure configuration: `fallback_models` maps assignee keys to OMP
-// model identifiers. Neither the assignee set nor the model is hardcoded —
-// users configure both via vault-map.json. Empty string means no fallback.
-func (c *Config) FallbackModelFor(assignee string) string {
-	return c.FallbackModels[assignee]
 }
 
 // ResolveProject returns the local path for a project name.

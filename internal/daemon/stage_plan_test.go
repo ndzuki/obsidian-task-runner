@@ -193,7 +193,8 @@ id: "stage-plan"
 	}
 	runner := New(&config.Config{
 		ObsidianVault: vault,
-		OMPCmd:        fakeOMP,
+		Executor:      "dsh",
+		DSHCmd:        fakeOMP,
 		LogDir:        filepath.Join(dir, "logs"),
 		Models:        config.DefaultModels(),
 	})

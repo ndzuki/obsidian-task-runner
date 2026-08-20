@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/priority"
@@ -84,44 +82,9 @@ func (r *Runner) runPriorityAssessmentContext(parent context.Context, candidate 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	// ── Phase 5 executor seam ──────────────────────────────────────────
-	// dsh path recovers the strict JSON from the free-text headless stdout
-	// (extractJSON) before priority.Decode; the OMP path below is untouched
-	// while cfg.Executor stays "omp".
-	if r.cfg.Executor == "dsh" {
-		return r.runPriorityAssessmentDSH(ctx, candidate, reqPath, attempts)
-	}
-
-	cmd := exec.CommandContext(ctx, r.cfg.OMPCmd, "--model", r.cfg.Model("default"), "--auto-approve", "-p", "/obsidian-task-runner-priority "+reqPath)
-	if err := setTaskTempEnv(cmd, candidate.FilePath); err != nil {
-		return fmt.Errorf("create task temp environment: %w", err)
-	}
-	// Deterministic working directory: without it the OMP session inherits
-	// the daemon's cwd and relative paths become launch-dependent.
-	if reqPath != "" {
-		cmd.Dir = filepath.Dir(reqPath)
-	}
-	// Graceful timeout/shutdown: SIGTERM first, hard-kill after WaitDelay.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 30 * time.Second
-	output, runErr := cmd.Output()
-	if runErr != nil {
-		// Interrupted by daemon shutdown (our own SIGTERM via ctx): do not
-		// record a failure — the phase-interrupt contract applies. Reset the
-		// claim so the next scan retries the assessment.
-		if ctx.Err() != nil {
-			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
-				"priority_assessment_status": "pending",
-			})
-			return nil
-		}
-		return r.recordPriorityFailure(candidate, attempts, fmt.Sprintf("model failed: %v", runErr))
-	}
-	result, decodeErr := priority.Decode(output)
-	if decodeErr != nil {
-		return r.recordPriorityFailure(candidate, attempts, decodeErr.Error())
-	}
-	return yamlfrontmatter.Update(candidate.FilePath, priorityUpdates(result, "completed"))
+	// 优先级评估统一走 DSH executor（extractJSON 从 headless 输出恢复 strict
+	// JSON 后 priority.Decode）。
+	return r.runPriorityAssessmentDSH(ctx, candidate, reqPath, attempts)
 }
 
 // runPriorityAssessmentDSH executes the priority assessment through the DSH

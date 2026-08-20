@@ -1546,36 +1546,6 @@ func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 	return fm
 }
 
-func TestCheckAPIKeyUnavailable(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "omp.log")
-
-	if got := checkAPIKeyUnavailable(filepath.Join(dir, "missing.log")); got != "" {
-		t.Fatalf("missing log = %q, want empty", got)
-	}
-
-	if err := os.WriteFile(logPath, []byte("Working...\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := checkAPIKeyUnavailable(logPath); got != "" {
-		t.Fatalf("clean log = %q, want empty", got)
-	}
-
-	if err := os.WriteFile(logPath, []byte("Working...\nerror: No API key found for gateway.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := checkAPIKeyUnavailable(logPath); got == "" {
-		t.Fatal("key error log = empty, want message")
-	}
-
-	if err := os.WriteFile(logPath, []byte("missing API_KEY for provider deepseek\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := checkAPIKeyUnavailable(logPath); got == "" {
-		t.Fatal("missing api key log = empty, want message")
-	}
-}
-
 // TestScanAndProcessAutoResumesKeyBlockedTask verifies that a task blocked on
 // API_KEY_UNAVAILABLE is restored to blocked_phase and dispatched in the SAME
 // scan round once the key probe succeeds (fall-through, no extra round wait).

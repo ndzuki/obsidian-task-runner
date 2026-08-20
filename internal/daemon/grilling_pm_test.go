@@ -453,7 +453,8 @@ grill_continue: true
 	omp := writeArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -503,7 +504,8 @@ grill_continue: false
 	omp := writeSlowArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -541,7 +543,8 @@ func TestConsolidateInFlightDedup(t *testing.T) {
 	omp := writeSlowArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -599,7 +602,8 @@ last_distributed_at: 2026-08-05T10:00:00+08:00
 	omp := writeArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -705,7 +709,8 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 	omp := writeArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -718,7 +723,7 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "/obsidian-task-runner-pm consolidate") {
+	if !strings.Contains(args, "任务参数：consolidate") {
 		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 	if !strings.Contains(args, "TASK-012") || !strings.Contains(args, "TASK-074") {
@@ -752,7 +757,8 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 	omp := writeArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -765,7 +771,7 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "/obsidian-task-runner-pm distribute") {
+	if !strings.Contains(args, "任务参数：distribute") {
 		t.Fatalf("pm args = %q, want distribute prompt", args)
 	}
 	if !strings.Contains(args, "Grilling-Decisions.md") {
@@ -785,7 +791,8 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 	omp := writeArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:              omp,
+			Executor:            "dsh",
+			DSHCmd:              omp,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -812,7 +819,8 @@ func TestParkedTaskIsNotDispatched(t *testing.T) {
 
 	runner := &Runner{
 		cfg: &config.Config{
-			OMPCmd:             omp,
+			Executor:           "dsh",
+			DSHCmd:             omp,
 			ObsidianVault:      vault,
 			MaxConcurrentTasks: 2,
 			Models:             config.DefaultModels(),
