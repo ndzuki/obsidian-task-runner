@@ -126,14 +126,20 @@ dsh-embed 具备生产可用性。
   `dsh --profile headless-agent-server` + 30s 健康检查；stopAgentServer SIGTERM
   →10s→SIGKILL。Run/RunOnce 挂载（dsh-embed 时启动/收口，其他 executor no-op）。
 
-### E4 决策：暂缓 resume 接通（2026-08-20）
+### E4 完成状态：Resume 核心 + sessionId 持久化 ✅（2026-08-20）
 
-实测确认 `phaseExecutor.Resume` **从未被 daemon 调用**（daemon 重启后靠 frontmatter
-状态重派发，spawn/omp 皆如此）。接通 durable resume 需要在 processBatchSequential
-增加「重启检测 executor_session_id → Resume」的恢复逻辑，属独立工程，且**非替换
-omp 的前提**。dshEmbedExecutor 已把 sessionId 写入 `ExecutionResult.ResumeToken`
-（E2），未来接通 resume 时直接可用；当前 daemon 重启后与 spawn 一样走 frontmatter
-重派发（可接受，非 blocker）。
+- **dshEmbedExecutor.Resume 实现**：JSON token（sessionId + provider/model/
+  skillPrompt/effort）解码后重新发 `/agent/run` 带 sessionId，agent-server
+  恢复会话而非新建（`agents.resume`）。
+- **ResumeToken 编码**：dispatch 的 `ExecutionResult.ResumeToken` 从裸
+  sessionId 改为 JSON（含 spec 字段，供 Resume 重建请求）。
+- **sessionId 持久化**：runDSHPhaseDispatch 的 interrupted 分支写回
+  `executor_session_id`；success 分支清空（`clearExecutorSessionID`）。
+- 测试：Resume token 往返（编码/解码/sessionId 传递）+ 畸形 token 拒绝。
+
+**剩余 backlog**：daemon 重启后「scan 检测 executor_session_id 非空 → Resume」
+的接通（属 scan 流程改动）。round2 有 checkpoint 复用，重派发已能从断点继续，
+故 resume 接通是省 token + 保持上下文，非正确性前提。
 
 ### E1 验证记录（2026-08-20，rc.8）
 
