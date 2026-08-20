@@ -3191,7 +3191,12 @@ func canAutoApproveMerge(t task.ReadyTask, currentReqHash string, maxAutoMergeFi
 	if t.PhaseErrorCode == "" {
 		return true
 	}
-	if t.PhaseErrorCode == string(ErrGitHubUnavailable) || t.PhaseErrorCode == string(ErrRepoMismatch) {
+	// Only REPO_MISMATCH is a true permanent defect (the remote/branch config is
+	// wrong — retrying would never succeed). GITHUB_UNAVAILABLE covers gh CLI
+	// absence AND transient network failures (TLS connect error, timeout) — the
+	// latter recovers on its own, so it must retry within the merge_retry_count
+	// budget (bounded + cooled) rather than strand the task in review forever.
+	if t.PhaseErrorCode == string(ErrRepoMismatch) {
 		return false
 	}
 	if t.PlanReqHash == "" || currentReqHash != t.PlanReqHash {
