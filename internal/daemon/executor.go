@@ -122,14 +122,15 @@ type ExecutionHandle interface {
 }
 
 // ompPhaseThinking mirrors the daemon's current phase→reasoning-effort mapping.
-// DSH has no `--thinking off` equivalent (off is not a declared model level),
-// so the cheapest declared level is "low" — priority (a cheap read-only
-// assessment) uses it instead of the agent-default-model default (which could
-// be high/max).
+// Reasoning effort by phase nature:
+//   - priority / audit / pm / refining：评估与整理类，medium/low 足够（不需 deep reasoning）
+//   - planning：跨需求规划，high（需要理解多需求关系）
+//   - round2：实现阶段，max（最复杂，需 deep reasoning 写代码）
+//   - grilling 交互在 kitty-grill 单独分级（需求详细化 high、决策清单 low）
 func ompPhaseThinking(phase string) string {
 	switch phase {
 	case "priority":
-		return "low"
+		return "medium"
 	case "round2":
 		return "max"
 	case "planning":
