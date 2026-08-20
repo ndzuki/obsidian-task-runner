@@ -342,7 +342,7 @@ func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoD
 	spec := PhaseSpec{
 		Phase:           "audit",
 		Model:           model,
-		ReasoningEffort: "off",
+		ReasoningEffort: "low", // off 不是 DSH 声明的级别；low 是最省的显式推理
 		SkillPrompt:     prompt,
 		ToolPolicy:      "read,grep,bash",
 		Timeout:         r.auditTimeout(),
@@ -388,7 +388,7 @@ func (r *Runner) writeAuditLog(taskID string, output string) string {
 	logDir := r.cfg.LogDir
 	if logDir == "" {
 		home, _ := os.UserHomeDir()
-		logDir = filepath.Join(home, ".omp", "logs")
+		logDir = filepath.Join(home, ".dsh", "logs")
 	}
 	taskLogDir := filepath.Join(logDir, "tasks")
 	if err := os.MkdirAll(taskLogDir, 0o700); err != nil {

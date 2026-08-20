@@ -121,11 +121,15 @@ type ExecutionHandle interface {
 	PID() int
 }
 
-// ompPhaseThinking mirrors the daemon's current phase→--thinking mapping.
+// ompPhaseThinking mirrors the daemon's current phase→reasoning-effort mapping.
+// DSH has no `--thinking off` equivalent (off is not a declared model level),
+// so the cheapest declared level is "low" — priority (a cheap read-only
+// assessment) uses it instead of the agent-default-model default (which could
+// be high/max).
 func ompPhaseThinking(phase string) string {
 	switch phase {
 	case "priority":
-		return "off"
+		return "low"
 	case "round2":
 		return "max"
 	case "planning":

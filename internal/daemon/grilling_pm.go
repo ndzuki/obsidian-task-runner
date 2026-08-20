@@ -373,10 +373,11 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 // executor and returns its stdout plus any process error.
 func (r *Runner) execPMSession(runCtx context.Context, prompt, mode string, args []string) ([]byte, error) {
 	spec := PhaseSpec{
-		Phase:       "pm",
-		Model:       r.cfg.Model("default"),
-		SkillPrompt: prompt,
-		Timeout:     runCtxTimeout(runCtx),
+		Phase:           "pm",
+		Model:           r.cfg.Model("default"),
+		ReasoningEffort: "low", // 统筹/分发是确定性为主的任务，low 足够
+		SkillPrompt:     prompt,
+		Timeout:         runCtxTimeout(runCtx),
 	}
 	executor := r.phaseExecutor
 	if executor == nil {
