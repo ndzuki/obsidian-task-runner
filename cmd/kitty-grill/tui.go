@@ -174,7 +174,7 @@ func (m qModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  ↑↓ 选择 · Enter/Space 确认 · ←→ 切题 · Tab 跳到未答 · q 提交"))
+	b.WriteString(helpStyle.Render("  ↓/j ↑/k 选选项 · ←/h →/l 切题 · Enter/Space 确认 · Tab 跳未答 · q 提交"))
 	b.WriteString("\n")
 	return b.String()
 }
