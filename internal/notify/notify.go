@@ -436,7 +436,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model str
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec %s --task %s --title %s --req %s --vault %s --addr %s --provider %s --model %s`, tid, ttl, rd, grillExecPath(),
+exec %s --task %s --title %s --req %s --vault %s --addr %s --provider %s --model %s --effort high`, tid, ttl, rd, grillExecPath(),
 		fmt.Sprintf("%q", tid), fmt.Sprintf("%q", ttl), fmt.Sprintf("%q", rd), fmt.Sprintf("%q", vaultPath),
 		fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
 	cmd := exec.Command("kitty", "@", "launch",

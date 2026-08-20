@@ -23,10 +23,11 @@ import (
 )
 
 type chatRequest struct {
-	Message   string `json:"message"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	SessionID string `json:"sessionId,omitempty"`
+	Message         string `json:"message"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
 }
 
 type chatResponse struct {
@@ -46,6 +47,7 @@ func main() {
 		addr      = flag.String("addr", "127.0.0.1:8799", "agent-server address")
 		provider  = flag.String("provider", "deepseek_magic", "DSH provider")
 		model     = flag.String("model", "deepseek-v4-pro", "DSH model")
+		effort    = flag.String("effort", "low", "reasoning effort for questionnaire generation (off/low/high/max)")
 		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
 		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
 	)
@@ -65,7 +67,7 @@ func main() {
 	if prompt == "" {
 		prompt = buildGrillingPrompt(*taskID, *taskTitle, *reqDoc, *vaultPath)
 	}
-	if err := repl(*addr, *provider, *model, prompt); err != nil {
+	if err := repl(*addr, *provider, *model, *effort, prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "kitty-grill: %v\n", err)
 		os.Exit(1)
 	}
@@ -142,7 +144,7 @@ func extractJSON(text string) (string, bool) {
 	}
 	return strings.TrimSpace(text[start : start+end]), true
 }
-func repl(addr, provider, model, prompt string) error {
+func repl(addr, provider, model, effort, prompt string) error {
 	sessionID := ""
 
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════╗\n")
@@ -155,7 +157,7 @@ func repl(addr, provider, model, prompt string) error {
 
 	// 阶段 1：生成问卷。
 	fmt.Print("⏳ 正在深度勘察并生成问卷（可能需要 1-3 分钟）…\n\n")
-	resp, err := chat(addr, provider, model, sessionID, prompt)
+	resp, err := chat(addr, provider, model, effort, sessionID, prompt)
 	if err != nil {
 		return err
 	}
@@ -165,12 +167,12 @@ func repl(addr, provider, model, prompt string) error {
 	raw, ok := extractJSON(resp.Text)
 	if !ok {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, sessionID)
+		return manualFill(addr, provider, model, effort, sessionID)
 	}
 	var q questionnaire
 	if err := json.Unmarshal([]byte(raw), &q); err != nil || len(q.Decisions) == 0 {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, sessionID)
+		return manualFill(addr, provider, model, effort, sessionID)
 	}
 
 	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
@@ -191,7 +193,7 @@ func repl(addr, provider, model, prompt string) error {
 	}
 
 	fmt.Print("\n⏳ 正在根据你的决策写回需求文档…\n\n")
-	resp, err = chat(addr, provider, model, sessionID, strings.Join(parts, " "))
+	resp, err = chat(addr, provider, model, effort, sessionID, strings.Join(parts, " "))
 	if err != nil {
 		return err
 	}
@@ -202,7 +204,7 @@ func repl(addr, provider, model, prompt string) error {
 
 // manualFill is the fallback when the model does not emit a parseable JSON
 // questionnaire: print the raw reply and read one multi-line round of answers.
-func manualFill(addr, provider, model, sessionID string) error {
+func manualFill(addr, provider, model, effort, sessionID string) error {
 	fmt.Println()
 	in := bufio.NewReader(os.Stdin)
 	var answers []string
@@ -230,7 +232,7 @@ func manualFill(addr, provider, model, sessionID string) error {
 	if len(answers) == 0 {
 		return nil
 	}
-	resp, err := chat(addr, provider, model, sessionID, strings.Join(answers, "\n"))
+	resp, err := chat(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"))
 	if err != nil {
 		return err
 	}
@@ -240,12 +242,13 @@ func manualFill(addr, provider, model, sessionID string) error {
 }
 
 // chat sends one message to the agent-server and returns the model reply.
-func chat(addr, provider, model, sessionID, message string) (*chatResponse, error) {
+func chat(addr, provider, model, effort, sessionID, message string) (*chatResponse, error) {
 	body, err := json.Marshal(chatRequest{
-		Message:   message,
-		Provider:  provider,
-		Model:     model,
-		SessionID: sessionID,
+		Message:         message,
+		Provider:        provider,
+		Model:           model,
+		ReasoningEffort: effort,
+		SessionID:       sessionID,
 	})
 	if err != nil {
 		return nil, err
