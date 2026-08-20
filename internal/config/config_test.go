@@ -348,4 +348,18 @@ func TestExecutorDefaultAndValidation(t *testing.T) {
 	if cfg.Executor != "dsh" {
 		t.Fatalf("executor=%q, want dsh", cfg.Executor)
 	}
+	// dsh-embed executor accepted (embed migration seam).
+	if err := os.WriteFile(mapFile, []byte(`{"executor":"dsh-embed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Executor != "dsh-embed" {
+		t.Fatalf("executor=%q, want dsh-embed", cfg2.Executor)
+	}
+	if cfg2.AgentServerAddr != "127.0.0.1:8799" {
+		t.Fatalf("agent_server_addr=%q, want default 127.0.0.1:8799", cfg2.AgentServerAddr)
+	}
 }

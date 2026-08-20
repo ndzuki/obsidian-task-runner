@@ -7,13 +7,18 @@ import (
 )
 
 // newPhaseExecutor selects the phase-dispatch backend from cfg.Executor.
-// Default is the frozen OMP adapter (behavior unchanged); "dsh" opts into the
-// spawn-headless DSH adapter. The seam is the Phase 5 migration point — the
-// default flips to dsh only after every phase is verified on it
-// (docs/phase5-executor-migration.md).
+//   - "omp" (frozen)     — legacy OMP adapter (rollback path).
+//   - "dsh"              — spawn-headless DSH adapter.
+//   - "dsh-embed"        — long-lived agent-server RPC (per-phase reasoning
+//     effort + durable resume; docs/embed-migration-plan.md).
+//
+// Default is the frozen OMP adapter; the embed adapter is the terminal form.
 func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
-	if cfg.Executor == "dsh" {
+	switch cfg.Executor {
+	case "dsh":
 		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
+	case "dsh-embed":
+		return newDSHEmbedExecutor(cfg.AgentServerAddr, "")
 	}
 	return newOMPExecutor(cfg.OMPCmd)
 }

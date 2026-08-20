@@ -77,10 +77,15 @@ type Runner struct {
 	// each adapter migration is individually verified.
 	designExecutor PhaseExecutor
 	// phaseExecutor is the processBatchSequential phase-dispatch backend,
-	// selected by cfg.Executor ("omp" default / "dsh"). It is injectable in
-	// tests; New() builds it from config. Distinct from designExecutor, which
-	// is always DSH (the global design session never runs on OMP).
+	// selected by cfg.Executor ("omp" default / "dsh" / "dsh-embed"). It is
+	// injectable in tests; New() builds it from config. Distinct from
+	// designExecutor, which is always DSH (the global design session never
+	// runs on OMP).
 	phaseExecutor PhaseExecutor
+	// agentServerCmd is the long-lived `dsh --profile headless-agent-server`
+	// child process the dsh-embed executor talks to. Non-nil only when
+	// cfg.Executor == "dsh-embed"; the daemon lifecycle owns start/stop.
+	agentServerCmd *exec.Cmd
 }
 
 // Path tokens for watcher-event routing, built with the platform separator
@@ -176,6 +181,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// OMP sessions (graceful SIGTERM) instead of leaving them until systemd's
 	// TimeoutStopSec hard-kills the process tree.
 	r.daemonCtx = ctx
+	// dsh-embed: 拉起长驻 agent-server 并等待健康检查；daemon 退出时收口。
+	if err := r.startAgentServer(ctx); err != nil {
+		return fmt.Errorf("start agent-server: %w", err)
+	}
+	defer r.stopAgentServer()
 
 	// Start the filesystem watcher before acquiring the lock: events buffered
 	// while the --once fallback runner holds the flock are consumed immediately
@@ -502,6 +512,11 @@ func (r *Runner) RunOnce() error {
 	if r.cfg.ObsidianVault == "" {
 		return fmt.Errorf("obsidian_vault not configured")
 	}
+	// dsh-embed: --once 也要拉起 agent-server 处理本次派发，结束后收口。
+	if err := r.startAgentServer(r.daemonCtx); err != nil {
+		return fmt.Errorf("start agent-server: %w", err)
+	}
+	defer r.stopAgentServer()
 	unlock, err := acquireLock(r.cfg)
 	if err != nil {
 		r.logger.Printf("skipping (lock held by watcher daemon): %v", err)
