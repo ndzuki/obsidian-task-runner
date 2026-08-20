@@ -171,3 +171,20 @@ reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc �
 - `OMPCmd`、`FallbackModels`、`tailOMPLog`、PID 文件、omp 日志解析全部移除；
 - `otg install` 不再检查/安装 omp；skills 落 `~/.dsh/skills`；
 - `make test` 全绿 + 真实 vault 端到端（release-manager 73 任务）无回归。
+
+## 7. DSH rc.8 升级（2026-08-19）
+
+- **升级**：dsh `0.1.0-rc.7 → 0.1.0-rc.8`（npm `next` tag）+ dsh-tui `0.8.1 → 0.8.5`。
+- **验证**：`dsh-upgrade-check --full` 全绿——5 个插件（fallback/omp-commands/
+  kb-distill/mcp-context7/vault）+ agent-server 语法 OK，headless 冒烟通过。
+- **rc.8 关键变更（与 dsh 路径相关）**：
+  - 修复「自定义 OpenAI 兼容网关请求格式差异无法调用 + 推理内容回传可能缺失」——
+    可能改善 planning 冒烟跑偏（推理内容丢失是收敛失败候选根因）。
+  - 改善 SQLite 后端读写/分叉性能（数据结构不兼容，插件不直接访问 SQLite，无影响）。
+  - 多模态（`/goal`、`/plan` 图文输入）——与本项目无直接冲突。
+- **skill 修复（教训）**：`dsh-upgrade` skill 与 `dsh-eval-upgrade` 脚本原用
+  `npm view @deepseek-ai/dsh version`（只查 `latest` tag）——但 rc 版本发布到
+  `next` tag，`latest` 停在旧 rc，导致误报「已是最新」。已改为查 GitHub release
+  权威源 + `npm view ... dist-tags.next` 交叉确认。
+- **推理强度失效（§5.6）在 rc.8 未解决**：spawn 模式仍无 per-调用 reasoningEffort；
+  rc.8 的「推理内容回传修复」是传输层修复，非 per-request 强度能力。
