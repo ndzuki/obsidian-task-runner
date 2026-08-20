@@ -2602,7 +2602,36 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 	if _, err2 := add(); err2 == nil {
 		return path, nil
 	}
+	// 分支占用自愈：add 失败可能是 targetBranch 被另一个残留 worktree 占用
+	// （如 merge ci-fix 的 taskxxx-cifix worktree 中断残留）。这不算危险操作
+	// —— 被占用的是任务自己的临时 worktree，remove --force 释放分支后重试，
+	// 不阻塞任务；无法自动清理时保留错误交由调用方（merge 已走 notifyFailure
+	// 桌面提醒）。
+	if targetBranch != "" {
+		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
+			log.Printf("task worktree: branch %s occupied by %s, removing stale worktree", targetBranch, occupied)
+			exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+			if _, err3 := add(); err3 == nil {
+				return path, nil
+			}
+		}
+	}
 	return "", fmt.Errorf("create worktree (stale-registration repair attempted): %w: %s", err, strings.TrimSpace(string(output)))
+}
+
+// worktreePathFromError extracts the occupied worktree path from a git
+// "already used by worktree at '<path>'" error message.
+func worktreePathFromError(errText string) string {
+	const marker = "already used by worktree at '"
+	idx := strings.Index(errText, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := errText[idx+len(marker):]
+	if end := strings.IndexByte(rest, '\''); end >= 0 {
+		return rest[:end]
+	}
+	return ""
 }
 
 // repairStaleWorktree makes path recreatable after a dangling git worktree
