@@ -109,7 +109,9 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 			body = "前置门禁未通过：上游依赖事实未收敛（PR 未合入/依赖未 done），daemon 按事实自动恢复中，无需人工"
 		case "PHASE_INTERRUPTED":
 			body = "阶段被 daemon 重启中断，重启后自动恢复"
-		case "MODEL_FAILED", "MODEL_QUOTA_EXHAUSTED", "PHASE_TIMEOUT":
+		case "MODEL_QUOTA_EXHAUSTED":
+			body = "免费模型额度耗尽（magic deepseek + gpt-5.6 均不可用），daemon 已停止自动重试——请改任务 assignee=ds-official 用官方付费渠道，或等免费额度恢复"
+		case "MODEL_FAILED", "PHASE_TIMEOUT":
 			body = "阶段执行失败（" + fm.PhaseErrorCode + "），daemon 自动重试中"
 		default:
 			body = "缺少必填字段或被依赖阻塞，请检查 blocked_by 和必填字段"
