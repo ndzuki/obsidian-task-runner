@@ -85,8 +85,11 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 	default:
 		r.logger.Printf("task %s: DSH failed (%s): %s", t.ID, code, reason)
 		r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, code, reason, logPath)
-		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败",
-			fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason), failNotifyReason)
+		desc := fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason)
+		if code == ErrModelQuotaExhausted {
+			desc = fmt.Sprintf("%s 阶段失败：免费模型额度耗尽（magic deepseek + gpt-5.6）——请改任务 assignee=ds-official 用官方付费渠道", phase)
+		}
+		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败", desc, failNotifyReason)
 		return true
 	}
 }
