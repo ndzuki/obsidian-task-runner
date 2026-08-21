@@ -48,7 +48,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | `ready` | daemon 转 `refining`；**团队项目（`project_type: team`）首个任务先拦截过只读规范审查（`/obsidian-task-runner-conventions`，产物 `Notes/PROJECT-CONVENTIONS.md` 即一次性门禁标记，见「团队项目模式」）**；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
 | `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先生成 Wayfinder Map 决策地图（内联规则见 refining 4a，无需外部 skill），作为 Grilling 焦点；failed 项三分类收敛——fact 自修正 REQ、auto 采纳建议留 `auto_accepted` 审计（可推翻）、仅 dispute 进 grilling；重复争议（grill_repeat≥2）park 升级到项目级清单 |
 | `needs-refining` | 旧版遗留状态；scan 拾起后自动迁移为 needs-grilling（`nextLocalTransition`），随后走正常 Grilling 路径（Kitty tab、提醒、lease） |
-| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；**清单 `status=paused` 时该项目 grilling 流程整体暂停**——不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 不解除；恢复靠用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 **kitty-grill 光标问卷（批量）**：模型把待答决策点 + 选项 + 推荐结构化输出，用户 `j/k` 选选项、`Enter` 确认、`q` 一轮提交，答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
+| `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；**清单 `status=paused` 时该项目 grilling 流程整体暂停**——不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 不解除；恢复靠用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 **kitty-grill 光标问卷（批量）**：模型把待答决策点 + 选项 + 推荐结构化输出，用户 `j/k` 选选项、`Enter` 确认、`q` 一轮提交；提交后 **detached 子进程异步写回**（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，10 分钟超时，spawn 失败回退同步）并 **kitty 自动关闭本 tab**（不再卡「写回中」）；**写回守卫**：启动与写回前复查任务状态，已离开 needs-grilling（closed/done 等）阻止写回；问卷 prompt 以 `任务 TASK-<id>` 开头（agent-server 监控面板按第一个 TASK-xxx 打标签）；答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
 | `planning` | daemon 直接调用 Round 1 Skill，使用 TASK assignee |
 | `plan-review` | auto_approve 默认 true（缺失即 true，模板已写入）→ daemon 自动 `plan_approved=true` 转 implementing；显式 `auto_approve: false` 时等待人工 `plan_approved=true`；关闭必须同时满足 `rework_resolution=close` + `close_approved=true` + 合法 `closure_reason` + 非空 `closure_note`（duplicate 还需 `replacement_task`）。**Grilling 是唯一常规人工关卡** |
 | `implementing` | daemon 直接调用 Round 2 Skill；高风险 Step 先跑 Prototype Gate；**空转冷却**：会话完成后仍 implementing 且无 `checkpoint_commit`（入口门禁复验类）→ 指数退避冷却（10m→…→~10.7h 上限）不重派；有进展即重置。不会自动转 closed |
@@ -106,7 +106,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 - **implementing / Round 2**：`max_concurrent_tasks_per_project`（每项目上限，默认 `2`，缺失/`0` 回落默认）——N 个项目最多并行 N×2 个实现会话，一个项目的满负荷不会饿死其它项目；`max_concurrent_tasks` 为可选**全局总封顶**（`0` = 不限，默认 `0`），两上限同时生效、取更严格者。**旧配置仅含 `max_concurrent_tasks: 2` 时行为不变**（等效全局封顶 2 + 每项目 2）。
 - **其它阶段**：`phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`；key 置 `0` 或删除 = 不限），防止一轮 scan 同时拉起 20+ 个 dsh 会话烧 token、触发 API 限速与本地资源抢占。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 映射生效；`merge` 槽位当前不可达（review/conflict+merge_approved 在到达门禁段前已进入 merge 分支提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + `pmInFlight` 按目标去重约束）——这两个 key 置 `0`/调大均无效果，属代码追赶项。
-- **daemon 重启存活会话**：dsh-embed 无 PID 文件，daemon 重启后按 frontmatter 状态重派发（round2 有 checkpoint 复用，从断点继续）；`executor_session_id` 持久化支持 durable resume（当前 daemon 重启后仍走 frontmatter 重派发，resume 接通属后续 backlog）。
+- **daemon 重启存活会话**：dsh-embed 无 PID 文件，daemon 重启后按 frontmatter 状态重派发（round2 有 checkpoint 复用，从断点继续）；`executor_session_id` 持久化支持 durable resume——resume 成功复用会话；**超时/中断如实上报**（PHASE_TIMEOUT / PHASE_INTERRUPTED，不 fresh start：daemon 侧 HTTP 超时不终止 agent-server 会话，fresh start 会造成同任务双会话并行写，TASK-058 教训）；仅终态失败（session not found 等）回退 fresh start；resume 等待超时对齐阶段 spec（不再硬编码 30m）。
 - 修改配置后重启 daemon 生效。
 
 ## IDs & Dependencies（ID与依赖）
@@ -176,7 +176,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 - Kitty Grilling tab 始终尝试创建，不受 desktop 开关控制。
 - 同一 TASK 只允许一个活跃 Grilling tab；创建前按 task ID 检查 Kitty tab/window title，并以 per-task flock + debounce 防止并发和重启重复创建。
 - Kitty JSON 无法解析时不创建 tab，保留 notify-send fallback；Kitty 不可用时保持 needs-grilling 并周期重试。
-- **失败/切换通知按任务 5 分钟防抖**（`notifyFailure`）：⏰执行超时 / 💥进程异常 / 💰Token 不足 / 🔄模型切换 / ❌全部失败 / 🚫阶段失败——同级/低级别窗口内抑制，更高级别事件（❌全部失败 / 🚫阶段阻塞）升级后再发，保证终态必达（一个失败事件链最多 2 条：🔄+❌ 或 ⏰+🚫）；有 fallback 时失败原因并入切换通知单条发出。API key 故障走全局 5 分钟防抖（`notifyKeyUnavailable`）。
+- **失败/切换通知按任务 5 分钟防抖**（`notifyFailure`）：⏰执行超时 / 💥进程异常 / 💰Token 不足 / 🔄模型切换 / ❌全部失败 / 🚫阶段失败——同级/低级别窗口内抑制，更高级别事件（❌全部失败 / 🚫阶段阻塞）升级后再发，保证终态必达（一个失败事件链最多 2 条：🔄+❌ 或 ⏰+🚫）；有 fallback 时失败原因并入切换通知单条发出。API key 故障走全局 5 分钟防抖（`notifyKeyUnavailable`）。**需求变更通知按 taskID+action 5 分钟防抖**（`notifyReqChanged`）：grilling 写回多次改写 REQ，每轮 on-req-changed 重复发同一条「需求变更」toast（TASK-058 观测：对齐后连续多条）——同一任务同一 action 窗口内只发第一条。
 
 ## Fallback Model（兜底模型）
 

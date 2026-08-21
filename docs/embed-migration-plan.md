@@ -233,6 +233,17 @@ omp 的 grilling 交互（`exec "omp" <prompt>` 逐问 TUI）替换为自研 kit
 - **prompt-env**：决策清单 prompt 经环境变量传（避免 bash 反引号转义）。
 - daemon 集成：tryKittyTab（需求详细化）/TryKittyDecisionTab（决策清单）从
   `exec omp` 改为 `exec kitty-grill`；ompExecPath → grillExecPath。
+- **提交后异步写回 + 自动关 tab**（2026-08-22，TASK-058 对齐体验修复）：
+  回答提交后 spawn detached 子进程（setsid，`--writeback` 模式）重新挂接
+  session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，写回请求
+  10 分钟超时），主进程 `kitty @ close-window --match id:$KITTY_WINDOW_ID`
+  关闭本 tab——消除「卡在写回中 / tab 不自动关闭」；spawn 失败回退有界同步
+  写回，答案不丢失。
+- **写回守卫**：启动与写回前复查任务 status，已离开 needs-grilling
+  （closed/done 等）阻止写回（防僵尸 tab 写回已归档需求）。
+- **prompt 任务 ID 前置**：问卷 prompt 以 `任务 TASK-<id>` 开头，agent-server
+  监控面板按第一个 `TASK-xxx` 打标签时命中真实任务（观测：REQ 正文引用其他
+  任务时标签被误标，如 TASK-005 问卷误标 TASK-058）。
 
 ### reasoning effort 分级
 
