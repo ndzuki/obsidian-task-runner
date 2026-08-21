@@ -613,3 +613,125 @@ func TestExtractTaskKnowledgeDanglingADRRef(t *testing.T) {
 		t.Fatal("dangling ref must not create uncategorized archive")
 	}
 }
+
+// ── adr_written 真实形态（逗号串 + Notes/adr/ 前缀）───────────────
+//
+// Round 1 把 adr_written 写成单个逗号分隔字符串且每项带 Notes/adr/ 前缀：
+// `Notes/adr/ADR-001-….md,Notes/adr/ADR-002-….md`。旧 collectADRIDs 把整串
+// 当一个 id，matchesADRID 永不命中 → 扫描到 N 个 ADR 却提取 0 条
+// （daemon 日志特征 `adrs=6 new=0 updated=0`）。这些测试钉住归一化语义。
+
+func TestCollectADRIDsSplitsCSVAndStripsPaths(t *testing.T) {
+	got := collectADRIDs("Notes/adr/ADR-001-a.md, Notes/adr/ADR-002-b.md")
+	want := []string{"ADR-001-a", "ADR-002-b"}
+	if len(got) != len(want) {
+		t.Fatalf("collectADRIDs(csv) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("collectADRIDs(csv) = %v, want %v", got, want)
+		}
+	}
+
+	if got := collectADRIDs([]any{"Notes/adr/ADR-003-c.md", "ADR-004", "", "Notes/adr/ADR-005-d"}); len(got) != 3 {
+		t.Fatalf("collectADRIDs(list) = %v, want 3 ids", got)
+	}
+	if got := collectADRIDs(nil); got != nil {
+		t.Fatalf("collectADRIDs(nil) = %v, want nil", got)
+	}
+	if got := collectADRIDs(""); got != nil {
+		t.Fatalf("collectADRIDs(\"\") = %v, want nil", got)
+	}
+}
+
+func TestMatchesADRIDFullPathAndShortRefs(t *testing.T) {
+	id := "ADR-001-go-containerregistry-operator"
+	for _, ref := range []string{
+		"Notes/adr/ADR-001-go-containerregistry-operator.md",
+		"ADR-001-go-containerregistry-operator.md",
+		"ADR-001",
+		"ADR-001-go-containerregistry-operator",
+	} {
+		if !matchesADRID(id, []string{ref}) {
+			t.Errorf("matchesADRID(%q, %q) = false, want true", id, ref)
+		}
+	}
+	if matchesADRID(id, []string{"ADR-002"}) {
+		t.Error("matchesADRID must reject a different ADR id")
+	}
+}
+
+func TestExtractTaskKnowledgeFullPathADRRefs(t *testing.T) {
+	vault := t.TempDir()
+	project := "bench-project"
+	writeRefIndexFile(t, vault, "core/go/connect-rpc.md", "connect,grpc")
+	writeProjectADRFile(t, vault, project, "ADR-012-connect.md", "Connect Protocol", "使用 Connect 统一协议。")
+	writeProjectADRFile(t, vault, project, "ADR-013-grpc.md", "gRPC Deprecation", "gRPC 服务统一迁移 Connect。")
+
+	tasksDir := filepath.Join(vault, "Projects", project, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 真实形态：单个逗号串，带 Notes/adr/ 路径前缀与 .md 后缀。
+	taskPath := filepath.Join(tasksDir, "TASK-001-test.md")
+	content := "---\nid: \"001\"\ntitle: Test task\nproject: " + project + "\nassignee: gpt\nstatus: done\nadr_written: Notes/adr/ADR-012-connect.md,Notes/adr/ADR-013-grpc.md\nknowledge_extracted: false\n---\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ExtractTaskKnowledge(vault, project, taskPath)
+	if err != nil {
+		t.Fatalf("ExtractTaskKnowledge: %v", err)
+	}
+	if result.ADRCount != 2 {
+		t.Fatalf("want 2 scanned ADRs, got %d", result.ADRCount)
+	}
+	if result.UpdatedRefs != 2 {
+		t.Fatalf("both referenced ADRs must extract into the KB doc, got new=%d updated=%d errors=%v", result.NewRefs, result.UpdatedRefs, result.Errors)
+	}
+	data, err := os.ReadFile(filepath.Join(vault, "References", "core", "go", "connect-rpc.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ADR-012-connect", "ADR-013-grpc", "使用 Connect 统一协议"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("KB doc missing %q:\n%s", want, data)
+		}
+	}
+	taskData, _ := os.ReadFile(taskPath)
+	fm, _ := yamlfrontmatter.Parse(taskData)
+	if fm == nil || !fm.KnowledgeExtracted {
+		t.Fatal("successful extraction must set knowledge_extracted")
+	}
+}
+
+// TestExtractTaskKnowledgePracticeNoteIdempotent 钉住重试安全：补救扫描在
+// store 同步失败时把 marker 重置为 false 并重跑整条管道，实践条目必须去重，
+// 不能让同一条 ADR 决策在知识文档里重复追加。
+func TestExtractTaskKnowledgePracticeNoteIdempotent(t *testing.T) {
+	vault := t.TempDir()
+	project := "bench-project"
+	writeRefIndexFile(t, vault, "core/go/connect-rpc.md", "connect,grpc")
+	writeProjectADRFile(t, vault, project, "ADR-012-connect.md", "Connect Protocol", "使用 Connect 统一协议。")
+
+	taskPath := writeTaskFile(t, vault, project, "ADR-012-connect")
+
+	if _, err := ExtractTaskKnowledge(vault, project, taskPath); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	// Simulate the sync-failure recovery path: reset the marker and re-run.
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extracted": false}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ExtractTaskKnowledge(vault, project, taskPath)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if result.UpdatedRefs != 0 {
+		t.Fatalf("second run must not re-append the practice note, got %+v", result)
+	}
+	data, _ := os.ReadFile(filepath.Join(vault, "References", "core", "go", "connect-rpc.md"))
+	if n := strings.Count(string(data), "**来源**：[ADR-012-connect]"); n != 1 {
+		t.Fatalf("practice note duplicated: %d occurrences, want 1:\n%s", n, data)
+	}
+}

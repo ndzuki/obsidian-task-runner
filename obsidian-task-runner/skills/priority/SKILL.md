@@ -2,7 +2,7 @@
 name: obsidian-task-runner-priority
 description: "Headless priority assessment: read a REQ document, output strict JSON with impact/urgency/workaround dimensions and P1-P4 score."
 hide: true
-disableModelInvocation: true
+disable-model-invocation: true
 ---
 
 **Role**: Priority Assessment Engine. Read the supplied REQ document and output only one JSON object.

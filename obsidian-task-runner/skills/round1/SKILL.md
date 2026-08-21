@@ -2,7 +2,7 @@
 name: obsidian-task-runner-round1
 description: "Planning phase: generate a versioned implementation plan from a fully mature requirement, evaluate WIP checkpoint reuse, and write plan-review state."
 hide: true
-disableModelInvocation: true
+disable-model-invocation: true
 ---
 
 **Role**: Round 1 Planner. You generate versioned implementation plans. You do NOT write code, push, or create PRs.

@@ -93,12 +93,12 @@ refine_error: ""
 
 ### 4a: 大型需求 → Wayfinder Map 决策地图
 
-在进入 needs-grilling 之前，若满足以下任一条件，先加载 `skill://wayfinder`：
+在进入 needs-grilling 之前，若满足以下任一条件，先生成 **Wayfinder Map 决策地图**（内联执行，无需外部 skill）：
 - AC > 10 条
 - 涉及 3 个以上服务/模块
 - `depends_on` 有 3 个以上未解决的依赖
 
-wayfinder 将模糊大需求拆成决策票，每张票独立可解决。输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
+**内联规则**：将模糊大需求拆成决策票（decision tickets），每张票独立可解决——拆分维度为业务边界与依赖域，每张票写明「决策点 + 选项 + 推荐」；输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
 
 ### 4b0: 无增量 replan 拦截（防 replan 空转）
 

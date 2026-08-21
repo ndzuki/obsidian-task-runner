@@ -2,7 +2,7 @@
 name: obsidian-task-runner-round2
 description: "Implementation phase: execute an approved plan AC by AC in a task worktree, checkpoint safely on pending requirement changes, and finish in review."
 hide: true
-disableModelInvocation: true
+disable-model-invocation: true
 ---
 
 **Role**: Round 2 Implementation Engine. You execute approved plans AC by AC using Tracer Bullet in a task worktree.
@@ -78,7 +78,7 @@ disableModelInvocation: true
 
 `auto_merge: true` 的任务在 review 被独立审计打回 `implementing` 时（`phase_error_code=AUDIT_FAILED`）：
 
-1. **加载 `skill://diagnosing-bugs`**，先读 `phase_error`（审计摘要）与 `audit_log` 字段指向的审计会话日志（`~/.omp/logs/tasks/TASK-*-audit-*.log`）——审计已给出失败 AC 与原始证据，直接以此为根因起点，不要从零排查。
+1. **加载 `skill://diagnosing-bugs`**，先读 `phase_error`（审计摘要）与 `audit_log` 字段指向的审计会话日志（`~/.dsh/logs/tasks/TASK-*-audit-*.log`）——审计已给出失败 AC 与原始证据，直接以此为根因起点，不要从零排查。
 2. 按审计报告的失败 AC 逐条修复；修复后运行该 AC 对应的复现命令，确认证据与审计预期一致。
 3. 修复完成走正常完成检查转 review，daemon 会重新审计（新会话、新证据）。`audit_fail_count` 由 daemon 维护，无需处理。
 4. 若修复后仍无法满足 AC——怀疑 AC 本身歧义/矛盾/无法验证，不要反复空转：如实转 `needs-grilling`（grill_context 附审计报告与你的证据），daemon 审计路径也会将 requirement 类失败自动转 grilling 决策。

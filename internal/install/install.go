@@ -725,7 +725,7 @@ func validateRequiredSkills() ([]string, error) {
 
 // stopDaemon gracefully stops any running otg daemon processes.
 func stopDaemon() {
-	runBestEffort("stop task runner timer", "systemctl", "--user", "stop", "otg-task-runner.timer")
+	// DSH era has no polling timer unit: the daemon is a watcher service only.
 	// Wait for the watcher to finish its graceful shutdown (daemon SIGTERM →
 	// session save → exit). Blocking here also serializes with the later
 	// enable --now, so the new instance never races the old one.

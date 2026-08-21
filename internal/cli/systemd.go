@@ -18,9 +18,9 @@ var (
 var installSystemdCmd = &cobra.Command{
 	Use:   "install-systemd",
 	Short: "Generate and enable user systemd units for the daemon",
-	Long: `(Re)generates the user systemd units (omp-task-runner.timer,
-omp-task-watcher.service, omp-task-runner.service) into
-~/.config/systemd/user/, then enables and starts them.
+	Long: `(Re)generates the user systemd units (dsh-agent-server.service,
+dsh-web.service, otg-task-watcher.service) into ~/.config/systemd/user/,
+then enables and starts them.
 
 Use this after moving the vault or changing the polling interval, or
 when the units were never installed (e.g. a fresh machine where

@@ -182,7 +182,7 @@ aliases: []
 - %s — 从 %s 项目 %s 自动归档
 `, now, adr.Title, adr.ID, projectName, adr.ID,
 		adr.Decision, now, projectName, adr.ID)
-	return os.WriteFile(target, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(target, []byte(content))
 }
 
 // ExtractTaskKnowledge implements per-task Step 0 extraction: only the ADRs
@@ -284,42 +284,78 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 	return result, nil
 }
 
-// marker 仅在全部成功时写入：任何错误保持 knowledge_extracted=false，
-// strings, or a map keyed by ADR id) into a flat list of id strings.
+// collectADRIDs flattens the task's adr_written field into a list of bare ADR
+// file ids.
+//
+// adr_written 的真实形态是 Round 1 写回的一个逗号串（或含路径前缀的列表）：
+// `Notes/adr/ADR-001-go-containerregistry-operator.md,Notes/adr/ADR-002-…`。
+// 每个 token 都会被拆开并归一化为裸 ADR 文件名 id（去掉路径与 .md 后缀），
+// 否则 matchesADRID 永远无法命中任务自己的 ADR——扫描到 N 个 ADR 却提取 0 条
+// （daemon 日志特征：`knowledge-base extracted: adrs=6 new=0 updated=0`）。
 func collectADRIDs(v any) []string {
 	var ids []string
+	add := func(s string) {
+		for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+			return r == ',' || r == ';' || r == '，' || r == '；'
+		}) {
+			if key := adrRefKey(part); key != "" {
+				ids = append(ids, key)
+			}
+		}
+	}
 	switch vv := v.(type) {
 	case string:
-		if vv != "" {
-			ids = append(ids, vv)
-		}
+		add(vv)
 	case []any:
 		for _, item := range vv {
 			ids = append(ids, collectADRIDs(item)...)
 		}
 	case []string:
-		ids = append(ids, vv...)
+		for _, item := range vv {
+			add(item)
+		}
 	case map[string]any:
 		for k := range vv {
-			ids = append(ids, k)
+			ids = append(ids, collectADRIDs(k)...)
 		}
 	case map[any]any:
 		for k := range vv {
-			ids = append(ids, fmt.Sprint(k))
+			ids = append(ids, collectADRIDs(fmt.Sprint(k))...)
 		}
 	}
 	return ids
 }
 
+// adrRefKey normalizes one ADR reference token to the bare file id:
+// trims whitespace, strips any directory prefix (Notes/adr/… or an absolute
+// path) and the .md suffix. Returns "" for empty tokens.
+func adrRefKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	s = strings.TrimSuffix(s, ".md")
+	return strings.TrimSpace(s)
+}
+
 // matchesADRID reports whether an ADR file id (e.g. "ADR-012-model-x") matches
-// a referenced id, allowing short references like "ADR-012".
+// a referenced id, allowing short references like "ADR-012" and full
+// path references like "Notes/adr/ADR-012-model-x.md" (both sides are
+// normalized through adrRefKey).
 func matchesADRID(id string, refs []string) bool {
+	key := adrRefKey(id)
+	if key == "" {
+		return false
+	}
 	for _, r := range refs {
-		norm := strings.TrimSuffix(r, ".md")
+		norm := adrRefKey(r)
 		if norm == "" {
 			continue
 		}
-		if id == norm || strings.HasPrefix(id, norm+"-") {
+		if key == norm || strings.HasPrefix(key, norm+"-") || strings.HasPrefix(norm, key+"-") {
 			return true
 		}
 	}
@@ -412,8 +448,13 @@ func extractADRKnowledge(adr adrInfo, refsDir, projectName string) (int, int, st
 		}
 		newCount++
 	} else {
-		if err := appendPracticeNote(targetPath, adr, projectName); err != nil {
+		appended, err := appendPracticeNote(targetPath, adr, projectName)
+		if err != nil {
 			return 0, 0, "", false, err
+		}
+		if !appended {
+			// 该 ADR 决策已记录（重试安全）：不算更新、不重复 touched。
+			return 0, 0, "", false, nil
 		}
 		updateCount++
 	}
@@ -765,7 +806,7 @@ func appendPitfallNote(path string, p taskPitfall, projectName, taskID string) (
 	} else {
 		content += "\n" + note + "\n## 更新记录\n\n- `" + now + "` — 从 " + projectName + " 项目 TASK-" + taskID + " 提取踩坑实践\n"
 	}
-	return true, os.WriteFile(path, []byte(content), 0o644)
+	return true, yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
 // appendUnclassifiedPitfall archives a pitfall with no knowledge match under
@@ -820,7 +861,7 @@ aliases: []
 - %s — 从 %s 项目 TASK-%s 自动归档
 `, now, p.Title, taskID, projectName, taskID,
 		p.Time, p.Symptom, p.Failed, p.RootCause, p.Success, now, projectName, taskID)
-	return os.WriteFile(target, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(target, []byte(content))
 }
 
 // ── Interactive absorb (`otg kb absorb`) ─────────────────────────────
@@ -935,7 +976,7 @@ func appendSummaryNote(path, title, text, projectName string) (bool, error) {
 	} else {
 		content += "\n" + note + "\n## 更新记录\n\n- `" + now + "` — 从 " + projectName + " 交互会话吸收经验总结\n"
 	}
-	return true, os.WriteFile(path, []byte(content), 0o644)
+	return true, yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
 // appendUnclassifiedSummary archives an interactive summary with no knowledge
@@ -980,7 +1021,7 @@ aliases: []
 
 - %s — 从 %s 项目交互会话自动归档
 `, now, title, projectName, strings.TrimSpace(text), now, projectName)
-	return os.WriteFile(target, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(target, []byte(content))
 }
 
 // ── Experience heat & core promotion ─────────────────────────────────
@@ -1160,7 +1201,7 @@ func appendPromoteNote(path string, hits int) error {
 	} else {
 		content += "\n## 更新记录\n\n" + line
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
 // tailLogTail returns the last meaningful line of a phase log as failure
@@ -1255,19 +1296,26 @@ aliases: []
 `, topicStr, now, adr.Title, adr.ID, projectName, adr.ID,
 		adr.Decision, now, projectName, adr.ID)
 
-	return os.WriteFile(path, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
-func appendPracticeNote(path string, adr adrInfo, projectName string) error {
+func appendPracticeNote(path string, adr adrInfo, projectName string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	content := string(data)
+	// 幂等：同一 ADR 的实践经验只写一次。补救扫描在 store 同步失败时
+	// 会把 marker 重置为 false 并重跑整条管道，重复追加会让同一决策在
+	// 文档里膨胀（appendPitfallNote 有去重，实践条目此前没有）。
+	provenance := fmt.Sprintf("**来源**：[%s](Projects/%s/Notes/adr/%s.md)", adr.ID, projectName, adr.ID)
+	if strings.Contains(content, provenance) {
+		return false, nil // already recorded — idempotent no-op
+	}
 	now := time.Now().Format("2006-01-02")
 
-	note := fmt.Sprintf("\n### %s 项目实践\n\n**来源**：[%s](Projects/%s/Notes/adr/%s.md)（%s）\n\n**决策**：%s\n",
-		projectName, adr.ID, projectName, adr.ID, now, adr.Decision)
+	note := fmt.Sprintf("\n### %s 项目实践\n\n%s（%s）\n\n**决策**：%s\n",
+		projectName, provenance, now, adr.Decision)
 
 	if idx := strings.LastIndex(content, "## 更新记录"); idx >= 0 {
 		content = content[:idx] + note + content[idx:]
@@ -1275,7 +1323,7 @@ func appendPracticeNote(path string, adr adrInfo, projectName string) error {
 		content += "\n" + note + "\n## 更新记录\n\n- `" + now + "` — 从 " + projectName + " 项目 " + adr.ID + " 自动提取实践经验\n"
 	}
 
-	return os.WriteFile(path, []byte(content), 0o644)
+	return true, yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
 func extractSection(content, heading string) string {
@@ -1417,5 +1465,5 @@ func AppendFailurePattern(vaultDir, code, phase, taskID, logPath string) error {
 	} else {
 		content += entry
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return yamlfrontmatter.AtomicWrite(path, []byte(content))
 }

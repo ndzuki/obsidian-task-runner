@@ -49,7 +49,7 @@
   },
   "obsidian_vault": "/home/you/Obsidian/MainVault",
   "phase_concurrency": {
-    "_comment": "非 implementing 阶段的 OMP 并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks_per_project（每项目上限，默认 2）+ max_concurrent_tasks（可选全局总封顶，0=不限）控制。限制同时运行的 OMP 会话，保护 API 限速/token 消耗与本地资源。",
+    "_comment": "非 implementing 阶段的 DSH 阶段会话并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks_per_project（每项目上限，默认 2）+ max_concurrent_tasks（可选全局总封顶，0=不限）控制。限制同时运行的 DSH 会话，保护 API 限速/token 消耗与本地资源。",
     "refining": 3,
     "planning": 2,
     "merge": 1,
@@ -58,13 +58,14 @@
     "audit": 1
   },
   "audit": {
-    "_comment": "完成审计（独立验证）：auto_merge 的 review 任务在合并授权前，由受限只读 OMP 会话（read/grep/bash，无写工具）逐条 AC 复核原始证据；implementation 类失败带审计报告转回 implementing 自动修复（连续 max_fixes 次升级 grilling 决策），requirement 类失败直接转 grilling 决策，均不硬性阻塞。enabled=false 可关闭。",
+    "_comment": "完成审计（独立验证）：auto_merge 的 review 任务在合并授权前，由受限只读 DSH 会话（read/grep/bash，无写工具）逐条 AC 复核原始证据；implementation 类失败带审计报告转回 implementing 自动修复（连续 max_fixes 次升级 grilling 决策），requirement 类失败直接转 grilling 决策，均不硬性阻塞。enabled=false 可关闭。",
     "enabled": true,
     "max_fixes": 2,
     "timeout_minutes": 15,
     "concurrency": 1,
     "model": ""
   },
+  "auto_resume_aged_after_hours": 24,
   "poll_interval_minutes": 30,
   "projects": [
     {

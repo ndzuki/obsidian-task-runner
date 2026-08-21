@@ -8,12 +8,15 @@ description: >
   request file.
 alwaysApply: false
 hide: false
-disableModelInvocation: false
+disable-model-invocation: false
 ---
 
 # Kulala HTTP Authoring
 
 Use this skill for **Kulala-specific request files**, not for generic curl-only answers. Keep the interface small: produce a runnable `.http` collection, a safe environment/secret seam, and observable assertions.
+
+> 生成标准 Go 微服务的 Kulala 集合布局（`api/kulala/` 目录结构、env 分层）时
+> 用 `project-scaffold`（`/scaffold`）；本 skill 只负责集合内部内容的编写规范。
 
 ## Workflow
 
@@ -89,7 +92,7 @@ For health or stability probes, use a safe deterministic prompt or read-only end
 - usage/error category;
 - whether a fallback was used.
 
-Split probes by layer: DNS/TLS/auth, provider endpoint, actual model request, then tool/session integration. Do not infer an upstream outage from a local `repo busy`, `phase gate full`, MCP startup delay, or an OMP session error without the underlying HTTP/provider evidence.
+Split probes by layer: DNS/TLS/auth, provider endpoint, actual model request, then tool/session integration. Do not infer an upstream outage from a local `repo busy`, `phase gate full`, MCP startup delay, or a DSH session error without the underlying HTTP/provider evidence.
 
 ### 7. Verify before delivery
 
@@ -101,9 +104,9 @@ Complete all applicable checks:
 - external JavaScript passes `node --check` when Node is available;
 - if `kulala-fmt` or a project parser is installed, run its check/format command;
 - send at least one safe request through Kulala when the plugin and target are available;
-- otherwise run an equivalent direct HTTP/OMP probe and state that Kulala runtime execution was not available.
+- otherwise run an equivalent direct HTTP/DSH probe and state that Kulala runtime execution was not available.
 
-Do not claim a Kulala smoke test from a curl or OMP-only test.
+Do not claim a Kulala smoke test from a curl or DSH-only test.
 
 ## Knowledge and tags
 
