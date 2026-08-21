@@ -209,8 +209,26 @@ export function apply(ctx, config = {}) {
     }
   })
 
-  /** 获取（create/resume）一个 agent，并注入本会话的 reasoningEffort。 */
-  async function acquireAgent(payload) {
+  /** session not found 类错误：会话确实不存在（不同于 busy/未知错误）。 */
+  function isSessionNotFound(err) {
+    const msg = String(err?.message ?? err).toLowerCase()
+    const hasSession = msg.includes("session")
+    const hasNotFound = msg.includes("not found") || msg.includes("no such session") || msg.includes("does not exist")
+    return hasSession && hasNotFound
+  }
+
+  /**
+   * 获取（create/resume）一个 agent，并注入本会话的 reasoningEffort。
+   *
+   * lenientCreate 语义分叉：
+   * - /agent/run（daemon 阶段派发）：Go daemon 为每次 fresh Start 预生成
+   *   sessionId（中断时用它持久化 resume token）。因此 sessionId 非空不代表
+   *   「resume」——先按 resume 尝试，session not found 时按同一 id 创建新会话
+   *   （观测：agent-server 重启后 pm 分发全部 500 session not found）。
+   * - /agent/chat（kitty-grill 交互）：sessionId 必须严格 resume——找不到即报
+   *   错，kitty-grill 依赖该信号降级 fresh fallback（writebackContext）。
+   */
+  async function acquireAgent(payload, lenientCreate) {
     const provider = payload.provider
     const model = payload.model
     if (typeof provider !== "string" || typeof model !== "string") throw new TypeError("provider/model must be strings")
@@ -220,11 +238,23 @@ export function apply(ctx, config = {}) {
 
     let agent
     if (payload.sessionId !== undefined && payload.sessionId !== "") {
-      agent = await agents.resume({
-        resumeSessionId: payload.sessionId,
-        agentOptions,
-        setup,
-      })
+      try {
+        agent = await agents.resume({
+          resumeSessionId: payload.sessionId,
+          agentOptions,
+          setup,
+        })
+      } catch (err) {
+        if (!lenientCreate || !isSessionNotFound(err)) throw err
+        console.error(`agent-server: resume(${payload.sessionId}) not found — creating fresh session with that id (lenient /agent/run)`)
+        const created = await agents.create({
+          sessionId: payload.sessionId,
+          meta: { cwd: process.cwd() },
+          agentOptions,
+          setup,
+        })
+        agent = created.agent
+      }
     } else {
       const created = await agents.create({
         sessionId: `session-${randomUUID()}`,
@@ -245,7 +275,7 @@ export function apply(ctx, config = {}) {
   async function runAgent(payload) {
     const task = payload.task
     if (typeof task !== "string" || task.length === 0) throw new TypeError("task must be a non-empty string")
-    const agent = await acquireAgent(payload)
+    const agent = await acquireAgent(payload, true)
 
     await agent.whenIdle()
     const firstSeq = agent.session.seq
@@ -271,12 +301,13 @@ export function apply(ctx, config = {}) {
     if (sid !== undefined && sid !== "") {
       agent = liveAgents.get(sid)
       if (agent === undefined) {
-        // 会话不在本进程（daemon 重启后）：resume 恢复。
-        agent = await acquireAgent(payload)
+        // 会话不在本进程（daemon 重启后）：严格 resume——session not found
+        // 必须报错，kitty-grill 依赖该信号降级 fresh fallback。
+        agent = await acquireAgent(payload, false)
         liveAgents.set(String(agent.session.id), agent)
       }
     } else {
-      agent = await acquireAgent(payload)
+      agent = await acquireAgent(payload, false)
       liveAgents.set(String(agent.session.id), agent)
     }
 
