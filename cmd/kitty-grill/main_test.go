@@ -172,15 +172,15 @@ func TestResolveTaskFileFallsBackAcrossProjects(t *testing.T) {
 }
 
 func TestWritebackArgs(t *testing.T) {
-	args := writebackArgs("/x/kitty-grill", "127.0.0.1:8799", "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A D2=B")
-	if len(args) != 14 {
-		t.Fatalf("args len=%d, want 14: %v", len(args), args)
+	args := writebackArgs("/x/kitty-grill", "127.0.0.1:8799", "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A D2=B", "/tmp/wb-ctx.json")
+	if len(args) != 16 {
+		t.Fatalf("args len=%d, want 16: %v", len(args), args)
 	}
 	if args[0] != "/x/kitty-grill" || args[1] != "--writeback" {
 		t.Fatalf("argv 应以 executable + --writeback 开头: %v", args)
 	}
 	joined := strings.Join(args, "\x00")
-	for _, want := range []string{"--session\x00session-1", "--answers\x00D1=A D2=B", "--addr\x00127.0.0.1:8799"} {
+	for _, want := range []string{"--session\x00session-1", "--answers\x00D1=A D2=B", "--addr\x00127.0.0.1:8799", "--ctx\x00/tmp/wb-ctx.json"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args 缺少 %q: %v", want, args)
 		}
@@ -220,7 +220,7 @@ func TestRunWriteback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A"); err != nil {
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A", nil); err != nil {
 		t.Fatalf("runWriteback: %v", err)
 	}
 	if !sawClose {
@@ -232,10 +232,10 @@ func TestRunWriteback(t *testing.T) {
 }
 
 func TestRunWritebackRejectsMissingInput(t *testing.T) {
-	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "", "D1=A"); err == nil {
+	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "", "D1=A", nil); err == nil {
 		t.Fatal("缺 session 应报错")
 	}
-	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "session-1", ""); err == nil {
+	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "session-1", "", nil); err == nil {
 		t.Fatal("缺 answers 应报错")
 	}
 }
@@ -245,7 +245,7 @@ func TestRunWritebackServerError(t *testing.T) {
 		http.Error(w, `{"error":"session not found"}`, http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A"); err == nil {
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil); err == nil {
 		t.Fatal("HTTP 500 应报错")
 	}
 }
@@ -296,7 +296,7 @@ func TestRunWritebackRetriesThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A"); err != nil {
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil); err != nil {
 		t.Fatalf("runWriteback 重试后应成功: %v", err)
 	}
 	if calls != 2 {
@@ -324,7 +324,7 @@ func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A")
+	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil)
 	if err == nil {
 		t.Fatal("全部尝试失败应返回错误")
 	}
@@ -333,5 +333,105 @@ func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
 	}
 	if !notified {
 		t.Fatal("重试耗尽后应触发桌面提醒")
+	}
+}
+
+// TestRunWritebackSessionGoneFallsBackFresh：session not found 是永久性错误，
+// 重试同一会话无意义——应降级为全新会话（ctx 重建 prompt）完成写回。
+// 观测：TASK-058 决策写回 3 次重试全撞 session not found，答案丢失。
+func TestRunWritebackSessionGoneFallsBackFresh(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	t.Cleanup(func() { writebackRetryBackoff = old })
+
+	var chatCalls int
+	var secondSession, secondMsg string
+	var sawClose bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/chat":
+			chatCalls++
+			var req chatRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if chatCalls == 1 {
+				http.Error(w, `{"error":"session \"session-1\" not found"}`, http.StatusInternalServerError)
+				return
+			}
+			secondSession = req.SessionID
+			secondMsg = req.Message
+			_ = json.NewEncoder(w).Encode(chatResponse{Text: "写回完成", Outcome: "completed", SessionID: "session-fresh"})
+		case "/agent/close":
+			sawClose = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	ctx := &writebackContext{
+		SkillPrompt:   "原始问卷指令：把决策写回清单",
+		Questionnaire: questionnaire{Decisions: []decision{{ID: "D1", Question: "Q1"}}},
+		Answers:       "D1=A",
+	}
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", ctx); err != nil {
+		t.Fatalf("session 丢失后应经 fresh fallback 成功: %v", err)
+	}
+	if chatCalls != 2 {
+		t.Fatalf("chat calls = %d, want 2（一次 session-gone + 一次 fresh）", chatCalls)
+	}
+	if secondSession != "" {
+		t.Fatalf("fresh fallback 应用新会话（空 sessionId），got %q", secondSession)
+	}
+	if !strings.Contains(secondMsg, "D1=A") || !strings.Contains(secondMsg, "无需再次生成问卷") {
+		t.Fatalf("fresh prompt 应包含答案与跳过指令，got %.200q", secondMsg)
+	}
+	if !sawClose {
+		t.Fatal("fresh 会话写回成功后应 /agent/close")
+	}
+}
+
+// TestRunWritebackSessionGoneWithoutCtxNotifies：无上下文可重建时，会话丢失
+// 立即失败 + 桌面提醒（不再空转重试）。
+func TestRunWritebackSessionGoneWithoutCtxNotifies(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	var notified bool
+	oldNotify := notifyWritebackFailure
+	notifyWritebackFailure = func(error) { notified = true }
+	t.Cleanup(func() {
+		writebackRetryBackoff = old
+		notifyWritebackFailure = oldNotify
+	})
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, `{"error":"session not found"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil); err == nil {
+		t.Fatal("无 ctx 且会话丢失应失败")
+	}
+	if calls != 1 {
+		t.Fatalf("chat calls = %d, want 1（session gone 不重试）", calls)
+	}
+	if !notified {
+		t.Fatal("会话丢失且无法重建时应桌面提醒")
+	}
+}
+
+// TestWritebackContextFreshPrompt：重建 prompt 必须自包含原始指令、答案与
+// 问卷全文（新会话无任何旧上下文可依赖）。
+func TestWritebackContextFreshPrompt(t *testing.T) {
+	ctx := writebackContext{
+		SkillPrompt:   "对 X 进行需求详细化…写回指令…",
+		Answers:       "D1=A D2=B",
+		Questionnaire: questionnaire{Decisions: []decision{{ID: "D1", Question: "Q1"}}},
+	}
+	prompt := ctx.FreshPrompt()
+	for _, want := range []string{"对 X 进行需求详细化", "D1=A D2=B", "无需再次生成问卷", "```json", `"id":"D1"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("FreshPrompt 缺少 %q：%.300q", want, prompt)
+		}
 	}
 }
