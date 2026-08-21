@@ -122,7 +122,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 
 **`recoverBlockedPendingReq`（blocked + pending_req 覆盖）**：阶段失败 blocked 的任务若 REQ 已变更（`pending_req=true`），daemon 每轮 scan 自动转 `refining` 重细化——不复用旧 phase（手动 resume 会拿旧需求重新实现）。转 refining 复用 `transitionToRefining` 基底原子清 grill/plan/merge/`round2_stall_until` 残留。排除：`PREREQUISITE_SMOKE_FAILED` 门禁、`REQ_MISSING` 等非瞬时码、空错误码 + `blocked_by` 非空的入口门禁形态（三者各有专属恢复路径）。
 
-**`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 DSH 阶段会话收 SIGTERM 保存会话后退出（agent-server 常驻时由 `executor_session_id` 持久恢复），任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 自动重新调度，阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
+**`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 DSH 阶段会话收 SIGTERM 保存会话后退出（agent-server 常驻时由 `executor_session_id` 持久恢复），任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 经 `runDSHPhase` durable resume 重挂会话：**resume 成功复用结果；resume 等待超时/再中断时如实上报 PHASE_TIMEOUT / PHASE_INTERRUPTED，不得 fresh start**（daemon 侧 HTTP 超时不终止 agent-server 会话，fresh start 会造成同任务双会话并行写，TASK-058 教训）；仅会话终态失败（session not found 等）回退 fresh start；resume 超时对齐阶段 spec。阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
 
 **人工暂停**：需要暂停任务等待外部条件（如用户完善需求）时，可设 `status=blocked` + `blocked_phase=<原状态>` + `phase_error_code=REQ_MISSING`（非自动恢复错误码），daemon 保持阻塞且不提醒；条件满足后设 `resume_approved=true` 恢复。
 
@@ -383,6 +383,8 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 - Kitty tab 不受该字段控制，Grilling 时始终尝试创建。
 - 同一 TASK 只允许一个活跃 Grilling tab。Daemon 创建前解析 `kitty @ ls`，按 `Grilling <task-id>` 检查所有 tab/window title；任务标题变化或 Unicode JSON 转义不会触发第二个 tab。
 - per-task 文件锁和每次尝试前写入的 5 分钟 debounce 时间戳防止并发扫描或 daemon 重启重复创建。
+- **提交后异步写回 + 自动关 tab**：kitty-grill 提交答案后 spawn detached 子进程（`--writeback` 模式）重新挂接 session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，10 分钟超时），主进程 `kitty @ close-window --match id:$KITTY_WINDOW_ID` 关闭本 tab；spawn 失败回退有界同步写回。**写回守卫**：启动与写回前复查任务 status，已离开 needs-grilling 阻止写回并提示。问卷 prompt 以 `任务 TASK-<id>` 开头（监控面板按第一个 TASK-xxx 打标签）。
+- **需求变更通知按 taskID+action 5 分钟防抖**（`notifyReqChanged`）：grilling 写回多次改写 REQ 时，同一任务同一 action 只发第一条「需求变更」toast。
 - Kitty 状态 JSON 无法解析时不会创建 tab，并回退到桌面通知；后续扫描继续重试。
 - Kitty 不可用：保持 needs-grilling，写日志并周期重试，不转 blocked，不启动普通终端。
 

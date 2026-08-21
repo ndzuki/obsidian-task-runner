@@ -1,6 +1,7 @@
 .PHONY: build test test-cover bench lint clean install install-force
 
 BINARY := otg
+GRILL  := kitty-grill
 GOBIN  := $(or $(shell go env GOBIN 2>/dev/null),$(HOME)/go/bin)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -8,6 +9,7 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 build:
 	go build -tags sqlite_fts5 $(LDFLAGS) -o $(BINARY) ./cmd/otg/
+	go build -o $(GRILL) ./cmd/kitty-grill/
 
 test:
 	go test -race -tags sqlite_fts5 -cover ./...
@@ -23,13 +25,20 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm -f $(BINARY) coverage.out coverage.html
+	rm -f $(BINARY) $(GRILL) coverage.out coverage.html
 
+# busy-safe install: 运行中的二进制（otg daemon / grilling tab 的
+# kitty-grill）不允许原地覆盖（Text file busy），先 mv 到 .old 再 cp。
 install: build sync-docs
+	@echo "=== Installing $(BINARY) + $(GRILL) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
-	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
-	cp $(BINARY) $(GOBIN)/$(BINARY)
-	@echo "Installed to $(HOME)/.local/bin/$(BINARY)"
+	@for b in $(BINARY) $(GRILL); do \
+		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
+		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
+		cp $$b $(HOME)/.local/bin/$$b; \
+		cp $$b $(GOBIN)/$$b; \
+	done
+	@echo "Installed to $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"
 
 install-force: build
 	@echo "=== Stopping task watcher (dsh-agent-server keeps running: durable sessions survive) ==="
@@ -38,12 +47,14 @@ install-force: build
 	@sleep 2
 	-pkill -9 -U "$$(id -u)" -f "otg daemon" 2>/dev/null || true
 	@sleep 1
-	@echo "=== Installing new binary ==="
-	-rm -f $(HOME)/.local/bin/$(BINARY).old $(GOBIN)/$(BINARY).old 2>/dev/null || true
+	@echo "=== Installing new binaries ($(BINARY) + $(GRILL)) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
-	-mv $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(BINARY).old 2>/dev/null || true
-	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
-	cp $(BINARY) $(GOBIN)/$(BINARY)
+	@for b in $(BINARY) $(GRILL); do \
+		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
+		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
+		cp $$b $(HOME)/.local/bin/$$b; \
+		cp $$b $(GOBIN)/$$b; \
+	done
 	@echo "=== Regenerating systemd units (dsh-agent-server / dsh-web / otg-task-watcher) ==="
 	$(HOME)/.local/bin/$(BINARY) install-systemd
 	@echo "=== Restarting task watcher ==="
