@@ -78,6 +78,8 @@ type Frontmatter struct {
 	Generation          int      `yaml:"generation"`
 	AttemptID           string   `yaml:"attempt_id"`
 	ExecutorSessionID   string   `yaml:"executor_session_id"`
+	QuotaBackoffLevel   int      `yaml:"quota_backoff_level"`
+	QuotaBackoffUntil   string   `yaml:"quota_backoff_until"`
 	AdrApproved         bool     `yaml:"adr_approved"`
 	AdrProposed         any      `yaml:"adr_proposed"`
 	AdrWritten          any      `yaml:"adr_written"`
