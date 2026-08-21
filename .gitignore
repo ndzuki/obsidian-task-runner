@@ -28,3 +28,6 @@ Thumbs.db
 core.*
 core.[0-9]*
 models/
+
+# local Go build caches (sandbox has no writable ~/.cache)
+.cache/

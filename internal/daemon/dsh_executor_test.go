@@ -102,7 +102,7 @@ func TestDSHTaskTextInjectsSkillBody(t *testing.T) {
 
 func TestDSHExecutorResumeUnsupported(t *testing.T) {
 	e := newDSHExecutor("dsh")
-	if _, err := e.Resume(context.Background(), "tok", 0); err != ErrResumeUnsupported {
+	if _, err := e.Resume(context.Background(), PhaseSpec{}, "tok", 0); err != ErrResumeUnsupported {
 		t.Fatalf("Resume err = %v, want ErrResumeUnsupported", err)
 	}
 }

@@ -364,6 +364,8 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
 	answers, aborted := runQuestionnaire(q.Decisions)
 	if aborted {
+		// 用户放弃：回收 agent-server 里的交互会话，避免僵尸条目滞留监控面板。
+		closeChatSession(addr, sessionID)
 		return nil
 	}
 
@@ -394,7 +396,9 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 
 // submitAnswers fires the write-back asynchronously and closes the tab.
 // When the detached spawn fails (rare: missing executable), it falls back to
-// a bounded synchronous write-back so the answers are never lost.
+// a bounded synchronous write-back so the answers are never lost. The chat
+// session is closed by the write-back side (child or sync fallback) on
+// success — the session must stay alive while the write-back runs.
 func submitAnswers(addr, provider, model, effort, sessionID, message, taskID string) {
 	if err := spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID); err != nil {
 		fmt.Printf("\n⏳ 后台进程启动失败，改为同步写回（最多等待 %v）…\n\n", writebackTimeout)
@@ -403,6 +407,7 @@ func submitAnswers(addr, provider, model, effort, sessionID, message, taskID str
 			fmt.Printf("\n⚠️  写回失败：%v\n", chatErr)
 		} else {
 			fmt.Println(resp.Text)
+			closeChatSession(addr, sessionID)
 		}
 	}
 	closeOwnTab()
@@ -431,11 +436,13 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 			continue
 		}
 		if msg == "/quit" || msg == "/exit" {
+			closeChatSession(addr, sessionID)
 			return nil
 		}
 		answers = append(answers, msg)
 	}
 	if len(answers) == 0 {
+		closeChatSession(addr, sessionID)
 		return nil
 	}
 	// 写回前复查任务状态（同问卷路径：作答期间任务可能已离开 grilling）。
@@ -454,7 +461,8 @@ const writebackTimeout = 10 * time.Minute
 
 // runWriteback is the --writeback mode body: re-attach to the session the
 // questionnaire left behind and submit the answers. It is executed by the
-// detached child process; stdout/stderr go to a log file.
+// detached child process; stdout/stderr go to a log file. On success the chat
+// session is closed so the agent-server monitor does not accumulate zombies.
 func runWriteback(addr, provider, model, effort, sessionID, answers string) error {
 	if sessionID == "" || answers == "" {
 		return fmt.Errorf("writeback mode requires --session and --answers")
@@ -464,7 +472,36 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string) erro
 		return err
 	}
 	fmt.Printf("writeback ok: session=%s\n%s\n", sessionID, resp.Text)
+	closeChatSession(addr, sessionID)
 	return nil
+}
+
+// closeChatSession tells the agent-server to cancel a chat session (POST
+// /agent/close). Best-effort and silent: the server also lazily recycles
+// idle chat sessions, this is just the prompt path. run sessions are
+// unaffected (the server tracks chat sessions separately).
+func closeChatSession(addr, sessionID string) {
+	if addr == "" || sessionID == "" {
+		return
+	}
+	body, err := json.Marshal(struct {
+		SessionID string `json:"sessionId"`
+	}{sessionID})
+	if err != nil {
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/agent/close", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 }
 
 // writebackLogDir returns the directory for detached write-back logs.
