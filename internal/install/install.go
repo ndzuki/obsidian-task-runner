@@ -499,6 +499,17 @@ func ConfigureSystemd(opts Options) error {
 	// starving every implementing task behind the failed slots).
 	path := buildSystemdPath(home)
 
+	// dsh is executed by absolute path, not via PATH lookup: systemd fails
+	// to resolve bare `dsh` through the mise shims dir (a symlink-only
+	// directory) with "Unable to locate executable 'dsh': No such file or
+	// directory" (status=203/EXEC, observed systemd 261). The bin.js shebang
+	// (`#!/usr/bin/env node`) still resolves node via PATH, so the node
+	// install bin dir is prepended in buildSystemdPath.
+	dshExec := "dsh"
+	if abs := filepath.Join(home, ".local", "share", "mise", "installs", "node", "latest", "bin", "dsh"); fileExists(abs) {
+		dshExec = abs
+	}
+
 	// Write service files. dsh-web and dsh-agent-server are independent user
 	// services; otg-task-watcher depends on the externally managed
 	// agent-server (agent_server_managed=false) so it starts after it is
@@ -513,14 +524,14 @@ Type=simple
 Environment=PATH=%s
 Environment=XDG_RUNTIME_DIR=/run/user/%%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
-ExecStart=dsh --profile headless-agent-server
+ExecStart=%s --profile headless-agent-server
 Restart=always
 RestartSec=3
 TimeoutStartSec=30
 
 [Install]
 WantedBy=default.target
-`, path),
+`, path, dshExec),
 		"dsh-web.service": fmt.Sprintf(`[Unit]
 Description=DSH Web UI
 After=network.target
@@ -530,14 +541,14 @@ Type=simple
 Environment=PATH=%s
 Environment=XDG_RUNTIME_DIR=/run/user/%%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
-ExecStart=dsh --profile web
+ExecStart=%s --profile web
 Restart=always
 RestartSec=3
 TimeoutStartSec=30
 
 [Install]
 WantedBy=default.target
-`, path),
+`, path, dshExec),
 		"otg-task-watcher.service": fmt.Sprintf(`[Unit]
 Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发任务处理
 After=dsh-agent-server.service
@@ -636,12 +647,14 @@ func installRegistry(opts Options) error {
 	return nil
 }
 
-// buildSystemdPath assembles the PATH for systemd units: user bin dirs
+// buildSystemdPath assembles the PATH for systemd units: the mise node
+// install bin dir (real `node` binary for the bin.js shebang), user bin dirs
 // (go/bin, .local/bin) and mise shims take precedence over system dirs.
 // Only existing directories are included, mirroring an interactive shell.
 func buildSystemdPath(home string) string {
 	path := "/usr/local/bin:/usr/bin:/bin"
 	for _, d := range []string{
+		filepath.Join(home, ".local", "share", "mise", "installs", "node", "latest", "bin"),
 		filepath.Join(home, "go", "bin"),
 		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, ".local", "share", "mise", "shims"),
@@ -656,6 +669,11 @@ func buildSystemdPath(home string) string {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // copyDir recursively copies a directory tree from src to dst using native Go I/O.
