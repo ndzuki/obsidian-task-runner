@@ -272,3 +272,66 @@ func TestCloseChatSession(t *testing.T) {
 	closeChatSession("", "")
 	closeChatSession(strings.TrimPrefix(srv.URL, "http://"), "")
 }
+
+// TestRunWritebackRetriesThenSucceeds：模型级失败（outcome error）应重试同一
+// 会话，第二次成功后返回 nil（观测：TASK-058 决策写回一次失败即丢答案）。
+func TestRunWritebackRetriesThenSucceeds(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	t.Cleanup(func() { writebackRetryBackoff = old })
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/chat":
+			calls++
+			if calls == 1 {
+				_ = json.NewEncoder(w).Encode(chatResponse{Outcome: "error", SessionID: "session-1", ErrorCode: ""})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(chatResponse{Text: "写回完成", Outcome: "completed", SessionID: "session-1"})
+		case "/agent/close":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A"); err != nil {
+		t.Fatalf("runWriteback 重试后应成功: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("chat calls = %d, want 2（一次失败 + 一次重试成功）", calls)
+	}
+}
+
+// TestRunWritebackExhaustsRetriesAndNotifies：全部尝试失败后返回错误并触发
+// 桌面提醒钩子（用户不会再静默发现任务仍被阻塞）。
+func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	var notified bool
+	oldNotify := notifyWritebackFailure
+	notifyWritebackFailure = func(error) { notified = true }
+	t.Cleanup(func() {
+		writebackRetryBackoff = old
+		notifyWritebackFailure = oldNotify
+	})
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(chatResponse{Outcome: "error", SessionID: "session-1"})
+	}))
+	defer srv.Close()
+
+	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A")
+	if err == nil {
+		t.Fatal("全部尝试失败应返回错误")
+	}
+	if calls != writebackMaxAttempts {
+		t.Fatalf("chat calls = %d, want %d", calls, writebackMaxAttempts)
+	}
+	if !notified {
+		t.Fatal("重试耗尽后应触发桌面提醒")
+	}
+}

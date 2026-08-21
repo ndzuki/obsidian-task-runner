@@ -459,21 +459,50 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 // has already left.
 const writebackTimeout = 10 * time.Minute
 
+// writebackMaxAttempts bounds model-level retries for the write-back turn.
+// 免费渠道偶发 SERVER/outcome error 时（观测：TASK-058 决策写回一次失败即
+// 丢弃答案），重试同一会话同一答案（幂等）显著提高写回成功率。
+const writebackMaxAttempts = 3
+
+// writebackRetryBackoff 是写回重试间隔；测试可覆盖为 0。
+var writebackRetryBackoff = 20 * time.Second
+
+// notifyWritebackFailure 是写回最终失败时的桌面提醒；测试可覆盖。
+var notifyWritebackFailure = func(err error) {
+	if _, e := exec.LookPath("notify-send"); e != nil {
+		return
+	}
+	_ = exec.Command("notify-send", "-u", "critical", "⚠️ Grilling 决策写回失败",
+		fmt.Sprintf("已自动重试 %d 次仍失败（%v）。请稍后重新提交决策问卷，或直接手动编辑 Grilling-Decisions.md。", writebackMaxAttempts, err)).Run()
+}
+
 // runWriteback is the --writeback mode body: re-attach to the session the
 // questionnaire left behind and submit the answers. It is executed by the
 // detached child process; stdout/stderr go to a log file. On success the chat
 // session is closed so the agent-server monitor does not accumulate zombies.
+// Model-level failures are retried (same session, same answers — idempotent);
+// after the budget is exhausted a desktop notification surfaces the loss so
+// the user re-submits instead of silently discovering a still-blocked task.
 func runWriteback(addr, provider, model, effort, sessionID, answers string) error {
 	if sessionID == "" || answers == "" {
 		return fmt.Errorf("writeback mode requires --session and --answers")
 	}
-	resp, err := chat(addr, provider, model, effort, sessionID, answers, writebackTimeout)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 1; attempt <= writebackMaxAttempts; attempt++ {
+		resp, err := chat(addr, provider, model, effort, sessionID, answers, writebackTimeout)
+		if err == nil {
+			fmt.Printf("writeback ok (attempt %d): session=%s\n%s\n", attempt, sessionID, resp.Text)
+			closeChatSession(addr, sessionID)
+			return nil
+		}
+		lastErr = err
+		fmt.Printf("writeback attempt %d/%d failed: %v\n", attempt, writebackMaxAttempts, err)
+		if attempt < writebackMaxAttempts {
+			time.Sleep(writebackRetryBackoff)
+		}
 	}
-	fmt.Printf("writeback ok: session=%s\n%s\n", sessionID, resp.Text)
-	closeChatSession(addr, sessionID)
-	return nil
+	notifyWritebackFailure(lastErr)
+	return lastErr
 }
 
 // closeChatSession tells the agent-server to cancel a chat session (POST
