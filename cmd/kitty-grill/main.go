@@ -61,6 +61,7 @@ func main() {
 		writeback = flag.Bool("writeback", false, "internal: submit answers to an existing session and exit")
 		sessionID = flag.String("session", "", "agent-server session id (writeback mode)")
 		answers   = flag.String("answers", "", "user answers to submit (writeback mode)")
+		ctxPath   = flag.String("ctx", "", "writeback context file (fresh-session fallback; writeback mode)")
 	)
 	flag.Parse()
 
@@ -70,7 +71,7 @@ func main() {
 	}
 
 	if *writeback {
-		if err := runWriteback(*addr, *provider, *model, *effort, *sessionID, *answers); err != nil {
+		if err := runWriteback(*addr, *provider, *model, *effort, *sessionID, *answers, loadWritebackContext(*ctxPath)); err != nil {
 			fmt.Fprintf(os.Stderr, "kitty-grill writeback: %v\n", err)
 			os.Exit(1)
 		}
@@ -353,12 +354,12 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 	raw, ok := extractJSON(resp.Text)
 	if !ok {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc)
+		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
 	}
 	var q questionnaire
 	if err := json.Unmarshal([]byte(raw), &q); err != nil || len(q.Decisions) == 0 {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc)
+		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
 	}
 
 	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
@@ -390,32 +391,47 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 	// 异步提交：detached 子进程完成写回，本进程立即退出并关 tab——不再
 	// 同步等待模型写回（观测：TASK-058 提交后卡在「写回需求文档中」，
 	// tab 不关闭，还连发重复的「需求变更」桌面提醒）。
-	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(parts, " "), taskID)
+	reqPath := reqDoc
+	if reqPath != "" && vaultPath != "" {
+		reqPath = filepath.Join(vaultPath, reqDoc)
+	}
+	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(parts, " "), taskID, writebackContext{
+		Kind:          "req",
+		Target:        reqPath,
+		TaskID:        taskID,
+		ReqDoc:        reqDoc,
+		VaultPath:     vaultPath,
+		SkillPrompt:   prompt,
+		Questionnaire: q,
+	})
 	return nil
 }
 
-// submitAnswers fires the write-back asynchronously and closes the tab.
-// When the detached spawn fails (rare: missing executable), it falls back to
-// a bounded synchronous write-back so the answers are never lost. The chat
-// session is closed by the write-back side (child or sync fallback) on
-// success — the session must stay alive while the write-back runs.
-func submitAnswers(addr, provider, model, effort, sessionID, message, taskID string) {
-	if err := spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID); err != nil {
-		fmt.Printf("\n⏳ 后台进程启动失败，改为同步写回（最多等待 %v）…\n\n", writebackTimeout)
-		resp, chatErr := chat(addr, provider, model, effort, sessionID, message, writebackTimeout)
-		if chatErr != nil {
-			fmt.Printf("\n⚠️  写回失败：%v\n", chatErr)
-		} else {
-			fmt.Println(resp.Text)
-			closeChatSession(addr, sessionID)
+// submitAnswers fires the write-back asynchronously and closes the tab. The
+// write-back context (original questionnaire prompt + questionnaire JSON) is
+// persisted alongside so a fresh-session fallback can rebuild context if the
+// agent-server lost the session (restart between questionnaire and write-back).
+// When the detached spawn fails (rare: missing executable), it falls back to a
+// bounded synchronous write-back so the answers are never lost.
+func submitAnswers(addr, provider, model, effort, sessionID, message, taskID string, ctx writebackContext) {
+	ctx.Answers = message
+	ctxPath, ctxErr := writeWritebackContext(ctx, taskID)
+	if ctxErr == nil {
+		if err := spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID, ctxPath); err == nil {
+			closeOwnTab()
+			return
 		}
+	}
+	fmt.Printf("\n⏳ 后台进程启动失败，改为同步写回（最多等待 %v）…\n\n", writebackTimeout)
+	if err := runWriteback(addr, provider, model, effort, sessionID, message, &ctx); err != nil {
+		fmt.Printf("\n⚠️  写回失败：%v\n", err)
 	}
 	closeOwnTab()
 }
 
 // manualFill is the fallback when the model does not emit a parseable JSON
 // questionnaire: print the raw reply and read one multi-line round of answers.
-func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc string) error {
+func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt string) error {
 	fmt.Println()
 	in := bufio.NewReader(os.Stdin)
 	var answers []string
@@ -449,7 +465,13 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 	if taskLeftGrilling(taskID, vaultPath, reqDoc) {
 		return nil
 	}
-	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"), taskID)
+	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"), taskID, writebackContext{
+		Kind:        "req",
+		TaskID:      taskID,
+		ReqDoc:      reqDoc,
+		VaultPath:   vaultPath,
+		SkillPrompt: prompt,
+	})
 	return nil
 }
 
@@ -476,16 +498,114 @@ var notifyWritebackFailure = func(err error) {
 		fmt.Sprintf("已自动重试 %d 次仍失败（%v）。请稍后重新提交决策问卷，或直接手动编辑 Grilling-Decisions.md。", writebackMaxAttempts, err)).Run()
 }
 
+// writebackContext carries everything a fresh-session fallback needs to
+// rebuild the write-back prompt when the original chat session is gone
+// (agent-server restarted between questionnaire and write-back — 观测：
+// TASK-058 决策写回 3 次重试全撞「session not found」)。
+type writebackContext struct {
+	Kind          string        `json:"kind"`             // "req" | "decision"
+	Target        string        `json:"target,omitempty"` // REQ / 决策清单绝对路径
+	TaskID        string        `json:"taskID,omitempty"`
+	ReqDoc        string        `json:"reqDoc,omitempty"`
+	VaultPath     string        `json:"vaultPath,omitempty"`
+	SkillPrompt   string        `json:"skillPrompt"` // 原始问卷 prompt（含写回指令）
+	Questionnaire questionnaire `json:"questionnaire,omitempty"`
+	Answers       string        `json:"answers"`
+}
+
+// FreshPrompt rebuilds a self-contained write-back prompt for a new session:
+// the original questionnaire instructions + the user's answers + the
+// questionnaire JSON, so the model can write back without the old context.
+func (c writebackContext) FreshPrompt() string {
+	var b strings.Builder
+	b.WriteString(c.SkillPrompt)
+	b.WriteString("\n\n【无需再次生成问卷】用户已经完成问卷并提交答复：\n")
+	b.WriteString(c.Answers)
+	if len(c.Questionnaire.Decisions) > 0 {
+		if data, err := json.Marshal(c.Questionnaire); err == nil {
+			b.WriteString("\n\n问卷全文（供参考，含问题与选项）：\n```json\n")
+			b.WriteString(string(data))
+			b.WriteString("\n```")
+		}
+	}
+	b.WriteString("\n\n请跳过问卷生成与提问，直接执行上面的写回指令（把答复写回需求文档/决策清单）。写回完成后输出「决策总结」即可。")
+	return b.String()
+}
+
+// writeWritebackContext persists the context JSON next to the write-back logs.
+func writeWritebackContext(ctx writebackContext, taskID string) (string, error) {
+	logDir := writebackLogDir()
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", err
+	}
+	name := taskID
+	if name == "" {
+		name = "decision"
+	}
+	path := filepath.Join(logDir, fmt.Sprintf("writeback-ctx-%s-%s.json", name, time.Now().Format("20060102-150405")))
+	data, err := json.MarshalIndent(ctx, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// loadWritebackContext reads a context file; nil when absent/broken/empty.
+func loadWritebackContext(path string) *writebackContext {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var ctx writebackContext
+	if err := json.Unmarshal(data, &ctx); err != nil || ctx.Answers == "" {
+		return nil
+	}
+	return &ctx
+}
+
+// sessionGoneEvidence reports whether an error proves the target chat session
+// no longer exists. Only permanent-loss evidence stops same-session retries
+// and switches to the fresh-session fallback; transient errors keep retrying.
+func sessionGoneEvidence(errText string) bool {
+	lower := strings.ToLower(errText)
+	hasSession := strings.Contains(lower, "session")
+	hasNotFound := strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "no such session") ||
+		strings.Contains(lower, "does not exist")
+	return hasSession && hasNotFound
+}
+
 // runWriteback is the --writeback mode body: re-attach to the session the
 // questionnaire left behind and submit the answers. It is executed by the
 // detached child process; stdout/stderr go to a log file. On success the chat
 // session is closed so the agent-server monitor does not accumulate zombies.
-// Model-level failures are retried (same session, same answers — idempotent);
-// after the budget is exhausted a desktop notification surfaces the loss so
-// the user re-submits instead of silently discovering a still-blocked task.
-func runWriteback(addr, provider, model, effort, sessionID, answers string) error {
-	if sessionID == "" || answers == "" {
-		return fmt.Errorf("writeback mode requires --session and --answers")
+//
+// Failure classification:
+//   - transient (SERVER / unreachable / unknown)：同一会话重试
+//     writebackMaxAttempts 次（幂等）；
+//   - session gone（session not found 等）：重试无意义，改用 ctx 重建的
+//     全新会话完成写回（fresh-session fallback）；
+//   - 全部路径失败：桌面提醒，不再静默丢答案。
+func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx *writebackContext) error {
+	if answers == "" {
+		return fmt.Errorf("writeback mode requires --answers")
+	}
+	if sessionID == "" {
+		// 罕见：问卷会话从未建立（agent-server 启动失败等）→ 直接 fresh。
+		if ctx == nil {
+			return fmt.Errorf("writeback mode requires --session")
+		}
+		if err := freshWriteback(addr, provider, model, effort, ctx); err != nil {
+			notifyWritebackFailure(err)
+			return err
+		}
+		return nil
 	}
 	var lastErr error
 	for attempt := 1; attempt <= writebackMaxAttempts; attempt++ {
@@ -496,13 +616,38 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string) erro
 			return nil
 		}
 		lastErr = err
+		if sessionGoneEvidence(err.Error()) {
+			fmt.Printf("writeback: session %s gone (%v) — retries are futile, falling back to a fresh session\n", sessionID, err)
+			break
+		}
 		fmt.Printf("writeback attempt %d/%d failed: %v\n", attempt, writebackMaxAttempts, err)
 		if attempt < writebackMaxAttempts {
 			time.Sleep(writebackRetryBackoff)
 		}
 	}
+	if ctx != nil {
+		if err := freshWriteback(addr, provider, model, effort, ctx); err != nil {
+			lastErr = fmt.Errorf("session lost and fresh fallback failed: %w", err)
+		} else {
+			return nil
+		}
+	}
 	notifyWritebackFailure(lastErr)
 	return lastErr
+}
+
+// freshWriteback starts a brand-new chat session with the rebuilt self-
+// contained prompt (original questionnaire instructions + answers + questions)
+// and closes it afterwards. No resume dependency on the lost session.
+func freshWriteback(addr, provider, model, effort string, ctx *writebackContext) error {
+	prompt := ctx.FreshPrompt()
+	resp, err := chat(addr, provider, model, effort, "", prompt, writebackTimeout)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("writeback ok via fresh session: session=%s\n%s\n", resp.SessionID, resp.Text)
+	closeChatSession(addr, resp.SessionID)
+	return nil
 }
 
 // closeChatSession tells the agent-server to cancel a chat session (POST
@@ -543,7 +688,7 @@ func writebackLogDir() string {
 }
 
 // writebackArgs builds the argv for the detached --writeback child.
-func writebackArgs(exe, addr, provider, model, effort, sessionID, message string) []string {
+func writebackArgs(exe, addr, provider, model, effort, sessionID, message, ctxPath string) []string {
 	return []string{
 		exe,
 		"--writeback",
@@ -553,13 +698,14 @@ func writebackArgs(exe, addr, provider, model, effort, sessionID, message string
 		"--effort", effort,
 		"--session", sessionID,
 		"--answers", message,
+		"--ctx", ctxPath,
 	}
 }
 
 // spawnAsyncWriteback starts a detached --writeback child (setsid) that
 // re-attaches to the session and performs the write-back after this process
 // exits. Returns an error only when the child cannot be started.
-func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID string) error {
+func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID, ctxPath string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -577,7 +723,7 @@ func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, task
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, writebackArgs(exe, addr, provider, model, effort, sessionID, message)[1:]...)
+	cmd := exec.Command(exe, writebackArgs(exe, addr, provider, model, effort, sessionID, message, ctxPath)[1:]...)
 	cmd.Stdin = nil
 	cmd.Stdout = f
 	cmd.Stderr = f
