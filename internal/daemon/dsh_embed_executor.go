@@ -150,10 +150,14 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, provider, mo
 	return h, nil
 }
 
-// mapDSHModel translates the OMP model identity into DSH's provider/model route
-// form: "gateway/<model>" → deepseek_magic (same gateway.internal.example baseURL),
-// "deepseek/<model>" → ds-official (official DeepSeek). Identities already in
-// DSH form ("deepseek_magic/<model>", "ds-official/<model>") pass through.
+// mapDSHModel translates a vault-map model identity into DSH's provider/model
+// route form. Legacy identities are normalized to the free channels:
+//   - "gateway/<model>"  → deepseek_magic (same gateway.internal.example baseURL)
+//   - "deepseek/<model>" → deepseek_magic (free magic channel; the paid
+//     official channel is only reachable via the explicit "ds-official" key)
+//
+// Identities already in DSH route form ("deepseek_magic/<model>",
+// "openai/<model>", "ds-official/<model>") pass through unchanged.
 func mapDSHModel(ompModel string) (provider, model string) {
 	if ompModel == "" {
 		return "deepseek_magic", "deepseek-v4-pro"
@@ -161,15 +165,21 @@ func mapDSHModel(ompModel string) (provider, model string) {
 	if idx := strings.IndexByte(ompModel, '/'); idx > 0 {
 		p, m := ompModel[:idx], ompModel[idx+1:]
 		switch p {
-		case "gateway":
+		case "gateway", "deepseek":
 			return "deepseek_magic", m
-		case "deepseek":
-			return "ds-official", m
 		default:
 			return p, m
 		}
 	}
 	return "deepseek_magic", ompModel
+}
+
+// isFreeModelRoute reports whether a vault-map model identity resolves to a
+// free channel (deepseek_magic or openai). It is used for the "free models
+// exhausted — consider assignee=ds-official" reminder.
+func isFreeModelRoute(ompModel string) bool {
+	provider, _ := mapDSHModel(ompModel)
+	return provider == "deepseek_magic" || provider == "openai"
 }
 
 // dshModelLabel renders a vault-map model identity in DSH route form

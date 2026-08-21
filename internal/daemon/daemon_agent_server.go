@@ -12,19 +12,25 @@ import (
 // startAgentServer 拉起长驻 agent-server（`dsh --profile headless-agent-server`）
 // 并等待健康检查通过。executor != "dsh-embed" 时 no-op。子进程日志写入 daemon
 // 的 logWriter；生命周期由 stopAgentServer 收口。
+// 当 AgentServerManaged=false 时，不拉起子进程，只等待外部 systemd 管理的
+// agent-server 健康检查通过。
 func (r *Runner) startAgentServer(ctx context.Context) error {
 	if r.cfg.Executor != "dsh-embed" {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, r.cfg.DSHCmd, "--profile", "headless-agent-server")
-	cmd.Stdout = r.logWriter
-	cmd.Stderr = r.logWriter
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start agent-server: %w", err)
+	if r.cfg.AgentServerManaged {
+		cmd := exec.CommandContext(ctx, r.cfg.DSHCmd, "--profile", "headless-agent-server")
+		cmd.Stdout = r.logWriter
+		cmd.Stderr = r.logWriter
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start agent-server: %w", err)
+		}
+		r.agentServerCmd = cmd
+		r.logger.Printf("agent-server starting (pid=%d, addr=%s)", cmd.Process.Pid, r.cfg.AgentServerAddr)
+	} else {
+		r.logger.Printf("agent-server managed externally; waiting for health at %s", r.cfg.AgentServerAddr)
 	}
-	r.agentServerCmd = cmd
-	r.logger.Printf("agent-server starting (pid=%d, addr=%s)", cmd.Process.Pid, r.cfg.AgentServerAddr)
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -46,7 +52,12 @@ func (r *Runner) startAgentServer(ctx context.Context) error {
 }
 
 // stopAgentServer 优雅关闭 agent-server（SIGTERM → 10s 宽限 → SIGKILL）。
+// AgentServerManaged=false 时不关闭外部服务，systemd 负责其生命周期。
 func (r *Runner) stopAgentServer() {
+	if !r.cfg.AgentServerManaged {
+		r.logger.Printf("agent-server managed externally; skipping stop")
+		return
+	}
 	if r.agentServerCmd == nil || r.agentServerCmd.Process == nil {
 		return
 	}

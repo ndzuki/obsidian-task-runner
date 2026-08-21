@@ -115,11 +115,13 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 
 ## 5.5 模型路由（2026-08-19，用户确认）
 
-- **fallback 链**（`~/.dsh/cordis.patch.yml`，fallback.mjs）：
-  - `magic/deepseek-v4-pro` → 官方 `ds-official/deepseek-v4-pro`
-  - `magic/gpt-5.4-mini`（=flash）→ 官方 `ds-official/deepseek-v4-flash`
-  - 即 magic 免费模型无响应时兜底官方 DeepSeek 直连（web 与 dsh headless 统一由
-    fallback.mjs 完成）。
+- **fallback 链**（fallback.mjs，配置在 `headless` / `headless-agent-server` 的
+  `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
+  - `deepseek_magic/deepseek-v4-pro` → `openai/gpt-5.6-terra`（+ `gpt-5.6-sol` 次级）
+  - `deepseek_magic/gpt-5.4-mini`（=flash）→ `openai/gpt-5.6-luna`
+  - 即 magic 免费 deepseek 失败 → magic 免费 openai gpt-5.6（luna/sol/terra 对应能力映射）。
+  - 仅 obsidian-task-runner 自动化任务（headless / headless-agent-server）加载；
+    dsh web / dsh-tui 交互会话不加载，模型失败直接返回。
 - **settings.yaml**：`agent-default-model` = `magic/deepseek-v4-pro`（magic 免费优先）；
   官方直连 provider 名 **`ds-official`**（模型 id 小写 `deepseek-v4-pro`/`deepseek-v4-flash`，
   与 `/models` 实测一致）。
@@ -129,7 +131,8 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 - **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
   `gateway/deepseek-v4-pro`（免费），fallback `deepseek/deepseek-v4-pro`（官方）。
 - **已知：magic 免费额度可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
-  402 Insufficient Balance`）——fallback.mjs 会切官方，但官方非免费。
+  402 Insufficient Balance`）——fallback.mjs 会在免费渠道间切换（deepseek_magic → openai），
+  免费渠道全耗尽时 daemon 通知改 `assignee=ds-official` 使用官方直连。
 
 ## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
 

@@ -277,11 +277,18 @@ func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
 
 	config := map[string]interface{}{
-		"config_version":        1,
-		"obsidian_vault":        opts.ObsidianVault,
-		"new_project_root":      opts.NewProjectRoot,
-		"projects":              []interface{}{},
-		"models":                map[string]string{"default": "gateway/gpt-5.4-mini"},
+		"config_version":   1,
+		"obsidian_vault":   opts.ObsidianVault,
+		"new_project_root": opts.NewProjectRoot,
+		"projects":         []interface{}{},
+		"models": map[string]string{
+			"default":        "deepseek_magic/gpt-5.4-mini",
+			"deepseek":       "deepseek_magic/deepseek-v4-pro",
+			"gpt":            "openai/gpt-5.6-sol",
+			"openai":         "openai/gpt-5.6-sol",
+			"deepseek_magic": "deepseek_magic/deepseek-v4-pro",
+			"ds-official":    "ds-official/deepseek-v4-pro",
+		},
 		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
 		"poll_interval_minutes": opts.PollIntervalMin,
 		// max_concurrent_tasks: 0 = no global cap (per-project governs);
@@ -492,10 +499,49 @@ func ConfigureSystemd(opts Options) error {
 	// starving every implementing task behind the failed slots).
 	path := buildSystemdPath(home)
 
-	// Write service files
+	// Write service files. dsh-web and dsh-agent-server are independent user
+	// services; otg-task-watcher depends on the externally managed
+	// agent-server (agent_server_managed=false) so it starts after it is
+	// healthy instead of spawning a conflicting child process.
 	services := map[string]string{
+		"dsh-agent-server.service": fmt.Sprintf(`[Unit]
+Description=DSH Agent Server (headless-agent-server for obsidian-task-runner)
+After=network.target
+
+[Service]
+Type=simple
+Environment=PATH=%s
+Environment=XDG_RUNTIME_DIR=/run/user/%%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
+ExecStart=dsh --profile headless-agent-server
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+
+[Install]
+WantedBy=default.target
+`, path),
+		"dsh-web.service": fmt.Sprintf(`[Unit]
+Description=DSH Web UI
+After=network.target
+
+[Service]
+Type=simple
+Environment=PATH=%s
+Environment=XDG_RUNTIME_DIR=/run/user/%%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%%U/bus
+ExecStart=dsh --profile web
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+
+[Install]
+WantedBy=default.target
+`, path),
 		"otg-task-watcher.service": fmt.Sprintf(`[Unit]
 Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发任务处理
+After=dsh-agent-server.service
+Requires=dsh-agent-server.service
 
 [Service]
 Type=simple
@@ -523,10 +569,12 @@ WantedBy=default.target
 		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n%s\n", err, out)
 		}
-		if out, err := exec.Command("systemctl", "--user", "enable", "--now", "otg-task-watcher.service").CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: systemctl enable watcher failed: %v\n%s\n", err, out)
+		for _, unit := range []string{"dsh-agent-server.service", "dsh-web.service", "otg-task-watcher.service"} {
+			if out, err := exec.Command("systemctl", "--user", "enable", "--now", unit).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: systemctl enable %s failed: %v\n%s\n", unit, err, out)
+			}
 		}
-		fmt.Println("systemd unit installed and enabled")
+		fmt.Println("systemd units installed and enabled")
 	}
 	return nil
 }

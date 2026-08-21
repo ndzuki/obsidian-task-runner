@@ -247,8 +247,9 @@ low/medium/high/xhigh 四档）：
 
 ### 配置与持久化
 
-- agent-default-model 修复为 `deepseek_magic/deepseek-v4-pro`（magic 免费优先，
-  fallback ds-official 官方兜底），reasoningEffort=high。
+- agent-default-model 修复为 `deepseek_magic/deepseek-v4-pro`（magic 免费优先），
+  fallback 只在免费渠道间切换：`deepseek_magic → openai gpt-5.6`（能力映射），
+  `ds-official` 官方付费渠道仅由任务 `assignee=ds-official` 显式启用。
 - `omp-commands` 插件改名 `dsh-commands`。
 - daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，
   完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描
@@ -287,3 +288,17 @@ token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
 - **vault.mjs 加 `/agents` 命令**：dsh web 对话里输入 `/agents` 打开监控面板。
 - 资源占用：面板单文件 ~5KB + 每活跃 agent 一个 ~1KB SVG（懒加载）+ 几行 CSS，
   无前端框架、无大图、无重动画循环；轮询只在面板打开时进行。
+
+## 13. systemd 独立管理 dsh web / agent-server（2026-08-21）
+
+headless-agent-server 不再由 otg daemon 作为子进程拉起，改为独立 user
+systemd 服务；dsh web 也纳入 systemd：
+
+- `~/.config/systemd/user/dsh-agent-server.service`：`dsh --profile headless-agent-server`，
+  `Restart=always`。
+- `~/.config/systemd/user/dsh-web.service`：`dsh --profile web`，`Restart=always`。
+- `~/.config/systemd/user/otg-task-watcher.service`：增加
+  `After=dsh-agent-server.service` + `Requires=dsh-agent-server.service`。
+- `vault-map.json` 增加 `agent_server_managed: false`：daemon 不再自行
+  start/stop agent-server，只等待外部服务健康检查通过。
+- `otg install-systemd` / `make install-force` 会同时生成并启用这三个 unit。

@@ -18,14 +18,40 @@ func TestMapDSHModel(t *testing.T) {
 		{"", "deepseek_magic", "deepseek-v4-pro"},
 		{"gateway/deepseek-v4-pro", "deepseek_magic", "deepseek-v4-pro"},
 		{"gateway/gpt-5.4-mini", "deepseek_magic", "gpt-5.4-mini"},
-		{"deepseek/deepseek-v4-flash", "ds-official", "deepseek-v4-flash"},
+		{"deepseek/deepseek-v4-flash", "deepseek_magic", "deepseek-v4-flash"},
 		{"deepseek_magic/deepseek-v4-pro", "deepseek_magic", "deepseek-v4-pro"}, // 已 DSH 形式直传
+		{"openai/gpt-5.6-sol", "openai", "gpt-5.6-sol"},
 		{"ds-official/deepseek-v4-flash", "ds-official", "deepseek-v4-flash"},
 	}
 	for _, c := range cases {
 		prov, mod := mapDSHModel(c.in)
 		if prov != c.wantProv || mod != c.wantMod {
 			t.Errorf("mapDSHModel(%q) = (%q, %q), want (%q, %q)", c.in, prov, mod, c.wantProv, c.wantMod)
+		}
+	}
+}
+
+func TestIsFreeModelRoute(t *testing.T) {
+	free := []string{
+		"deepseek_magic/deepseek-v4-pro",
+		"deepseek_magic/gpt-5.4-mini",
+		"openai/gpt-5.6-sol",
+		"gateway/deepseek-v4-pro",
+		"deepseek/deepseek-v4-flash",
+	}
+	for _, model := range free {
+		if !isFreeModelRoute(model) {
+			t.Errorf("isFreeModelRoute(%q) = false, want true", model)
+		}
+	}
+	paid := []string{
+		"ds-official/deepseek-v4-pro",
+		"google/gemini-2.5-pro",
+		"anthropic/claude-sonnet-4-20250514",
+	}
+	for _, model := range paid {
+		if isFreeModelRoute(model) {
+			t.Errorf("isFreeModelRoute(%q) = true, want false", model)
 		}
 	}
 }
@@ -153,8 +179,8 @@ func TestDSHEmbedExecutorOffSkipsEffort(t *testing.T) {
 	if gotReq.ReasoningEffort != "" {
 		t.Errorf("reasoningEffort = %q, want empty (off skips)", gotReq.ReasoningEffort)
 	}
-	if gotReq.Provider != "ds-official" || gotReq.Model != "deepseek-v4-flash" {
-		t.Errorf("provider/model = %q/%q, want ds-official/deepseek-v4-flash", gotReq.Provider, gotReq.Model)
+	if gotReq.Provider != "deepseek_magic" || gotReq.Model != "deepseek-v4-flash" {
+		t.Errorf("provider/model = %q/%q, want deepseek_magic/deepseek-v4-flash", gotReq.Provider, gotReq.Model)
 	}
 }
 
