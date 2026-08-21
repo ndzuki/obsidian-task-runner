@@ -65,6 +65,7 @@ type Frontmatter struct {
 	PhaseErrorCode      string `yaml:"phase_error_code"`
 	PhaseLog            string `yaml:"phase_log"`
 	BlockedPhase        string `yaml:"blocked_phase"`
+	BlockedAt           string `yaml:"blocked_at"` // RFC3339; when the task last entered blocked (aged auto-resume base, daemon-maintained)
 	PendingReq          bool   `yaml:"pending_req"`
 	CheckpointCommit    string `yaml:"checkpoint_commit"`
 	TargetBranch        string `yaml:"target_branch"`
@@ -332,7 +333,7 @@ var taskFieldOrder = []string{
 	"round2_stall_until",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
-	"blocked_phase", "phase_error", "phase_error_code", "phase_log",
+	"blocked_phase", "blocked_at", "phase_error", "phase_error_code", "phase_log",
 	"auto_resume_pending", "auto_resume_count",
 	// Grilling lease (daemon-maintained).
 	"grill_owner", "grill_started_at", "grill_heartbeat_at",
@@ -626,11 +627,24 @@ func NormalizeReqFrontmatter(path string) (bool, error) {
 // the document, backfills missing schema fields per the given order/defaults,
 // reorders keys canonically (unknown keys keep relative order, appended),
 // and rewrites atomically. Existing values are never overwritten.
+//
+// The whole read-modify-write runs under the same task-path flock that
+// Update/AtomicReadModifyWrite use: without it a normalizer pass that reads
+// just before an OMP/daemon Update lands and writes just after would clobber
+// the concurrent state change (observed 2026-08-21: the schema-defaults pass
+// rewrote a TASK and the knowledge_extracted=true write raced through it,
+// flipping the marker back to false and forcing a spurious re-extraction).
 func normalizeFrontmatter(path string, order []string, defaults map[string]interface{}) (bool, error) {
 	cleanPath, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return false, fmt.Errorf("resolve task path: %w", err)
 	}
+	unlock, err := acquireTaskLock(cleanPath)
+	if err != nil {
+		return false, fmt.Errorf("lock %s: %w", cleanPath, err)
+	}
+	defer unlock()
+
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", cleanPath, err)

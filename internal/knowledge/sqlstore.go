@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
@@ -61,7 +63,9 @@ func KBPath(vaultDir, override string) string {
 // "no such module: fts5" (or worse, silently serve an empty index when the
 // tables already exist). Probing up front names the real cause once.
 func openKB(dbPath string) (*sql.DB, error) {
-	db, err := openRaw(dbPath)
+	kbInitMu.Lock()
+	defer kbInitMu.Unlock()
+	db, err := openRawUnlocked(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -77,51 +81,153 @@ func openKB(dbPath string) (*sql.DB, error) {
 // the recovery/migration path (a v1 store cannot otherwise be rebuilt by a
 // v2 binary — the error message would demand the very command that fails).
 func openKBForRebuild(dbPath string) (*sql.DB, error) {
-	return openRaw(dbPath)
+	kbInitMu.Lock()
+	defer kbInitMu.Unlock()
+	return openRawUnlocked(dbPath)
 }
+
+// kbInitMu serializes store initialization inside one process. A fresh
+// database's journal-mode switch needs an exclusive lock: two concurrent
+// openRaw calls in the same process (watcher sync + merge-extraction sync)
+// raced each other and failed with "enable WAL: database is locked"
+// (observed 2026-08-21). Schema creation is serialized too — concurrent
+// ensureSchema DDL vs a sync's INSERT raced the same way. Cross-process
+// races are covered by the busy retry below.
+var kbInitMu sync.Mutex
 
 // openRaw opens the SQLite file with WAL + busy_timeout and probes FTS5 —
 // shared plumbing for openKB and openKBForRebuild.
 func openRaw(dbPath string) (*sql.DB, error) {
+	kbInitMu.Lock()
+	defer kbInitMu.Unlock()
+	return openRawUnlocked(dbPath)
+}
+
+func openRawUnlocked(dbPath string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
-	db, err := sql.Open("sqlite3", dbPath)
+	// Whether the store file exists decides how FTS5 is probed: a fresh
+	// database gets the throwaway CREATE/DROP probe, an existing one a
+	// read-only probe. The DROP on every open was a schema-lock write that
+	// raced the sync loops of other openKB callers and surfaced as
+	// "insert …: database is locked" (observed 2026-08-21).
+	fresh := false
+	statPath := dbPath
+	if i := strings.IndexAny(statPath, "?"); i >= 0 {
+		statPath = statPath[:i]
+	}
+	if _, err := os.Stat(statPath); err != nil {
+		fresh = true
+	}
+	// WAL + busy_timeout go through DSN parameters, not PRAGMA statements:
+	// db.Exec runs on ONE pooled connection only, while mattn/go-sqlite3
+	// opens additional connections on demand — those lacked busy_timeout and
+	// failed with "database is locked" as soon as two syncs contended
+	// (observed 2026-08-21: merge-extraction sync vs watcher sync).
+	// _journal_mode=WAL is persistent in the file; _busy_timeout applies to
+	// every connection the pool opens.
+	db, err := sql.Open("sqlite3", kbDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("open store %s: %w", dbPath, err)
 	}
-	// WAL: concurrent daemon/CLI access without read locks; busy_timeout
-	// serializes writers instead of failing fast.
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+	// One writer connection per pool: in-process syncs can never contend
+	// with each other through separate connections (cross-process contention
+	// is handled by busy_timeout on both sides).
+	db.SetMaxOpenConns(1)
+	// Belt-and-braces PRAGMAs for the single connection (also makes WAL
+	// visible to any embedder that bypasses kbDSN). Retried: another process
+	// (CLI absorb / kb index) may be mid-init on the same fresh file.
+	if err := execPragmaRetry(db, `PRAGMA journal_mode=WAL`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if err := execPragmaRetry(db, `PRAGMA busy_timeout=5000`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
-	if err := probeFTS5(db); err != nil {
+	if err := probeFTS5(db, fresh); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
 }
 
-// probeFTS5 verifies the FTS5 module is available in this build by creating
-// and dropping a throwaway virtual table.
-// probeFTS5 verifies the FTS5 module is available in this build by creating
-// and dropping a throwaway virtual table. IF NOT EXISTS makes a leftover
-// probe table (from a failed DROP) self-heal on the next open instead of
-// failing with "already exists".
-func probeFTS5(db *sql.DB) error {
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS _kb_fts_probe USING fts5(probe)`); err != nil {
+// execPragmaRetry runs one init statement, retrying SQLITE_BUSY with a short
+// backoff. The journal-mode switch on a brand-new database needs an exclusive
+// lock; a concurrent process doing the same switch (or schema DDL racing a
+// sync's INSERT) must not turn a 1ms initialization race into a hard failure.
+func execPragmaRetry(db *sql.DB, stmt string) error {
+	_, err := execRetry(db, stmt)
+	return err
+}
+
+// execRetry executes stmt and retries while SQLite reports a busy lock,
+// backing off up to ~2s total. Init DDL (journal switch, FTS probe,
+// CREATE IF NOT EXISTS) races concurrent processes on a fresh store.
+func execRetry(db *sql.DB, stmt string) (sql.Result, error) {
+	var res sql.Result
+	var lastErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		if r, err := db.Exec(stmt); err == nil {
+			return r, nil
+		} else {
+			res, lastErr = nil, err
+			if !strings.Contains(err.Error(), "database is locked") && !strings.Contains(err.Error(), "database table is locked") {
+				return nil, err
+			}
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
+	return res, lastErr
+}
+
+// kbDSN appends the mattn/go-sqlite3 connection parameters that must hold
+// for every pooled connection (not just the one that ran a PRAGMA): WAL
+// journal mode, a 5s busy timeout, and immediate transactions. _txlock is the
+// critical one for writer contention: with deferred transactions a
+// read-then-write tx (upsertDoc SELECTs before INSERT) can hit a WAL snapshot
+// upgrade conflict and fail instantly with "database is locked" — the busy
+// handler never retries that. BEGIN IMMEDIATE takes the write lock up front,
+// where the busy handler does serialize writers.
+func kbDSN(dbPath string) string {
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	return dbPath + sep + "_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_txlock=immediate"
+}
+
+// probeFTS5 verifies the FTS5 module is available in this build. A fresh
+// database gets the throwaway CREATE/DROP probe; an existing store is probed
+// read-only (SELECT against kb_fts) so the probe never takes the schema
+// write lock that a concurrent sync's INSERT would hit as "database is
+// locked". When kb_fts is absent on an existing file, ensureSchema recreates
+// it — that case is not an FTS5 problem and is tolerated here.
+func probeFTS5(db *sql.DB, fresh bool) error {
+	if fresh {
+		if err := execPragmaRetry(db, `CREATE VIRTUAL TABLE IF NOT EXISTS _kb_fts_probe USING fts5(probe)`); err != nil {
+			if strings.Contains(err.Error(), "no such module") {
+				return fmt.Errorf("FTS5 unavailable — otg was built without `-tags sqlite_fts5`; rebuild with `make build` / `make install-force` (see obsidian-task-runner SKILL.md 构建强制条款): %w", err)
+			}
+			return fmt.Errorf("FTS5 probe: %w", err)
+		}
+		if err := execPragmaRetry(db, `DROP TABLE _kb_fts_probe`); err != nil {
+			return fmt.Errorf("FTS5 probe cleanup: %w", err)
+		}
+		return nil
+	}
+	// Read-only probe: preparing a query over kb_fts loads the FTS5 module
+	// and names the real cause when the binary lacks -tags sqlite_fts5.
+	_, err := db.Exec(`SELECT count(*) FROM kb_fts LIMIT 0`)
+	if err != nil {
 		if strings.Contains(err.Error(), "no such module") {
 			return fmt.Errorf("FTS5 unavailable — otg was built without `-tags sqlite_fts5`; rebuild with `make build` / `make install-force` (see obsidian-task-runner SKILL.md 构建强制条款): %w", err)
 		}
+		if strings.Contains(err.Error(), "no such table") {
+			return nil // schema not created yet — ensureSchema handles it
+		}
 		return fmt.Errorf("FTS5 probe: %w", err)
-	}
-	if _, err := db.Exec(`DROP TABLE _kb_fts_probe`); err != nil {
-		return fmt.Errorf("FTS5 probe cleanup: %w", err)
 	}
 	return nil
 }
@@ -170,7 +276,7 @@ func ensureSchema(db *sql.DB) error {
 		// (model-dependent: bge-m3 is 1024); see ensureVecTable.
 	}
 	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
+		if _, err := execRetry(db, s); err != nil {
 			if strings.Contains(err.Error(), "no such module: fts5") {
 				// The binary was built without the opt-in FTS5 tag: it
 				// compiles and runs, but every kb command hits this. Name

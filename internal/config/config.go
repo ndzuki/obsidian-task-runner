@@ -73,6 +73,7 @@ type Config struct {
 	MergePollWaitTicks         int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
 	StageMinPerPhase           int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
 	StageMaxPhases             int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
+	AutoResumeAgedAfterHours   int `json:"auto_resume_aged_after_hours"`  // blocked-task aged auto-resume window (transient phase errors); <=0 = default 24
 
 	// Knowledge-base vector search (optional). When configured and the
 	// vector index exists, otg kb search blends embedding cosine similarity
@@ -368,6 +369,7 @@ func Defaults() *Config {
 		UpstreamStallDays:          3,  // upstream idle warning (TASK-067: month-long silent blockage)
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
+		AutoResumeAgedAfterHours:   24,
 		SkillInstallDir:            filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
 		Models:                     DefaultModels(),
 		DSHCmd:                     "dsh",
@@ -553,6 +555,9 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.StageMaxPhases <= 0 {
 		cfg.StageMaxPhases = defaults.StageMaxPhases
+	}
+	if cfg.AutoResumeAgedAfterHours <= 0 {
+		cfg.AutoResumeAgedAfterHours = defaults.AutoResumeAgedAfterHours
 	}
 	if cfg.Audit == nil {
 		cfg.Audit = defaults.Audit

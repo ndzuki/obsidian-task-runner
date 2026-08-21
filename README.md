@@ -81,7 +81,7 @@ flowchart TD
     KB -->|失败自动沉淀| KEYBLOCK
 ```
 
-> 📖 想了解每一步系统具体做什么、调用哪个 Skill、写回哪些字段（含失败恢复与知识库回流）：见 [docs/workflow.md §0 自动化任务完整链路](docs/workflow.md)。
+> 📖 想了解每一步系统具体做什么、调用哪个 Skill、写回哪些字段（含失败恢复与知识库回流）：见 [docs/workflow.md §0 自动化任务完整链路](docs/workflow.md)。想了解 daemon 与 DSH agent-server 的进程拓扑、模型路由与恢复层级：见 [docs/architecture.md](docs/architecture.md)。
 
 ## 阶段化交付（大型项目按阶段走）
 
@@ -180,7 +180,8 @@ otg install \
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
   "max_concurrent_tasks": 0,
-  "max_concurrent_tasks_per_project": 2
+  "max_concurrent_tasks_per_project": 2,
+  "auto_resume_aged_after_hours": 24
 }
 ```
 
@@ -206,6 +207,10 @@ otg install \
 - 达到上限的任务留在待调度队列，等其它任务完成释放槽位后自动启动（无需手动操作）。
 - 任意 key 可调大/调小；置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限）+ `max_concurrent_tasks`（可选全局总封顶）控制（不在此配置）。
 - 修改后重启 daemon 生效。
+
+### 阻断任务老化兜底恢复（`auto_resume_aged_after_hours`，默认 24）
+
+`status=blocked` 且错误可自动恢复（MODEL_FAILED/QUOTA/PHASE_TIMEOUT/PHASE_INTERRUPTED/DESIGN_SESSION_FAILED 等）的任务，阻断超过该窗口后 daemon 每轮 scan 自动 `resume_approved=true` 重试（预算 2 次）。想改为 12 小时就在 vault-map.json 设 `"auto_resume_aged_after_hours": 12`；人为决策块（REQ_MISSING/DOCUMENT_INVALID/入口门禁）不按年龄恢复。
 
 ### 知识库语义检索（`kb_embedding`，可选）
 
@@ -266,6 +271,19 @@ flowchart LR
 ```
 
 llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-server -m bge-reranker-v2-m3-f16.gguf --port 11435`（SYCL/OpenVINO 编译版可加 `--device` 参数）。**后端不可用时自动降级**：保持混合检索原序，不影响搜索结果。精排文本 = 标题 + 摘要 + 最佳 section 嵌入文本（索引时落库，无需重读 vault）。
+
+本机已验证的容器化部署（`ghcr.io/ggml-org/llama.cpp:server`，模型 GGUF 取自 ollama-sycl 容器 blob——`docker cp ollama-sycl:/root/.ollama/models/blobs/<sha256-4bf5…>`，607MB，仓库 `models/` 目录已 gitignore）：
+
+```bash
+docker run -d --name kb-reranker --restart unless-stopped \
+  -p 127.0.0.1:11435:8080 \
+  -v "$(pwd)/models:/models:ro" \
+  ghcr.io/ggml-org/llama.cpp:server \
+  -m /models/bge-reranker-v2-m3.gguf --reranking --host 0.0.0.0 --port 8080 \
+  --threads 4 -b 1024 -ub 1024
+```
+
+两个实测注意点：① 默认 `-ub 512` 放不下 query+600 字 chunk（会报 `input (530 tokens) is too large` → 该次精排静默跳过），必须 `-ub 1024`；② 容器健康检查通过前 `/v1/rerank` 可能未就绪，RerankClient 的降级兜底不受影响。
 
 ### 知识库问答（`kb_chat` + `otg kb ask`，可选）
 
@@ -423,10 +441,17 @@ flowchart LR
 ### 5. 确认服务状态
 
 ```bash
-systemctl --user status otg-task-watcher.service
-systemctl --user list-timers | grep otg-task-runner
+systemctl --user status otg-task-watcher.service dsh-agent-server.service
 journalctl --user -u otg-task-watcher.service -n 50
 ```
+
+三个 user 单元（`otg install-systemd` / `make install-force` 生成）：
+`otg-task-watcher.service`（daemon）、`dsh-agent-server.service`
+（常驻 headless agent-server，阶段会话 RPC 后端）、`dsh-web.service`（可选 Web UI）。
+
+**升级/重装 daemon**：`make install-force` —— 重建二进制（`-tags sqlite_fts5`，
+知识库必需）、停 watcher（agent-server 保持运行，在飞会话可持久恢复）、
+重装 systemd 单元、重启 watcher、同步 skill 包到 `~/.dsh/skills/`。
 
 如果暂时不想安装常驻服务，可以手动运行一次扫描：
 
@@ -496,6 +521,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 
 | 命令 | 用途 |
 | ------ | ------ |
+| `make install-force` | 重建二进制 + 停/启 watcher + 重装 systemd 单元 + 同步 skill（daemon 升级标准路径） |
 | `otg install` | 安装 Skill、配置和 systemd |
 | `otg install --dry-run` | 预览安装动作 |
 | `otg install-systemd` | 重新生成并启用 systemd 单元（vault 迁移后或单元缺失时使用；vault/轮询间隔从 `vault-map.json` 读取） |
@@ -528,6 +554,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `~/.dsh/skills/obsidian-task-runner/` | Agent Skill、参考文档和配置 |
 | `~/.dsh/skills/obsidian-task-runner/config/vault-map.json` | Vault 与项目映射、模型映射 |
 | `~/.dsh/logs/` | daemon 和任务审计日志 |
+| `~/.dsh/sessions/` | DSH 阶段会话持久化（zstd jsonl，按 workdir） |
 | `~/Vault/Projects/<project>/Requirements/` | 你编写的需求 |
 | `~/Vault/Projects/<project>/Tasks/` | Agent 自动创建和更新的任务 |
 
@@ -552,7 +579,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 - [`templates/REQ-000-template.md`](templates/REQ-000-template.md)：需求模板。
 - [`templates/TASK-000-template.md`](templates/TASK-000-template.md)：任务模板。
 - [`templates/ADR-000-template.md`](templates/ADR-000-template.md)：架构决策记录模板。
-- [`deploy/systemd/`](deploy/systemd/)：systemd 单元模板（`otg install --systemd` 会生成实际单元）。
+- [`deploy/systemd/`](deploy/systemd/)：systemd 单元说明（单元由 `internal/install/install.go` 生成，`otg install-systemd` / `make install-force` 落地）。
 
 ## License
 

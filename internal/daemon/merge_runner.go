@@ -1746,15 +1746,31 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	}
 	// Sync the retrieval store incrementally so newly extracted lessons
 	// participate in retrieval immediately. Non-blocking: embedding outages
-	// degrade to FTS-only, never fail the merge.
-	dbPath := knowledge.KBPath(vaultDir, r.cfg.KBDb)
-	var client *knowledge.EmbeddingClient
-	if r.cfg.KBEmbedding != nil {
-		client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
-	}
-	stats, serr := knowledge.SyncKnowledgeDB(vaultDir, dbPath, client)
+	// degrade to FTS-only, never fail the merge. A store-sync failure is a
+	// REAL 提炼收入 failure though: the marker is reset to false and the
+	// error recorded so the done+merged recovery scan re-runs the whole
+	// idempotent pipeline next round instead of leaving a stale retrieval
+	// store behind a true marker (2026-08-21 TASK-001: sync failed with
+	// "database is locked" and only a log line was left).
+	stats, serr := r.syncKnowledgeStore()
 	if serr != nil {
 		r.logger.Printf("knowledge-base store sync failed: %v", serr)
+		syncMsg := "knowledge store sync failed: " + serr.Error()
+		if len(result.Errors) > 0 {
+			syncMsg = strings.Join(result.Errors, "; ") + "; " + syncMsg
+		}
+		if uerr := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"knowledge_extracted":     false,
+			"knowledge_extract_error": syncMsg,
+		}); uerr != nil {
+			r.logger.Printf("knowledge-base store sync failure marker update failed: %v", uerr)
+		}
+		if data, rerr := os.ReadFile(taskPath); rerr == nil {
+			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识库同步失败（自动重试中）",
+					"任务知识未完整收入检索库："+serr.Error()+"。daemon 每轮扫描自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
+			}
+		}
 	} else {
 		r.logger.Printf("knowledge-base store synced: %d docs (+%d -%d), %d chunks",
 			stats.TotalDocs, stats.Added, stats.Removed, stats.TotalChunks)

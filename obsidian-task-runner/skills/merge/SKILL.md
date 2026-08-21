@@ -2,7 +2,7 @@
 name: obsidian-task-runner-merge
 description: "Merge phase: enforce stale-requirement guards, push the approved feature branch, create/reuse a PR, merge, and record conflicts. Daemon invokes this skill for one-shot AI conflict auto-resolution (local commits only; push/PR/merge stay with the daemon)."
 hide: true
-disableModelInvocation: true
+disable-model-invocation: true
 ---
 
 **Role**: Merge Phase Executor. Remote operations are ONLY allowed when all preconditions are met.
@@ -41,7 +41,7 @@ PR 存在合并冲突**或 CI checks 失败**时，daemon 以本 Skill 启动执
 模式由 prompt 第二参数决定：
 
 - `{task} conflicts` — 冲突解决（默认，兼容旧调用）：
-  1. 加载 `skill://resolving-merge-conflicts`。
+  1. 直接执行下方需求溯源流程解决冲突（`resolving-merge-conflicts` 已并入本 Skill，无需外部加载）。
   2. **需求溯源（必须）**：读取 TASK frontmatter 的 `req_doc`，用 `grep`/`read` 定位 REQ 文档中与冲突代码对应的契约章节（输入/输出契约、错误模型、状态机、验收标准 AC）。每个冲突侧先回答「它对应哪个需求意图/AC」，再判断代码归属。
   3. 逐 hunk 解决。简单冲突（空白/import）自动处理；语义冲突**以需求契约为准**裁决（两侧各自满足哪个 AC，冲突处的最终行为必须符合 REQ 描述），读取上下文提方案；无法从 REQ 判定的分歧记录到解决 commit message 中。
   4. 运行项目测试。PASS→本地 commit 解决结果并正常退出；FAIL→保留冲突+证据，以非零退出码结束，daemon 通知用户。

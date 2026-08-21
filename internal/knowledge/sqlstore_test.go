@@ -494,3 +494,71 @@ func TestPromoteToCoreUsesHotCache(t *testing.T) {
 		t.Fatal("migration note must carry the actual hits count")
 	}
 }
+
+func TestKbDSN(t *testing.T) {
+	got := kbDSN("/tmp/x/kb.sqlite")
+	for _, want := range []string{"_journal_mode=WAL", "_busy_timeout=5000", "_foreign_keys=on", "_txlock=immediate"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("kbDSN = %q, missing %q", got, want)
+		}
+	}
+	if !strings.HasPrefix(got, "/tmp/x/kb.sqlite?") {
+		t.Fatalf("kbDSN must keep the path and append query params, got %q", got)
+	}
+	// An existing query string is preserved, params appended.
+	got2 := kbDSN("file:kb.sqlite?mode=rwc")
+	if !strings.HasPrefix(got2, "file:kb.sqlite?mode=rwc&") || !strings.Contains(got2, "_busy_timeout=5000") {
+		t.Fatalf("kbDSN with query = %q", got2)
+	}
+}
+
+// TestOpenRawSingleConnBusyTimeout 钉住 "database is locked" 的根因：
+// PRAGMA 只作用于执行它的那一条连接，池内后续新开连接没有 busy_timeout。
+// 现在参数通过 DSN 下发给每条连接，且池收敛为单连接，进程内同步互不争写。
+func TestOpenRawSingleConnBusyTimeout(t *testing.T) {
+	db, err := openRaw(filepath.Join(t.TempDir(), "kb.sqlite"))
+	if err != nil {
+		t.Fatalf("openRaw: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 (single in-process writer)", got)
+	}
+	var journal string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(journal, "wal") {
+		t.Fatalf("journal_mode = %q, want wal", journal)
+	}
+}
+
+// TestConcurrentSyncNoLock 并发 sync 共享同一 store：每条连接都带
+// busy_timeout，写入串行化而不是报 "database is locked"。
+func TestConcurrentSyncNoLock(t *testing.T) {
+	vault := t.TempDir()
+	refsDir := filepath.Join(vault, "References", "core", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b.md", "c.md", "d.md"} {
+		content := "---\ntopics: [concurrency, sync]\nlevel: reference\nupdated: \"2026-08-21\"\nsource: \"local\"\nverified: false\naliases: []\n---\n# " + name + "\n\n并发写入正文。\n"
+		if err := os.WriteFile(filepath.Join(refsDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dbPath := filepath.Join(t.TempDir(), "kb.sqlite")
+	const workers = 4
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			_, err := SyncKnowledgeDB(vault, dbPath, nil)
+			errs <- err
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent sync failed: %v", err)
+		}
+	}
+}

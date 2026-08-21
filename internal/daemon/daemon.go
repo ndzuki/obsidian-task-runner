@@ -48,6 +48,7 @@ type Runner struct {
 	phaseGates         map[string]*phaseGate // phase → concurrency gate (nil/absent = unlimited)
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
+	agedSkipLogged     sync.Map              // taskPath → bool (aged auto-resume skip already logged this daemon run)
 	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (free-tier exhaustion exponential backoff)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
 	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
@@ -59,6 +60,7 @@ type Runner struct {
 	refIndexRebuiltAt  sync.Map              // "last" → time.Time (References INDEX rebuild debounce)
 	kbSyncAt           sync.Map              // "last" → time.Time (knowledge retrieval-store sync debounce)
 	kbSyncRunning      atomic.Bool           // true while a retrieval-store sync goroutine is in flight
+	kbSyncMu           sync.Mutex            // serializes retrieval-store syncs (watcher-triggered vs merge-extraction)
 	consolidatedAt     sync.Map              // reqDoc → time.Time (last PM consolidate dispatch per group)
 	pmInFlight         sync.Map              // "distribute:<listPath>" / "consolidate:<taskPaths>" → true (PM session in flight)
 	diagNotifyAt       sync.Map              // "project|key" → date (dependency-health / overlap / health-warning toast debounce)
@@ -297,6 +299,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				// frontmatter validation (and the debounced notification).
 				if strings.HasSuffix(evt.Path, ".md") && filepath.Base(evt.Path) != "INDEX.md" {
 					if verr := knowledge.ValidateRefFile(evt.Path); verr != nil {
+						// The file can vanish between the fsnotify event and this
+						// read (atomic rename, editor temp cleanup, agent move):
+						// a deleted document is not a KB violation and must not
+						// fire the "知识库格式不合规" toast (observed 2026-08-21
+						// TASK-001: phantom pitfall file alerted while the real
+						// extraction was fine). Deletion still rebuilds INDEX +
+						// syncs the store below.
+						if os.IsNotExist(verr) {
+							r.logger.Printf("knowledge-base intake: %s skipped (file gone before validation)", filepath.Base(evt.Path))
+							goto normalized
+						}
 						// Self-heal the common agent-intake violations (RFC3339
 						// timestamps, empty source) before alerting: a fixable
 						// write is normalized in place so broken documents
@@ -866,6 +879,7 @@ func (r *Runner) scanAndProcess() error {
 	r.detectStaleDoneReopens()
 	r.recoverUnExtractedKnowledge()
 	r.fixBlockedGateErrorCodes()
+	r.autoResumeAgedBlocks()
 	r.resolveBlockedDependencies()
 	r.recoverBlockedPendingReq()
 	r.parkedFactRecovery()
@@ -3252,6 +3266,7 @@ func (r *Runner) restoreBlockedPhase(taskPath, phase string, resetBudget bool) e
 	updates := map[string]interface{}{
 		"status":              phase,
 		"blocked_phase":       "",
+		"blocked_at":          "",
 		"phase_error":         "",
 		"phase_log":           "",
 		"phase_error_code":    "",
@@ -3314,6 +3329,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 			"status":           "blocked",
 			"blocked_phase":    status,
+			"blocked_at":       time.Now().Format(time.RFC3339),
 			"phase_error_code": string(code),
 			"phase_error":      reason,
 			"phase_log":        logPath,
@@ -3380,6 +3396,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 			"status":              "blocked",
 			"blocked_phase":       "implementing",
+			"blocked_at":          time.Now().Format(time.RFC3339),
 			"phase_error_code":    string(code),
 			"phase_error":         reason,
 			"phase_log":           logPath,
@@ -3430,6 +3447,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 		"status":           "blocked",
 		"blocked_phase":    phase,
+		"blocked_at":       time.Now().Format(time.RFC3339),
 		"phase_error_code": string(code),
 		"phase_error":      reason,
 		"phase_log":        logPath,
@@ -3883,12 +3901,7 @@ func (r *Runner) maybeSyncKnowledgeDB() {
 	r.kbSyncAt.Store("last", now)
 	go func() {
 		defer r.kbSyncRunning.Store(false)
-		dbPath := knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb)
-		var client *knowledge.EmbeddingClient
-		if r.cfg.KBEmbedding != nil {
-			client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
-		}
-		stats, err := knowledge.SyncKnowledgeDB(r.cfg.ObsidianVault, dbPath, client)
+		stats, err := r.syncKnowledgeStore()
 		if err != nil {
 			r.logger.Printf("knowledge-base store sync failed: %v", err)
 			return
@@ -3899,6 +3912,22 @@ func (r *Runner) maybeSyncKnowledgeDB() {
 			r.logger.Printf("knowledge-base store synced: %d docs, %d chunks", stats.TotalDocs, stats.TotalChunks)
 		}
 	}()
+}
+
+// syncKnowledgeStore runs one incremental retrieval-store sync. All in-process
+// callers (watcher-triggered debounced syncs and the merge-extraction pipeline)
+// share kbSyncMu so two syncs never write the same SQLite store concurrently —
+// concurrent writer contention is what produced "database is locked" on the
+// merge path (watcher sync racing the extraction sync; 2026-08-21).
+func (r *Runner) syncKnowledgeStore() (knowledge.SyncStats, error) {
+	r.kbSyncMu.Lock()
+	defer r.kbSyncMu.Unlock()
+	dbPath := knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb)
+	var client *knowledge.EmbeddingClient
+	if r.cfg.KBEmbedding != nil {
+		client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
+	}
+	return knowledge.SyncKnowledgeDB(r.cfg.ObsidianVault, dbPath, client)
 }
 
 // resolveVaultProjectDir resolves a project name to its vault directory.

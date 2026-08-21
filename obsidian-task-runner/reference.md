@@ -49,7 +49,7 @@ closed -- [终态，不可恢复]
 
 | 字段 | 人工操作 | 约束 |
 | ------ | ---------- | ------ |
-| `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 OMP 读取，implementing 状态不重置 |
+| `plan_approved` | 审阅计划后设 true | 仅 `plan-review` 有效；`plan-review → implementing` 后**保留 true** 供 Round 2 阶段会话读取，implementing 状态不重置 |
 | `merge_approved` | Merge 授权 | `pending_req=true` 时绝对无效；进入 review 时按 `auto_merge` 在**完成审计通过后**自动置 true（人工设 true 跳过审计——人工门禁优先；审计 fail 清授权）；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + 预算未耗尽 + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用，TASK-051/059 教训）；硬失败回退（预算耗尽/REQ hash 变更/gh 缺失或**未登录**/仓库目标不匹配）置 false 需人工重设；环境性失败（网络/瞬时 GitHub 错误）自动重试期间保持 true；停机/超时中断保持 true 重启自动恢复。可自动重授权的未授权任务与已授权 merge 同走 lock-free 调度路径（`prepareBatch` 锁判定与 gate 对齐，防调度入口饿死）。**gh 未登录**：merge 前 daemon 本地预检 `gh auth status`，未登录 → 不发起任何远程操作，`phase_error` 附 `gh auth login` 指引 + 桌面通知提醒，登录后重设 `merge_approved=true` 继续 |
 | `auto_merge` | 默认 true；进入 review 时自动授权合并 | 设 false 恢复人工 merge gate；仅 review 状态有效 |
 | `auto_approve` | 默认 true；计划自动批准 | 缺失即 true（解析兼容 + 模板写入）；plan-review 时 daemon 自动 `plan_approved=true` 转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划 |
@@ -122,7 +122,7 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 
 **`recoverBlockedPendingReq`（blocked + pending_req 覆盖）**：阶段失败 blocked 的任务若 REQ 已变更（`pending_req=true`），daemon 每轮 scan 自动转 `refining` 重细化——不复用旧 phase（手动 resume 会拿旧需求重新实现）。转 refining 复用 `transitionToRefining` 基底原子清 grill/plan/merge/`round2_stall_until` 残留。排除：`PREREQUISITE_SMOKE_FAILED` 门禁、`REQ_MISSING` 等非瞬时码、空错误码 + `blocked_by` 非空的入口门禁形态（三者各有专属恢复路径）。
 
-**`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 OMP 收 SIGTERM 保存 session 后退出，任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 自动重新调度，阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
+**`PHASE_INTERRUPTED`（daemon 重启/停机中断）**：daemon 优雅停机时，运行中的 DSH 阶段会话收 SIGTERM 保存会话后退出（agent-server 常驻时由 `executor_session_id` 持久恢复），任务**不转 blocked**——保持原状态并写 `phase_error_code=PHASE_INTERRUPTED`（`phase_error="daemon 重启中断，等待自动恢复"`）；重启后下一轮 scan 自动重新调度，阶段成功后由 `clearPhaseError` 清除标记。该错误码同时被依赖链自动恢复识别（见上）。
 
 **人工暂停**：需要暂停任务等待外部条件（如用户完善需求）时，可设 `status=blocked` + `blocked_phase=<原状态>` + `phase_error_code=REQ_MISSING`（非自动恢复错误码），daemon 保持阻塞且不提醒；条件满足后设 `resume_approved=true` 恢复。
 
@@ -141,8 +141,8 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不开 tab/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`;` 分隔追加），用户可推翻后重跑 |
-| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失 |
-| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动重试中）」 |
+| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**（含检索库 store 同步）；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失。`adr_written` 的逗号串+路径前缀形态在匹配前归一化为裸 ADR id |
+| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见，含检索库同步失败）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动重试中）」 |
 TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
 | `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
 | `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
@@ -163,7 +163,7 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `auto_merge` | bool | `true` | 进入 review 自动授权合并（先过完成审计）；false 恢复人工 gate |
 | `audit_status` | string | `""` | 完成审计状态：`""`（未审计 / 失败路由后清空待重审）/ `pending`（审计中或会话失败待重试）/ `passed`（已通过）；auto_merge 任务仅 `passed` 或人工 `merge_approved=true` 可进入合并授权；merge 失败回退保持 `passed` 不重复审计 |
 | `audit_fail_count` | int | `0` | 连续审计失败次数（implementation 类）；达 `audit.max_fixes`（默认 2）升级 grilling 决策时清零（resume 重置预算，防止已决策方向被旧计数立即再限流） |
-| `audit_log` | string | `""` | 最近一次审计会话原始输出日志路径（`~/.omp/logs/tasks/TASK-<id>-audit-<ts>.log`），round2 修复时消费 |
+| `audit_log` | string | `""` | 最近一次审计会话原始输出日志路径（`~/.dsh/logs/tasks/TASK-<id>-audit-<ts>.log`），round2 修复时消费 |
 | `target_branch` | string | `""` | Round 2 分支；done 重开时清空，round2 完成后 daemon 写新分支 |
 | `pr_url` | string | `""` | PR URL；done 重开时清空，新交付创建新 PR |
 | `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
@@ -198,7 +198,7 @@ ADR 生命周期：Round 1 读取已有 ADR → 检测新架构决策 → 写入
 | `otg write-adr` | 原子写 ADR + fsync + validate |
 | `otg validate-adr` | ADR frontmatter 结构校验 |
 
-Daemon 在 OMP 成功后通过 `git diff --name-only` 扫描工作区所有 `.md` 变更，调用 `ValidateDocument` 兜底检测 CONTEXT.md、ADR 等非 TASK 文件的损坏。
+Daemon 在阶段会话成功后通过 `git diff --name-only` 扫描工作区所有 `.md` 变更，调用 `ValidateDocument` 兜底检测 CONTEXT.md、ADR 等非 TASK 文件的损坏。
 
 #### 4.6.4 CONTEXT.md 自动维护
 
@@ -289,7 +289,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 ### 4.7 Daemon 上下文注入
 
-Daemon 在调度 OMP 执行 `refining`、`planning`、`implementing`、`plan-review` 阶段与 **merge 冲突/CI 修复会话**时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。merge 会话注入目的：AI 按需求意图裁决语义冲突（结合 Merge Skill 的强制需求溯源），而非纯代码结构判断。
+Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`、`plan-review` 阶段与 **merge 冲突/CI 修复会话**时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。merge 会话注入目的：AI 按需求意图裁决语义冲突（结合 Merge Skill 的强制需求溯源），而非纯代码结构判断。
 
 注入格式（技能命令后追加）：
 
@@ -393,12 +393,12 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - 同一 Vault watcher/timer 互斥。
 - 不同 Vault 可并行。
 - refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见仓库 docs/workflow.md §6.5）。
-- 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree OMP 隔离，避免被 planning/refining 读锁长期阻塞）。
+- 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree 阶段会话隔离，避免被 planning/refining 读锁长期阻塞）。
 - Round 2 使用任务专属 worktree。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 - 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ frontmatter 同样每轮 Normalize**（`NormalizeReqFrontmatter` / `syncReqSchemaDefaults`）：稳定字段（created/updated/tags）回填，必填身份与可选决策字段不伪造——旧 REQ 被重拾（done 任务 breaking 重开）时字段演进不静默断链。
 - **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
-- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 OMP 会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 OMP 会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 生效；`merge` 槽位不可达（merge 任务在门禁段前已提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + in-flight 去重约束）——两 key 置 `0`/调大无效果，属代码追赶项。
+- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 DSH 阶段会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 DSH 阶段会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 生效；`merge` 槽位不可达（merge 任务在门禁段前已提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + in-flight 去重约束）——两 key 置 `0`/调大无效果，属代码追赶项。
 
 ### 8.1 Thinking Mode
 
@@ -448,15 +448,15 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 ## 10. 故障排查
 
 1. `otg find-ready <vault>`：检查 daemon 是否会拾取任务。
-2. `tail -f ~/.omp/logs/otg-daemon.log`：检查状态分派、锁和重试。
-3. `~/.omp/logs/tasks/`：检查阶段日志/PID。
+2. `tail -f ~/.dsh/logs/otg-daemon.log`：检查状态分派、锁和重试。
+3. `~/.dsh/logs/tasks/`：检查阶段日志（DSH 会话记录在 `~/.dsh/sessions/`）。
 4. blocked 阶段失败：检查 `blocked_phase`、`phase_error`、`phase_log`；修复后设 `resume_approved=true`。自动 resume 预算耗尽（`auto_resume_count>=2`）时会收到 🧩 桌面通知。
 5. Grilling 卡住：检查 `grill_owner`、`grill_started_at`、timeout 和 Kitty 日志。
 6. 安装后执行 `skill-doctor check`，必须返回 0。
 
 ## 11. Skill Writing Convention（Skill 编写规范）
 
-All OMP skill documents MUST follow these conventions to maximize AI agent comprehension:
+All skill documents MUST follow these conventions to maximize AI agent comprehension:
 
 1. **Step headers**: bilingual format `## Step N: English Title（中文标题）`. The English verb is the action primitive agents are trained on.
 2. **Mandatory actions**: prefix with RFC 2119 keywords **MUST** / **MUST NOT** / **SHOULD**.
