@@ -30,7 +30,7 @@ func (f *fakeDesignExecutor) Start(_ context.Context, spec PhaseSpec, snap TaskS
 	return fakeDesignHandle{result: f.result}, nil
 }
 
-func (f *fakeDesignExecutor) Resume(context.Context, string) (ExecutionHandle, error) {
+func (f *fakeDesignExecutor) Resume(context.Context, string, time.Duration) (ExecutionHandle, error) {
 	return nil, ErrResumeUnsupported
 }
 

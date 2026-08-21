@@ -35,14 +35,24 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	}
 
 	// durable resume：上次中断会话（executor_session_id 持久化在 frontmatter）。
-	// 只有 resume 真正成功（OutcomeSuccess）才复用会话结果；否则（session not
-	// found——中断发生在 agent-server create 之前、或 agent-server 重启丢会话）
-	// 一律回退 fresh start，避免把「会话已失效」误判为阶段失败（MODEL_FAILED）。
+	// 只有 resume 真正成功（OutcomeSuccess）才复用会话结果；会话真正终态
+	// （Failed/Quota/…——agent-server 里已无存活会话）才回退 fresh start。
+	// 超时/中断必须如实上报：daemon 侧 HTTP 等待超时不会终止 agent-server
+	// 里的会话，此时 fresh start 会让两个会话并行写同一个任务文档
+	// （TASK-058 观测：同一任务两个 planning 会话并行规划）。
 	if token := readExecutorSessionID(snap.TaskPath); token != "" {
-		if handle, err := executor.Resume(ctx, token); err == nil {
-			if result, err := handle.Wait(); err == nil && result.Code == OutcomeSuccess {
-				outcome, code, reason := mapExecOutcome(result)
-				return result, outcome, code, reason
+		if handle, err := executor.Resume(ctx, token, spec.Timeout); err == nil {
+			if result, err := handle.Wait(); err == nil {
+				if result.Code == OutcomeSuccess {
+					outcome, code, reason := mapExecOutcome(result)
+					return result, outcome, code, reason
+				}
+				if result.Code == OutcomeTimedOut || result.Code == OutcomeInterrupted {
+					// 会话可能仍在 agent-server 里运行：上报真实结果，
+					// 下一轮 scan 用同一 token 再 resume。
+					outcome, code, reason := mapExecOutcome(result)
+					return result, outcome, code, reason
+				}
 			}
 			r.logger.Printf("task %s: resume not successful, falling back to fresh start", snap.TaskID)
 		} else if !errors.Is(err, ErrResumeUnsupported) {

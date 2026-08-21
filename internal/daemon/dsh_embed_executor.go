@@ -74,7 +74,7 @@ type embedResumeToken struct {
 // (JSON) and re-issuing /agent/run with the recorded sessionId. The agent-
 // server resumes the session rather than starting a new one, so model
 // context carries across a daemon restart.
-func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string) (ExecutionHandle, error) {
+func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string, timeout time.Duration) (ExecutionHandle, error) {
 	if resumeToken == "" {
 		return nil, fmt.Errorf("dsh-embed resume: empty resume token")
 	}
@@ -87,8 +87,13 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string) (Exec
 	}
 	// provider/model are already in DSH route form (recorded at dispatch);
 	// skillPrompt is the original slash prompt, re-injected here.
+	// timeout comes from the phase spec (runDSHPhase 转发)：不再硬编码 30m，
+	// 否则 round2（60m）等长阶段的 resume 会在阶段超时前就被截断。
 	taskText := e.dshTaskText(tok.SkillPrompt)
-	return e.startRequest(ctx, "resume", tok.Provider, tok.Model, taskText, tok.ReasoningEffort, tok.SessionID, tok.SkillPrompt, 30*time.Minute)
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	return e.startRequest(ctx, "resume", tok.Provider, tok.Model, taskText, tok.ReasoningEffort, tok.SessionID, tok.SkillPrompt, timeout)
 }
 
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract
