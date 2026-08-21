@@ -76,7 +76,7 @@ func defaultDSHSkillDir() string {
 
 func (e *dshExecutor) Name() string { return "dsh" }
 
-func (e *dshExecutor) Resume(context.Context, string, time.Duration) (ExecutionHandle, error) {
+func (e *dshExecutor) Resume(context.Context, PhaseSpec, string, time.Duration) (ExecutionHandle, error) {
 	// DSH durable session resume lands in Phase 3 (ctx.agents.resume). For
 	// now the daemon re-dispatches from frontmatter state after restart,
 	// identical to today's OMP PID-adoption fallback.

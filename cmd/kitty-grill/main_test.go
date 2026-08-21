@@ -199,23 +199,32 @@ func TestCloseTabArgs(t *testing.T) {
 
 func TestRunWriteback(t *testing.T) {
 	var gotReq chatRequest
+	var sawClose bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/agent/chat" {
-			t.Errorf("path = %q", r.URL.Path)
+		switch r.URL.Path {
+		case "/agent/chat":
+			if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(chatResponse{
+				Text:      "决策总结：已写回",
+				Outcome:   "completed",
+				SessionID: "session-1",
+			})
+		case "/agent/close":
+			sawClose = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
-			t.Errorf("decode: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(chatResponse{
-			Text:      "决策总结：已写回",
-			Outcome:   "completed",
-			SessionID: "session-1",
-		})
 	}))
 	defer srv.Close()
 
 	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A"); err != nil {
 		t.Fatalf("runWriteback: %v", err)
+	}
+	if !sawClose {
+		t.Fatal("runWriteback 成功后应调用 /agent/close 回收会话")
 	}
 	if gotReq.SessionID != "session-1" || gotReq.Message != "D1=A" {
 		t.Fatalf("chat request = %+v, want session-1/D1=A", gotReq)
@@ -239,4 +248,27 @@ func TestRunWritebackServerError(t *testing.T) {
 	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A"); err == nil {
 		t.Fatal("HTTP 500 应报错")
 	}
+}
+
+func TestCloseChatSession(t *testing.T) {
+	var gotPath, gotSession string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotSession = body.SessionID
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	closeChatSession(strings.TrimPrefix(srv.URL, "http://"), "session-1")
+	if gotPath != "/agent/close" || gotSession != "session-1" {
+		t.Fatalf("closeChatSession → %s session=%q, want /agent/close session-1", gotPath, gotSession)
+	}
+	// 空参数静默跳过。
+	closeChatSession("", "")
+	closeChatSession(strings.TrimPrefix(srv.URL, "http://"), "")
 }

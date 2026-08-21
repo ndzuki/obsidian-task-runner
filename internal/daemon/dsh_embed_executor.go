@@ -74,7 +74,14 @@ type embedResumeToken struct {
 // (JSON) and re-issuing /agent/run with the recorded sessionId. The agent-
 // server resumes the session rather than starting a new one, so model
 // context carries across a daemon restart.
-func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string, timeout time.Duration) (ExecutionHandle, error) {
+//
+// The CURRENT spec (phase/prompt/model/effort) drives the resumed run — the
+// token only names the durable session. A daemon restart can dispatch a
+// different phase than the one the token was recorded for (e.g. refining
+// session interrupted, next scan routes to planning): re-injecting the
+// token's stale prompt would run the wrong phase inside the resumed session.
+// Token provider/model remain the fallback for legacy tokens without a spec.
+func (e *dshEmbedExecutor) Resume(ctx context.Context, spec PhaseSpec, resumeToken string, timeout time.Duration) (ExecutionHandle, error) {
 	if resumeToken == "" {
 		return nil, fmt.Errorf("dsh-embed resume: empty resume token")
 	}
@@ -85,15 +92,20 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, resumeToken string, timeo
 	if tok.SessionID == "" || tok.Provider == "" || tok.Model == "" {
 		return nil, fmt.Errorf("dsh-embed resume: token missing sessionId/provider/model")
 	}
-	// provider/model are already in DSH route form (recorded at dispatch);
-	// skillPrompt is the original slash prompt, re-injected here.
-	// timeout comes from the phase spec (runDSHPhase 转发)：不再硬编码 30m，
-	// 否则 round2（60m）等长阶段的 resume 会在阶段超时前就被截断。
-	taskText := e.dshTaskText(tok.SkillPrompt)
+	provider, model := tok.Provider, tok.Model
+	if spec.Model != "" {
+		provider, model = mapDSHModel(spec.Model)
+	}
+	skillPrompt := spec.SkillPrompt
+	if skillPrompt == "" {
+		skillPrompt = tok.SkillPrompt // legacy token：退回 token 内 prompt
+	}
+	effort := mapDSHEffort(spec.ReasoningEffort)
+	taskText := e.dshTaskText(skillPrompt)
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return e.startRequest(ctx, "resume", tok.Provider, tok.Model, taskText, tok.ReasoningEffort, tok.SessionID, tok.SkillPrompt, timeout)
+	return e.startRequest(ctx, spec.Phase, provider, model, taskText, effort, tok.SessionID, skillPrompt, timeout)
 }
 
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract

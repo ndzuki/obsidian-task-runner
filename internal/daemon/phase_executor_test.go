@@ -18,7 +18,7 @@ type phaseExecutorStub struct {
 }
 
 func (e phaseExecutorStub) Name() string { return "stub" }
-func (e phaseExecutorStub) Resume(context.Context, string, time.Duration) (ExecutionHandle, error) {
+func (e phaseExecutorStub) Resume(context.Context, PhaseSpec, string, time.Duration) (ExecutionHandle, error) {
 	return nil, ErrResumeUnsupported
 }
 func (e phaseExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
@@ -32,17 +32,20 @@ func (e phaseExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (Exec
 // 以及 resume 超时/终态失败后的分派策略。
 type resumeExecutorStub struct {
 	result        *ExecutionResult // Resume 返回的结果
+	resumeWaitErr error            // Resume handle.Wait 返回的错误
 	startResult   *ExecutionResult // Start（fresh start）返回的结果
 	resumeCalled  bool
 	startCalled   bool
 	resumeTimeout time.Duration
+	resumeSpec    PhaseSpec
 }
 
 func (e *resumeExecutorStub) Name() string { return "resume-stub" }
-func (e *resumeExecutorStub) Resume(_ context.Context, _ string, timeout time.Duration) (ExecutionHandle, error) {
+func (e *resumeExecutorStub) Resume(_ context.Context, spec PhaseSpec, _ string, timeout time.Duration) (ExecutionHandle, error) {
 	e.resumeCalled = true
 	e.resumeTimeout = timeout
-	return phaseHandleStub{result: e.result}, nil
+	e.resumeSpec = spec
+	return phaseHandleStub{result: e.result, waitErr: e.resumeWaitErr}, nil
 }
 func (e *resumeExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
 	e.startCalled = true
@@ -50,10 +53,11 @@ func (e *resumeExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (Ex
 }
 
 type phaseHandleStub struct {
-	result *ExecutionResult
+	result  *ExecutionResult
+	waitErr error
 }
 
-func (h phaseHandleStub) Wait() (*ExecutionResult, error) { return h.result, nil }
+func (h phaseHandleStub) Wait() (*ExecutionResult, error) { return h.result, h.waitErr }
 func (phaseHandleStub) PID() int                          { return 0 }
 
 func TestNewPhaseExecutorSelection(t *testing.T) {
@@ -235,5 +239,95 @@ func TestRunDSHPhaseResumeTerminalFailureFallsBackToFreshStart(t *testing.T) {
 	}
 	if outcome != OutcomeSuccess || code != "" {
 		t.Fatalf("outcome/code = %q/%q, want success after fresh start", outcome, code)
+	}
+}
+
+// TestRunDSHPhaseResumeBusyDoesNotFreshStart 守护 TASK-058 二次观测
+// （install-force 重启变种）：旧 daemon 被 SIGKILL 时其会话仍在 agent-server
+// 运行；新 daemon resume 拿到 500（"already has active work"）——不得把挂接
+// 失败当终态失败 fresh start，否则旧会话继续跑 + 新会话并行写同一任务文档。
+// 挂接失败按可重试中断上报，下轮 scan 用同一 token 再 resume。
+func TestRunDSHPhaseResumeBusyDoesNotFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	content := "---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{
+		result:      &ExecutionResult{Code: OutcomeFailed, Error: `agent-server HTTP 500: {"error":"agent \"...\" already has active work"}`},
+		startResult: &ExecutionResult{Code: OutcomeSuccess},
+	}
+	r.phaseExecutor = stub
+	res, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "planning"},
+		TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if !stub.resumeCalled {
+		t.Fatal("有 executor_session_id 时应走 Resume")
+	}
+	if stub.startCalled {
+		t.Fatal("resume 挂接失败（busy）不得 fresh start：旧会话仍在 agent-server 运行，fresh start 形成双会话并行写")
+	}
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED（可重试）", outcome, code)
+	}
+	if res == nil || res.ResumeToken != "tok-058" {
+		t.Fatalf("resume token must be preserved for next-scan retry, got %+v", res)
+	}
+}
+
+// TestRunDSHPhaseResumeUnknownErrorDoesNotFreshStart：Resume RPC 本身报
+// 非「会话已死」错误（unreachable 等）时同样不得 fresh start——会话状态
+// 未知，下轮 scan 再试 resume。
+func TestRunDSHPhaseResumeUnknownErrorDoesNotFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{resumeWaitErr: context.DeadlineExceeded}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "planning"},
+		TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if stub.startCalled {
+		t.Fatal("resume 等待错误不得 fresh start")
+	}
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED", outcome, code)
+	}
+}
+
+// TestRunDSHPhaseResumeForwardsCurrentSpec：resume 必须携带当前 spec
+// （相位/prompt），token 只标识会话——重启后可能以不同相位重新派发，
+// 注入 token 里的旧 prompt 会在恢复会话里跑错阶段。
+func TestRunDSHPhaseResumeForwardsCurrentSpec(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+	spec := PhaseSpec{Phase: "planning", SkillPrompt: "/obsidian-task-runner-round1 /task.md", Timeout: 30 * time.Minute}
+	r.runDSHPhase(context.Background(), spec, TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if !stub.resumeCalled {
+		t.Fatal("应走 Resume")
+	}
+	if stub.resumeSpec.Phase != "planning" || stub.resumeSpec.SkillPrompt != spec.SkillPrompt {
+		t.Fatalf("Resume 收到 spec = %+v, want phase=planning + 当前 prompt", stub.resumeSpec)
+	}
+	if stub.resumeTimeout != 30*time.Minute {
+		t.Fatalf("Resume timeout = %v, want spec timeout", stub.resumeTimeout)
 	}
 }
