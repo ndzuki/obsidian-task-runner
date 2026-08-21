@@ -170,9 +170,12 @@ otg install \
   ],
   "new_project_root": "/home/you/src",
   "models": {
-    "deepseek": "deepseek/deepseek-v4-flash",
-    "gpt": "gateway/deepseek-v4-pro",
-    "default": "gateway/gpt-5.4-mini"
+    "default": "deepseek_magic/gpt-5.4-mini",
+    "deepseek": "deepseek_magic/deepseek-v4-pro",
+    "gpt": "openai/gpt-5.6-sol",
+    "openai": "openai/gpt-5.6-sol",
+    "deepseek_magic": "deepseek_magic/deepseek-v4-pro",
+    "ds-official": "ds-official/deepseek-v4-pro"
   },
   "notifications": { "desktop": true },
   "poll_interval_minutes": 30,
@@ -368,7 +371,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | merge | `high` | 冲突解决需推理 |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
-模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。兜底由 DSH 的 fallback.mjs 插件（`~/.dsh/cordis.patch.yml`）按链切换 `deepseek_magic → ds-official`（免费网关失败/配额耗尽自动切官方直连），daemon 侧无 fallback 层。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
+模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `deepseek_magic`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `openai`（免费）的 gpt-5.6 系列——`deepseek-v4-pro → gpt-5.6-sol`、`gpt-5.4-mini(flash) → gpt-5.6-luna`，再失败继续在免费渠道间重试（如 `gpt-5.6-terra`）；**daemon 侧无 fallback 层**。该 fallback 只配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，供 obsidian-task-runner 自动化任务使用；**dsh web / dsh-tui 不加载 fallback**，模型调用失败会直接返回，避免长会话被免费模型失败重试一直占用。`ds-official`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `ds-official` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=ds-official`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
 
 ### 阻塞依赖自动恢复
 

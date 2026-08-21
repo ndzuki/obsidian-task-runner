@@ -34,10 +34,19 @@ func TestLoadReadsConcurrentTaskLimit(t *testing.T) {
 	}
 }
 
-func TestDefaultModelsUsesDefaultAssignee(t *testing.T) {
+func TestDefaultModelsUsesFreeChannelsFirst(t *testing.T) {
 	models := DefaultModels()
-	if got := models["default"]; got != "gateway/gpt-5.4-mini" {
-		t.Fatalf("default model = %q, want %q", got, "gateway/gpt-5.4-mini")
+	if got := models["default"]; got != "deepseek_magic/gpt-5.4-mini" {
+		t.Fatalf("default model = %q, want %q", got, "deepseek_magic/gpt-5.4-mini")
+	}
+	if got := models["deepseek"]; got != "deepseek_magic/deepseek-v4-pro" {
+		t.Fatalf("deepseek model = %q, want %q", got, "deepseek_magic/deepseek-v4-pro")
+	}
+	if got := models["ds-official"]; got != "ds-official/deepseek-v4-pro" {
+		t.Fatalf("ds-official model = %q, want %q", got, "ds-official/deepseek-v4-pro")
+	}
+	if got := models["gpt"]; got != "openai/gpt-5.6-sol" {
+		t.Fatalf("gpt model = %q, want %q", got, "openai/gpt-5.6-sol")
 	}
 	if _, ok := models["flash"]; ok {
 		t.Fatal("legacy flash assignee must not be present")
@@ -292,5 +301,19 @@ func TestExecutorDefaultAndValidation(t *testing.T) {
 	}
 	if cfg2.AgentServerAddr != "127.0.0.1:8799" {
 		t.Fatalf("agent_server_addr=%q, want default 127.0.0.1:8799", cfg2.AgentServerAddr)
+	}
+	if !cfg2.AgentServerManaged {
+		t.Fatal("agent_server_managed defaults to true")
+	}
+	// External systemd-managed agent-server can opt out of daemon child management.
+	if err := os.WriteFile(mapFile, []byte(`{"executor":"dsh-embed","agent_server_managed":false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg3, err := Load(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg3.AgentServerManaged {
+		t.Fatal("agent_server_managed=false must be honored")
 	}
 }

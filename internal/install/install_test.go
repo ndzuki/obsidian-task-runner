@@ -31,8 +31,17 @@ func TestGenerateVaultMapUsesDefaultModelKey(t *testing.T) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatalf("parse vault map: %v", err)
 	}
-	if got := config.Models["default"]; got != "gateway/gpt-5.4-mini" {
-		t.Fatalf("default model = %q, want %q", got, "gateway/gpt-5.4-mini")
+	if got := config.Models["default"]; got != "deepseek_magic/gpt-5.4-mini" {
+		t.Fatalf("default model = %q, want %q", got, "deepseek_magic/gpt-5.4-mini")
+	}
+	if got := config.Models["deepseek"]; got != "deepseek_magic/deepseek-v4-pro" {
+		t.Fatalf("deepseek model = %q, want %q", got, "deepseek_magic/deepseek-v4-pro")
+	}
+	if got := config.Models["ds-official"]; got != "ds-official/deepseek-v4-pro" {
+		t.Fatalf("ds-official model = %q, want %q", got, "ds-official/deepseek-v4-pro")
+	}
+	if got := config.Models["gpt"]; got != "openai/gpt-5.6-sol" {
+		t.Fatalf("gpt model = %q, want %q", got, "openai/gpt-5.6-sol")
 	}
 	if _, ok := config.Models["flash"]; ok {
 		t.Fatal("legacy flash model must not be generated")
@@ -96,13 +105,22 @@ func TestConfigureSystemdWritesMiseShimsPath(t *testing.T) {
 	if err := ConfigureSystemd(Options{ObsidianVault: "/vault", PollIntervalMin: 30}); err != nil {
 		t.Fatalf("ConfigureSystemd: %v", err)
 	}
-	for _, name := range []string{"otg-task-watcher.service"} {
+	for _, name := range []string{"dsh-agent-server.service", "dsh-web.service", "otg-task-watcher.service"} {
 		data, err := os.ReadFile(filepath.Join(home, ".config", "systemd", "user", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		if !strings.Contains(string(data), "Environment=PATH="+shims+":") {
 			t.Fatalf("%s PATH missing mise shims:\n%s", name, data)
+		}
+	}
+	watcher, err := os.ReadFile(filepath.Join(home, ".config", "systemd", "user", "otg-task-watcher.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"After=dsh-agent-server.service", "Requires=dsh-agent-server.service"} {
+		if !strings.Contains(string(watcher), want) {
+			t.Fatalf("otg-task-watcher.service missing %q:\n%s", want, watcher)
 		}
 	}
 }

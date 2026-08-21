@@ -39,8 +39,14 @@ type Config struct {
 	DSHProfile string `json:"dsh_profile"`
 	// AgentServerAddr is the long-lived `dsh --profile headless-agent-server`
 	// address used by the dsh-embed executor (host:port; docs/embed-migration-
-	// plan.md). The daemon manages the child process lifecycle itself.
+	// plan.md).
 	AgentServerAddr string `json:"agent_server_addr"`
+	// AgentServerManaged controls whether the daemon starts/stops the
+	// agent-server child itself. When false, the operator is expected to run
+	// `dsh --profile headless-agent-server` as an external systemd service
+	// (dsh-agent-server.service); the daemon only waits for it to become
+	// healthy and never spawns or kills it.
+	AgentServerManaged bool `json:"agent_server_managed"`
 	// VaultWebAddr is the read-only vault dashboard HTTP API address (host:port)
 	// served in-process by the daemon for the DSH web vault-dashboard plugin
 	// (Phase 4). Empty disables the embedded server.
@@ -217,14 +223,37 @@ type NotifConfig struct {
 }
 
 // DefaultModels returns the built-in model mappings.
+//
+// Routing policy: free channels first. The daemon and phase skills resolve
+// assignee keys to DSH route form via mapDSHModel; "deepseek_magic" is the
+// free DeepSeek gateway and "openai" is the free OpenAI-compatible gateway
+// (gpt-5.6 family). ds-official is the paid official DeepSeek channel and is
+// never auto-selected — a human opts in by setting the task assignee to
+// "ds-official" (or a model key mapped to ds-official/*).
 func DefaultModels() map[string]string {
 	return map[string]string{
-		"deepseek": "deepseek/deepseek-v4-flash",
-		"gpt":      "gateway/deepseek-v4-pro",
-		"default":  "gateway/gpt-5.4-mini",
-		"gemini":   "google/gemini-2.5-pro",
-		"claude":   "anthropic/claude-sonnet-4-20250514",
-		"minimax":  "minimax/minimax-m1",
+		// Light phases (refining/priority/pm/conventions/audit) use default:
+		// magic's cheap/fast model (gpt-5.4-mini == DeepSeek V4 Flash on the
+		// magic gateway).
+		"default": "deepseek_magic/gpt-5.4-mini",
+		// Heavy phases (planning/round2/merge/design) use the free magic
+		// flagship unless a task assignee says otherwise.
+		"deepseek": "deepseek_magic/deepseek-v4-pro",
+		// OpenAI free gateway (gpt-5.6 family) — the capability-mapped
+		// fallback channel and an explicit assignee option.
+		"gpt":    "openai/gpt-5.6-sol",
+		"openai": "openai/gpt-5.6-sol",
+		// Explicit aliases so assignee can name the provider directly.
+		"deepseek_magic": "deepseek_magic/deepseek-v4-pro",
+		// Paid official DeepSeek. Never used automatically; opt in per task
+		// via assignee=ds-official.
+		"ds-official": "ds-official/deepseek-v4-pro",
+		// Optional channels, retained for compatibility. They are only used
+		// when a task assignee explicitly selects them and the corresponding
+		// provider is configured in ~/.dsh/settings.yaml.
+		"gemini":  "google/gemini-2.5-pro",
+		"claude":  "anthropic/claude-sonnet-4-20250514",
+		"minimax": "minimax/minimax-m1",
 	}
 }
 
@@ -259,13 +288,16 @@ func ModelReference() string {
 	d := DefaultModels()
 	return fmt.Sprintf(`| key | 模型标识 | 用途 |
 |----------|---------|------|
-| default  | %s | refining、planning、round2 日常任务（gpt-5.4-mini，Agent 能力大幅增强） |
-| deepseek | %s | deepseek assignee 主模型（官方直连） |
-| gpt      | %s | 高推理任务主力（gateway 免费 v4-pro） |
-| gemini   | %s | 可选 |
-| claude   | %s | 可选 |
-| minimax  | %s | 可选 |
-`, d["default"], d["deepseek"], d["gpt"], d["gemini"], d["claude"], d["minimax"])
+| default  | %s | refining/priority/pm/conventions/audit 轻量任务（magic 免费 flash） |
+| deepseek | %s | planning/round2/merge/design 重度任务（magic 免费 v4-pro） |
+| gpt      | %s | OpenAI 免费旗舰，gpt-5.6 系列 fallback 主目标 |
+| openai   | %s | 同上（assignee 直接指定 openai 渠道） |
+| deepseek_magic | %s | 同上（assignee 直接指定 magic 渠道） |
+| ds-official | %s | 自费官方渠道，仅 assignee 显式指定时使用 |
+| gemini   | %s | 可选（需 settings.yaml 配置对应 provider） |
+| claude   | %s | 可选（需 settings.yaml 配置对应 provider） |
+| minimax  | %s | 可选（需 settings.yaml 配置对应 provider） |
+`, d["default"], d["deepseek"], d["gpt"], d["openai"], d["deepseek_magic"], d["ds-official"], d["gemini"], d["claude"], d["minimax"])
 }
 
 // DefaultKBEmbedding returns the shipped embedding defaults (ollama, bge-m3,
@@ -341,6 +373,7 @@ func Defaults() *Config {
 		DSHCmd:                     "dsh",
 		DSHProfile:                 "headless",
 		AgentServerAddr:            "127.0.0.1:8799",
+		AgentServerManaged:         true,
 		VaultWebAddr:               "127.0.0.1:8787",
 		ReplanGateThreshold:        5,
 		Executor:                   "dsh-embed",
