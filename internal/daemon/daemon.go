@@ -57,6 +57,7 @@ type Runner struct {
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
 	failNotifyAt       sync.Map              // taskPath → failNotifyEntry (failure/fallback toast debounce)
+	reqChangedNotifyAt sync.Map              // "taskID:action" → time.Time (需求变更 toast debounce)
 	refIndexRebuiltAt  sync.Map              // "last" → time.Time (References INDEX rebuild debounce)
 	kbSyncAt           sync.Map              // "last" → time.Time (knowledge retrieval-store sync debounce)
 	kbSyncRunning      atomic.Bool           // true while a retrieval-store sync goroutine is in flight
@@ -392,18 +393,18 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 					switch result.Action {
 					case "reset_to_ready", "rename_req":
-						notify.SendTaskAction(result.TaskID, "", "🔄", "需求变更", "重新出计划", r.cfg.Notifications.Desktop)
+						r.notifyReqChanged(result.TaskID, result.Action, "🔄", "需求变更", "重新出计划")
 					case "pending_req":
-						notify.SendTaskAction(result.TaskID, "", "📌", "需求变更", "当前阶段完成后自动重新出计划", r.cfg.Notifications.Desktop)
+						r.notifyReqChanged(result.TaskID, result.Action, "📌", "需求变更", "当前阶段完成后自动重新出计划")
 					case "create_task":
 						notify.SendTaskAction(result.TaskID, "", "🆕", "新任务已创建", "请填写 assignee 和 project 字段", r.cfg.Notifications.Desktop)
 					case "req_additive":
-						notify.SendTaskAction(result.TaskID, "", "📌", "需求增量变更",
-							"已交付任务保持完成状态；如需交付增量，请新建 TASK 承接或手动重开该任务", r.cfg.Notifications.Desktop)
+						r.notifyReqChanged(result.TaskID, result.Action, "📌", "需求增量变更",
+							"已交付任务保持完成状态；如需交付增量，请新建 TASK 承接或手动重开该任务")
 					case "req_missing":
-						notify.SendTaskAction(result.TaskID, "", "🚫", "需求文件缺失", "TASK 已阻塞，恢复 REQ 后重试", r.cfg.Notifications.Desktop)
+						r.notifyReqChanged(result.TaskID, result.Action, "🚫", "需求文件缺失", "TASK 已阻塞，恢复 REQ 后重试")
 					case "warn_only":
-						notify.SendTaskAction(result.TaskID, "", "⚠️", "需求变更", "请手动评估影响", r.cfg.Notifications.Desktop)
+						r.notifyReqChanged(result.TaskID, result.Action, "⚠️", "需求变更", "请手动评估影响")
 					default:
 						r.logger.Printf("task %s: unknown OnReqChanged action %q", result.TaskID, result.Action)
 					}
@@ -3788,6 +3789,22 @@ func (r *Runner) notifyFailure(taskPath, taskID, taskTitle, emoji, title, desc s
 	}
 	r.failNotifyAt.Store(taskPath, failNotifyEntry{at: time.Now(), prio: prio})
 	notify.SendTaskAction(taskID, taskTitle, emoji, title, desc, r.cfg.Notifications.Desktop)
+	return true
+}
+
+// notifyReqChanged sends a 需求变更 notification debounced per task+action.
+// Grilling 写回会多次改写 REQ，每次 watcher 事件都触发 on-req-changed 并
+// 重复发同一条「需求变更」toast（观测：TASK-058 对齐后连续多次重复提醒）。
+// 同一任务同一 action 在窗口内只发第一条。Returns whether a toast was sent.
+func (r *Runner) notifyReqChanged(taskID, action, emoji, title, desc string) bool {
+	key := taskID + ":" + action
+	if v, ok := r.reqChangedNotifyAt.Load(key); ok {
+		if time.Since(v.(time.Time)) < failNotifyInterval {
+			return false
+		}
+	}
+	r.reqChangedNotifyAt.Store(key, time.Now())
+	notify.SendTaskAction(taskID, "", emoji, title, desc, r.cfg.Notifications.Desktop)
 	return true
 }
 
