@@ -275,8 +275,8 @@ func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
 		t.Fatalf("resume token fields wrong: %+v", tok)
 	}
 
-	// Resume 用 token 重新发请求，带 sessionId。
-	h2, err := e.Resume(context.Background(), res.ResumeToken)
+	// Resume 用 token 重新发请求，带 sessionId。timeout 传 0 走默认值。
+	h2, err := e.Resume(context.Background(), res.ResumeToken, 0)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -297,13 +297,13 @@ func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
 // TestDSHEmbedExecutorResumeRejectsBadToken 断言 Resume 拒绝空/畸形 token。
 func TestDSHEmbedExecutorResumeRejectsBadToken(t *testing.T) {
 	e := newDSHEmbedExecutor("127.0.0.1:8799", t.TempDir())
-	if _, err := e.Resume(context.Background(), ""); err == nil {
+	if _, err := e.Resume(context.Background(), "", 0); err == nil {
 		t.Error("Resume(empty) must fail")
 	}
-	if _, err := e.Resume(context.Background(), "not-json"); err == nil {
+	if _, err := e.Resume(context.Background(), "not-json", 0); err == nil {
 		t.Error("Resume(not-json) must fail")
 	}
-	if _, err := e.Resume(context.Background(), `{"sessionId":"","provider":"p","model":"m"}`); err == nil {
+	if _, err := e.Resume(context.Background(), `{"sessionId":"","provider":"p","model":"m"}`, 0); err == nil {
 		t.Error("Resume(missing sessionId) must fail")
 	}
 }

@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
@@ -15,7 +18,7 @@ type phaseExecutorStub struct {
 }
 
 func (e phaseExecutorStub) Name() string { return "stub" }
-func (e phaseExecutorStub) Resume(context.Context, string) (ExecutionHandle, error) {
+func (e phaseExecutorStub) Resume(context.Context, string, time.Duration) (ExecutionHandle, error) {
 	return nil, ErrResumeUnsupported
 }
 func (e phaseExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
@@ -25,19 +28,25 @@ func (e phaseExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (Exec
 	return phaseHandleStub{result: e.result}, nil
 }
 
-// resumeExecutorStub 支持 Resume，记录是否被调用，用于验证 durable resume 接通。
+// resumeExecutorStub 支持 Resume，记录调用情况，用于验证 durable resume 接通
+// 以及 resume 超时/终态失败后的分派策略。
 type resumeExecutorStub struct {
-	result       *ExecutionResult
-	resumeCalled bool
+	result        *ExecutionResult // Resume 返回的结果
+	startResult   *ExecutionResult // Start（fresh start）返回的结果
+	resumeCalled  bool
+	startCalled   bool
+	resumeTimeout time.Duration
 }
 
 func (e *resumeExecutorStub) Name() string { return "resume-stub" }
-func (e *resumeExecutorStub) Resume(context.Context, string) (ExecutionHandle, error) {
+func (e *resumeExecutorStub) Resume(_ context.Context, _ string, timeout time.Duration) (ExecutionHandle, error) {
 	e.resumeCalled = true
+	e.resumeTimeout = timeout
 	return phaseHandleStub{result: e.result}, nil
 }
 func (e *resumeExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
-	return phaseHandleStub{result: e.result}, nil
+	e.startCalled = true
+	return phaseHandleStub{result: e.startResult}, nil
 }
 
 type phaseHandleStub struct {
@@ -122,10 +131,109 @@ func TestRunDSHPhaseResumesWhenTokenPresent(t *testing.T) {
 
 func TestRunDSHPhaseFreshStartWhenNoToken(t *testing.T) {
 	r := New(&config.Config{Executor: "dsh-embed"})
-	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}
+	stub := &resumeExecutorStub{startResult: &ExecutionResult{Code: OutcomeSuccess}}
 	r.phaseExecutor = stub
 	r.runDSHPhase(context.Background(), PhaseSpec{Phase: "round2"}, TaskSnapshot{TaskID: "001"}) // 无 TaskPath
 	if stub.resumeCalled {
 		t.Fatal("无 executor_session_id 时应走 fresh Start，而非 Resume")
+	}
+	if !stub.startCalled {
+		t.Fatal("无 executor_session_id 时应调用 Start")
+	}
+}
+
+// TestRunDSHPhaseResumeTimeoutDoesNotFreshStart 守护 TASK-058 重复会话回归：
+// resume 超时只表示 daemon 侧 HTTP 等待超时，agent-server 里的会话可能仍在
+// 运行；此时 fresh start 会让两个会话并行写同一个任务文档（观测到同一任务
+// 两个 planning 会话同时规划）。超时必须如实上报，由阶段重试策略接管，下轮
+// scan 用同一 token 再 resume。
+func TestRunDSHPhaseResumeTimeoutDoesNotFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	content := "---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(&config.Config{Executor: "dsh-embed"})
+	stub := &resumeExecutorStub{
+		result:      &ExecutionResult{Code: OutcomeTimedOut, Error: "agent-server request timed out"},
+		startResult: &ExecutionResult{Code: OutcomeSuccess},
+	}
+	r.phaseExecutor = stub
+	res, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "planning", Timeout: 30 * time.Minute},
+		TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if !stub.resumeCalled {
+		t.Fatal("有 executor_session_id 时应走 Resume")
+	}
+	if stub.startCalled {
+		t.Fatal("resume 超时后不得 fresh start：服务器会话可能仍存活，fresh start 会形成两个并行会话写同一任务文档")
+	}
+	if outcome != OutcomeTimedOut || code != ErrPhaseTimeout {
+		t.Fatalf("outcome/code = %q/%q, want timeout/PHASE_TIMEOUT（超时必须如实上报，而非吞掉后开新会话）", outcome, code)
+	}
+	if res == nil || res.Code != OutcomeTimedOut {
+		t.Fatalf("result code = %v, want OutcomeTimedOut", res)
+	}
+	if stub.resumeTimeout != 30*time.Minute {
+		t.Fatalf("Resume timeout = %v, want phase spec timeout 30m", stub.resumeTimeout)
+	}
+}
+
+// TestRunDSHPhaseResumeInterruptedDoesNotFreshStart：resume 会话被 daemon 停机
+// 中断时同样不得 fresh start——上报中断结果（携带 resume token），下次重启
+// 继续 resume 同一会话。
+func TestRunDSHPhaseResumeInterruptedDoesNotFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	content := "---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(&config.Config{Executor: "dsh-embed"})
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeInterrupted, Error: "agent-server request cancelled"}}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "round2"},
+		TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if stub.startCalled {
+		t.Fatal("resume 中断后不得 fresh start")
+	}
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED", outcome, code)
+	}
+}
+
+// TestRunDSHPhaseResumeTerminalFailureFallsBackToFreshStart：resume 返回终态
+// 失败（会话已在 agent-server 里结束）时 fresh start 是安全的——此时服务器里
+// 没有存活会话，不会形成并行写。
+func TestRunDSHPhaseResumeTerminalFailureFallsBackToFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	content := "---\nid: \"058\"\nexecutor_session_id: 'tok-058'\n---\n# body\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{
+		result:      &ExecutionResult{Code: OutcomeFailed, Error: `agent-server HTTP 500: session "..." not found`},
+		startResult: &ExecutionResult{Code: OutcomeSuccess},
+	}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "planning"},
+		TaskSnapshot{TaskID: "058", TaskPath: taskPath})
+
+	if !stub.resumeCalled || !stub.startCalled {
+		t.Fatal("resume 终态失败（会话已死亡）应回退 fresh Start")
+	}
+	if outcome != OutcomeSuccess || code != "" {
+		t.Fatalf("outcome/code = %q/%q, want success after fresh start", outcome, code)
 	}
 }

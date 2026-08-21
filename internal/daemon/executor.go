@@ -19,9 +19,11 @@ type PhaseExecutor interface {
 	// carries the ctx-derived cancellation and the result channel.
 	Start(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecutionHandle, error)
 	// Resume re-attaches to an in-flight execution after a daemon restart,
-	// using the durable identity recorded in the task frontmatter. Adapters
-	// that cannot resume return ErrResumeUnsupported.
-	Resume(ctx context.Context, resumeToken string) (ExecutionHandle, error)
+	// using the durable identity recorded in the task frontmatter. timeout
+	// bounds the re-attached wait (the phase's own timeout); zero uses the
+	// adapter default. Adapters that cannot resume return
+	// ErrResumeUnsupported.
+	Resume(ctx context.Context, resumeToken string, timeout time.Duration) (ExecutionHandle, error)
 	// Name returns the adapter identity (e.g. "omp", "dsh").
 	Name() string
 }
