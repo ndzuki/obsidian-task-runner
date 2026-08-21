@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 并发监控</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f1115; color: #e6e6e6; font-family: system-ui, -apple-system, sans-serif; padding: 20px; }
+  h2 { font-size: 16px; color: #c0caf5; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+  .card { background: #1a1d24; border: 1px solid #24283a; border-radius: 12px; padding: 14px; display: flex; gap: 12px; align-items: center; }
+  .avatar { width: 52px; height: 52px; border-radius: 8px; background: #24283a; flex-shrink: 0; }
+  .info { flex: 1; min-width: 0; }
+  .phase { color: #7aa2f7; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .task { color: #9aa5b1; font-size: 13px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status { color: #565f89; font-size: 12px; margin-top: 4px; }
+  .elapsed { color: #3d4663; font-size: 11px; }
+  .empty { color: #565f89; text-align: center; padding: 48px 16px; grid-column: 1 / -1; }
+  @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+  @keyframes bounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-5px); } }
+  .working { animation: breathe 1.6s ease-in-out infinite; }
+  .thinking { animation: pulse 1.1s ease-in-out infinite; }
+  .done { animation: bounce .5s ease; }
+</style>
+</head>
+<body>
+<h2>🤖 Agent 并发监控 <span id="count" style="color:#565f89;font-weight:400"></span></h2>
+<div id="grid" class="grid"><div class="empty">等待 agent 活动…</div></div>
+<script>
+  const EMOJI = { bash: '💻', read: '📖', grep: '🔍', write: '✍️', edit: '✍️', thinking: '🤔', writing: '✍️', working: '⚙️', idle: '😴' };
+  const CLS = { bash: 'working', read: 'working', grep: 'working', write: 'working', edit: 'working', thinking: 'thinking', writing: 'working', working: 'working', idle: '' };
+  const PHASE_CN = { refining: '需求细化', round1: '规划', round2: '实现', merge: '合并', priority: '优先级', pm: '统筹', split: '拆分', conventions: '规范审查', audit: '审计', design: '设计', grilling: '交互问答' };
+  function fmt(s) { const m = Math.floor(s/60), r = s%60; return m > 0 ? m + 'm' + r + 's' : r + 's'; }
+  async function poll() {
+    let agents;
+    try { agents = await (await fetch('/agents')).json(); } catch (e) { return; }
+    const grid = document.getElementById('grid');
+    document.getElementById('count').textContent = agents.length ? ('· ' + agents.length + ' 活跃') : '· 空闲';
+    if (!agents.length) { grid.innerHTML = '<div class="empty">😴 无活跃 agent（空闲）</div>'; return; }
+    grid.innerHTML = agents.map(a => {
+      const emoji = EMOJI[a.status] || '⚙️';
+      const cls = CLS[a.status] || 'working';
+      const phase = PHASE_CN[a.phase] || a.phase;
+      return '<div class="card">' +
+        '<img class="avatar ' + cls + '" src="https://api.dicebear.com/9.x/bottts/svg?seed=' + encodeURIComponent(a.sessionId) + '" alt="">' +
+        '<div class="info">' +
+          '<div class="phase">' + phase + ' <span>' + emoji + '</span></div>' +
+          '<div class="task" title="' + a.task + '">' + a.task + '</div>' +
+          '<div class="status">' + a.status + ' · <span class="elapsed">' + fmt(a.elapsed) + '</span></div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  poll();
+  setInterval(poll, 2000);
+</script>
+</body>
+</html>

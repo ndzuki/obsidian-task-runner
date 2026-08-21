@@ -69,9 +69,12 @@ install-force: build
 	fi
 	@echo "=== Done ==="
 	@$(MAKE) sync-docs
+	@$(MAKE) sync-plugins
+	@echo ""
+	@echo "NOTE: 若 deploy/dsh-plugins/agent-server.mjs 有更新，需重启 agent-server 生效："
+	@echo "      systemctl --user restart dsh-agent-server"
 
-.PHONY: sync-docs
-.PHONY: sync-docs
+.PHONY: sync-docs sync-plugins
 sync-docs:
 	@echo "=== Syncing skill docs to ~/.dsh/skills/obsidian-task-runner/ ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
@@ -90,5 +93,20 @@ sync-docs:
 	@for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
 		mkdir -p $(HOME)/.dsh/skills/obsidian-task-runner-$$s; \
 		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md; \
+	done
+	@echo "=== Done ==="
+
+# sync-plugins: 把 deploy/dsh-plugins/ 下的 DSH 插件同步到 ~/.dsh/plugins/
+#（dsh profile 按绝对路径加载）。busy-safe 替换；agent-server.mjs 变更需
+# 重启 dsh-agent-server 才生效（install-force 末尾有提示）。
+sync-plugins:
+	@echo "=== Syncing dsh plugins to ~/.dsh/plugins/ ==="
+	mkdir -p $(HOME)/.dsh/plugins
+	@for f in deploy/dsh-plugins/*; do \
+		b=$$(basename $$f); \
+		-rm -f $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
+		-mv $(HOME)/.dsh/plugins/$$b $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
+		cp $$f $(HOME)/.dsh/plugins/$$b; \
+		chmod 600 $(HOME)/.dsh/plugins/$$b; \
 	done
 	@echo "=== Done ==="
