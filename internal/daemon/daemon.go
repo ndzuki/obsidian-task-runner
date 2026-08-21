@@ -48,6 +48,7 @@ type Runner struct {
 	phaseGates         map[string]*phaseGate // phase → concurrency gate (nil/absent = unlimited)
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
+	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (free-tier exhaustion exponential backoff)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
 	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
 	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
@@ -2843,6 +2844,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				}
 				r.phaseFailures.Delete(taskPath)
 			}
+			// 免费额度耗尽指数退避：until 持久化在 frontmatter（重启不清零），
+			// 到期前不重试（减少刷免费网关）；到期后允许重试。
+			if data, err := os.ReadFile(taskPath); err == nil {
+				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.QuotaBackoffUntil != "" {
+					if until, err := time.Parse(time.RFC3339, fm.QuotaBackoffUntil); err == nil && time.Now().Before(until) {
+						continue
+					}
+				}
+			}
 			// Check if this is a phase-failure blocked task waiting for resume.
 			if data, err := os.ReadFile(taskPath); err == nil {
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil {
@@ -3256,6 +3266,42 @@ func (r *Runner) restoreBlockedPhase(taskPath, phase string, resetBudget bool) e
 
 // handlePhaseFailure tracks retry counts for refining/planning phases and
 // transitions the task to blocked after the second consecutive failure.
+// quotaBackoff tracks free-tier exhaustion backoff: level increments per
+// consecutive QUOTA failure; until is the next retry deadline. This keeps the
+// daemon from hammering the free gateways every scan when the quota is gone.
+type quotaBackoff struct {
+	level int
+	until time.Time
+}
+
+// quotaCooldown returns the backoff window for a consecutive QUOTA-failure
+// level: 2m, 4m, 8m, 16m, 32m, 64m, … capped at 4h. A daemon restart does not
+// reset it (level is persisted in the task frontmatter, see below).
+func quotaCooldown(level int) time.Duration {
+	const base = 2 * time.Minute
+	const ceiling = 4 * time.Hour
+	if level <= 1 {
+		return base
+	}
+	d := base
+	for i := 1; i < level && d < ceiling; i++ {
+		d *= 2
+		if d > ceiling {
+			d = ceiling
+		}
+	}
+	return d
+}
+
+// readFrontmatter parses a task file's frontmatter; returns nil on any error.
+func readFrontmatter(taskPath string) (*yamlfrontmatter.Frontmatter, error) {
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return nil, err
+	}
+	return yamlfrontmatter.Parse(data)
+}
+
 func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase string, code ErrorCode, reason, logPath string) {
 	// Auto-sink the first occurrence of this failure code+phase into the
 	// knowledge base as a bug pattern (dedup inside AppendFailurePattern).
@@ -3278,6 +3324,22 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		if code == ErrAPIKeyUnavailable {
 			// Debounced: one toast per 5 minutes, not one per failing task.
 			r.notifyKeyUnavailable()
+		}
+		if code == ErrModelQuotaExhausted {
+			// 免费额度耗尽：指数退避，别每轮 scan 都刷免费网关。level 持久化到
+			// frontmatter（daemon 重启不清零），冷却 2m→4m→8m→…→4h 上限。
+			level := 0
+			if fm, err := readFrontmatter(taskPath); err == nil && fm != nil {
+				level = fm.QuotaBackoffLevel
+			}
+			level++
+			until := time.Now().Add(quotaCooldown(level))
+			_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"quota_backoff_level": level,
+				"quota_backoff_until": until.Format(time.RFC3339),
+			})
+			r.quotaBackoffs.Store(taskPath, quotaBackoff{level: level, until: until})
+			r.logger.Printf("task %s: free-tier quota exhausted, backoff level %d, retry after %s", taskID, level, until.Format("15:04:05"))
 		}
 		return
 	}

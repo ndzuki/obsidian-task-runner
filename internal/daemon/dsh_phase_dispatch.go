@@ -49,6 +49,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		r.logger.Printf("task %s: completed via DSH", t.ID)
 		// 会话完成：清空持久化的 resume token（无未完成会话可恢复）。
 		r.clearExecutorSessionID(taskPath)
+		r.clearQuotaBackoff(taskPath)
 		r.compactPlanHistory(taskPath, phase)
 		if phase == "round2" {
 			r.recordRound2Completion(taskPath, t.ID)
@@ -86,8 +87,8 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		r.logger.Printf("task %s: DSH failed (%s): %s", t.ID, code, reason)
 		r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, code, reason, logPath)
 		desc := fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason)
-		if code == ErrModelQuotaExhausted {
-			desc = fmt.Sprintf("%s 阶段失败：免费模型额度耗尽（magic deepseek + gpt-5.6）——请改任务 assignee=ds-official 用官方付费渠道", phase)
+		if isFreeModelRoute(model) && (code == ErrModelQuotaExhausted || code == ErrModelFailed) {
+			desc = fmt.Sprintf("%s 阶段失败：免费模型渠道不可用或额度耗尽（deepseek_magic / openai gpt-5.6）——请把任务文档 assignee 改为 ds-official 后 resume_approved=true 恢复", phase)
 		}
 		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败", desc, failNotifyReason)
 		return true
@@ -100,5 +101,16 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 func (r *Runner) clearExecutorSessionID(taskPath string) {
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"executor_session_id": ""}); err != nil {
 		r.logger.Printf("clear executor_session_id: %v", err)
+	}
+}
+
+// clearQuotaBackoff resets the free-tier quota backoff after a phase succeeds,
+// so the next failure starts a fresh 2m→4m→… ladder.
+func (r *Runner) clearQuotaBackoff(taskPath string) {
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"quota_backoff_level": 0,
+		"quota_backoff_until": "",
+	}); err != nil {
+		r.logger.Printf("clear quota backoff: %v", err)
 	}
 }

@@ -1720,3 +1720,23 @@ func TestWorktreePathFromError(t *testing.T) {
 		t.Fatalf("non-worktree error should return empty, got %q", got)
 	}
 }
+
+func TestQuotaCooldownExponentialBackoff(t *testing.T) {
+	cases := []struct {
+		level int
+		want  time.Duration
+	}{
+		{1, 2 * time.Minute},
+		{2, 4 * time.Minute},
+		{3, 8 * time.Minute},
+		{4, 16 * time.Minute},
+		{5, 32 * time.Minute},
+		{6, 64 * time.Minute},
+		{100, 4 * time.Hour}, // ceiling
+	}
+	for _, c := range cases {
+		if got := quotaCooldown(c.level); got != c.want {
+			t.Errorf("quotaCooldown(%d) = %v, want %v", c.level, got, c.want)
+		}
+	}
+}
