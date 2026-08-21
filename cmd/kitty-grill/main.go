@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 type chatRequest struct {
@@ -59,6 +61,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	// 启动守卫：任务已离开 needs-grilling（被关闭/完成/推进）时直接退出，
+	// 不生成问卷——避免向已归档需求写回决策（观测：TASK-005 关闭后其
+	// grilling tab 仍停留在交互状态）。
+	if *taskID != "" {
+		if left := taskLeftGrilling(*taskID, *vaultPath, *reqDoc); left {
+			return
+		}
+	}
+
 	prompt := *custom
 	if *promptEnv != "" {
 		if v := os.Getenv(*promptEnv); v != "" {
@@ -72,7 +83,7 @@ func main() {
 			prompt += "\n\n" + ctx
 		}
 	}
-	if err := repl(*addr, *provider, *model, *effort, prompt); err != nil {
+	if err := repl(*addr, *provider, *model, *effort, prompt, *taskID, *vaultPath, *reqDoc); err != nil {
 		fmt.Fprintf(os.Stderr, "kitty-grill: %v\n", err)
 		os.Exit(1)
 	}
@@ -158,7 +169,7 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 	case taskTitle != "":
 		target = fmt.Sprintf("我要实现「%s」，请补充技术细节", taskTitle)
 	}
-	return fmt.Sprintf(`%s（遵循 skill://requirement-elaborator 的方法论：事实从环境查，决策由用户定）。
+	body := fmt.Sprintf(`%s（遵循 skill://requirement-elaborator 的方法论：事实从环境查，决策由用户定）。
 
 交互方式改为「批量问卷」，不要逐问：
 1. 勘察（精简）：读需求文档正文；仅当需求正文明确引用某 ADR / 契约 / 上游 REQ 时，再读那些被引用的文件。不要遍历 CONTEXT.md 全量术语、不要读代码实现——它们会在实现阶段按需加载。
@@ -176,6 +187,13 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 - 把每个决策写回需求文档（更新/补充 REQ 的技术规格、状态与数据、验收标准等章节）
 - 输出「决策总结」：逐项列出用户选择 + 已写回位置
 - 如有剩余歧义，总结末尾列「待澄清」，但不要阻塞本轮写回`, target, '`', '`', '`')
+	// 真实任务 ID 前置：agent-server 监控面板按 prompt 里第一个 TASK-xxx
+	// 打标签，前置可避免启发式抓到 REQ 正文/预取上下文里提到的其他任务
+	// （观测：TASK-005 的 grilling 会话被误标为 TASK-058）。
+	if taskID != "" {
+		return fmt.Sprintf("任务 TASK-%s — %s\n\n%s", taskID, target, body)
+	}
+	return body
 }
 
 // questionnaire is the structured questionnaire the model emits as JSON.
@@ -213,7 +231,90 @@ func extractJSON(text string) (string, bool) {
 	}
 	return strings.TrimSpace(text[start : start+end]), true
 }
-func repl(addr, provider, model, effort, prompt string) error {
+
+// grillingStillActive resolves the task file for taskID (project derived from
+// the requirement path) and reports whether its frontmatter status is still
+// needs-grilling. Unresolvable/unparseable tasks report active — the guard must
+// never block legacy flows that lack a vault/task/status.
+func grillingStillActive(vaultPath, reqDoc, taskID string) (bool, string) {
+	if vaultPath == "" || taskID == "" {
+		return true, ""
+	}
+	taskPath := resolveTaskFile(vaultPath, reqDoc, taskID)
+	if taskPath == "" {
+		return true, ""
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		return true, ""
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil || fm.Status == "" {
+		return true, ""
+	}
+	return fm.Status == "needs-grilling", fm.Status
+}
+
+// resolveTaskFile locates TASK-<id>[-slug].md. It first derives the project
+// directory from the requirement path (Projects/<proj>/Requirements/...), then
+// falls back to scanning every project's Tasks directory.
+func resolveTaskFile(vaultPath, reqDoc, taskID string) string {
+	if reqDoc != "" {
+		rel := strings.TrimPrefix(reqDoc, "Projects/")
+		if i := strings.IndexByte(rel, '/'); i > 0 {
+			if p := findTaskInDir(filepath.Join(vaultPath, "Projects", rel[:i], "Tasks"), taskID); p != "" {
+				return p
+			}
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(vaultPath, "Projects"))
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if p := findTaskInDir(filepath.Join(vaultPath, "Projects", e.Name(), "Tasks"), taskID); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func findTaskInDir(tasksDir, taskID string) string {
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "TASK-"+taskID+".md" || strings.HasPrefix(name, "TASK-"+taskID+"-") {
+			return filepath.Join(tasksDir, name)
+		}
+	}
+	return ""
+}
+
+// taskLeftGrilling reports whether the task moved out of needs-grilling and
+// must not receive any write-back; it prints the notice and returns true when
+// blocked.
+func taskLeftGrilling(taskID, vaultPath, reqDoc string) bool {
+	if taskID == "" {
+		return false
+	}
+	active, status := grillingStillActive(vaultPath, reqDoc, taskID)
+	if active {
+		return false
+	}
+	fmt.Printf("\n⚠️  任务 TASK-%s 已离开 grilling 状态（当前 status=%s），决策不会写回。请直接关闭本标签页。\n", taskID, status)
+	return true
+}
+
+func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc string) error {
 	sessionID := ""
 
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════╗\n")
@@ -236,12 +337,12 @@ func repl(addr, provider, model, effort, prompt string) error {
 	raw, ok := extractJSON(resp.Text)
 	if !ok {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, effort, sessionID)
+		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc)
 	}
 	var q questionnaire
 	if err := json.Unmarshal([]byte(raw), &q); err != nil || len(q.Decisions) == 0 {
 		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, effort, sessionID)
+		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc)
 	}
 
 	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
@@ -261,6 +362,13 @@ func repl(addr, provider, model, effort, prompt string) error {
 		return nil
 	}
 
+	// 写回前复查任务状态：问卷生成 + 作答期间任务可能已被关闭/推进，
+	// 写回会落到已离开 grilling 的任务上（观测：TASK-005 关闭后其问卷
+	// tab 仍可提交）。此处阻断写回并提示用户。
+	if taskLeftGrilling(taskID, vaultPath, reqDoc) {
+		return nil
+	}
+
 	fmt.Print("\n⏳ 正在根据你的决策写回需求文档…\n\n")
 	resp, err = chat(addr, provider, model, effort, sessionID, strings.Join(parts, " "))
 	if err != nil {
@@ -273,7 +381,7 @@ func repl(addr, provider, model, effort, prompt string) error {
 
 // manualFill is the fallback when the model does not emit a parseable JSON
 // questionnaire: print the raw reply and read one multi-line round of answers.
-func manualFill(addr, provider, model, effort, sessionID string) error {
+func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc string) error {
 	fmt.Println()
 	in := bufio.NewReader(os.Stdin)
 	var answers []string
@@ -299,6 +407,10 @@ func manualFill(addr, provider, model, effort, sessionID string) error {
 		answers = append(answers, msg)
 	}
 	if len(answers) == 0 {
+		return nil
+	}
+	// 写回前复查任务状态（同问卷路径：作答期间任务可能已离开 grilling）。
+	if taskLeftGrilling(taskID, vaultPath, reqDoc) {
 		return nil
 	}
 	resp, err := chat(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"))
