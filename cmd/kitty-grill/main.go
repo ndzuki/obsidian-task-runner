@@ -18,9 +18,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -53,12 +56,25 @@ func main() {
 		effort    = flag.String("effort", "low", "reasoning effort for questionnaire generation (off/low/high/max)")
 		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
 		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
+		// 内部模式：异步写回。问卷提交后主进程立即退出（tab 关闭），由
+		// detached 子进程携带 --writeback 完成写回，避免 tab 卡在「写回中」。
+		writeback = flag.Bool("writeback", false, "internal: submit answers to an existing session and exit")
+		sessionID = flag.String("session", "", "agent-server session id (writeback mode)")
+		answers   = flag.String("answers", "", "user answers to submit (writeback mode)")
 	)
 	flag.Parse()
 
 	if *addr == "" {
 		fmt.Fprintln(os.Stderr, "kitty-grill: --addr is required")
 		os.Exit(2)
+	}
+
+	if *writeback {
+		if err := runWriteback(*addr, *provider, *model, *effort, *sessionID, *answers); err != nil {
+			fmt.Fprintf(os.Stderr, "kitty-grill writeback: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// 启动守卫：任务已离开 needs-grilling（被关闭/完成/推进）时直接退出，
@@ -327,7 +343,7 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 
 	// 阶段 1：生成问卷。
 	fmt.Print("⏳ 正在深度勘察并生成问卷（可能需要 1-3 分钟）…\n\n")
-	resp, err := chat(addr, provider, model, effort, sessionID, prompt)
+	resp, err := chat(addr, provider, model, effort, sessionID, prompt, 0)
 	if err != nil {
 		return err
 	}
@@ -369,14 +385,27 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 		return nil
 	}
 
-	fmt.Print("\n⏳ 正在根据你的决策写回需求文档…\n\n")
-	resp, err = chat(addr, provider, model, effort, sessionID, strings.Join(parts, " "))
-	if err != nil {
-		return err
-	}
-	fmt.Println(resp.Text)
-	fmt.Println()
+	// 异步提交：detached 子进程完成写回，本进程立即退出并关 tab——不再
+	// 同步等待模型写回（观测：TASK-058 提交后卡在「写回需求文档中」，
+	// tab 不关闭，还连发重复的「需求变更」桌面提醒）。
+	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(parts, " "), taskID)
 	return nil
+}
+
+// submitAnswers fires the write-back asynchronously and closes the tab.
+// When the detached spawn fails (rare: missing executable), it falls back to
+// a bounded synchronous write-back so the answers are never lost.
+func submitAnswers(addr, provider, model, effort, sessionID, message, taskID string) {
+	if err := spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID); err != nil {
+		fmt.Printf("\n⏳ 后台进程启动失败，改为同步写回（最多等待 %v）…\n\n", writebackTimeout)
+		resp, chatErr := chat(addr, provider, model, effort, sessionID, message, writebackTimeout)
+		if chatErr != nil {
+			fmt.Printf("\n⚠️  写回失败：%v\n", chatErr)
+		} else {
+			fmt.Println(resp.Text)
+		}
+	}
+	closeOwnTab()
 }
 
 // manualFill is the fallback when the model does not emit a parseable JSON
@@ -413,17 +442,128 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 	if taskLeftGrilling(taskID, vaultPath, reqDoc) {
 		return nil
 	}
-	resp, err := chat(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"))
-	if err != nil {
-		return err
-	}
-	fmt.Println(resp.Text)
-	fmt.Println()
+	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(answers, "\n"), taskID)
 	return nil
 }
 
+// writebackTimeout bounds one write-back round-trip. The interactive
+// questionnaire generation stays unbounded (the user is watching), but the
+// detached write-back must not run forever: it writes to a log and the user
+// has already left.
+const writebackTimeout = 10 * time.Minute
+
+// runWriteback is the --writeback mode body: re-attach to the session the
+// questionnaire left behind and submit the answers. It is executed by the
+// detached child process; stdout/stderr go to a log file.
+func runWriteback(addr, provider, model, effort, sessionID, answers string) error {
+	if sessionID == "" || answers == "" {
+		return fmt.Errorf("writeback mode requires --session and --answers")
+	}
+	resp, err := chat(addr, provider, model, effort, sessionID, answers, writebackTimeout)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("writeback ok: session=%s\n%s\n", sessionID, resp.Text)
+	return nil
+}
+
+// writebackLogDir returns the directory for detached write-back logs.
+func writebackLogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(os.TempDir(), "kitty-grill-logs")
+	}
+	return filepath.Join(home, ".dsh", "logs", "kitty-grill")
+}
+
+// writebackArgs builds the argv for the detached --writeback child.
+func writebackArgs(exe, addr, provider, model, effort, sessionID, message string) []string {
+	return []string{
+		exe,
+		"--writeback",
+		"--addr", addr,
+		"--provider", provider,
+		"--model", model,
+		"--effort", effort,
+		"--session", sessionID,
+		"--answers", message,
+	}
+}
+
+// spawnAsyncWriteback starts a detached --writeback child (setsid) that
+// re-attaches to the session and performs the write-back after this process
+// exits. Returns an error only when the child cannot be started.
+func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, taskID string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logDir := writebackLogDir()
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return err
+	}
+	name := taskID
+	if name == "" {
+		name = "decision"
+	}
+	logPath := filepath.Join(logDir, fmt.Sprintf("writeback-%s-%s.log", name, time.Now().Format("20060102-150405")))
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, writebackArgs(exe, addr, provider, model, effort, sessionID, message)[1:]...)
+	cmd.Stdin = nil
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		f.Close()
+		return err
+	}
+	fmt.Printf("\n✅ 决策已提交，后台异步写回需求文档（进度见 %s），本标签页即将关闭。\n", logPath)
+	// 关闭日志句柄：子进程继承 fd，父进程无需等待。
+	f.Close()
+	return nil
+}
+
+// closeTabArgs builds the kitty remote-control argv for closing this window.
+func closeTabArgs(windowID string) []string {
+	return []string{"kitty", "@", "close-window", "--match", "id:" + windowID}
+}
+
+// closeOwnTab closes the kitty tab this questionnaire runs in via remote
+// control, using KITTY_WINDOW_ID injected by kitty into launched windows.
+// Silent no-op when not running inside kitty (manual runs, tests) or when
+// kitty is unavailable — the daemon's debounce re-opens a tab when needed.
+func closeOwnTab() {
+	windowID := os.Getenv("KITTY_WINDOW_ID")
+	if windowID == "" {
+		return
+	}
+	if _, err := exec.LookPath("kitty"); err != nil {
+		return
+	}
+	env := os.Environ()
+	if os.Getenv("KITTY_LISTEN_ON") == "" {
+		if entries, err := os.ReadDir("/tmp"); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "kitty-") {
+					env = append(env, "KITTY_LISTEN_ON=unix:/tmp/"+e.Name())
+					break
+				}
+			}
+		}
+	}
+	cmd := exec.Command("kitty", closeTabArgs(windowID)[1:]...)
+	cmd.Env = env
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("\n⚠️  自动关闭标签页失败（%v），请手动关闭。\n", err)
+	}
+}
+
 // chat sends one message to the agent-server and returns the model reply.
-func chat(addr, provider, model, effort, sessionID, message string) (*chatResponse, error) {
+// timeout == 0 means no timeout (interactive questionnaire generation).
+func chat(addr, provider, model, effort, sessionID, message string, timeout time.Duration) (*chatResponse, error) {
 	body, err := json.Marshal(chatRequest{
 		Message:         message,
 		Provider:        provider,
@@ -435,7 +575,7 @@ func chat(addr, provider, model, effort, sessionID, message string) (*chatRespon
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 0} // 交互会话不设超时，模型可能长考
+	client := &http.Client{Timeout: timeout} // 交互问卷 0=不限；写回用 writebackTimeout
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/agent/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -444,6 +584,9 @@ func chat(addr, provider, model, effort, sessionID, message string) (*chatRespon
 
 	res, err := client.Do(req)
 	if err != nil {
+		if os.IsTimeout(err) {
+			return nil, fmt.Errorf("agent-server write-back timed out after %v: %w", timeout, err)
+		}
 		return nil, fmt.Errorf("agent-server unreachable: %w", err)
 	}
 	defer res.Body.Close()

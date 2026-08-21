@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,5 +168,75 @@ func TestResolveTaskFileFallsBackAcrossProjects(t *testing.T) {
 	got := resolveTaskFile(vault, "Projects/001-demo/Requirements/REQ-005.md", "005")
 	if got != taskPath {
 		t.Fatalf("resolveTaskFile = %q, want %q", got, taskPath)
+	}
+}
+
+func TestWritebackArgs(t *testing.T) {
+	args := writebackArgs("/x/kitty-grill", "127.0.0.1:8799", "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A D2=B")
+	if len(args) != 14 {
+		t.Fatalf("args len=%d, want 14: %v", len(args), args)
+	}
+	if args[0] != "/x/kitty-grill" || args[1] != "--writeback" {
+		t.Fatalf("argv 应以 executable + --writeback 开头: %v", args)
+	}
+	joined := strings.Join(args, "\x00")
+	for _, want := range []string{"--session\x00session-1", "--answers\x00D1=A D2=B", "--addr\x00127.0.0.1:8799"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args 缺少 %q: %v", want, args)
+		}
+	}
+}
+
+func TestCloseTabArgs(t *testing.T) {
+	args := closeTabArgs("win-42")
+	want := []string{"kitty", "@", "close-window", "--match", "id:win-42"}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("closeTabArgs = %v, want %v", args, want)
+		}
+	}
+}
+
+func TestRunWriteback(t *testing.T) {
+	var gotReq chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(chatResponse{
+			Text:      "决策总结：已写回",
+			Outcome:   "completed",
+			SessionID: "session-1",
+		})
+	}))
+	defer srv.Close()
+
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A"); err != nil {
+		t.Fatalf("runWriteback: %v", err)
+	}
+	if gotReq.SessionID != "session-1" || gotReq.Message != "D1=A" {
+		t.Fatalf("chat request = %+v, want session-1/D1=A", gotReq)
+	}
+}
+
+func TestRunWritebackRejectsMissingInput(t *testing.T) {
+	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "", "D1=A"); err == nil {
+		t.Fatal("缺 session 应报错")
+	}
+	if err := runWriteback("127.0.0.1:1", "p", "m", "low", "session-1", ""); err == nil {
+		t.Fatal("缺 answers 应报错")
+	}
+}
+
+func TestRunWritebackServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"session not found"}`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A"); err == nil {
+		t.Fatal("HTTP 500 应报错")
 	}
 }
