@@ -3216,7 +3216,17 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// 阶段派发统一走 DSH executor（dsh-embed 长驻 agent-server 或 dsh spawn）。
 		// runDSHPhaseDispatch 内部处理成功/失败的 shared tail（写回 + 通知），
 		// 返回 handled=true 表示本阶段已完整处理。
+		// 项目冻结守护：派发前快照决策清单 status=closed 的用户意图，阶段
+		// 会话（refining/PM 等模型写回）不得擅自改回 open（观测：用户设
+		// closed 后 TASK-002 refining 会话把清单翻成 open）。
+		var listGuard *decisionListStatusGuard
+		if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" {
+			listGuard = snapshotDecisionListStatus(listPath)
+		}
 		r.runDSHPhaseDispatch(t, taskPath, repoDir, phase, model, skillPrompt, logPath)
+		if listGuard != nil {
+			listGuard.restoreIfClosed(t.ID)
+		}
 		if f != nil {
 			if err := f.Close(); err != nil {
 				r.logger.Printf("task %s: close task log: %v", t.ID, err)
