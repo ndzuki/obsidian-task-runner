@@ -833,3 +833,61 @@ func TestParkedTaskIsNotDispatched(t *testing.T) {
 		t.Fatalf("parked task entered dispatch queue: %d pending", len(pending))
 	}
 }
+
+// TestActivatePausedDecisionListSkipsClosed 守护用户项目冻结意图：closed 是
+// 「暂时不想开始这项目开发」的显式冻结，REQ 更新不得自动翻成 open（观测：
+// magic-models-manager 用户设 closed 后被 TASK 会话写回 REQ 触发的激活逻辑
+// 改回 open，项目重新跑起来）。只有用户手动改 open 才恢复。
+func TestActivatePausedDecisionListSkipsClosed(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	notes := filepath.Join(vault, "Projects", "002-magic-models-manager", "Notes")
+	if err := os.MkdirAll(notes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listPath := filepath.Join(notes, "Grilling-Decisions.md")
+	closed := "---\nid: \"grilling-decisions\"\nproject: 002-magic-models-manager\nstatus: closed\n---\n# Decisions\n- 决策: <用户填写>\n"
+	if err := os.WriteFile(listPath, []byte(closed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := activatePausedDecisionList(vault, "002-magic-models-manager"); ok || err != nil {
+		t.Fatalf("closed list: ok=%v err=%v, want false,nil（closed 不得自动激活）", ok, err)
+	}
+	if fm := mustParse(t, listPath); fm.Status != "closed" {
+		t.Fatalf("closed list status = %q, want closed（保持冻结）", fm.Status)
+	}
+}
+
+// TestDecisionListStatusGuardRestoresClosed 守护阶段派发路径：派发前快照
+// status=closed，阶段会话（模型写回）把它改成 open 后必须恢复 closed。
+func TestDecisionListStatusGuardRestoresClosed(t *testing.T) {
+	dir := t.TempDir()
+	listPath := filepath.Join(dir, "Grilling-Decisions.md")
+	if err := os.WriteFile(listPath, []byte("---\nid: \"grilling-decisions\"\nstatus: closed\n---\n# D\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := snapshotDecisionListStatus(listPath)
+	if g == nil || g.status != "closed" {
+		t.Fatalf("snapshot = %+v, want closed", g)
+	}
+	// 模拟阶段会话把 status 改成 open。
+	if err := os.WriteFile(listPath, []byte("---\nid: \"grilling-decisions\"\nstatus: open\n---\n# D\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !g.restoreIfClosed("002") {
+		t.Fatal("closed → open 应由守护恢复")
+	}
+	if fm := mustParse(t, listPath); fm.Status != "closed" {
+		t.Fatalf("status after restore = %q, want closed", fm.Status)
+	}
+	// 已是 closed 时幂等（不重复写）。
+	if g.restoreIfClosed("002") {
+		t.Fatal("status 已 closed，不应再触发恢复")
+	}
+	// open 快照不得拦截合法变更（守护只保护 closed）。
+	g2 := snapshotDecisionListStatus(listPath)
+	g2.status = "open"
+	if g2.restoreIfClosed("002") {
+		t.Fatal("open 快照不应恢复")
+	}
+}

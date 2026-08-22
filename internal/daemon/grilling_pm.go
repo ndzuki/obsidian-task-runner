@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -642,7 +643,8 @@ func grillingDecisionPendingForTask(path, taskID string) int {
 // Kitty decision tab, no grill_continue reset, no PM distribute/consolidate
 // dispatch, no parked-task un-parking. The pause lifts when the user acts:
 // manually setting the list status to "open", or updating the associated REQ
-// (daemon auto-activates — the user actively supplementing the requirement).
+// (daemon auto-activates — the user actively supplementing the requirement;
+// closed 除外：显式项目冻结只认手动 open)。
 //
 // Accepts "pause" (user typo variant seen in the field), "paused" and
 // "closed", case-insensitively.
@@ -670,6 +672,9 @@ func grillingListPaused(path string) bool {
 // pending_req, maturity gate, consolidate re-evaluating new requirements
 // against existing disputes, planning) pick up again, and the user aligns
 // via Grilling before tasks resume.
+// closed 不在此列：它是用户的显式项目冻结（「暂时不想开始这项目开发」），
+// 只有手动改回 open 才恢复——REQ 更新不得自动解锁（观测：magic-models-
+// manager 用户设 closed 后，TASK 会话写回 REQ 触发本函数把清单翻成 open）。
 // Returns true when the list existed and was paused.
 func activatePausedDecisionList(vaultPath, project string) (bool, error) {
 	path := filepath.Join(vaultPath, "Projects", project, "Notes", "Grilling-Decisions.md")
@@ -685,8 +690,11 @@ func activatePausedDecisionList(vaultPath, project string) (bool, error) {
 		return false, nil
 	}
 	switch strings.ToLower(fm.Status) {
-	case "paused", "pause", "closed":
+	case "paused", "pause":
 		// Fall through to reactivate.
+	case "closed":
+		// 显式项目冻结：不自动解锁。
+		return false, nil
 	default:
 		return false, nil
 	}
@@ -775,4 +783,49 @@ func summarizeOutput(output []byte) string {
 		return trimmed[:300] + "..."
 	}
 	return trimmed
+}
+
+// decisionListStatusGuard snapshots a decision list's frontmatter status
+// before a DSH phase runs, and restores it afterwards when the session
+// flipped a user-set closed back to open. closed 是用户显式的项目冻结
+// （「暂时不想开始这项目开发」）——模型写回（refining/PM 会话更新清单时）
+// 不得擅自解锁；只有用户手动把清单改回 open 才恢复自动化。
+type decisionListStatusGuard struct {
+	path   string
+	status string
+}
+
+func snapshotDecisionListStatus(path string) *decisionListStatusGuard {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		return nil
+	}
+	return &decisionListStatusGuard{path: path, status: strings.ToLower(fm.Status)}
+}
+
+// restoreIfClosed re-applies status=closed when the pre-phase status was
+// closed and the session changed it. Returns true when restored.
+func (g *decisionListStatusGuard) restoreIfClosed(taskID string) bool {
+	if g == nil || g.status != "closed" {
+		return false
+	}
+	fm, err := readFrontmatter(g.path)
+	if err != nil || fm == nil {
+		return false
+	}
+	if strings.ToLower(fm.Status) == "closed" {
+		return false
+	}
+	if err := yamlfrontmatter.Update(g.path, map[string]interface{}{
+		"status":  "closed",
+		"updated": time.Now().Format(time.RFC3339),
+	}); err != nil {
+		return false
+	}
+	log.Printf("decision list %s: session changed status=%q → restored closed (user project freeze) during task %s phase", g.path, fm.Status, taskID)
+	return true
 }
