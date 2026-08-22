@@ -1343,7 +1343,7 @@ func (r *Runner) resolveMergeChecksFailure(candidate task.ReadyTask, repoDir str
 // (conflict resolution or CI-fix). mode selects the skill step via prompt
 // suffix; the session never touches the remote.
 func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mode mergeFixMode) error {
-	model := r.selectModel(candidate.Assignee)
+	model := r.selectModel(candidate.Assignee, "merge")
 	skillPrompt := fmt.Sprintf("/obsidian-task-runner-merge %s %s", candidate.FilePath, mode)
 	// Inject the same project context (constraints / domain terms / ADRs)
 	// that refining/planning sessions get: conflict and CI-fix resolution

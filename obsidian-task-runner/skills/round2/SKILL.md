@@ -53,6 +53,8 @@ disable-model-invocation: true
 
 这样 Grilling 不再是"你觉得应该怎么设计？"而是"原型验证了 X 不可行（证据见 /path），建议采用 Y。你同意吗？"——一轮定案。
 
+> **Gate 验证器是持久验收资产（throwaway 例外）**：当本任务的入口门禁验证器（如 `web/prototype/*-gate.ts`）同时是其他任务的验收标准时，它**不是 throwaway**——必须随本任务实现提交进分支（合入 main），以 main 版本为唯一权威。门禁恢复后重跑必须使用 main 版本（先 `git fetch` + `git merge --ff-only upstream/main`），不得依赖 worktree 里未提交的旧副本。教训（2026-08-22 TASK-058/079）：验证器留在 worktree 未提交，承接任务无法发现、恢复后 worktree 重建即丢失。
+
 ## Tracer Bullet（逐AC推进）
 
 每条 AC 独立执行，Red/Green/Refactor 标准参照 `skill://tdd`：

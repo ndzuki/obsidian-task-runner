@@ -178,6 +178,19 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 - Kitty JSON 无法解析时不创建 tab，保留 notify-send fallback；Kitty 不可用时保持 needs-grilling 并周期重试。
 - **失败/切换通知按任务 5 分钟防抖**（`notifyFailure`）：⏰执行超时 / 💥进程异常 / 💰Token 不足 / 🔄模型切换 / ❌全部失败 / 🚫阶段失败——同级/低级别窗口内抑制，更高级别事件（❌全部失败 / 🚫阶段阻塞）升级后再发，保证终态必达（一个失败事件链最多 2 条：🔄+❌ 或 ⏰+🚫）；有 fallback 时失败原因并入切换通知单条发出。API key 故障走全局 5 分钟防抖（`notifyKeyUnavailable`）。**需求变更通知按 taskID+action 5 分钟防抖**（`notifyReqChanged`）：grilling 写回多次改写 REQ，每轮 on-req-changed 重复发同一条「需求变更」toast（TASK-058 观测：对齐后连续多条）——同一任务同一 action 窗口内只发第一条。
 
+## 阶段模型与推理强度路由（daemon 权威）
+
+`selectModel(assignee, phase)`（`internal/daemon/daemon.go`）与 `ompPhaseThinking(phase)`（`executor.go`）：
+
+| 阶段 | 模型（assignee=default 时） | reasoningEffort |
+|------|------------------------------|-----------------|
+| planning / round2 / merge（重型） | `models.deepseek_magic`（免费旗舰 deepseek-v4-pro；键缺失时硬编码同值） | planning=high / round2=max / merge=low |
+| refining / priority / design（规格作者） | `models.default`（gpt-5.4-mini） | refining=medium / priority=medium / design=medium |
+| pm / audit / conventions（确定性为主） | `models.default` | low |
+
+- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。
+- 教训（2026-08-22 复盘）：旧实现按 assignee 全阶段统一路由，default assignee 让 planning/round2 跑在 V4 Flash 级 mini 上——spec/计划/代码质量与 high/max effort 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。refining 的 effort 从 low 提到 medium 同理（spec 命名推断失误）。
+
 ## Fallback Model（兜底模型）
 
 模型兜底统一由 DSH 的 fallback.mjs 插件处理（配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
