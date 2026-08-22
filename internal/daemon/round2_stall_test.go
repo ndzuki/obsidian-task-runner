@@ -163,8 +163,11 @@ func TestRecordRound2CompletionCapsAtBlockLevel(t *testing.T) {
 	if fm.PhaseErrorCode != "PREREQUISITE_SMOKE_FAILED" {
 		t.Fatalf("phase_error_code = %q, want PREREQUISITE_SMOKE_FAILED", fm.PhaseErrorCode)
 	}
-	if fm.Round2StallUntil != "" || fm.Round2StallLevel != 0 {
-		t.Fatalf("stall fields not reset: until=%q level=%d", fm.Round2StallUntil, fm.Round2StallLevel)
+	if fm.Round2StallUntil != "" {
+		t.Fatalf("round2_stall_until not cleared: %q", fm.Round2StallUntil)
+	}
+	if fm.Round2StallLevel != round2StallBlockLevel {
+		t.Fatalf("round2_stall_level = %d, want %d（熔断标记保留，供 resolver 提高恢复门槛）", fm.Round2StallLevel, round2StallBlockLevel)
 	}
 }
 
@@ -189,5 +192,48 @@ func TestRecordRound2CompletionCapRestartSafe(t *testing.T) {
 	}
 	if fm.Status != "blocked" || fm.PhaseErrorCode != "PREREQUISITE_SMOKE_FAILED" {
 		t.Fatalf("重启后应仍触发熔断: status=%q code=%q", fm.Status, fm.PhaseErrorCode)
+	}
+}
+
+// TestPrereqDepsMergedStricterThanSatisfied 守护熔断后的事实恢复门槛：
+// prereqDepsSatisfied 接受 done+clean（历史语义），prereqDepsMerged 还要求
+// merge_status=merged——防陈旧 frontmatter（done 但 PR 从未合入，TASK-018）
+// 让熔断任务恢复后再次门禁 FAIL 形成 resume→FAIL→熔断循环。
+func TestPrereqDepsMergedStricterThanSatisfied(t *testing.T) {
+	dir := t.TempDir()
+	projDir := filepath.Join(dir, "Projects", "001-release-manager")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, status, merge, errCode string) {
+		t.Helper()
+		content := "---\nid: \"" + name + "\"\nproject: release-manager\nstatus: " + status + "\nmerge_status: " + merge + "\nphase_error_code: \"" + errCode + "\"\n---\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, "TASK-"+name+"-x.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("057", "done", "merged", "")
+	write("079", "done", "merged", "")
+	write("080", "done", "pushed", "") // 谎报：done 但 PR 未合并
+
+	runner := New(&config.Config{})
+	fm := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"057", "079"}}
+	if !runner.prereqDepsMerged(dir, projDir, fm) {
+		t.Fatal("全部 done+merged 应满足 prereqDepsMerged")
+	}
+	// merge_status=pushed 的上游：done 满足旧门槛，但不满足 merged 门槛。
+	fm2 := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"057", "080"}}
+	if !runner.prereqDepsSatisfied(dir, projDir, fm2) {
+		t.Fatal("done+clean 应满足 prereqDepsSatisfied（历史语义）")
+	}
+	if runner.prereqDepsMerged(dir, projDir, fm2) {
+		t.Fatal("merge_status=pushed 的上游不得满足 prereqDepsMerged（防谎报循环）")
+	}
+	// 上游带残留 phase error：两者都拒绝。
+	write("081", "done", "merged", "GIT_CONFLICT")
+	fm3 := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"057", "081"}}
+	if runner.prereqDepsSatisfied(dir, projDir, fm3) || runner.prereqDepsMerged(dir, projDir, fm3) {
+		t.Fatal("上游 phase_error 未清时两个门槛都必须拒绝")
 	}
 }

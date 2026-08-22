@@ -109,10 +109,17 @@ disable-model-invocation: true
      phase_error="{上游事实证据摘要，一句话}" \
      resume_approved=false
    ```
-3. 恢复由 daemon 自动完成：每轮 scan 检查 `blocked_by` 依赖**事实**（上游 `status=done` 且 `phase_error_code` 为空 = 上游 PR 已合入），事实变化后自动 `resume_approved=true`，无需用户干预、无需重新 grilling。
-4. 恢复后重新执行门禁；通过才进入 Step 2–9。未通过则再次 blocked（不消耗 grilling/refining 预算）。
+3. 恢复由 daemon 自动完成：每轮 scan 检查 `blocked_by` 依赖**事实**（上游 `status=done` 且 `phase_error_code` 为空 = 上游 PR 已合入；**已熔断过的任务**还要求上游 `merge_status=merged`），事实变化后自动 `resume_approved=true`，无需用户干预、无需重新 grilling。
+4. 恢复后**先同步 upstream/main 再重跑门禁**：
+   ```bash
+   git fetch upstream main
+   # 若工作树有未提交的旧门禁 fixture（throwaway），用 main 版本覆盖/移除后再同步
+   # （fixture 已随承接任务合入 main，以 main 版本为准，不在 worktree 手工维护）：
+   git merge --ff-only upstream/main   # 冲突按项目 ADR 处理
+   ```
+   然后重跑门禁；**通过才进入 Step 2–9**。未通过则保持 implementing 记录证据（进入 daemon 无进展冷却，见下），不写 blocked、不 replan。
 
-> **陈旧 upstream frontmatter 陷阱（TASK-071 教训）**：上游任务 frontmatter 显示 `done`+`merged` 但实际 PR 从未合入（TASK-018：旧 PR #16 标记 merged，v6 工作从未 push）时，转 blocked 会被 daemon 的 `prereqDepsSatisfied`（仅看 frontmatter）**每轮误恢复** → blocked→implementing→复验→blocked 模式 8 循环。此时**按计划批准路径保持 `implementing` 不转 blocked**——daemon 空转冷却接管：无进展完成（仍 implementing + 无 `checkpoint_commit`）进入指数退避冷却（10m→…→~10.7h），不每轮重派、不烧 token；**冷却截止时间持久化到 frontmatter `round2_stall_until`，daemon 重启不清零**（TASK-071 二修：纯内存冷却在频繁重启下每轮重启即重派）。恢复由事实变化或人工 `/obsidian-task-runner-round2` 驱动。无进展完成的 implementing 会话不发「未正常结束」通知（通知仅在真实阶段错误时携带错误原因；正常完成等待门禁的会话静默进入冷却）。
+> **陈旧 upstream frontmatter 陷阱（TASK-071 教训）**：上游任务 frontmatter 显示 `done`+`merged` 但实际 PR 从未合入（TASK-018：旧 PR #16 标记 merged，v6 工作从未 push）时，转 blocked 会被 daemon 的 `prereqDepsSatisfied`（仅看 frontmatter）**每轮误恢复** → blocked→implementing→复验→blocked 循环。因此门禁 FAIL 时**按计划批准路径保持 `implementing` 不转 blocked**——daemon 无进展冷却接管：无进展完成（仍 implementing + 无 `checkpoint_commit`）进入指数退避冷却（10m→…→~10.7h），不每轮重派、不烧 token；冷却截止时间持久化到 frontmatter `round2_stall_until`，daemon 重启不清零（TASK-071 二修：纯内存冷却在频繁重启下每轮重启即重派）。**无进展熔断（daemon 自动）**：连续 3 轮无进展（`round2_stall_level` 累计，跨重启持久）后 daemon 停止派发并转 `blocked` + `PREREQUISITE_SMOKE_FAILED`，此后恢复要求更严格（上游全部 done+clean **且 merge_status=merged**，防谎报循环）。恢复由事实变化（承接任务真实合入）或人工 `/obsidian-task-runner-round2` 驱动。无进展完成的 implementing 会话不发「未正常结束」通知（通知仅在真实阶段错误时携带错误原因；正常完成等待门禁的会话静默进入冷却）。
 
 ## Pending Requirement Handoff（pending_req安全交接）
 

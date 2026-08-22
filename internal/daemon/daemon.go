@@ -1997,6 +1997,13 @@ func (r *Runner) resolveBlockedDependencies() {
 			// blocked tasks — the entry gate is a blocked-state condition.
 			if fm.Status == "blocked" && fm.PhaseErrorCode == string(ErrPrerequisiteSmokeFailed) && !fm.ResumeApproved && len(fm.BlockedBy) > 0 {
 				if r.prereqDepsSatisfied(projectsDir, projDir, fm) {
+					// 已熔断过的任务（round2_stall_level 达到熔断级）：上游
+					// 仅 done 不够——必须 merge_status=merged 才算事实变化，
+					// 防陈旧 frontmatter（done 但 PR 从未合入，TASK-018）造成
+					// resume→门禁 FAIL→3 轮→熔断 的循环。
+					if fm.Round2StallLevel >= round2StallBlockLevel && !r.prereqDepsMerged(projectsDir, projDir, fm) {
+						continue
+					}
 					r.logger.Printf("dependency: prerequisite facts changed, resuming TASK-%s (blocked_phase=%s)", fm.ID, fm.BlockedPhase)
 					if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 						"resume_approved":     true,
@@ -2166,6 +2173,23 @@ func (r *Runner) prereqDepsSatisfied(projectsDir, projDir string, fm *yamlfrontm
 			return false
 		}
 		if upstream.Status != "done" || upstream.PhaseErrorCode != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// prereqDepsMerged is the stricter fact check for previously capped tasks:
+// every upstream must be done AND merge_status=merged. frontmatter done with
+// a stale/pushed/empty merge_status is the TASK-018 lie signature (done but
+// the PR never actually merged) that would loop a capped task forever.
+func (r *Runner) prereqDepsMerged(projectsDir, projDir string, fm *yamlfrontmatter.Frontmatter) bool {
+	for _, ref := range fm.BlockedBy {
+		upstream, _, err := r.findTaskByRef(projectsDir, projDir, ref)
+		if err != nil || upstream == nil {
+			return false
+		}
+		if upstream.Status != "done" || upstream.PhaseErrorCode != "" || upstream.MergeStatus != "merged" {
 			return false
 		}
 	}
@@ -2874,7 +2898,7 @@ func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 			"phase_error":        desc,
 			"resume_approved":    false,
 			"round2_stall_until": "",
-			"round2_stall_level": 0,
+			"round2_stall_level": level, // 保留熔断标记：resolver 对已熔断任务的恢复要求上游 merge_status=merged（防陈旧 frontmatter 谎报 done 造成 resume→FAIL→熔断循环）
 		}
 		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 			r.logger.Printf("task %s: cap round2 no-progress block: %v", taskID, err)
