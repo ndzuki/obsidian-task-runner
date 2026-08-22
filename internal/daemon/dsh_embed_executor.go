@@ -251,7 +251,9 @@ func (h *embedHandle) Wait() (*ExecutionResult, error) {
 		return res, nil
 	case <-h.ctx.Done():
 		if h.ctx.Err() == context.DeadlineExceeded {
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: "agent-server request timed out"}, nil
+			// 请求超时但会话可能仍在 agent-server 中运行：持久化 token，
+			// 下一轮 scan resume 同一会话——fresh start 会开双会话并行写。
+			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: "agent-server request timed out", ResumeToken: h.buildResumeToken(h.req.SessionID)}, nil
 		}
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: "agent-server request cancelled", ResumeToken: h.buildResumeToken(h.req.SessionID)}, nil
 	}
@@ -274,11 +276,15 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 	if err != nil {
 		switch h.ctx.Err() {
 		case context.DeadlineExceeded:
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: err.Error()}
+			// 同 Wait() 超时分支：会话可能仍在 agent-server 中运行。
+			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		case context.Canceled:
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		default:
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server unreachable: " + err.Error()}
+			// 连接失败：会话在 agent-server 里可能已建（请求发出后进程死亡），
+			// 保留 token 让下一轮 scan resume（持久层找不到则 agent-server
+			// 宽容创建），避免丢上下文 fresh start。
+			return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server unreachable: " + err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		}
 	}
 	defer resp.Body.Close()

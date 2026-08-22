@@ -85,6 +85,17 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 
 	default:
 		r.logger.Printf("task %s: DSH failed (%s): %s", t.ID, code, reason)
+		// 超时/断连类失败（OutcomeTimedOut/OutcomeFailed 携带 ResumeToken）：
+		// 会话可能仍在 agent-server 中运行，持久化 token 让下一轮 scan resume
+		// 同一会话。此前该路径丢 token → fresh start → 旧会话继续跑 + 新会话
+		// 并行写同一任务文档（监控面板因此出现「多个 agent 都在工作」）。
+		if result != nil && result.ResumeToken != "" {
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"executor_session_id": result.ResumeToken,
+			}); err != nil {
+				r.logger.Printf("task %s: persist resume token after failure: %v", t.ID, err)
+			}
+		}
 		r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, code, reason, logPath)
 		desc := fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason)
 		if isFreeModelRoute(model) && (code == ErrModelQuotaExhausted || code == ErrModelFailed) {

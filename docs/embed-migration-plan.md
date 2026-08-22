@@ -290,6 +290,26 @@ low/medium/high/xhigh 四档）：
 
 实测：TASK-001 resume → 不再 MODEL_FAILED → implementing 正常重派发 round2。
 
+### E4 残余缺陷修复：同进程 re-attach + resume 句柄 + 超时/断连 token（2026-08-22）
+
+监控面板「多个 agent 图标显示在工作」实查暴露三个 durable resume 残余缺陷：
+
+1. **resume 成功路径崩溃**：`agents.resume()` 返回 published handle
+   `{ agent, dispose }`，插件把它整体当 agent 用 → 每次成功 resume 都 500
+   `agent.whenIdle is not a function`（实测复现）。修复：取 `resumed.agent`。
+2. **同进程活会话无法 re-attach**：daemon 超时/中断后带同一 sessionId 再次
+   `/agent/run` 时，会话仍存活于 agent-server registry，`agents.resume` 对
+   live 会话抛 `cannot prepare session while it is live` → 永远挂接失败。
+   修复：acquireAgent 先 `agents.get(sessionId)` 命中活会话直接复用。
+3. **超时/断连丢 token → 双会话并行**：daemon 侧 HTTP 超时（agent-server 里
+   会话仍在跑）与 agent-server 不可达两条路径此前不携带 ResumeToken →
+   下一轮 scan fresh start → 同一任务两个会话并行写（面板两个「工作」图标）。
+   修复：Timeout/Unreachable 分支同样 `buildResumeToken`，并在
+   `runDSHPhaseDispatch` 失败分支持久化 `executor_session_id`。
+
+配套：re-attach 时 inbox 已有相同任务文本则跳过重复投递（只等它跑完收集结果）；
+已完成的 run 会话 10 分钟后 dispose 回收内存，resume 从持久层重载。
+
 ## 12. Agent 并发监控面板（2026-08-20）
 
 token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
@@ -302,6 +322,11 @@ token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
   每 2 秒，DiceBear Bottts SVG 机器人（seed=sessionId，每 agent 一个独特角色）
   + Emoji 状态 + CSS 动画（呼吸/脉冲/弹跳）。
 - **vault.mjs 加 `/agents` 命令**：dsh web 对话里输入 `/agents` 打开监控面板。
+- **面板只列活跃会话（2026-08-22 修复）**：`/agents` 仅返回进行中的 run 会话 +
+  存活中的 chat 会话；已完成的 run 会话 10 分钟后 dispose（resume 仍可从持久
+  层重载），数量经 `x-agents-finished` 响应头暴露（面板显示「N 活跃 · M 最近
+  完成」）。此前已完成会话永久驻留面板，造成「多个 agent 图标显示在工作」
+  的假象。
 - 资源占用：面板单文件 ~5KB + 每活跃 agent 一个 ~1KB SVG（懒加载）+ 几行 CSS，
   无前端框架、无大图、无重动画循环；轮询只在面板打开时进行。
 
