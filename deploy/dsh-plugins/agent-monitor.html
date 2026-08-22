@@ -35,11 +35,18 @@
   const PHASE_CN = { refining: '需求细化', round1: '规划', round2: '实现', merge: '合并', priority: '优先级', pm: '统筹', split: '拆分', conventions: '规范审查', audit: '审计', design: '设计', grilling: '交互问答' };
   function fmt(s) { const m = Math.floor(s/60), r = s%60; return m > 0 ? m + 'm' + r + 's' : r + 's'; }
   async function poll() {
-    let agents;
-    try { agents = await (await fetch('/agents')).json(); } catch (e) { return; }
+    let agents, finished = 0;
+    try {
+      const resp = await fetch('/agents');
+      finished = parseInt(resp.headers.get('x-agents-finished') || '0', 10) || 0;
+      agents = await resp.json();
+    } catch (e) { return; }
     const grid = document.getElementById('grid');
-    document.getElementById('count').textContent = agents.length ? ('· ' + agents.length + ' 活跃') : '· 空闲';
-    if (!agents.length) { grid.innerHTML = '<div class="empty">😴 无活跃 agent（空闲）</div>'; return; }
+    let suffix = finished > 0 ? (' · ' + finished + ' 最近完成') : '';
+    document.getElementById('count').textContent = agents.length
+      ? ('· ' + agents.length + ' 活跃' + suffix)
+      : ('· 空闲' + suffix);
+    if (!agents.length) { grid.innerHTML = '<div class="empty">😴 无活跃 agent（空闲）' + (finished > 0 ? '；最近 1 小时完成 ' + finished + ' 个会话' : '') + '</div>'; return; }
     grid.innerHTML = agents.map(a => {
       const emoji = EMOJI[a.status] || '⚙️';
       const cls = CLS[a.status] || 'working';

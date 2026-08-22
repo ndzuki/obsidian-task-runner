@@ -233,6 +233,11 @@ func TestDSHEmbedExecutorUnreachable(t *testing.T) {
 	if res.Error == "" {
 		t.Error("error must be non-empty on unreachable agent-server")
 	}
+	// 断连也要保留 token：下一轮 scan resume 同一会话而非 fresh start，
+	// 否则旧会话在 agent-server 里继续跑，出现同任务双会话并行。
+	if res.ResumeToken == "" {
+		t.Fatal("unreachable 时应持久化 ResumeToken（防 fresh start 双会话）")
+	}
 }
 
 // TestDSHEmbedExecutorResumeTokenRoundTrip 断言 dispatch 返回的 ResumeToken
@@ -340,5 +345,38 @@ func TestDSHEmbedExecutorInterruptedPersistsResumeToken(t *testing.T) {
 	}
 	if tok.SessionID != "session-daemon-allocated" || tok.Model != "deepseek-v4-pro" {
 		t.Fatalf("resume token 字段错误: %+v", tok)
+	}
+}
+
+// TestDSHEmbedExecutorTimeoutPersistsResumeToken 断言 HTTP 超时（daemon 侧
+// 30 分钟 deadline，/agent/run 响应未返回）也持久化 ResumeToken——超时后
+// 会话可能仍在 agent-server 中运行，fresh start 会开双会话并行写。
+func TestDSHEmbedExecutorTimeoutPersistsResumeToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	h := &embedHandle{
+		ctx:         ctx,
+		cancel:      cancel,
+		phase:       "round1",
+		req:         agentRunRequest{SessionID: "session-timeout-case", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
+		provider:    "deepseek_magic",
+		model:       "deepseek-v4-pro",
+		effort:      "high",
+		skillPrompt: "/obsidian-task-runner-round1 /vault/TASK.md",
+	}
+	time.Sleep(60 * time.Millisecond) // deadline 先到
+	res, err := h.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if res.Code != OutcomeTimedOut {
+		t.Fatalf("code = %q, want timed-out", res.Code)
+	}
+	if res.ResumeToken == "" {
+		t.Fatal("超时时应持久化 ResumeToken（会话可能仍在 agent-server 运行）")
+	}
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil || tok.SessionID != "session-timeout-case" {
+		t.Fatalf("resume token 字段错误: %+v (err=%v)", tok, err)
 	}
 }

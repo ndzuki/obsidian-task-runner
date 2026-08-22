@@ -25,6 +25,8 @@
  * RPC 契约：
  *   GET  /health                      → 200 { ok: true }
  *   GET  /agents                      → 200 [ { sessionId, phase, task, status, elapsed } ]
+ *        （仅活跃会话：进行中的 run + 存活中的 chat；已完成的 run 会话不出现在
+ *        列表中，其数量经 x-agents-finished 响应头暴露给监控面板）
  *   GET  /monitor（或 /）             → agent-monitor.html 监控面板
  *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId? }
  *     → 200 { text, outcome, sessionId, errorCode? }
@@ -47,6 +49,14 @@ const ALLOWED_KEYS = new Set(["port", "host"])
 /** 交互会话空闲回收窗口：客户端死亡（tab 被直接关闭）后不再有 /agent/close，
  * 超过该时长的 chat 会话在 /agents 枚举时惰性取消，避免僵尸条目永久驻留。 */
 const CHAT_IDLE_DISPOSE_MS = 30 * 60 * 1000
+
+/** run 会话完成后的内存保留窗口：daemon 在中断/超时后会带同一 sessionId
+ * 再次 /agent/run（durable resume），保留窗口内可 re-attach 到热会话；
+ * 超时后 dispose 回收 registry/事件内存（resume 仍可从持久层重新加载）。 */
+const RUN_DISPOSE_MS = 10 * 60 * 1000
+
+/** 监控面板「最近完成」计数窗口：仅统计该窗口内完成的 run 会话。 */
+const RUN_FINISHED_TRACK_MS = 60 * 60 * 1000
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 
@@ -185,6 +195,14 @@ export function apply(ctx, config = {}) {
   /** 已显式关闭（或惰性回收）的 chat sessionId：/agents 不再展示。 */
   const closedChat = new Set()
 
+  /** run sessionId -> 完成时间（ms）：已完成的 run 会话从 /agents 隐藏，
+   * 并在 RUN_DISPOSE_MS 后 dispose 回收；条目保留 RUN_FINISHED_TRACK_MS
+   * 供「最近完成」计数，随后在 /agents 枚举时惰性剪除。 */
+  const finishedRuns = new Map()
+
+  /** sessionId -> dispose 闭包（agents.create/resume 返回的生命周期 teardown）。 */
+  const disposeBySession = new Map()
+
   // agent/request（prepend 最外层）：注入 per-请求 reasoningEffort。AgentOptions
   // 不含 reasoningEffort，只能经此 waterfall 注入（对齐 fallback.mjs 的做法）。
   ctx.on("agent/request", async (payload, next) => {
@@ -197,7 +215,7 @@ export function apply(ctx, config = {}) {
     return { ...rest, reasoningEffort: effort }
   }, { prepend: true })
 
-  // agent 销毁时回收状态。
+  // agent 销毁时回收状态（finishedRuns 保留：它同时承载「最近完成」计数）。
   ctx.on("agent/disposed", (payload) => {
     const agent = payload?.agent
     if (agent !== undefined) {
@@ -206,6 +224,7 @@ export function apply(ctx, config = {}) {
       liveAgents.delete(sid)
       chatLastAt.delete(sid)
       closedChat.delete(sid)
+      disposeBySession.delete(sid)
     }
   })
 
@@ -237,23 +256,37 @@ export function apply(ctx, config = {}) {
     const setup = undefined
 
     let agent
+    let dispose = undefined
     if (payload.sessionId !== undefined && payload.sessionId !== "") {
-      try {
-        agent = await agents.resume({
-          resumeSessionId: payload.sessionId,
-          agentOptions,
-          setup,
-        })
-      } catch (err) {
-        if (!lenientCreate || !isSessionNotFound(err)) throw err
-        console.error(`agent-server: resume(${payload.sessionId}) not found — creating fresh session with that id (lenient /agent/run)`)
-        const created = await agents.create({
-          sessionId: payload.sessionId,
-          meta: { cwd: process.cwd() },
-          agentOptions,
-          setup,
-        })
-        agent = created.agent
+      // 会话仍存活在本进程（daemon 中断/超时后 re-attach 的主路径）：直接复用
+      // 实例。绝不走 agents.resume —— 持久层对 live 会话抛 "cannot prepare
+      // session while it is live"，会导致 resume 永远挂接失败。
+      const live = typeof agents.get === "function" ? agents.get(payload.sessionId) : undefined
+      if (live !== undefined) {
+        agent = live
+      } else {
+        try {
+          // agents.resume 返回 published handle { agent, dispose }，取 .agent
+          // （曾直接赋值导致 resume 成功后 agent.whenIdle is not a function）。
+          const resumed = await agents.resume({
+            resumeSessionId: payload.sessionId,
+            agentOptions,
+            setup,
+          })
+          agent = resumed.agent
+          dispose = resumed.dispose
+        } catch (err) {
+          if (!lenientCreate || !isSessionNotFound(err)) throw err
+          console.error(`agent-server: resume(${payload.sessionId}) not found — creating fresh session with that id (lenient /agent/run)`)
+          const created = await agents.create({
+            sessionId: payload.sessionId,
+            meta: { cwd: process.cwd() },
+            agentOptions,
+            setup,
+          })
+          agent = created.agent
+          dispose = created.dispose
+        }
       }
     } else {
       const created = await agents.create({
@@ -263,12 +296,56 @@ export function apply(ctx, config = {}) {
         setup,
       })
       agent = created.agent
+      dispose = created.dispose
     }
 
+    if (dispose !== undefined) disposeBySession.set(String(agent.session.id), dispose)
     if (payload.reasoningEffort !== undefined && payload.reasoningEffort !== "") {
       effortByAgent.set(agent.id, payload.reasoningEffort)
     }
     return agent
+  }
+
+  /** 判断 inbox 里是否已有一份内容相同的待投递 user 消息（re-attach 时
+   *  原请求的消息可能还在队列里：跳过重复投递，只等它跑完并收集结果）。 */
+  function pendingSameTask(agent, task) {
+    const text = task.trim()
+    for (const message of agent.inbox?.nextTurn ?? []) {
+      const joined = (message.content ?? [])
+        .filter((block) => block?.type === "text" && typeof block.text === "string")
+        .map((block) => block.text)
+        .join("\n")
+        .trim()
+      if (joined !== "" && joined === text) return true
+    }
+    return false
+  }
+
+  /** 完成一个 run 会话：进入 finishedRuns（面板隐藏 + TTL dispose）。 */
+  function finishRun(sessionKey) {
+    finishedRuns.set(sessionKey, Date.now())
+    scheduleRunDispose(sessionKey)
+  }
+
+  /** TTL 后 dispose 已完成的 run 会话，回收 registry 与事件内存。 */
+  function scheduleRunDispose(sessionKey) {
+    const timer = setTimeout(() => {
+      const finishedAt = finishedRuns.get(sessionKey)
+      if (finishedAt === undefined) return // 已 re-attach 复活
+      if (Date.now() - finishedAt < RUN_DISPOSE_MS) return
+      const agent = typeof agents.get === "function" ? agents.get(sessionKey) : undefined
+      if (agent === undefined) return
+      if (agent.status !== "idle") return // 又开工：交给下一次完成时的调度
+      const dispose = disposeBySession.get(sessionKey)
+      if (dispose === undefined) return
+      disposeBySession.delete(sessionKey)
+      try {
+        dispose()
+      } catch (err) {
+        console.error(`agent-server: dispose finished run ${sessionKey} failed: ${err?.message ?? err}`)
+      }
+    }, RUN_DISPOSE_MS)
+    timer.unref?.()
   }
 
   /** 驱动一个 agent 到 quiescence 并收集结果。 */
@@ -276,17 +353,23 @@ export function apply(ctx, config = {}) {
     const task = payload.task
     if (typeof task !== "string" || task.length === 0) throw new TypeError("task must be a non-empty string")
     const agent = await acquireAgent(payload, true)
+    const sessionKey = String(agent.session.id)
+    finishedRuns.delete(sessionKey) // re-attach：会话复活，重新计入活跃
 
-    await agent.whenIdle()
-    const firstSeq = agent.session.seq
-    agent.followup(userMessage(task))
-    await agent.whenIdle()
-    const outcome = summarize(agent.session.events, firstSeq)
-    return {
-      text: outcome.text,
-      outcome: mapOutcome(outcome.reason),
-      sessionId: String(agent.session.id),
-      errorCode: outcome.reason?.kind === "error" ? outcome.reason.error?.code : undefined,
+    try {
+      await agent.whenIdle()
+      const firstSeq = agent.session.seq
+      if (!pendingSameTask(agent, task)) agent.followup(userMessage(task))
+      await agent.whenIdle()
+      const outcome = summarize(agent.session.events, firstSeq)
+      return {
+        text: outcome.text,
+        outcome: mapOutcome(outcome.reason),
+        sessionId: sessionKey,
+        errorCode: outcome.reason?.kind === "error" ? outcome.reason.error?.code : undefined,
+      }
+    } finally {
+      finishRun(sessionKey)
     }
   }
 
@@ -314,6 +397,7 @@ export function apply(ctx, config = {}) {
     const sessionKey = String(agent.session.id)
     chatLastAt.set(sessionKey, Date.now())
     closedChat.delete(sessionKey)
+    finishedRuns.delete(sessionKey) // 已完成的 run 会话被 chat 复用：恢复活跃展示
 
     await agent.whenIdle()
     const firstSeq = agent.session.seq
@@ -329,7 +413,7 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  /** 取消一个交互会话（客户端退出后调用，或僵尸惰性回收）。 */
+  /** 取消并销毁一个交互会话（客户端退出后调用，或僵尸惰性回收）。 */
   function closeChat(sessionKey) {
     const agent = liveAgents.get(sessionKey)
     if (agent === undefined) return
@@ -342,18 +426,33 @@ export function apply(ctx, config = {}) {
     chatLastAt.delete(sessionKey)
     effortByAgent.delete(agent.id)
     closedChat.add(sessionKey)
+    const dispose = disposeBySession.get(sessionKey)
+    disposeBySession.delete(sessionKey)
+    if (dispose !== undefined) {
+      try {
+        dispose()
+      } catch (err) {
+        console.error(`agent-server: closeChat(${sessionKey}) dispose failed: ${err?.message ?? err}`)
+      }
+    }
   }
 
-  /** 监控面板：列出 live agents（run + chat），chat 僵尸惰性回收。 */
+  /** 监控面板：列出 live agents（run + chat），chat 僵尸惰性回收。
+   *  已完成的 run 会话不在列表中——面板只反映「当前真实并发」；其数量经
+   *  finishedRuns 最近一小时窗口计数暴露（x-agents-finished）。 */
   function listAgents() {
     const now = Date.now()
     for (const [sid, lastAt] of chatLastAt) {
       if (now - lastAt > CHAT_IDLE_DISPOSE_MS) closeChat(sid)
     }
+    for (const [sid, finishedAt] of finishedRuns) {
+      if (now - finishedAt > RUN_FINISHED_TRACK_MS) finishedRuns.delete(sid)
+    }
     const out = []
     for (const agent of agents.list()) {
       const sid = String(agent.session?.id ?? agent.id)
       if (closedChat.has(sid)) continue
+      if (finishedRuns.has(sid)) continue
       const text = firstUserText(agent.session)
       const { phase, task } = labelFromText(text)
       out.push({
@@ -386,7 +485,10 @@ export function apply(ctx, config = {}) {
       return
     }
     if (req.method === "GET" && req.url === "/agents") {
-      res.writeHead(200, { "content-type": "application/json" })
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "x-agents-finished": String(finishedRuns.size),
+      })
       res.end(JSON.stringify(listAgents()))
       return
     }
