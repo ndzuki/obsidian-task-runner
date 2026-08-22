@@ -126,13 +126,18 @@ type ExecutionHandle interface {
 
 // ompPhaseThinking mirrors the daemon's current phase→reasoning-effort mapping.
 // Reasoning effort by phase nature:
-//   - priority / audit / pm / refining：评估与整理类，medium/low 足够（不需 deep reasoning）
+//   - priority / refining / design：评估/规格作者类，medium（spec 命名推断
+//     类失误证明 low 不够，但每轮 high 太贵）
+//   - audit / pm / merge / conventions：确定性为主，low
 //   - planning：跨需求规划，high（需要理解多需求关系）
 //   - round2：实现阶段，max（最复杂，需 deep reasoning 写代码）
 //   - grilling 交互在 kitty-grill 单独分级（需求详细化 high、决策清单 low）
 func ompPhaseThinking(phase string) string {
 	switch phase {
-	case "priority":
+	case "priority", "refining", "design":
+		// 规格作者与设计库修订：medium——低强度下的 spec 命名推断类失误
+		// （TASK-079 D5 字段名 vs gate fixture）证明 low 不够，但 high 对
+		// 每轮 refining 太贵。
 		return "medium"
 	case "round2":
 		return "max"

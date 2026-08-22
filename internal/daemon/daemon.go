@@ -3105,7 +3105,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			continue
 		}
 		// ── Direct phase dispatch ──
-		model := r.selectModel(t.Assignee)
+		var model string
 		var phase, skillPrompt string
 
 		switch {
@@ -3141,10 +3141,9 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if t.Maturity == "fully_mature" && t.RefineReqHash != "" && t.RefineReqHash == r.reqHash(t.ReqDoc) {
 				r.logger.Printf("task %s: fully mature, audit current → planning", t.ID)
 				phase = "planning"
-				// Planning runs on the TASK assignee's model (docs/workflow.md
-				// 1.1); the refining early-out must not inherit the default
-				// model used for the maturity gate.
-				model = r.selectModel(t.Assignee)
+				// 重型阶段默认走免费旗舰 v4-pro；显式 assignee 仍可覆盖
+				// （selectModel 相位感知路由）。
+				model = r.selectModel(t.Assignee, "planning")
 				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 			} else {
 				phase = "refining"
@@ -3290,6 +3289,11 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// 阶段派发统一走 DSH executor（dsh-embed 长驻 agent-server 或 dsh spawn）。
 		// runDSHPhaseDispatch 内部处理成功/失败的 shared tail（写回 + 通知），
 		// 返回 handled=true 表示本阶段已完整处理。
+		// 相位感知模型路由兜底：planning/round2 等分支未显式指定模型时，
+		// 按重型/轻量阶段选择（selectModel）。
+		if model == "" {
+			model = r.selectModel(t.Assignee, phase)
+		}
 		// 项目冻结守护：派发前快照决策清单 status=closed 的用户意图，阶段
 		// 会话（refining/PM 等模型写回）不得擅自改回 open（观测：用户设
 		// closed 后 TASK-002 refining 会话把清单翻成 open）。
@@ -3666,8 +3670,32 @@ func (r *Runner) ensureProjectContext(projDir string) error {
 	return os.WriteFile(contextPath, []byte(content), 0o644)
 }
 
-func (r *Runner) selectModel(assignee string) string {
-	return r.cfg.Model(assignee)
+// selectModel routes a phase to its model identity.
+//   - 显式 assignee（非空且非 "default"）覆盖一切——用户可逐任务指定模型；
+//   - 否则重型阶段（planning/round2/merge）用 models.deepseek_magic（免费
+//     旗舰 deepseek-v4-pro），轻量阶段（refining/priority/pm/audit/
+//     conventions/design）用 models.default（gpt-5.4-mini）。
+//
+// 背景（2026-08-22 收口复盘）：config.DefaultModels 的注释声称重型阶段用
+// 旗舰，但实现一直按 assignee 全阶段统一路由——default assignee 让 planning/
+// round2 也跑在 V4 Flash 级 mini 上，spec/计划/代码质量与「high/max effort」
+// 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。
+func (r *Runner) selectModel(assignee, phase string) string {
+	if assignee != "" && assignee != "default" {
+		return r.cfg.Model(assignee)
+	}
+	switch phase {
+	case "planning", "round2", "merge":
+		// 注意：不能用 cfg.Model("deepseek_magic")——键缺失时会回退 default
+		// （mini），重型阶段又退化成 Flash。直接查 models 表，缺失时硬编码
+		// 免费旗舰。
+		if m, ok := r.cfg.Models["deepseek_magic"]; ok && m != "" {
+			return m
+		}
+		return "deepseek_magic/deepseek-v4-pro"
+	default:
+		return r.cfg.Model("default")
+	}
 }
 
 // cleanupOrphanWorktrees 回收已交付/关闭/孤儿任务的 git worktree。

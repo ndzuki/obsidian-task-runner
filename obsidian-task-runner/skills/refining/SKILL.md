@@ -25,6 +25,11 @@ hide: true
    - `## 验收标准` 的 AC 列表（grep 或前 N 行）。
    大 REQ（>20KB）全文读取是会话 token 的最大来源，除非某章节确实需要完整内容，否则不整读。
 5. 非 `plan-review` 状态发现 `plan_approved=true` → 重置 false 并写审计 warning。
+6. **门禁承接类 REQ（为解除另一任务的入口门禁而建，如 canonical 契约补齐）**：
+   - **验证器权威**：定位被承接任务的入口门禁验证器（通常是其计划 Step 1 声明的 fixture，如 `web/prototype/*-gate.ts`；可能在被承接任务的 worktree 中——从被承接任务文档的「Round 2 阻塞/变更记录」找到路径，再 `find`/`read` 实际文件）。契约字段名/符号清单**以验证器逐字为准**；禁止从散文/ADR 推断命名，推断命名必须显式标注「未验证」。
+   - 验证器是**持久验收资产**：要求 REQ 的 AC 包含「把验证器原样提交进 main，并以验证器编译 0 错误作为验收」；找不到验证器时在 REQ 中显式标注「验证器未知」并建议由承接任务重建。
+   - 被承接任务的 `blocked_by` 必须指向本任务（承接关系可被 daemon 事实恢复消费）。
+   - 教训（2026-08-22 TASK-079）：refining 按散文推断的 `ReleaseSummary` 字段名与 gate fixture 不一致，差点让 079 合入后 058 门禁仍 FAIL。
 
 ## Step 2: Maturity Gate（成熟度门禁）
 

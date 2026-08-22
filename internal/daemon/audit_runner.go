@@ -306,7 +306,7 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 	if !apiKeyAvailable() {
 		return nil, "", errAPIKeyUnavailable
 	}
-	model := r.selectModel(t.Assignee)
+	model := r.selectModel(t.Assignee, "audit")
 	if r.cfg.Audit != nil && r.cfg.Audit.Model != "" {
 		model = r.cfg.Audit.Model
 	}
