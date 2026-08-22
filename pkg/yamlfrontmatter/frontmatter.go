@@ -103,6 +103,7 @@ type Frontmatter struct {
 	ReqRefineCount      int      `yaml:"req_refine_count"`
 	TaskSchemaVersion   int      `yaml:"task_schema_version"`
 	Round2StallUntil    string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
+	Round2StallLevel    int      `yaml:"round2_stall_level"` // consecutive no-progress round2 completions (restart-safe; caps at block level)
 	// Completion audit (independent verification, daemon-maintained).
 	AuditStatus    string `yaml:"audit_status"`     // "" | "pending" | "passed"
 	AuditFailCount int    `yaml:"audit_fail_count"` // consecutive failed audits before block
@@ -330,7 +331,7 @@ var taskFieldOrder = []string{
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
 	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
-	"round2_stall_until",
+	"round2_stall_until", "round2_stall_level",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
 	"blocked_phase", "blocked_at", "phase_error", "phase_error_code", "phase_log",
@@ -412,6 +413,7 @@ var taskFieldDefaults = map[string]interface{}{
 	"pr_url":                "",
 	"completed":             "",
 	"round2_stall_until":    "",
+	"round2_stall_level":    0,
 	"reopen_count":          0,
 	"generation":            1,
 	"attempt_id":            "",

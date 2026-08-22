@@ -2750,6 +2750,12 @@ const (
 	// (10m → 20m → 40m → 80m → 160m → 320m → 640m ≈ 10.7h ceiling).
 	round2StallBaseCooldown = 10 * time.Minute
 	round2StallMaxLevel     = 6
+	// round2StallBlockLevel caps consecutive no-progress Round 2 sessions.
+	// 达到该级别后不再派发任何 round2 会话（每轮都是一次全量 LLM 会话）——
+	// 任务转 blocked + PREREQUISITE_SMOKE_FAILED 门禁态，等待 blocked_by
+	// 上游交付合入后按事实自动恢复（观测：TASK-058 同一 gate FAIL 报告
+	// 空转 8+ 轮，每轮烧 token 且零进展）。
+	round2StallBlockLevel = 2
 )
 
 func round2StallCooldown(level int) time.Duration {
@@ -2816,7 +2822,13 @@ func (r *Runner) round2StallActive(taskPath string) (time.Time, bool) {
 // session. Sessions that advanced the task (checkpoint_commit written, or the
 // task left implementing) reset the cooldown; sessions that left the task
 // implementing without a checkpoint raise it. The new deadline is persisted
-// to frontmatter round2_stall_until (RFC3339).
+// to frontmatter round2_stall_until (RFC3339) and the level to
+// round2_stall_level (restart-safe).
+//
+// 熔断：连续无进展达到 round2StallBlockLevel 后，不再派发新的 round2 会话
+// ——任务转 blocked + PREREQUISITE_SMOKE_FAILED 门禁态（blocked_phase=
+// implementing）。blocked_by 非空时 daemon 按事实恢复（上游全部 done+
+// merged 后自动 resume）；blocked_by 为空时需人工 resume_approved=true。
 func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 	data, err := os.ReadFile(taskPath)
 	if err != nil {
@@ -2828,19 +2840,57 @@ func (r *Runner) recordRound2Completion(taskPath, taskID string) {
 	}
 	if fm.Status != "implementing" || fm.CheckpointCommit != "" {
 		r.round2Stalls.Delete(taskPath)
-		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"round2_stall_until": ""})
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"round2_stall_until": "",
+			"round2_stall_level": 0,
+		})
 		return
 	}
-	level := 0
+	level := fm.Round2StallLevel
 	if old, ok := r.round2Stalls.Load(taskPath); ok {
 		level = old.(round2Stall).level + 1
-		if level > round2StallMaxLevel {
-			level = round2StallMaxLevel
-		}
+	} else if fm.Round2StallUntil != "" {
+		// 重启后内存清空：frontmatter 里的 level 是上一轮记录值。
+		level = fm.Round2StallLevel + 1
 	}
+	if level > round2StallMaxLevel {
+		level = round2StallMaxLevel
+	}
+
+	if level >= round2StallBlockLevel {
+		// 熔断：停止自动派发，转门禁阻塞，等事实恢复。
+		r.round2Stalls.Delete(taskPath)
+		desc := "Round 2 连续 " + fmt.Sprintf("%d", level+1) + " 轮无进展（checkpoint 无变化），daemon 已停止自动派发以避免空转烧 token。"
+		if len(fm.BlockedBy) > 0 {
+			desc += "等待 blocked_by 上游交付合入（全部 done+merged 后自动恢复）。"
+		} else {
+			desc += "无 blocked_by 事实可等待：修复后请手动设 resume_approved=true 恢复。"
+		}
+		updates := map[string]interface{}{
+			"status":             "blocked",
+			"blocked_phase":      "implementing",
+			"blocked_at":         time.Now().Format(time.RFC3339),
+			"phase_error_code":   string(ErrPrerequisiteSmokeFailed),
+			"phase_error":        desc,
+			"resume_approved":    false,
+			"round2_stall_until": "",
+			"round2_stall_level": 0,
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+			r.logger.Printf("task %s: cap round2 no-progress block: %v", taskID, err)
+			return
+		}
+		r.logger.Printf("task %s: round2 no-progress capped at level %d — blocked (PREREQUISITE_SMOKE_FAILED), no further sessions until facts change", taskID, level)
+		notify.SendTaskAction(taskID, fm.Title, "🚧", "Round 2 无进展熔断", desc, r.cfg.Notifications.Desktop)
+		return
+	}
+
 	until := time.Now().Add(round2StallCooldown(level))
 	r.round2Stalls.Store(taskPath, round2Stall{until: until, checkpoint: fm.CheckpointCommit, level: level})
-	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"round2_stall_until": until.Format(time.RFC3339)}); err != nil {
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"round2_stall_until": until.Format(time.RFC3339),
+		"round2_stall_level": level,
+	}); err != nil {
 		r.logger.Printf("task %s: persist round2 stall deadline: %v", taskID, err)
 	}
 	r.logger.Printf("task %s: round2 no-progress completion recorded (cooldown level %d, retry after %s)", taskID, level, until.Format("15:04:05"))

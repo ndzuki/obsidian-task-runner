@@ -112,3 +112,82 @@ func TestRecordRound2Completion(t *testing.T) {
 		t.Fatal("stall not reset after status change")
 	}
 }
+
+// TestRecordRound2CompletionCapsAtBlockLevel 守护无进展熔断：连续 3 轮
+// no-progress round2（level 0,1,2）后不再派发会话——任务转 blocked +
+// PREREQUISITE_SMOKE_FAILED 门禁态，等待 blocked_by 事实恢复（观测：
+// TASK-058 同一 gate FAIL 报告空转 8+ 轮，每轮一次全量 LLM 会话）。
+func TestRecordRound2CompletionCapsAtBlockLevel(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	writeTask := func(status, checkpoint string) {
+		t.Helper()
+		content := "---\nid: \"058\"\ntitle: T\nstatus: " + status + "\ncheckpoint_commit: \"" + checkpoint + "\"\nblocked_by:\n  - \"079\"\n---\n"
+		if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+
+	// 第 1 轮无进展 → level 0（10m 冷却），仍在 implementing。
+	writeTask("implementing", "")
+	runner.recordRound2Completion(taskPath, "058")
+	if s, ok := runner.round2Stalls.Load(taskPath); !ok || s.(round2Stall).level != 0 {
+		t.Fatalf("round 1: stall = %v ok=%v, want level 0", s, ok)
+	}
+	// 第 2 轮 → level 1。
+	writeTask("implementing", "")
+	runner.recordRound2Completion(taskPath, "058")
+	if s, _ := runner.round2Stalls.Load(taskPath); s.(round2Stall).level != 1 {
+		t.Fatalf("round 2: level = %d, want 1", s.(round2Stall).level)
+	}
+	// 第 3 轮 → level 2 ≥ block level：熔断转 blocked，不再排冷却。
+	writeTask("implementing", "")
+	runner.recordRound2Completion(taskPath, "058")
+	if _, ok := runner.round2Stalls.Load(taskPath); ok {
+		t.Fatal("熔断后不应再有内存 stall 状态")
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal("parse after cap")
+	}
+	if fm.Status != "blocked" || fm.BlockedPhase != "implementing" {
+		t.Fatalf("status/blocked_phase = %q/%q, want blocked/implementing", fm.Status, fm.BlockedPhase)
+	}
+	if fm.PhaseErrorCode != "PREREQUISITE_SMOKE_FAILED" {
+		t.Fatalf("phase_error_code = %q, want PREREQUISITE_SMOKE_FAILED", fm.PhaseErrorCode)
+	}
+	if fm.Round2StallUntil != "" || fm.Round2StallLevel != 0 {
+		t.Fatalf("stall fields not reset: until=%q level=%d", fm.Round2StallUntil, fm.Round2StallLevel)
+	}
+}
+
+// TestRecordRound2CompletionCapRestartSafe：重启后 level 从 frontmatter
+// 恢复——已 2 轮无进展的任务重启后第 3 轮仍触发熔断（不会因重启回到 10m
+// 冷却无限空转）。
+func TestRecordRound2CompletionCapRestartSafe(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-058.md")
+	content := "---\nid: \"058\"\ntitle: T\nstatus: implementing\ncheckpoint_commit: \"\"\nblocked_by:\n  - \"079\"\nround2_stall_until: \"2030-01-01T00:00:00+08:00\"\nround2_stall_level: 1\n---\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟重启：内存空，但 frontmatter 里有上一轮的 level=1。
+	runner := New(&config.Config{})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.recordRound2Completion(taskPath, "058")
+	data, _ := os.ReadFile(taskPath)
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal("parse after cap")
+	}
+	if fm.Status != "blocked" || fm.PhaseErrorCode != "PREREQUISITE_SMOKE_FAILED" {
+		t.Fatalf("重启后应仍触发熔断: status=%q code=%q", fm.Status, fm.PhaseErrorCode)
+	}
+}
