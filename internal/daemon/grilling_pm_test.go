@@ -404,6 +404,8 @@ func TestDecisionAnsweredPlaceholderVariants(t *testing.T) {
 		"  用户填写  ",
 		"确认 / 修改（列出修改）/ 不拆分",
 		"继续 / supplement:{建议} / end",
+		"（待用户三选一回答，daemon 检测答案 hash 变更后自动分发回 TASK-079）",
+		"待用户确认后自动分发",
 	} {
 		if decisionAnswered(v) {
 			t.Errorf("decisionAnswered(%q) = true, want false (placeholder)", v)

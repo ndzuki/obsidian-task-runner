@@ -587,6 +587,13 @@ func decisionAnswered(value string) bool {
 	if strings.Contains(v, "用户填写") {
 		return false
 	}
+	// PM 新式占位（2026-08-22 TASK-079 D-95 观测）：「（待用户三选一回答，
+	// daemon 检测答案 hash 变更后自动分发回 TASK-079）」——旧识别只认「用户
+	// 填写」，导致 pending=0、决策 tab 永不打开、用户无处作答。任何「待用户」
+	// 措辞都视为未答。
+	if strings.Contains(v, "待用户") {
+		return false
+	}
 	for _, placeholder := range []string{"确认 / 修改（列出修改）/ 不拆分", "继续 / supplement:{建议} / end"} {
 		if strings.Contains(v, placeholder) {
 			return false
