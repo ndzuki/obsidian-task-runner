@@ -437,6 +437,32 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** 取消并销毁一个 run 会话（daemon 阶段超时后调用）：中止当前 model turn
+   *  并从 live registry dispose——下次 /agent/run 携同 sessionId 时按
+   *  session not found 走 lenient create（fresh start）。没有它，卡死的
+   *  turn（gateway 挂起，TASK-079 refining 观测 6.8h）会被反复 re-attach。 */
+  function cancelRun(sessionKey) {
+    const agent = typeof agents.get === "function" ? agents.get(sessionKey) : undefined
+    if (agent === undefined) return false
+    try {
+      agent.cancel({ kind: "cancelled" })
+    } catch (err) {
+      console.error(`agent-server: cancelRun(${sessionKey}) cancel failed: ${err?.message ?? err}`)
+    }
+    finishedRuns.delete(sessionKey)
+    effortByAgent.delete(agent.id)
+    const dispose = disposeBySession.get(sessionKey)
+    disposeBySession.delete(sessionKey)
+    if (dispose !== undefined) {
+      try {
+        dispose()
+      } catch (err) {
+        console.error(`agent-server: cancelRun(${sessionKey}) dispose failed: ${err?.message ?? err}`)
+      }
+    }
+    return true
+  }
+
   /** 监控面板：列出 live agents（run + chat），chat 僵尸惰性回收。
    *  已完成的 run 会话不在列表中——面板只反映「当前真实并发」；其数量经
    *  finishedRuns 最近一小时窗口计数暴露（x-agents-finished）。 */
@@ -497,7 +523,8 @@ export function apply(ctx, config = {}) {
       return
     }
     if (req.method !== "POST" ||
-      (req.url !== "/agent/run" && req.url !== "/agent/chat" && req.url !== "/agent/close")) {
+      (req.url !== "/agent/run" && req.url !== "/agent/chat" &&
+        req.url !== "/agent/close" && req.url !== "/agent/cancel")) {
       res.writeHead(404, { "content-type": "application/json" })
       res.end(JSON.stringify({ error: "not found" }))
       return
@@ -510,6 +537,13 @@ export function apply(ctx, config = {}) {
         if (typeof sid !== "string" || sid === "") throw new TypeError("sessionId must be a non-empty string")
         closeChat(sid)
         result = { ok: true }
+      } else if (req.url === "/agent/cancel") {
+        const sid = payload.sessionId
+        if (typeof sid !== "string" || sid === "") throw new TypeError("sessionId must be a non-empty string")
+        // run 会话优先；run 会话不存在时退化为 closeChat（同一取消语义）。
+        const cancelled = cancelRun(sid)
+        if (!cancelled) closeChat(sid)
+        result = { ok: true, cancelled }
       } else {
         result = req.url === "/agent/chat" ? await runChat(payload) : await runAgent(payload)
       }

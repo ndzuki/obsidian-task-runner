@@ -108,6 +108,42 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, spec PhaseSpec, resumeTok
 	return e.startRequest(ctx, spec.Phase, provider, model, taskText, effort, tok.SessionID, skillPrompt, timeout)
 }
 
+// Cancel aborts a wedged agent-server session (POST /agent/cancel): the model
+// turn is cancelled and the session is disposed from the live registry, so
+// the next resume finds it gone and falls back to a fresh start. Used by the
+// daemon on phase timeout — without it, a hung turn (gateway stall, 6.8h
+// observed on TASK-079 refining) would be re-attached to forever.
+func (e *dshEmbedExecutor) Cancel(ctx context.Context, resumeToken string) error {
+	if resumeToken == "" {
+		return nil
+	}
+	var tok embedResumeToken
+	if err := json.Unmarshal([]byte(resumeToken), &tok); err != nil || tok.SessionID == "" {
+		return fmt.Errorf("dsh-embed cancel: invalid resume token")
+	}
+	body, err := json.Marshal(map[string]string{"sessionId": tok.SessionID})
+	if err != nil {
+		return err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "http://"+e.addr+"/agent/cancel", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("agent-server cancel HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract
 // (docs/embed-migration-plan.md §3).
 type agentRunRequest struct {

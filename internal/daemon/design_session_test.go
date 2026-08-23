@@ -20,6 +20,8 @@ type fakeDesignExecutor struct {
 
 func (f *fakeDesignExecutor) Name() string { return "fake-dsh-design" }
 
+func (f *fakeDesignExecutor) Cancel(context.Context, string) error { return nil }
+
 func (f *fakeDesignExecutor) Start(_ context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecutionHandle, error) {
 	f.spec = spec
 	if f.write != nil {

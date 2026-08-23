@@ -25,6 +25,12 @@ type PhaseExecutor interface {
 	// re-attached wait (the phase's own timeout); zero uses the adapter
 	// default. Adapters that cannot resume return ErrResumeUnsupported.
 	Resume(ctx context.Context, spec PhaseSpec, resumeToken string, timeout time.Duration) (ExecutionHandle, error)
+	// Cancel aborts a wedged execution session (phase timeout — the model turn
+	// is stuck in the agent-server and resume would re-attach to the same dead
+	// turn forever). Best-effort: next scan's resume must then find the
+	// session gone and fall back to a fresh start. Adapters without server-side
+	// sessions are no-ops.
+	Cancel(ctx context.Context, resumeToken string) error
 	// Name returns the adapter identity (e.g. "omp", "dsh").
 	Name() string
 }

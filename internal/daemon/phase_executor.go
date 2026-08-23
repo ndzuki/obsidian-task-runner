@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -57,14 +58,21 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 					return result, outcome, code, reason
 				}
 				if result.Code == OutcomeTimedOut || result.Code == OutcomeInterrupted {
+					// 超时：会话可能是死锁的模型 turn（gateway 挂起，TASK-079
+					// refining 观测 6.8h）——cancel 后下一轮 resume 才能落到
+					// fresh start，否则会永久 re-attach 同一个死 turn。
+					// 中断：daemon 停机，会话必须保留供 resume，不 cancel。
+					if result.Code == OutcomeTimedOut {
+						r.cancelWedgedSession(ctx, executor, result.ResumeToken, snap.TaskID)
+					}
 					// 会话可能仍在 agent-server 里运行：上报真实结果，
 					// 下一轮 scan 用同一 token 再 resume。
 					outcome, code, reason := mapExecOutcome(result)
 					return result, outcome, code, reason
 				}
-				if !sessionGoneEvidence(result.Error) {
-					// 挂接失败但无证据表明会话已死（busy/500/未知）：
-					// 按可重试中断上报，绝不 fresh start。
+				if sessionBusyEvidence(result.Error) {
+					// 会话明确仍在跑（busy）：可重试中断，绝不 fresh start
+					// （否则两个会话并行写同一任务文档）。
 					r.logger.Printf("task %s: resume attach failed (%s), session may still be running — retrying next scan (no fresh start)", snap.TaskID, result.Error)
 					res := &ExecutionResult{
 						Phase:       spec.Phase,
@@ -75,8 +83,13 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 					outcome, code, reason := mapExecOutcome(res)
 					return res, outcome, code, reason
 				}
+				// 其余（session gone / 服务器确认 turn 已结束，如 "agent-server
+				// outcome error"）：服务器侧无活跃写者，fresh start 安全且是唯一
+				// 收敛路径（TASK-079 观测：死 turn 会让 interrupted-retry 永转）。
+				r.logger.Printf("task %s: resume terminal (%s), falling back to fresh start", snap.TaskID, result.Error)
 			} else if !sessionGoneEvidence(werr.Error()) {
-				r.logger.Printf("task %s: resume wait failed (%v), session may still be running — retrying next scan (no fresh start)", snap.TaskID, werr)
+				// 传输层错误（unreachable 等）：服务器状态未知，保守重试。
+				r.logger.Printf("task %s: resume wait failed (%v), transport-level — retrying next scan (no fresh start)", snap.TaskID, werr)
 				res := &ExecutionResult{Phase: spec.Phase, Code: OutcomeInterrupted, Error: "resume wait failed: " + werr.Error(), ResumeToken: token}
 				outcome, code, reason := mapExecOutcome(res)
 				return res, outcome, code, reason
@@ -103,8 +116,30 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	if err != nil {
 		return nil, OutcomeFailed, ErrModelFailed, err.Error()
 	}
+	if result != nil && result.Code == OutcomeTimedOut {
+		// 全新派发也超时：cancel 服务器侧会话（同样的死 turn 问题），下一轮
+		// resume 找不到会话 → fresh start。
+		r.cancelWedgedSession(ctx, executor, result.ResumeToken, snap.TaskID)
+	}
 	outcome, code, reason := mapExecOutcome(result)
 	return result, outcome, code, reason
+}
+
+// cancelWedgedSession cancels a phase session on the agent-server after a
+// phase timeout. Best-effort: cancellation failure only means the session
+// stays live and the next resume re-attaches — the retry budget still bounds
+// the loop. The Cancel call must not use the (already expired) dispatch ctx.
+func (r *Runner) cancelWedgedSession(ctx context.Context, executor PhaseExecutor, resumeToken, taskID string) {
+	if resumeToken == "" || executor == nil {
+		return
+	}
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := executor.Cancel(cancelCtx, resumeToken); err != nil {
+		r.logger.Printf("task %s: cancel wedged session after phase timeout: %v", taskID, err)
+		return
+	}
+	r.logger.Printf("task %s: phase timeout — wedged session cancelled (next scan will fresh start)", taskID)
 }
 
 // sessionGoneEvidence reports whether an agent-server error string proves the
@@ -118,6 +153,14 @@ func sessionGoneEvidence(errText string) bool {
 		strings.Contains(lower, "no such session") ||
 		strings.Contains(lower, "does not exist")
 	return hasSession && hasNotFound
+}
+
+// sessionBusyEvidence reports whether the error says the session still has
+// active work ("already has active work") — the only non-timeout case where
+// the server-side session is provably still running and fresh start would
+// create a parallel writer.
+func sessionBusyEvidence(errText string) bool {
+	return strings.Contains(strings.ToLower(errText), "active work")
 }
 
 // readExecutorSessionID reads the persisted durable-resume token from the task

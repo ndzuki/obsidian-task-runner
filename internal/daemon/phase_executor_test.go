@@ -17,7 +17,8 @@ type phaseExecutorStub struct {
 	err    error
 }
 
-func (e phaseExecutorStub) Name() string { return "stub" }
+func (e phaseExecutorStub) Name() string                         { return "stub" }
+func (e phaseExecutorStub) Cancel(context.Context, string) error { return nil }
 func (e phaseExecutorStub) Resume(context.Context, PhaseSpec, string, time.Duration) (ExecutionHandle, error) {
 	return nil, ErrResumeUnsupported
 }
@@ -36,10 +37,17 @@ type resumeExecutorStub struct {
 	startResult   *ExecutionResult // Start（fresh start）返回的结果
 	resumeCalled  bool
 	startCalled   bool
+	cancelCalled  bool
+	cancelToken   string
 	resumeTimeout time.Duration
 	resumeSpec    PhaseSpec
 }
 
+func (e *resumeExecutorStub) Cancel(_ context.Context, token string) error {
+	e.cancelCalled = true
+	e.cancelToken = token
+	return nil
+}
 func (e *resumeExecutorStub) Name() string { return "resume-stub" }
 func (e *resumeExecutorStub) Resume(_ context.Context, spec PhaseSpec, _ string, timeout time.Duration) (ExecutionHandle, error) {
 	e.resumeCalled = true
@@ -329,5 +337,86 @@ func TestRunDSHPhaseResumeForwardsCurrentSpec(t *testing.T) {
 	}
 	if stub.resumeTimeout != 30*time.Minute {
 		t.Fatalf("Resume timeout = %v, want spec timeout", stub.resumeTimeout)
+	}
+}
+
+// TestRunDSHPhaseTimeoutCancelsWedgedSession 守护阶段超时后的会话回收：
+// resume/Start 超时只表示 daemon 侧等待超时，agent-server 里的 model turn
+// 可能已死锁（TASK-079 refining 观测 6.8h 挂起）——必须 Cancel 掉，否则
+// 下一轮 resume 永远 re-attach 同一个死 turn。
+func TestRunDSHPhaseTimeoutCancelsWedgedSession(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-079.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"079\"\nexecutor_session_id: '{\"sessionId\":\"s-1\",\"provider\":\"p\",\"model\":\"m\"}'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeTimedOut, ResumeToken: `{"sessionId":"s-1","provider":"p","model":"m"}`}}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "refining", Timeout: 15 * time.Minute},
+		TaskSnapshot{TaskID: "079", TaskPath: taskPath})
+	if outcome != OutcomeTimedOut || code != ErrPhaseTimeout {
+		t.Fatalf("outcome/code = %q/%q, want timeout/PHASE_TIMEOUT", outcome, code)
+	}
+	if !stub.cancelCalled {
+		t.Fatal("phase timeout 后必须 Cancel 服务器侧会话（否则下一轮 resume 死循环）")
+	}
+	if stub.cancelToken != `{"sessionId":"s-1","provider":"p","model":"m"}` {
+		t.Fatalf("cancel token = %q", stub.cancelToken)
+	}
+}
+
+// TestRunDSHPhaseInterruptedDoesNotCancel 守护反向语义：PHASE_INTERRUPTED
+// （daemon 停机）必须保留会话供 durable resume，不得 Cancel。
+func TestRunDSHPhaseInterruptedDoesNotCancel(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-079.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"079\"\nexecutor_session_id: '{\"sessionId\":\"s-1\",\"provider\":\"p\",\"model\":\"m\"}'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{result: &ExecutionResult{Code: OutcomeInterrupted, ResumeToken: `{"sessionId":"s-1","provider":"p","model":"m"}`}}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "refining"},
+		TaskSnapshot{TaskID: "079", TaskPath: taskPath})
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED", outcome, code)
+	}
+	if stub.cancelCalled {
+		t.Fatal("PHASE_INTERRUPTED 不得 Cancel（会话要留给 resume）")
+	}
+}
+
+// TestRunDSHPhaseResumeServerEndedTurnFallsBackFresh 守护分类边界：
+// resume 返回服务器确认的 turn 结束错误（"agent-server outcome error"——
+// TASK-079 观测：卡死会话被 agent-server 重启清掉后，持久层的旧 turn
+// 立即 error）时，会话侧已无活跃写者——必须 fresh start 收敛，否则
+// interrupted-retry 会永远对着同一个死 turn 空转。
+func TestRunDSHPhaseResumeServerEndedTurnFallsBackFresh(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-079.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"079\"\nexecutor_session_id: '{\"sessionId\":\"s-1\",\"provider\":\"p\",\"model\":\"m\"}'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{
+		result:      &ExecutionResult{Code: OutcomeFailed, Error: "agent-server outcome error"},
+		startResult: &ExecutionResult{Code: OutcomeSuccess},
+	}
+	r.phaseExecutor = stub
+	_, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "refining"},
+		TaskSnapshot{TaskID: "079", TaskPath: taskPath})
+
+	if !stub.resumeCalled || !stub.startCalled {
+		t.Fatal("服务器侧 turn 已结束的 resume 失败应回退 fresh Start")
+	}
+	if outcome != OutcomeSuccess || code != "" {
+		t.Fatalf("outcome/code = %q/%q, want fresh-start success", outcome, code)
 	}
 }

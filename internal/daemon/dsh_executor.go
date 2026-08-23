@@ -76,6 +76,10 @@ func defaultDSHSkillDir() string {
 
 func (e *dshExecutor) Name() string { return "dsh" }
 
+// Cancel is a no-op for the spawn adapter: its sessions are child processes
+// bound to the dispatch ctx, which already carries the phase timeout.
+func (e *dshExecutor) Cancel(context.Context, string) error { return nil }
+
 func (e *dshExecutor) Resume(context.Context, PhaseSpec, string, time.Duration) (ExecutionHandle, error) {
 	// DSH durable session resume lands in Phase 3 (ctx.agents.resume). For
 	// now the daemon re-dispatches from frontmatter state after restart,
