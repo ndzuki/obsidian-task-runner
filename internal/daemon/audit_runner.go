@@ -65,6 +65,7 @@ const auditPromptTemplate = `你是独立完成审计员（independent completio
      * "requirement" = AC 本身歧义/矛盾/无法验证，或实现与需求意图冲突需用户裁决
    - verdict=fail 时 summary 必须列出最关键失败点与建议修复方向（供 round2 会话直接使用）
 5. 诚实原则：证据不足的 AC 判 fail，禁止推断为 pass。
+6. 核验环境清理证据：实现会话必须已清理自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）并在阶段记录留下清理快照（` + "`k3d cluster list`" + `/` + "`docker ps`" + ` 输出）。存在自建资源残留、或发现会话曾停用用户常驻服务（kb-reranker、ollama-sycl、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
 
 工具限制：你只有 read / grep / bash 三个工具（bash 仅用于运行测试与查询命令）。
 禁止修改任何文件、禁止任何 git 写操作、禁止提交。`
@@ -344,6 +345,7 @@ func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoD
 		Model:           model,
 		ReasoningEffort: "low", // off 不是 DSH 声明的级别；low 是最省的显式推理
 		SkillPrompt:     prompt,
+		TaskStatus:      t.Status,
 		ToolPolicy:      "read,grep,bash",
 		Timeout:         r.auditTimeout(),
 		WorkingDir:      workDir,

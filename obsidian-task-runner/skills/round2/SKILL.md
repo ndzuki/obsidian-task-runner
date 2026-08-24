@@ -37,6 +37,16 @@ disable-model-invocation: true
 - **最小变更**：只按计划实现 AC；不顺手重构、不格式化项目没要求格式化的区域、不新增多余抽象——团队项目 review 认知负担优先。
 - 项目没有 PROJECT-CONVENTIONS.md 时按常识 + 最小变更执行，并保持与项目现状一致。
 
+## Environment Cleanup（环境清理与资源回收，强制）
+
+每个会话退出前（含失败、超时、中断）必须完成环境清理，防止污染宿主机与后续任务：
+
+1. **删除本任务创建的一切临时资源**：k3d 集群（`k3d cluster delete`）、docker 容器/网络（`docker rm -f`）、临时 kubeconfig/凭据、冒烟日志与构建产物。
+2. **优先调用项目自带清理入口**：repo 存在 Makefile 清理目标（`make dev-down` / `dev-purge` / `k3d-clean` 等）时必须使用，禁止只杀进程不删资源。
+3. **严禁触碰非本任务资源（红线）**：不得停止/删除用户常驻服务（kb-reranker、ollama-sycl、桌面/IDE 进程等）或其它任务的资源。内存/端口门禁不通过时记录阻塞并退出，禁止以停用户服务换取门禁通过。
+4. **保留资源必须显式声明**：确需留给下游任务的环境，在任务文档写明下游任务 ID 与保留清单（ownership manifest）；下游任务结束时必须清理。
+5. **清理证据写入阶段记录**：收尾输出 `k3d cluster list` / `docker ps` 快照与清理命令结果；清理失败必须列出残留清单（residual manifest）并如实上报，不得静默。
+
 ## Prototype Gate（高风险 Step 的前置验证）
 
 若已批准计划包含 `## Prototype 建议` section，在执行任何标记为 `risk: high` 的 Step 之前：

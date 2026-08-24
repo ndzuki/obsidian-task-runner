@@ -31,6 +31,10 @@ hide: true
    - 被承接任务的 `blocked_by` 必须指向本任务（承接关系可被 daemon 事实恢复消费）。
    - 教训（2026-08-22 TASK-079）：refining 按散文推断的 `ReleaseSummary` 字段名与 gate fixture 不一致，差点让 079 合入后 058 门禁仍 FAIL。
 
+## Step 1.9: Environment Cleanup（环境清理，强制）
+
+refining 会话若创建过任何临时资源（原型、容器、集群、临时文件），退出前必须清理并记录证据；严禁停止/删除用户常驻服务（kb-reranker、ollama-sycl 等）或其它任务资源换取门禁。
+
 ## Step 2: Maturity Gate（成熟度门禁）
 
 逐项检查：
@@ -41,6 +45,10 @@ hide: true
 4. AC 使用 Given/When/Then，覆盖成功、边界、错误、幂等/并发。
 5. 数据模型或类型定义具体。
 6. **ADR consistency** — read ALL files under `Notes/adr/`. For each accepted ADR, extract its core constraints and verify the REQ does not violate them. Conflict detected → mark this check as ❌ and write the conflicting ADR + constraint to `grill_context` for user resolution during grilling.
+7. **关联需求契约一致性（含下游反向义务）** — 冲突只查上游是不够的（TASK-065/066 教训：REQ-066 要求 REQ-065 的 devseed 提供 `e2e-runner` 账号与 nginx `/health` `/readyz` `/environment` 反代，REQ-065 里没有，065 交付后 066 的 AC-066-17 必然 FAIL）：
+   - **上游**：读本 REQ frontmatter `depends_on` 与正文 `参照:` 列出的每个 REQ，逐项核对本 REQ 引用的字段/端点/错误码在上游 REQ 中真实存在且语义一致。
+   - **下游**：`grep -l "REQ-{本REQ编号}" Requirements/` 找出依赖本 REQ 的下游 REQ，逐项核对本 REQ **是否覆盖了下游声明的需求**（如「TASK-065 devseed 提供 e2e-runner 与凭据」「nginx 反代 /health」）。缺失 → 本 REQ 记 ❌，把「下游契约义务清单」写入 `grill_context`——不是把责任推给下游，而是本 REQ 欠下游的债。
+   - 处置优先 fact/auto（能查证/能采纳就修正 REQ），跨需求边界冲突才是 dispute。禁止在「无已知矛盾」列打 ✅ 时忽略本项。
 
 ## Step 2.5: Incremental Knowledge Re-link（增量知识重关联）
 
@@ -62,6 +70,8 @@ refine_req_hash: "sha256:\{hash\}"
 refine_error: ""
 ```
 
+> daemon 在本阶段**成功后还会按当前 REQ bytes 兜底重写 `refine_req_hash`**（会话改写 REQ 后写漏 hash → early-out 永不成立 → maturity gate 每轮重跑，TASK-058 教训）；会话仍需按上表写入——Step 4b0 无增量 replan 判定依赖会话写回的值。
+
 写入或替换 TASK 的 `## 需求成熟度评估` section：
 
 ```markdown
@@ -77,6 +87,7 @@ refine_error: ""
 | AC 完整 | ✅/❌ | ... |
 | 数据模型具体 | ✅/❌ | ... |
 | 无已知矛盾 | ✅/❌ | ... |
+| 关联需求契约一致（上游引用 + 下游义务） | ✅/❌ | ... |
 
 **结论**（`- ` 分点，每条 ≤2 句，禁止超长段落）：
 

@@ -138,6 +138,14 @@ AGENTS.md 默认约定**：
 3. 计划不得包含项目规范之外的重构/优化类 Step（团队项目 review 认知负担优先）；已有规范未覆盖处按最小变更原则。
 4. 新项目（无此文件）不适用本步，照常生成计划。
 
+## Step 1.9: Environment Cleanup Planning（环境清理计划，强制）
+
+计划中任何 Step 若会创建集群/容器/临时文件（k3d、docker、冒烟日志、kubeconfig/凭据等），**计划末尾必须包含对应清理 Step**（调用项目清理目标如 `make dev-down`/`dev-purge`/`k3d-clean`）。计划中还必须显式声明：
+
+1. 会话退出前删除本任务创建的一切临时资源，清理证据写入阶段记录（`k3d cluster list`/`docker ps` 快照）。
+2. 严禁停止/删除用户常驻服务（kb-reranker、ollama-sycl、桌面/IDE 进程等）或其它任务资源；资源门禁不通过时记录阻塞，禁止以停用户服务换取门禁。
+3. 确需留给下游任务的环境，写明下游任务 ID 与保留清单，由下游任务结束时清理。
+
 ## Step 2: Checkpoint Assessment（Checkpoint 评估）
 
 若 `checkpoint_commit` 非空：

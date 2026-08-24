@@ -85,7 +85,7 @@ closed -- [终态，不可恢复]
 | ------ | ------ | -------- | ------ |
 | `maturity` | enum/string | `""` | `fully_mature` / `mostly_mature` / `immature` |
 | `refine_version` | int | `0` | maturity gate 审计版本 |
-| `refine_req_hash` | string | `""` | refining 开始时完整 REQ bytes SHA-256 |
+| `refine_req_hash` | string | `""` | refining 派发前由 daemon 预写、**成功后按当前 REQ bytes 兜底重写**的完整 REQ SHA-256（会话写漏时 early-out 仍成立，防 maturity gate 空转——TASK-058） |
 | `refine_retry_count` | int | `0` | refining 自动恢复次数 |
 | `refine_error` | string | `""` | 最近 refining 错误 |
 
@@ -165,6 +165,7 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `audit_fail_count` | int | `0` | 连续审计失败次数（implementation 类）；达 `audit.max_fixes`（默认 2）升级 grilling 决策时清零（resume 重置预算，防止已决策方向被旧计数立即再限流） |
 | `audit_log` | string | `""` | 最近一次审计会话原始输出日志路径（`~/.dsh/logs/tasks/TASK-<id>-audit-<ts>.log`），round2 修复时消费 |
 | `target_branch` | string | `""` | Round 2 分支；done 重开时清空，round2 完成后 daemon 写新分支 |
+| （自愈） | — | — | round2 被 daemon 重启打断未写回 `target_branch` 时，merge 授权前 daemon 从任务 worktree 恢复 `task/{id}-*` 分支名并写回（幂等，仅 `task/` 前缀；TASK-079） |
 | `pr_url` | string | `""` | PR URL；done 重开时清空，新交付创建新 PR |
 | `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
 | `merge_retry_count` | int | `0` | AI 合并修复预算（冲突/CI 失败共享，上限见 vault-map `max_auto_merge_fixes`）；仅在 merge 成功或**新一轮 planning 完成**时清零——replan 不继承旧交付耗尽（TASK-067 教训）；同一计划内重复授权不重置（防无限循环）。**冲突规模熔断（`max_auto_fix_conflicts`，默认 40）**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；**`upstream_stall_days`（默认 3）**：blocked_by 上游非终态且 `updated` 超阈值 → 每日一次提醒 |
@@ -281,6 +282,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 - **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`；人工已授权或 `audit.enabled=false` 跳过。
 - **会话**：assignee 模型（`audit.model` 覆盖）、`--thinking off`、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
+- **环境清理核验（强制）**：审计同时复核实现会话的清理证据——自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）残留，或发现会话曾停用用户常驻服务（kb-reranker、ollama-sycl、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
 - **pass** → `audit_status=passed`、清 `audit_fail_count`，继续合并授权流程。
 - **fail + implementation** → `phase_error_code=AUDIT_FAILED` + 审计摘要，转 implementing 自动修复（round2 加载 `skill://diagnosing-bugs` 消费 `phase_error`/`audit_log`）；连续 `audit.max_fixes` 次 → 升级 **needs-grilling 决策**（`grill_prev_status=implementing`；resume 回 implementing 重置预算 / replan 回 refining），非 blocked。
 - **fail + requirement**（AC 歧义/矛盾/不可验证）→ 直接转 needs-grilling 决策，不消耗修复预算。
