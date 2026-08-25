@@ -279,7 +279,7 @@ stateDiagram-v2
 
 ### 3.2 daemon 重启与中断恢复
 
-daemon 停机（SIGTERM：`systemctl stop`、`make install-force`、系统重启）时，执行中的 DSH 阶段会话不受影响——agent-server 常驻，会话经 `executor_session_id` 持久恢复；dsh-embed 会话由 agent-server 保管，daemon 重启后 resume 或 fresh start。
+daemon 停机（SIGTERM：`systemctl stop`、`make deploy`、系统重启）时，执行中的 DSH 阶段会话不受影响——agent-server 常驻，会话经 `executor_session_id` 持久恢复；dsh-embed 会话由 agent-server 保管，daemon 重启后 resume 或 fresh start。
 
 被中断的 phase **不转 blocked**：
 
@@ -290,7 +290,7 @@ daemon 停机（SIGTERM：`systemctl stop`、`make install-force`、系统重启
 5. fallback 执行中被中断同样保持状态（主失败原因记入日志）。
 6. **Merge 冲突自动解决会话被中断**：daemon 停机中止 AI 冲突解决时，任务**不写 conflict**——保持 `review + merge_approved=true`，重启后下一轮 scan 自动恢复合并流程（与 phase 中断同语义）。
 
-`otg install` 的 stopDaemon 阻塞等待 systemd 优雅停机完成后再安装，并与后续 `enable --now` 串行化，避免新旧实例竞态。
+`make deploy` 内部 `otg install` 的 stopDaemon 阻塞等待 systemd 优雅停机完成后再安装，并与后续 `enable --now` 串行化，避免新旧实例竞态。
 
 ## 4. 统一规格成熟度流程
 

@@ -49,7 +49,7 @@
 | `dsh-agent-server.service` | `dsh --profile headless-agent-server` | 长连接阶段会话 RPC（dsh-embed 后端） | 常驻；otg 单元 `Requires+After` 它 |
 | `dsh-web.service` | `dsh --profile web` | DSH Web UI | 常驻（可选） |
 
-关键不变量：**`make install-force` 重启 watcher 时 agent-server 保持运行**——
+关键不变量：**`make deploy` 重启 watcher 时 agent-server 保持运行**——
 在飞的实现/审计会话因此可持久恢复，daemon 重启不再打断阶段执行
 （对应知识库 `core/daemon-stuck-task-patterns.md` 模式 7 的根修）。
 

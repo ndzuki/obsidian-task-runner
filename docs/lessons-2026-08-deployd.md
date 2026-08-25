@@ -107,7 +107,7 @@ EOF
 
 1. 逐条执行上面 6 个 absorb 命令（`otg kb absorb` 自动去重 + 重建 INDEX + 增量同步检索库）。
 2. 验证：`otg kb search "MySQL 1292"`、`otg kb search "SyncRetry"` 应命中上述记录。
-3. **部署今天的 task-runner 修复**：已安装 skill 仍是 2026-08-24 19:32 旧版（`~/.dsh/skills/obsidian-task-runner-conventions/SKILL.md` 尚无「架构约束」、主 SKILL.md 还写着 merge/pm 槽位不可达）——执行 `make install-force`（或 `otg install --force`）部署新门禁与退避修复，否则 004-deployd 后续任务仍走旧流程。
+3. **部署今天的 task-runner 修复**：已安装 skill 仍是 2026-08-24 19:32 旧版（`~/.dsh/skills/obsidian-task-runner-conventions/SKILL.md` 尚无「架构约束」、主 SKILL.md 还写着 merge/pm 槽位不可达）——执行 `make deploy` 部署新门禁与退避修复，否则 004-deployd 后续任务仍走旧流程。
 4. **重审 004-deployd 基线**：现有 `Notes/PROJECT-CONVENTIONS.md` 是旧版（无 `## 架构约束` 节）。删除该文件 → 下一个 ready 任务自动触发新版基线审查；审查会话应读取 deployd 仓库已提炼的 `docs/architecture-constraints.md`（28 条约束，现成证据）写回基线。deployd 仓库侧已有约束清单，task-runner 门禁是双保险。
 5. deployd 仓库本身已有防复发机制：`docs/architecture-constraints.md` + AGENTS.md/CLAUDE.md 约束节与验证规则（bug 修复必须本地环境实测）——**不要重复造**，任务自动化引用即可。
 
@@ -221,7 +221,7 @@ EOF
 
 1. 逐条执行 L7-L14 共 8 个 absorb 命令（可写环境）。
 2. 验证：`otg kb search "失败场景"`、`otg kb search "flaky"`、`otg kb search "warmup"` 应命中。
-3. **部署 skill 更新**：`make sync-docs`（或 `make install-force`）把 round2 SKILL.md（失败场景验证节 + 完成检查 + Review Bundle）同步到 `~/.dsh/skills/`；代码改动（audit prompt 失败场景复核）随下一次 `make build`/`otg install` 生效。
+3. **部署 skill 更新**：`make sync-docs`（或 `make deploy`，内含 sync-docs）把 round2 SKILL.md（失败场景验证节 + 完成检查 + Review Bundle）同步到 `~/.dsh/skills/`；代码改动（audit prompt 失败场景复核）随下一次 `make deploy` 生效。
 4. **回看 004-deployd 后续任务**：新实现任务将按 round2「失败场景验证」执行，独立审计（audit prompt 第 7 条）会复核负向测试与 prod 引擎实测证据。
 
 ## 六、第三批教训（2026-08-25 二轮复盘：还能强化到 task-runner 的能力）

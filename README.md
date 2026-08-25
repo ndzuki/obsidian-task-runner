@@ -445,7 +445,7 @@ systemctl --user status otg-task-watcher.service dsh-agent-server.service
 journalctl --user -u otg-task-watcher.service -n 50
 ```
 
-三个 user 单元（`otg install-systemd` / `make install-force` 生成）：
+三个 user 单元（`otg install` / `otg install-systemd` 生成）：
 `otg-task-watcher.service`（daemon）、`dsh-agent-server.service`
 （常驻 headless agent-server，阶段会话 RPC 后端）、`dsh-web.service`（可选 Web UI）。
 
@@ -586,7 +586,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 - [`templates/REQ-000-template.md`](templates/REQ-000-template.md)：需求模板。
 - [`templates/TASK-000-template.md`](templates/TASK-000-template.md)：任务模板。
 - [`templates/ADR-000-template.md`](templates/ADR-000-template.md)：架构决策记录模板。
-- [`deploy/systemd/`](deploy/systemd/)：systemd 单元说明（单元由 `internal/install/install.go` 生成，`otg install-systemd` / `make install-force` 落地）。
+- [`deploy/systemd/`](deploy/systemd/)：systemd 单元说明（单元由 `internal/install/install.go` 生成，`otg install` / `otg install-systemd` 落地）。
 
 ## License
 

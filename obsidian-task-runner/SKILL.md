@@ -35,7 +35,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 **otg 构建必须带 `-tags sqlite_fts5`**（Makefile 与 CI 已内置，任何绕过 Makefile 的手动 `go build`/`go test` 必须自行追加）。知识库检索库依赖 SQLite FTS5，而 mattn/go-sqlite3 的 FTS5 是 **opt-in 编译宏**：
 
 - 不带 tag 的 otg **能编译、能运行、能建库**，但所有 `otg kb *` 命令在打开检索库时失败：`no such module: fts5`（新版 otg 会附带构建提示）。这是**构建缺 tag**，不是环境/配置问题。
-- 正确构建：`make build` / `make install-force`；判断已装二进制是否缺 tag：跑 `otg kb search "x"`，报 `no such module: fts5` 即缺 tag，重跑 `make install-force`。
+- 正确构建：`make build` / `make deploy`；判断已装二进制是否缺 tag：跑 `otg kb search "x"`，报 `no such module: fts5` 即缺 tag，重跑 `make deploy`。
 - 本 repo 的 `go build`/`go test`/CI 全部走 `-tags sqlite_fts5`；新增构建入口（脚本、workflow、容器镜像）必须同样携带，否则知识库功能静默不可用。
 
 **代码注释用英文**（本项目为开源仓库，代码注释与 commit 均遵循英文惯例，对齐 AGENTS.md 例外条款）：任何由本任务体系（refining / round1 / round2 / merge / daemon 自身开发）新增或修改的代码注释一律英文；仅函数签名、导出符号声明等结构性注释可双语。
@@ -177,10 +177,10 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 ## Daemon 重启与中断恢复
 
-- daemon 收到 SIGTERM（`systemctl stop`、`otg install`、重启）时优雅停机：长驻 agent-server（`dsh --profile headless-agent-server`）由 daemon 的 `stopAgentServer` SIGTERM（10 秒内未退出则 SIGKILL）；被中断的 dsh-embed 会话把 `executor_session_id` 持久化到 frontmatter（interrupted 时写回），停机期间不启动 fallback。
+- daemon 收到 SIGTERM（`systemctl stop`、`make deploy`、重启）时优雅停机：长驻 agent-server（`dsh --profile headless-agent-server`）由 daemon 的 `stopAgentServer` SIGTERM（10 秒内未退出则 SIGKILL）；被中断的 dsh-embed 会话把 `executor_session_id` 持久化到 frontmatter（interrupted 时写回），停机期间不启动 fallback。
 - 被中断的 phase **不视为失败**：任务保持原状态（`refining`/`planning`/`implementing`），写入 `phase_error_code=PHASE_INTERRUPTED` 标记；daemon 重启后下一轮 scan 自动重新调度——无 `blocked`、无手动 `resume_approved`。
 - 阶段成功后自动清理 `PHASE_INTERRUPTED` 标记（`clearPhaseError`）。
-- `otg install` 的 stopDaemon 阻塞等待 systemd 优雅停机完成后再安装，不与新实例竞态。
+- `make deploy` 内部 `otg install` 的 stopDaemon 阻塞等待 systemd 优雅停机完成后再安装，不与新实例竞态。
 - 依赖链自动恢复（`resolveBlockedDependencies`）识别 `PHASE_INTERRUPTED` 为可恢复错误码（同 `MODEL_FAILED`/`PHASE_TIMEOUT`）。
 
 ## Notifications（通知）

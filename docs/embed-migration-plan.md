@@ -349,4 +349,4 @@ systemd 服务；dsh web 也纳入 systemd：
   `After=dsh-agent-server.service` + `Requires=dsh-agent-server.service`。
 - `vault-map.json` 增加 `agent_server_managed: false`：daemon 不再自行
   start/stop agent-server，只等待外部服务健康检查通过。
-- `otg install-systemd` / `make install-force` 会同时生成并启用这三个 unit。
+- `otg install-systemd` / `otg install` 会同时生成并启用这三个 unit（`make deploy` 是 daemon 升级入口，不重新生成单元）。
