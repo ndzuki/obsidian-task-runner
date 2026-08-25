@@ -25,16 +25,20 @@ disable-model-invocation: true
 5. 读取已批准计划和 checkpoint 复用策略。
 6. **加载 `skill://knowledge-base`**：按计划中的技术栈检索知识库 core/ 文档，引用已验证的最佳实践和版本约束。实现过程中发现的踩坑经验，在 Commit 或 ADR 写回后追加到对应的 References 文件。
 
-## Project Conventions Alignment（项目规范对齐，强制）
+## Project Conventions Alignment（项目规范与架构约束对齐，强制）
 
 实现前读取 `{vault}/Projects/{project}/Notes/PROJECT-CONVENTIONS.md`（存在时）——
-它是该项目的规范基线，**优先级高于本 Skill 与全局 AGENTS.md 的默认约定**：
+它是该项目的基线（规范 **+ 架构约束**），**优先级高于本 Skill 与全局 AGENTS.md 的默认约定**：
 
 - **注释语言**：项目用中文注释就用中文、英文就英文（即使全局约定是英文）——注释语言是项目规范的一部分，不是偏好。
 - **代码风格**：命名、错误处理、包结构、测试风格按项目既有模式；不引入项目没有的框架/模式。
 - **提交信息**：commit 语言与格式对齐项目 `git log` 习惯（feat/fix/chore/中文描述…）。
 - **文档/API 文档**：新增/修改的文档按项目的文档规范与 API 文档形式。
-- **最小变更**：只按计划实现 AC；不顺手重构、不格式化项目没要求格式化的区域、不新增多余抽象——团队项目 review 认知负担优先。
+- **架构约束强制对齐（004-deployd 教训）**：`## 架构约束` 节是硬约束。凡实现涉及数据模型/新字段/新表/迁移/环境配置：
+  - **以项目 test/prod 实际数据库引擎为准**（如 test/prod=MySQL），不得用 dev 的 SQLite 语义实现——字段名结尾（`_at`/`_id` 等）、类型（`DATETIME(6)`/自增）、方言差异必须与 `## 架构约束` 一致；多引擎项目必须双引擎兼容并**在 test/prod 引擎上验证**（不只 dev 冒烟）。
+  - 迁移按项目既有机制（AutoMigrate/alembic/手写 SQL…）落库，新迁移必须在 test/prod 引擎可执行。
+  - 基线未覆盖处按常识 + 最小变更执行，保持与项目现状一致。
+- **最小变更**：只按计划实现 AC；不顺手重构、不格式化项目没要求格式化的区域、不新增多余抽象——已有项目 review 认知负担优先。
 - 项目没有 PROJECT-CONVENTIONS.md 时按常识 + 最小变更执行，并保持与项目现状一致。
 
 ## Environment Cleanup（环境清理与资源回收，强制）
@@ -81,6 +85,22 @@ disable-model-invocation: true
 ### Incremental Verification（写入即反馈）
 
 每条 AC 的 Green 落地后**立即**运行受影响包的测试与静态检查（Go: `go vet ./...` + `go test -race ./<受影响包>`），而不是等全部 AC 完成后一次性跑——错误在产生时暴露，避免错误累积到会话尾部再集中修复（失败重派率与审计打回率的主要来源）。全部 AC 完成后再跑全量（见 Completion Checklist）。
+
+### Failure Scenario Verification（失败场景验证，强制）
+
+实现 AC 时**禁止只验证主成功路径**——"测试全绿、生产爆炸"是验收打回与返工的头号来源（004-deployd 2026-08-25 复盘：8 个真实 bug 中一半只在某一种失败场景或某一种环境才暴露）。每条涉及**可失败路径**的 AC 必须补负向测试，按失败场景矩阵逐项过：
+
+1. **逐项构造失败场景**（按相关类别，不必全做）：
+   - 权限/认证：401/403、无权限调用、token 失效。
+   - 并发/排队/竞态：信号量耗尽、槽位释放、冲突写回、重试预算耗尽。**用 `-count=3`（或更多）重跑**，单次通过不算证据——flaky 必须抓到根因修复，禁止"重试到绿"掩盖。
+   - 吊销/删除/幂等：删除后重放、幂等拒绝（409）、已成功重复提交。
+   - 非法输入：校验失败、空值、超长、重复。
+   - 序列化/契约形状：`null` vs `[]`、字段缺失、时间戳/枚举边界。
+   - 跨引擎方言：dev 用 SQLite 但 test/prod 用 MySQL 时，存储/迁移必须**在 prod 引擎实测**（如本地 MySQL 8.4 严格模式，核对 sql_mode/零日期/TEXT 默认值/字符集）。
+   - 失败被容错掩盖：脚本/代码对错误"打印后继续"产生假成功——失败必须 fail-fast。
+2. **测试要驱动真实实现**：优先用 httptest/真实依赖/内存版真实组件（如内存 registry server），不要只用 mock/fake——mock 发现不了"远程调用多了一次/参数没传对"这类问题。
+3. **失败信息要可断言**：错误串稳定（如 `digest mismatch after push ...`），测试锁住这些串；分类逻辑（permanent/retryable）依赖子串时尤其如此。
+4. 每个失败场景的测试/证据在 `## 验收记录` 标注（命令 + 预期 + 通过输出），并写入 Review Bundle 的失败场景摘要。
 
 ### Independent Audit Expectation（独立审计预期）
 
@@ -195,7 +215,8 @@ otg update-status \{task\} \
 6. 运行 lint。
 7. 加载 `skill://test-quality`，修复 critical/important 问题。
 8. 加载 `skill://code-review`：Standards 轴检查代码规范+Code Smell；Spec 轴核验实现与 REQ 的 AC 是否一一对应、有无 scope creep。与 test-quality 互补——前者查测试质量，后者查代码+需求对齐。
-9. 调 task-verifier 核验 AC。
+9. **失败场景校验**：对照上方「失败场景矩阵」，确认每条可失败路径有负向测试且证据已写入验收记录；并发/竞态类用 `-count=3+` 复跑通过；跨引擎项目（dev SQLite / prod MySQL 等）有 prod 引擎实测证据。缺失且未补 → 完成检查不通过。
+10. 调 task-verifier 核验 AC。
 
 ### Write ADRs (BEFORE implementation — do not skip)
 
@@ -253,7 +274,8 @@ accepted
 5. **风险自评**：low/medium/high
 6. **Baseline 对比**（Shape Up Ch.14）：实现前用户如何解决？实现后改善了什么？一句对比帮助用户快速判断 merge 价值
 7. **Scope Hammering 结果**：若有降级的 AC，列出 `~nice-to-have` 项
-8. **通知摘要**：
+8. **失败场景摘要**：可失败路径负向测试清单（类别 × 命令 × 通过），跨引擎项目附 prod 引擎实测证据一句话；缺失项显式列出
+9. **通知摘要**：
 
 ```text
 TASK-{id}: {N} files +{added}/-{deleted}, {M} tests PASS
