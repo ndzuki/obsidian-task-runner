@@ -235,3 +235,39 @@ func pad(n int) string {
 	}
 	return s
 }
+
+// TestValidateDependencyRefsSurfacesReqDependsOnBrokenRefs guards the gap-1
+// fix: a REQ depends_on referencing a missing same-project REQ used to be
+// silently dropped by syncDependencyInheritance — the downstream task started
+// without the dependency and nothing ever signalled it. The validator must
+// log and notify once per (project, REQ, reference).
+func TestValidateDependencyRefsSurfacesReqDependsOnBrokenRefs(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	reqsDir := filepath.Join(vault, "Projects", "001-test", "Requirements")
+	writeHealthTask(t, reqsDir, "REQ-010-a.md", "---\nid: \"010\"\ntitle: A\ndepends_on:\n  - \"REQ-011\"\n---\n# A\n")
+	writeHealthTask(t, reqsDir, "REQ-011-b.md", "---\nid: \"011\"\ntitle: B\n---\n# B\n")
+	writeHealthTask(t, reqsDir, "REQ-012-c.md", "---\nid: \"012\"\ntitle: C\ndepends_on:\n  - \"REQ-013\"\n---\n# C\n")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeHealthTask(t, tasksDir, "TASK-001-x.md", "---\nid: \"001\"\nstatus: ready\n---\n# X\n")
+
+	runner := healthRunner(t, vault)
+	runner.validateDependencyRefs()
+
+	broken, valid := false, false
+	runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
+		if strings.Contains(key.(string), "req_depends_on|012->013") {
+			broken = true
+		}
+		if strings.Contains(key.(string), "req_depends_on|010->011") {
+			valid = true
+		}
+		return true
+	})
+	if !broken {
+		t.Fatal("broken REQ depends_on ref must be recorded once")
+	}
+	if valid {
+		t.Fatal("valid REQ depends_on ref must not be recorded")
+	}
+}

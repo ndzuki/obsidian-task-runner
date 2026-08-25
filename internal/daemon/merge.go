@@ -4,10 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // ensureGitRemote is defined in merge_runner.go.
@@ -18,6 +18,29 @@ type mergeAuthorization struct {
 	ReqPath       string
 	PlanReqHash   string
 	TargetBranch  string
+}
+
+// healTargetBranch 自愈 round2 被中断后丢失的 target_branch（TASK-079）：
+// 任务 worktree 已 checkout 在 round2 分支（task/{id}-slug）上，从其恢复
+// 分支名并写回 frontmatter。只在 target_branch 为空且 worktree 分支带
+// "task/" 前缀时生效（幂等、一次写回），避免把 main 等无关分支误写进去。
+func healTargetBranch(worktreeBase, repoDir string, candidate task.ReadyTask, fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || fm.TargetBranch != "" {
+		return false
+	}
+	wtPath := taskWorktreePath(worktreeBase, repoDir, taskRunKey(candidate.FilePath))
+	if _, err := os.Stat(wtPath); err != nil {
+		return false
+	}
+	branch, err := gitCurrentBranch(wtPath)
+	if err != nil || branch == "" || !strings.HasPrefix(branch, "task/") {
+		return false
+	}
+	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{"target_branch": branch}); err != nil {
+		return false
+	}
+	fm.TargetBranch = branch
+	return true
 }
 
 func validateMergeAuthorization(auth mergeAuthorization) error {
@@ -98,36 +121,4 @@ func evaluateMergeChecks(approvedHead string, checks mergeChecks) mergeDecision 
 	default:
 		return mergeDecision{Action: mergeActionWait}
 	}
-}
-func executeMergeCLI(cfg *config.Config, repoDir, projectName, targetBranch, approvedHead, prURL string) error {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return fmt.Errorf("%s: gh CLI not found", ErrGitHubUnavailable)
-	}
-	if targetBranch == "" {
-		return fmt.Errorf("precondition: target branch is required")
-	}
-	if err := ensureGitRemote(cfg, repoDir, projectName); err != nil {
-		return err
-	}
-	if output, err := exec.Command("git", "-C", repoDir, "push", "-u", "origin", targetBranch).CombinedOutput(); err != nil {
-		return fmt.Errorf("push feature branch: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if prURL == "" {
-		output, err := exec.Command("gh", "pr", "create", "--head", targetBranch, "--fill").CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: create PR: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
-		}
-		prURL = strings.TrimSpace(string(output))
-	}
-	if approvedHead == "" {
-		return fmt.Errorf("precondition: approved head is required before merge")
-	}
-	output, err := exec.Command("gh", "pr", "merge", prURL, "--merge", "--delete-branch").CombinedOutput()
-	if err != nil {
-		if strings.Contains(strings.ToLower(string(output)), "conflict") {
-			return fmt.Errorf("%s: %s", ErrGitConflict, strings.TrimSpace(string(output)))
-		}
-		return fmt.Errorf("%s: merge PR: %w: %s", ErrGitHubUnavailable, err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }

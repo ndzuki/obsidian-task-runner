@@ -189,6 +189,33 @@ func projectIsTeam(mapFile, projectName string) bool {
 	return false
 }
 
+// projectIsExisting reports whether the project is an EXISTING codebase rather
+// than a brand-new (greenfield) scaffold: the vault-map entry exists AND its
+// path is an existing directory on disk. This mirrors ResolveProject's
+// "existing" semantics — it is the authoritative signal that the project has a
+// real checkout to review before further development (004-deployd lesson: new
+// features were developed without first reviewing the project architecture —
+// dev ran SQLite while test/prod ran MySQL, and schema field-naming drift
+// shipped as a bug).
+//
+// Team projects are a subset (they are registered existing repos). New
+// projects are NOT existing until auto-registration materializes a path, so
+// the ready→refining fast path is never blocked for greenfield work.
+// Unregistered/unknown projects are treated as non-existing (conservative:
+// never block a task we cannot even locate).
+func projectIsExisting(mapFile, projectName string) bool {
+	entry := projectEntryFromVaultMap(mapFile, projectName)
+	if entry == nil {
+		return false
+	}
+	path := entry["path"]
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // conventionsReviewed reports whether the project's conventions baseline
 // exists — the review artifact itself is the idempotent gate marker:
 // `{vault}/Projects/{proj}/Notes/PROJECT-CONVENTIONS.md`. The conventions

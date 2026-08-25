@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -37,19 +36,6 @@ func TestEvaluateMergeChecksRevokesChangedHead(t *testing.T) {
 	result := evaluateMergeChecks("abc", mergeChecks{HeadOID: "def", State: "SUCCESS"})
 	if result.Action != mergeActionReview || result.ErrorCode != ErrBaseCommitMismatch {
 		t.Fatalf("result = %+v", result)
-	}
-}
-
-func TestMergeCommandRequiresGH(t *testing.T) {
-	dir := t.TempDir()
-	repo := filepath.Join(dir, "repo")
-	if output, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	t.Setenv("PATH", dir)
-	err := executeMergeCLI(&config.Config{}, repo, "test", "task/001", "", "")
-	if err == nil || !strings.Contains(err.Error(), string(ErrGitHubUnavailable)) {
-		t.Fatalf("error = %v, want GITHUB_UNAVAILABLE", err)
 	}
 }
 
@@ -665,8 +651,13 @@ exit 0
 // immediately without backoff retries.
 func TestProcessMergeTaskWithRetryStopsOnHardFailure(t *testing.T) {
 	f := newMergeFixture(t)
-	// Overwrite the task's target_branch to break validation: the resulting
-	// precondition failure must not be retried.
+	// The TASK-079 heal recovers a missing target_branch from a live task
+	// worktree, so remove the worktree first: only then does the cleared
+	// target_branch surface as a precondition failure, which must not be
+	// retried.
+	if output, err := exec.Command("git", "-C", f.repo, "worktree", "remove", "--force", f.worktree).CombinedOutput(); err != nil {
+		t.Fatalf("remove task worktree: %v: %s", err, output)
+	}
 	if err := yamlfrontmatter.Update(f.taskPath, map[string]interface{}{"target_branch": ""}); err != nil {
 		t.Fatalf("clear target_branch: %v", err)
 	}

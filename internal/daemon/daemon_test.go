@@ -1740,3 +1740,50 @@ func TestQuotaCooldownExponentialBackoff(t *testing.T) {
 		}
 	}
 }
+
+// TestPrematurePlanApprovalResetAppendsAuditRecord guards the gap-9 fix: a
+// plan_approved=true outside plan-review/implementing is reset by the state
+// machine, and the reset must leave an audit trail in the TASK 变更记录
+// (previously the reset was silent — AppendAuditRecord had zero callers).
+func TestPrematurePlanApprovalResetAppendsAuditRecord(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := writeVaultMap(t, dir, nil)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-x.md")
+	content := "---\nid: \"001\"\ntitle: T\nstatus: refining\nassignee: default\nplan_approved: true\n---\n# T\n\n## 变更记录\n1. `2026-01-01T00:00:00Z` — actor=daemon event=SEED from=ready to=refining plan=<none> error_code=<none> hash=<none>\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "001", Title: "T", FilePath: taskPath,
+		Status: "refining", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+	releaseBarrier(t, releaseFile)
+	_ = waitForBatch(t, done)
+
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "PLAN_APPROVAL_RESET") {
+		t.Fatalf("TASK 变更记录 must record PLAN_APPROVAL_RESET, got:\n%s", data)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if fm.PlanApproved {
+		t.Fatal("premature plan_approved must be reset to false")
+	}
+}

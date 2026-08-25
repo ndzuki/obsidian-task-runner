@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -148,8 +149,132 @@ func TestRecoverUnExtractedKnowledge(t *testing.T) {
 		t.Fatal("non-done task must not be extracted")
 	}
 
+	// 成功路径必须清退避字段（连续失败计数与下次重试截止）。
+	data, err := os.ReadFile(lost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatalf("parse lost task: %v", err)
+	}
+	if fm.KnowledgeExtractRetryCount != 0 || fm.KnowledgeExtractRetryUntil != "" {
+		t.Fatalf("successful extraction must clear backoff, got count=%d until=%q",
+			fm.KnowledgeExtractRetryCount, fm.KnowledgeExtractRetryUntil)
+	}
+
 	// 幂等：第二次运行不再提取任何任务。
 	if n := runner.recoverUnExtractedKnowledge(); n != 0 {
 		t.Fatalf("second run re-extracted %d, want 0 (idempotent)", n)
+	}
+}
+
+// TestKnowledgeExtractRetryDelay pins the exponential backoff schedule that
+// prevents a persistent extraction/store-sync failure from retrying every
+// scan forever (release-time retry storm lesson).
+func TestKnowledgeExtractRetryDelay(t *testing.T) {
+	for count, want := range map[int]time.Duration{
+		0:  10 * time.Minute,
+		1:  10 * time.Minute,
+		2:  20 * time.Minute,
+		3:  40 * time.Minute,
+		7:  6 * time.Hour, // 10m<<6 would exceed the cap
+		99: 6 * time.Hour,
+	} {
+		if got := knowledgeExtractRetryDelay(count); got != want {
+			t.Errorf("knowledgeExtractRetryDelay(%d) = %v, want %v", count, got, want)
+		}
+	}
+}
+
+// TestRecoverUnExtractedKnowledgeBacksOffOnPersistentFailure is the failure-
+// point verification for the recovery scan: when the extraction pipeline keeps
+// failing at the store-sync step (the release bug — "database is locked" at
+// release caused an unbounded per-scan retry storm), the task must be retried
+// only after the persisted backoff deadline, and each consecutive failure must
+// push the deadline further out.
+func TestRecoverUnExtractedKnowledgeBacksOffOnPersistentFailure(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-lost.md")
+	content := "---\nid: \"001\"\ntitle: Lost\nstatus: done\nmerge_status: merged\nknowledge_extracted: false\npending_req: false\n---\n# T\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force store-sync failure: KBDb's parent is a FILE, so opening the store
+	// must fail deterministically (MkdirAll on a file path → not a directory).
+	fileParent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(fileParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.cfg.KBDb = filepath.Join(fileParent, "kb.sqlite")
+
+	readFM := func() yamlfrontmatter.Frontmatter {
+		t.Helper()
+		data, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			t.Fatalf("parse task: %v", err)
+		}
+		return *fm
+	}
+
+	// First scan: extraction pipeline runs, store sync fails → backoff armed.
+	if n := runner.recoverUnExtractedKnowledge(); n != 1 {
+		t.Fatalf("first recovery re-extracted %d, want 1", n)
+	}
+	fm := readFM()
+	if fm.KnowledgeExtracted {
+		t.Fatal("marker must stay false after a store-sync failure")
+	}
+	if fm.KnowledgeExtractRetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", fm.KnowledgeExtractRetryCount)
+	}
+	until, err := time.Parse(time.RFC3339, fm.KnowledgeExtractRetryUntil)
+	if err != nil {
+		t.Fatalf("retry_until %q not RFC3339: %v", fm.KnowledgeExtractRetryUntil, err)
+	}
+	if !until.After(time.Now()) {
+		t.Fatalf("retry_until %s must be in the future", fm.KnowledgeExtractRetryUntil)
+	}
+	if fm.KnowledgeExtractErr == "" {
+		t.Fatal("knowledge_extract_error must record the sync failure")
+	}
+
+	// Second scan before the deadline: must NOT retry — this is the actual
+	// storm guard.
+	if n := runner.recoverUnExtractedKnowledge(); n != 0 {
+		t.Fatalf("recovery before deadline retried %d tasks, want 0", n)
+	}
+	if got := readFM().KnowledgeExtractRetryCount; got != 1 {
+		t.Fatalf("retry count changed before deadline: %d, want 1", got)
+	}
+
+	// Deadline expired → retry is allowed again, and the persistent failure
+	// increments the backoff.
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"knowledge_extract_retry_until": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := runner.recoverUnExtractedKnowledge(); n != 1 {
+		t.Fatalf("recovery after deadline re-extracted %d, want 1", n)
+	}
+	fm = readFM()
+	if fm.KnowledgeExtractRetryCount != 2 {
+		t.Fatalf("retry count after second failure = %d, want 2", fm.KnowledgeExtractRetryCount)
+	}
+	if fm.KnowledgeExtracted {
+		t.Fatal("marker must remain false while store sync keeps failing")
 	}
 }

@@ -187,6 +187,18 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 	}
 
 	if fm.PlanApproved && fm.Status != "plan-review" && fm.Status != "implementing" {
+		// 相位失败 blocked（blocked_phase 非空）在 resume 后会恢复原 phase，
+		// 已批准的计划必须存活。否则每次瞬态故障（MODEL_QUOTA_EXHAUSTED、
+		// agent-server 宕机等）都先把任务写 blocked，再由本 catch-all 清掉
+		// plan_approved——恢复 implementing 时 round2 门禁（plan_approved=true）
+		// 再次失败 → 重新 grilling「请再批准同一版计划」→ 永远转圈
+		// （2026-08-25 TASK-065 观测：09:58 v21 经计划门禁批准 → 10:53 quota
+		// blocked → 11:32 catch-all 清批准 → D-102 重新批准 → 来回变状态）。
+		// 入口门禁类 blocked（blocked_phase 为空，如 REQ_MISSING）没有可恢复
+		// 的 phase，陈旧批准照旧重置，防止泄漏进重新规划。
+		if fm.Status == "blocked" && fm.BlockedPhase != "" {
+			return localTransition{}, false
+		}
 		return localTransition{
 			Status:   fm.Status,
 			Dispatch: true,

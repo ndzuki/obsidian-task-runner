@@ -304,9 +304,11 @@ func TestValidateDependencyRefsWarnsStaleUpstream(t *testing.T) {
 	runner := New(&config.Config{ObsidianVault: vault, UpstreamStallDays: 3})
 	runner.logger = log.New(io.Discard, "", 0)
 	runner.validateDependencyRefs()
-	if _, ok := runner.diagNotifyAt.Load("001-test|blocked_by_stale|019"); !ok {
-		t.Fatal("stale-upstream warning key must be recorded after the first scan")
+	today := time.Now().Format("2006-01-02")
+	if _, ok := runner.diagNotifyAt.Load("001-test|blocked_by_stale|019|" + today); !ok {
+		t.Fatal("stale-upstream warning key (date-suffixed) must be recorded after the first scan")
 	}
-	// Idempotent: second scan must not re-notify (key already present).
+	// Idempotent: second scan the same day must not re-notify (key already
+	// present); the date suffix turns it into a daily reminder.
 	runner.validateDependencyRefs()
 }

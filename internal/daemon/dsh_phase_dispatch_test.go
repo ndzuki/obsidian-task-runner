@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log"
 	"os"
@@ -48,6 +50,61 @@ func TestRunDSHPhaseDispatchSuccess(t *testing.T) {
 	}
 	if fm.Status != "refining" {
 		t.Fatalf("status=%q, want refining (success tail must not change status)", fm.Status)
+	}
+}
+
+// TestRunDSHPhaseDispatchRefiningRestampsReqHash pins the daemon-side
+// safety net for the refining early-out. The pre-dispatch ensureReqHash
+// stamps the pre-session REQ bytes; a refining session that rewrites the
+// REQ during its own write-back changes the hash. If the success tail does
+// not re-stamp the post-session bytes, every later scan sees a stale
+// refine_req_hash and re-runs the maturity gate forever instead of routing
+// to planning (TASK-058 loop observed after TASK-079 merged).
+func TestRunDSHPhaseDispatchRefiningRestampsReqHash(t *testing.T) {
+	dir := t.TempDir()
+	reqContent := "## 目标\nrefined requirement\n"
+	if err := os.WriteFile(filepath.Join(dir, "REQ-001.md"), []byte(reqContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(dir, "TASK-001.md")
+	content := "---\nid: \"001\"\ntitle: Test\nproject: demo\nproject_id: \"001\"\nreq_doc: REQ-001.md\nassignee: default\nstatus: refining\nmaturity: fully_mature\nrefine_req_hash: sha256:stale\nplan_req_hash: sha256:stale\npending_req: true\ngeneration: 1\nplan_version: 1\n---\n# Task\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{
+		Executor:            "dsh",
+		ObsidianVault:       dir,
+		PhaseTimeoutMinutes: map[string]int{"refining": 1},
+	})
+	r.logger = log.New(io.Discard, "", 0)
+	r.phaseExecutor = phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}
+	candidate := task.ReadyTask{
+		ID: "001", Title: "Test", Project: "demo", FilePath: taskPath,
+		Status: "refining", Assignee: "default", ReqDoc: "REQ-001.md",
+		Maturity: "fully_mature", RefineReqHash: "sha256:stale",
+		PlanReqHash: "sha256:stale", PendingReq: true,
+	}
+
+	handled := r.runDSHPhaseDispatch(candidate, taskPath, dir, "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	if !handled {
+		t.Fatal("success dispatch must be handled")
+	}
+	fm, err := yamlfrontmatter.ParseTaskDocument(taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(reqContent))
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if fm.RefineReqHash != want {
+		t.Fatalf("refine_req_hash=%q, want %q (stale hash must be re-stamped to post-session REQ bytes)", fm.RefineReqHash, want)
+	}
+	// Invariant: the success tail re-stamps the hash but must not clear
+	// pending_req or flip the status — the planning round owns that.
+	if fm.PendingReq != true {
+		t.Fatalf("pending_req=%v, want true (only a successful plan clears it)", fm.PendingReq)
+	}
+	if fm.Status != "refining" {
+		t.Fatalf("status=%q, want refining", fm.Status)
 	}
 }
 
@@ -168,5 +225,44 @@ func TestOmpPhaseThinkingRefiningMedium(t *testing.T) {
 		if got := ompPhaseThinking(phase); got != want {
 			t.Errorf("ompPhaseThinking(%s) = %q, want %q", phase, got, want)
 		}
+	}
+}
+
+// specCaptureExecutor records the PhaseSpec of every dispatched phase so
+// tests can assert daemon-layer tool policies.
+type specCaptureExecutor struct {
+	phaseExecutorStub
+	spec PhaseSpec
+}
+
+func (e *specCaptureExecutor) Start(_ context.Context, spec PhaseSpec, _ TaskSnapshot) (ExecutionHandle, error) {
+	e.spec = spec
+	return phaseHandleStub{result: e.result}, nil
+}
+
+// TestRunDSHPhaseDispatchConventionsRestrictsTools guards the gap-7 fix: the
+// conventions baseline-review session must carry the read-only tool policy at
+// the daemon layer (parity with the audit session), not rely on the skill's
+// prompt self-restraint.
+func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
+	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeSuccess})
+	captor := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}
+	r.phaseExecutor = captor
+
+	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "conventions", "gateway/gpt-5.4-mini", "/obsidian-task-runner-conventions "+taskPath, "/tmp/task.log"); !handled {
+		t.Fatal("conventions dispatch must be handled")
+	}
+	if captor.spec.ToolPolicy != "read,grep,glob,bash" {
+		t.Fatalf("conventions ToolPolicy = %q, want read,grep,glob,bash", captor.spec.ToolPolicy)
+	}
+
+	// 对照组：普通阶段（refining）无工具限制。
+	captor2 := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}
+	r.phaseExecutor = captor2
+	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/obsidian-task-runner-refining "+taskPath, "/tmp/task.log"); !handled {
+		t.Fatal("refining dispatch must be handled")
+	}
+	if captor2.spec.ToolPolicy != "" {
+		t.Fatalf("refining ToolPolicy = %q, want empty", captor2.spec.ToolPolicy)
 	}
 }

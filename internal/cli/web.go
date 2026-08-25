@@ -33,7 +33,7 @@ TaskStore.Apply generation fencing.`,
 		}
 		srv := &http.Server{
 			Addr:              webAddr,
-			Handler:           vaultweb.New(cfg.ObsidianVault).Handler(),
+			Handler:           vaultweb.NewWithAgentServer(cfg.ObsidianVault, cfg.AgentServerAddr).Handler(),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		cmd.Printf("vault dashboard API listening on http://%s\n", webAddr)

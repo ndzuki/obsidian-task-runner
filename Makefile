@@ -1,4 +1,4 @@
-.PHONY: build test test-cover bench lint clean install install-force
+.PHONY: build test test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -40,41 +40,6 @@ install: build sync-docs
 	done
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"
 
-install-force: build
-	@echo "=== Stopping task watcher (dsh-agent-server keeps running: durable sessions survive) ==="
-	-systemctl --user stop --no-block otg-task-watcher.service 2>/dev/null || true
-	-pkill -TERM -U "$$(id -u)" -f "otg daemon" 2>/dev/null || true
-	@sleep 2
-	-pkill -9 -U "$$(id -u)" -f "otg daemon" 2>/dev/null || true
-	@sleep 1
-	@echo "=== Installing new binaries ($(BINARY) + $(GRILL)) ==="
-	mkdir -p $(HOME)/.local/bin $(GOBIN)
-	@for b in $(BINARY) $(GRILL); do \
-		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
-		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
-		cp $$b $(HOME)/.local/bin/$$b; \
-		cp $$b $(GOBIN)/$$b; \
-	done
-	@echo "=== Regenerating systemd units (dsh-agent-server / dsh-web / otg-task-watcher) ==="
-	$(HOME)/.local/bin/$(BINARY) install-systemd
-	@echo "=== Restarting task watcher ==="
-	systemctl --user daemon-reload
-	-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
-	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
-	@sleep 2
-	@if ! systemctl --user -q is-active otg-task-watcher.service; then \
-		echo "  Watcher didn't start (lock may be held) — retrying..."; \
-		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
-		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
-	fi
-	@echo "=== Done ==="
-	@$(MAKE) sync-docs
-	@$(MAKE) sync-plugins
-	@echo ""
-	@echo "NOTE: 若 deploy/dsh-plugins/agent-server.mjs 有更新，需重启 agent-server 生效："
-	@echo "      systemctl --user restart dsh-agent-server"
-
-.PHONY: sync-docs sync-plugins
 sync-docs:
 	@echo "=== Syncing skill docs to ~/.dsh/skills/obsidian-task-runner/ ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
@@ -110,3 +75,84 @@ sync-plugins:
 		chmod 600 $(HOME)/.dsh/plugins/$$b; \
 	done
 	@echo "=== Done ==="
+
+# ===========================================================================
+# deploy — 唯一部署入口（替代 install-force）。
+#   构建 → 单测 → busy-safe 安装 → 同步 skill/插件 → 写 drop-in override
+#   → daemon-reload → 重启 watcher → 插件变更时顺带重启 agent-server。
+# 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
+# ===========================================================================
+deploy: build test
+	@echo "=== [1/6] busy-safe install $(BINARY) + $(GRILL) ==="
+	mkdir -p $(HOME)/.local/bin $(GOBIN)
+	@for b in $(BINARY) $(GRILL); do \
+		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
+		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
+		cp $$b $(HOME)/.local/bin/$$b; \
+		cp $$b $(GOBIN)/$$b; \
+	done
+	@echo "=== [2/6] sync skill docs + plugins ==="
+	@$(MAKE) sync-docs
+	@$(MAKE) sync-plugins
+	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
+	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
+	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
+	@echo "=== [4/6] daemon-reload + restart watcher ==="
+	systemctl --user daemon-reload
+	-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
+	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
+	@sleep 2
+	@if ! systemctl --user -q is-active otg-task-watcher.service; then \
+		echo "  Watcher didn't start — retrying..."; \
+		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
+		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
+	fi
+	@echo "=== [5/6] agent-server (restart only if plugin changed) ==="
+	@if [ -n "$$(git diff --name-only -- deploy/dsh-plugins/agent-server.mjs 2>/dev/null | head -1)" ]; then \
+		echo "  agent-server.mjs changed — restarting dsh-agent-server"; \
+		systemctl --user restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
+	else \
+		echo "  agent-server.mjs unchanged — no restart needed"; \
+	fi
+	@echo "=== [6/6] done (daemon now runs repo otg) ==="
+	@echo "  verify:   make deploy-status"
+	@echo "  rollback: make rollback"
+
+# deploy-status: 展示仓库 → 运行时的同步差异（代码 / skill / 插件），
+# 一眼看出“改了但没同步”的东西。
+deploy-status:
+	@echo "=== otg binary: repo vs ~/.local/bin ==="
+	@if [ -f $(BINARY) ] && [ -f $(HOME)/.local/bin/$(BINARY) ]; then \
+		a=$$(sha256sum $(BINARY) | cut -d' ' -f1); b=$$(sha256sum $(HOME)/.local/bin/$(BINARY) | cut -d' ' -f1); \
+		if [ "$$a" = "$$b" ]; then echo "  SAME ($${a:0:12})"; else echo "  DIFF repo=$${a:0:12} installed=$${b:0:12} → 跑 make deploy"; fi; \
+	fi
+	@echo "=== skill sync status ==="
+	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+	for f in obsidian-task-runner/skills/*/SKILL.md obsidian-task-runner/SKILL.md obsidian-task-runner/reference.md; do \
+		rel=$${f#obsidian-task-runner/}; \
+		if [ -f "$$SKILL_DIR/$$rel" ]; then \
+			diff -q "$$f" "$$SKILL_DIR/$$rel" >/dev/null 2>&1 && st=SAME || st=DIFF; \
+		else st=MISSING; fi; \
+		[ "$$st" != "SAME" ] && echo "  $$st  $$rel"; \
+	done; \
+	echo "  (仅列出 DIFF/MISSING；无输出 = 全部已同步)"
+	@echo "=== plugin sync status ==="
+	@for f in deploy/dsh-plugins/*; do \
+		b=$$(basename $$f); \
+		if [ -f $(HOME)/.dsh/plugins/$$b ]; then \
+			diff -q "$$f" "$(HOME)/.dsh/plugins/$$b" >/dev/null 2>&1 && st=SAME || st=DIFF; \
+		else st=MISSING; fi; \
+		[ "$$st" != "SAME" ] && echo "  $$st  plugins/$$b"; \
+	done; \
+	echo "  (仅列出 DIFF/MISSING；无输出 = 全部已同步)"
+
+# rollback: 撤掉 drop-in override，daemon 回固定安装路径 ~/.local/bin/otg。
+rollback:
+	@echo "=== Removing deploy drop-in (daemon -> ~/.local/bin/otg) ==="
+	rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
+	systemctl --user daemon-reload
+	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
+	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
+
+# install-force 保留为 deploy 的别名（旧肌肉记忆兼容），不再有独立逻辑。
+install-force: deploy

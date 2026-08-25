@@ -93,8 +93,8 @@ func TestDefaultsSetsWorkflowConfiguration(t *testing.T) {
 	if cfg.ConfigVersion != 1 || cfg.ShutdownGraceSeconds != 30 || cfg.OffPeakTimezone != "Asia/Shanghai" {
 		t.Fatalf("defaults = %+v", cfg)
 	}
-	if got := cfg.PhaseTimeout("round2"); got.String() != "1h0m0s" {
-		t.Fatalf("round2 timeout = %v, want 1h", got)
+	if got := cfg.PhaseTimeout("round2"); got.String() != "2h0m0s" {
+		t.Fatalf("round2 timeout = %v, want 2h", got)
 	}
 	if len(cfg.OffPeakWindows) != 3 || cfg.StarvationWarningDays["P3"] != 14 || cfg.StarvationWarningDays["P4"] != 30 {
 		t.Fatalf("workflow defaults = %+v", cfg)

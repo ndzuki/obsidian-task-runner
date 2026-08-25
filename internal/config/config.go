@@ -75,6 +75,17 @@ type Config struct {
 	StageMaxPhases             int `json:"stage_max_phases"`              // deterministic staging: phase count ceiling
 	AutoResumeAgedAfterHours   int `json:"auto_resume_aged_after_hours"`  // blocked-task aged auto-resume window (transient phase errors); <=0 = default 24
 
+	// MemoryGate is the daemon-side host-memory gate for implementing/round2
+	// dispatch. It activates when a task's REQ declares a floor (e.g.
+	// "MemAvailable ≥ 12 GiB" / "可用内存 <12 GiB") or when MemAvailableMiB is
+	// set as a global floor. Below the floor the daemon first auto-recovers
+	// (stops restartable k3d staging clusters) and, if still short, escalates
+	// to a project-level grilling decision instead of burning a round2 session
+	// that would only discover the shortfall (2026-08-25 TASK-065: 12GiB gate
+	// 1GiB short looped between implementing/grilling and required a manual
+	// `k3d cluster stop`).
+	MemoryGate MemoryGateConfig `json:"memory_gate"`
+
 	// Knowledge-base vector search (optional). When configured and the
 	// vector index exists, otg kb search blends embedding cosine similarity
 	// with BM25; otherwise BM25 alone is used (zero-dependency fallback).
@@ -188,6 +199,25 @@ type TimeWindow struct {
 type OffPeakWindow struct {
 	Start string `json:"start"` // "00:00"
 	End   string `json:"end"`   // "09:00"
+}
+
+// MemoryGateConfig drives the daemon-side host-memory gate for
+// implementing/round2 dispatch (see Config.MemoryGate).
+type MemoryGateConfig struct {
+	// MemAvailableMiB is a global host-memory floor for round2 dispatch in
+	// MiB. 0 (default) disables the global floor — the gate then only
+	// activates for tasks whose REQ declares an explicit floor. Use this to
+	// enforce a minimum on every implementation task regardless of REQ text.
+	MemAvailableMiB int `json:"mem_available_mib"`
+	// AutoRecovery stops restartable k3d staging clusters (recoverable via
+	// `k3d cluster start`) to free memory before escalating. It never touches
+	// user services (kb-reranker, ollama-sycl, desktop processes) or anything
+	// in Exclude.
+	AutoRecovery bool `json:"auto_recovery"`
+	// MaxStops caps how many clusters a single auto-recovery pass may stop.
+	MaxStops int `json:"max_stops"`
+	// Exclude holds name substrings never auto-stopped by recovery.
+	Exclude []string `json:"exclude"`
 }
 
 // Project defines a project mapping.
@@ -352,12 +382,15 @@ func Defaults() *Config {
 		MaxConcurrentTasks:           0,
 		MaxConcurrentTasksPerProject: 2,
 		PhaseConcurrency:             DefaultPhaseConcurrency(),
-		PhaseTimeoutMinutes:          map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 60, "merge": 15, "design": 90},
-		ShutdownGraceSeconds:         30,
-		OffPeakTimezone:              "Asia/Shanghai",
-		OffPeakWindows:               []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
-		StarvationWarningDays:        map[string]int{"P3": 14, "P4": 30},
-		ScanMinIntervalSeconds:       10,
+		// round2 默认 120m：实现阶段带真实环境冒烟（k3d/镜像构建/回归），
+		// 单窗口 60m 会把活跃会话误判为 wedged 而 cancel（TASK-065 教训）；
+		// 配合 timeout_active 活动度续期，活跃会话不会被误杀。
+		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 120, "merge": 15, "design": 90},
+		ShutdownGraceSeconds:   30,
+		OffPeakTimezone:        "Asia/Shanghai",
+		OffPeakWindows:         []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
+		StarvationWarningDays:  map[string]int{"P3": 14, "P4": 30},
+		ScanMinIntervalSeconds: 10,
 		// Overlap deferral cap: 12h exceeds the round2 no-progress cooldown
 		// ceiling (~10.7h), so a stalled upstream stops being re-dispatched
 		// before the deferred task is released to run concurrently.
@@ -370,6 +403,15 @@ func Defaults() *Config {
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
 		AutoResumeAgedAfterHours:   24,
+		MemoryGate: MemoryGateConfig{
+			// 0 = 无全局下限：仅 REQ 显式声明 "MemAvailable ≥ N GiB" 的门禁生效
+			//（TASK-065 AC-065-20 12GiB）。不想让非 smoke 的普通实现任务也被
+			// 12GiB 卡住，所以默认不设全局 floor。
+			MemAvailableMiB: 0,
+			AutoRecovery:    true, // 自发现 + 自动回收可停 k3d 集群
+			MaxStops:        2,
+			Exclude:         []string{"kb-reranker", "ollama-sycl"},
+		},
 		SkillInstallDir:            filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
 		Models:                     DefaultModels(),
 		DSHCmd:                     "dsh",
@@ -558,6 +600,17 @@ func mergeDefaults(cfg *Config) {
 	}
 	if cfg.AutoResumeAgedAfterHours <= 0 {
 		cfg.AutoResumeAgedAfterHours = defaults.AutoResumeAgedAfterHours
+	}
+	if cfg.MemoryGate.MemAvailableMiB == 0 && !cfg.MemoryGate.AutoRecovery {
+		// 完全未配置 → 用默认（REQ 声明驱动、自动回收开、排除用户服务）。
+		cfg.MemoryGate = defaults.MemoryGate
+	} else {
+		if cfg.MemoryGate.MaxStops == 0 {
+			cfg.MemoryGate.MaxStops = defaults.MemoryGate.MaxStops
+		}
+		if len(cfg.MemoryGate.Exclude) == 0 {
+			cfg.MemoryGate.Exclude = defaults.MemoryGate.Exclude
+		}
 	}
 	if cfg.Audit == nil {
 		cfg.Audit = defaults.Audit

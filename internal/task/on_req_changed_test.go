@@ -69,6 +69,10 @@ func TestOnReqChanged_DoneBreakingReopens(t *testing.T) {
 		"merge_status":        "merged",
 		"completed":           "2026-07-16T18:20:16+08:00",
 		"knowledge_extracted": "true",
+		// 上一代交付遗留的提炼退避必须在重开时清零，否则新交付的
+		// 首次正常提炼会被旧 backoff 挡住。
+		"knowledge_extract_retry_count": "3",
+		"knowledge_extract_retry_until": "2026-08-25T12:00:00Z",
 	})
 
 	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
@@ -92,6 +96,10 @@ func TestOnReqChanged_DoneBreakingReopens(t *testing.T) {
 	}
 	if fm.KnowledgeExtracted {
 		t.Fatal("knowledge_extracted should reset so the second delivery re-extracts")
+	}
+	if fm.KnowledgeExtractRetryCount != 0 || fm.KnowledgeExtractRetryUntil != "" {
+		t.Fatalf("reopen must clear the previous delivery's extraction backoff, got count=%d until=%q",
+			fm.KnowledgeExtractRetryCount, fm.KnowledgeExtractRetryUntil)
 	}
 }
 
@@ -457,5 +465,78 @@ func TestOnReqChanged_AbsorbedStaleDoneAdditiveStaysTerminal(t *testing.T) {
 	if fm.Status != "done" || fm.PendingReq || fm.MergeStatus != "merged" {
 		t.Fatalf("additive must keep stale done terminal: status=%q pending_req=%v merge_status=%q",
 			fm.Status, fm.PendingReq, fm.MergeStatus)
+	}
+}
+
+// writeDependentVault builds a vault where REQ-099 (the changed upstream) and
+// REQ-098 (depends_on 099) each own one task.
+func writeDependentVault(t *testing.T, changeType string) (vault, task098Path string) {
+	t.Helper()
+	vault = t.TempDir()
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	reqsDir := filepath.Join(projDir, "Requirements")
+	for _, d := range []string{tasksDir, reqsDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reqBody, _ := reqContentWithType(changeType)
+	if err := os.WriteFile(filepath.Join(reqsDir, "REQ-099-test-req.md"), []byte(reqBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	depBody := "---\nid: \"098\"\ntitle: Dependent Requirement\nproject: test\ndepends_on: [\"099\"]\n---\n# Dependent Requirement\n"
+	if err := os.WriteFile(filepath.Join(reqsDir, "REQ-098-dependent.md"), []byte(depBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	task099 := filepath.Join(tasksDir, "TASK-099-test-req.md")
+	if err := os.WriteFile(task099, []byte("---\nid: \"099\"\ntitle: t\nproject: test\nassignee: default\nreq_doc: Projects/001-test/Requirements/REQ-099-test-req.md\nstatus: refining\n---\n# TASK-099\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	task098Path = filepath.Join(tasksDir, "TASK-098-dependent.md")
+	if err := os.WriteFile(task098Path, []byte("---\nid: \"098\"\ntitle: d\nproject: test\nassignee: default\nreq_doc: Projects/001-test/Requirements/REQ-098-dependent.md\nstatus: refining\n---\n# TASK-098\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return vault, task098Path
+}
+
+// TestOnReqChanged_PropagatesToDependents guards the reverse pass: a
+// breaking change to REQ-099 marks the task of every REQ that depends_on 099
+// pending, so a merged upstream contract break cannot silently reach a later
+// audit or gate failure (TASK-058 vs TASK-079 lesson).
+func TestOnReqChanged_PropagatesToDependents(t *testing.T) {
+	vault, task098Path := writeDependentVault(t, ReqChangeBreaking)
+
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
+	var dep *AffectedResult
+	for i := range results {
+		if results[i].TaskID == "098" {
+			dep = &results[i]
+		}
+	}
+	if dep == nil || dep.Action != "pending_req_dependent" {
+		t.Fatalf("results = %+v, want pending_req_dependent for TASK-098", results)
+	}
+	fm := readTaskFM(t, task098Path)
+	if !fm.PendingReq {
+		t.Fatal("dependent task must be marked pending_req")
+	}
+}
+
+// TestOnReqChanged_AdditiveDoesNotPropagateToDependents: additive changes are
+// backward-compatible, so dependents are NOT marked pending — they re-align
+// the next time their own REQ is refined.
+func TestOnReqChanged_AdditiveDoesNotPropagateToDependents(t *testing.T) {
+	vault, task098Path := writeDependentVault(t, ReqChangeAdditive)
+
+	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
+	for _, r := range results {
+		if r.Action == "pending_req_dependent" {
+			t.Fatalf("additive change must not propagate to dependents, got %+v", r)
+		}
+	}
+	fm := readTaskFM(t, task098Path)
+	if fm.PendingReq {
+		t.Fatal("additive upstream change must leave the dependent task untouched")
 	}
 }

@@ -60,6 +60,7 @@ type Runner struct {
 	reqChangedNotifyAt sync.Map              // "taskID:action" → time.Time (需求变更 toast debounce)
 	refIndexRebuiltAt  sync.Map              // "last" → time.Time (References INDEX rebuild debounce)
 	kbSyncAt           sync.Map              // "last" → time.Time (knowledge retrieval-store sync debounce)
+	memRecoveryAt      sync.Map              // "mem-<taskID>" → time.Time (memory-gate auto-recovery debounce)
 	kbSyncRunning      atomic.Bool           // true while a retrieval-store sync goroutine is in flight
 	kbSyncMu           sync.Mutex            // serializes retrieval-store syncs (watcher-triggered vs merge-extraction)
 	consolidatedAt     sync.Map              // reqDoc → time.Time (last PM consolidate dispatch per group)
@@ -405,6 +406,9 @@ func (r *Runner) Run(ctx context.Context) error {
 						r.notifyReqChanged(result.TaskID, result.Action, "🚫", "需求文件缺失", "TASK 已阻塞，恢复 REQ 后重试")
 					case "warn_only":
 						r.notifyReqChanged(result.TaskID, result.Action, "⚠️", "需求变更", "请手动评估影响")
+					case "pending_req_dependent":
+						r.notifyReqChanged(result.TaskID, result.Action, "📌", "上游需求变更影响本任务",
+							"本任务的 REQ 依赖上游 REQ，上游契约已变更；任务将重新对齐需求")
 					default:
 						r.logger.Printf("task %s: unknown OnReqChanged action %q", result.TaskID, result.Action)
 					}
@@ -757,7 +761,16 @@ func (r *Runner) reqDependsOn(projDir, tasksDir string) (map[string][]string, ma
 				continue
 			}
 			var deps []string
-			if raw, ok := fm.Extra["depends_on"]; ok {
+			// Typed field first (Frontmatter.DependsOn); the Extra map only
+			// carries depends_on for documents parsed before the typed field
+			// existed or with a shape yaml.v3 could not map.
+			if len(fm.DependsOn) > 0 {
+				for _, item := range fm.DependsOn {
+					if item != "" {
+						deps = append(deps, item)
+					}
+				}
+			} else if raw, ok := fm.Extra["depends_on"]; ok {
 				for _, item := range toStringSlice(raw) {
 					if item != "" {
 						deps = append(deps, item)
@@ -1296,21 +1309,48 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			continue
 		}
 		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
-		// Conventions gate intercept BEFORE the ready→refining transition:
-		// a team project's first task stays ready and dispatches the
-		// read-only conventions review instead of entering the maturity
-		// gate. The review artifact (Notes/PROJECT-CONVENTIONS.md) is the
-		// one-shot marker; delete it to re-review.
-		if fm.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project) {
-			r.logger.Printf("task %s: conventions gate: team project %q pending review", t.ID, t.Project)
+		// Conventions/architecture gate intercept BEFORE the ready→refining
+		// transition: an EXISTING project's first task stays ready and
+		// dispatches the read-only project-baseline review (conventions +
+		// architecture constraints) instead of entering the maturity gate.
+		// The review artifact (Notes/PROJECT-CONVENTIONS.md) is the one-shot
+		// marker; delete it to re-review. 004-deployd lesson: the gate used to
+		// fire only for project_type=team, so ordinary existing projects
+		// developed features without any architecture review and shipped
+		// dev/test-prod database drift (SQLite vs MySQL field naming).
+		if fm.Status == "ready" && projectIsExisting(mapFile, t.Project) && !r.conventionsReviewed(t.Project) {
+			r.logger.Printf("task %s: conventions gate: existing project %q pending review", t.ID, t.Project)
 			t.Status = "ready"
 			goto dispatchConventions
+		}
+		// Team projects never auto-reopen a done task for merge (gap 8 fix):
+		// a team task's done+merged terminal state is authoritative (manual
+		// remote probe / fork-merge atomic write). A user-hand-set done with
+		// merge_status=pushed or a residual PR URL must NOT be yanked back
+		// into review by nextLocalTransition's DoneReopensMerge branch —
+		// the team repo's PR lifecycle lives outside the daemon.
+		if fm.Status == "done" && projectIsTeam(mapFile, t.Project) && task.DoneReopensMerge(fm) {
+			r.logger.Printf("task %s: team project done task with unmerged PR — no auto reopen (team merge lifecycle is manual)", t.ID)
+			continue
 		}
 		if transition, ok := nextLocalTransition(fm); ok {
 			r.logger.Printf("task %s: local transition %s → %s (%s)", t.ID, fm.Status, transition.Status, transition.Reason)
 			if err := yamlfrontmatter.Update(t.FilePath, transition.Updates); err != nil {
 				r.logger.Printf("task %s: apply local transition: %v", t.ID, err)
 				continue
+			}
+			if transition.Reason == "premature plan approval reset" {
+				// 提前批准重置必须在 TASK 变更记录留下审计轨迹（gap 9
+				// 修复：此前 AppendAuditRecord 零生产调用方，重置静默发生）。
+				if err := AppendAuditRecord(t.FilePath, auditRecord{
+					Actor:     "daemon",
+					Event:     "PLAN_APPROVAL_RESET",
+					From:      fm.Status,
+					To:        fm.Status,
+					ErrorCode: "<none>",
+				}); err != nil {
+					r.logger.Printf("task %s: append premature-approval audit record: %v", t.ID, err)
+				}
 			}
 			if transition.Status == "done" || transition.Status == "closed" {
 				r.cleanupTaskArtifacts(t.FilePath, r.repoDirForTask(t.Project))
@@ -1332,9 +1372,9 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			}
 		}
 	dispatchConventions:
-		// conventions gate: team projects' first task must pass the
-		// read-only spec-review gate before direct-phase dispatch; the goto
-		// above and this marker keep the gate decision in one place (the
+		// conventions gate: an existing project's first task must pass the
+		// read-only spec/architecture review before direct-phase dispatch; the
+		// goto above and this marker keep the gate decision in one place (the
 		// dispatch switch below selects the conventions phase).
 		if t.Status == "needs-grilling" {
 			// 项目级暂停开关：Grilling-Decisions.md 的 status=paused（或
@@ -1406,7 +1446,21 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				}
 				repoDir = resolved
 			}
-			pending = append(pending, preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: repoLockRead})
+			lockMode := repoLockRead
+			// A planning task that must pass the replan gate first runs the
+			// global design session THIS scan iteration — no ordinary
+			// planning session executes. The design session reads the repo
+			// but writes the vault Design library, so it needs no repo lock;
+			// holding the read lock for the whole 10-90 minute session
+			// starves worktree preparation (write lock) for every same-repo
+			// implementing/plan-review task (2026-08-24: TASK-015/065/058
+			// all deferred on "repo busy" while the design session ran).
+			// Gate sessions run lock-free; the ordinary planning dispatch on
+			// the NEXT scan takes the read lock as usual.
+			if t.Status == "planning" && replanGateRequired(t, r.cfg.ReplanGateThreshold) {
+				lockMode = repoLockNone
+			}
+			pending = append(pending, preparedTask{task: t, repoDir: repoDir, workDir: repoDir, lockMode: lockMode})
 			continue
 		}
 
@@ -1442,7 +1496,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			// behind this write lock — skip and retry on the next scan,
 			// matching the tryRepoLock semantics of the dispatch loop.
 			if !lock.TryLock() {
-				r.logger.Printf("task %s: repo busy, deferring worktree prepare to next scan", t.ID)
+				r.logger.Printf("task %s: repo busy, deferring worktree prepare to next scan (a refining/planning session holds the read lock; replan-gate design sessions run lock-free)", t.ID)
 				continue
 			}
 			workDir, worktreeErr := ensureTaskWorktree(repoDir, taskRunKey(t.FilePath), t.TargetBranch, r.cfg.WorktreeBase)
@@ -2136,6 +2190,15 @@ func (r *Runner) parkedFactRecovery() {
 			// TASK-068 un-parked every scan on landed blocked_by while D-88/89/90
 			// stayed unanswered, looping refining. Only prerequisite-gate parks
 			// (D-19 style, no list entry sourcing this task) exit on facts.
+			// The dispute-park signal is read from the task's OWN frontmatter
+			// (isDisputePark), NOT from parsing the decision list — D-100's
+			// placeholder "待裁决" being mis-read as answered un-parked
+			// TASK-065 four times in one day, re-routing it to planning →
+			// round2 → grilling (TASK-065 lesson). A wording drift in the
+			// list must never re-open that loop.
+			if isDisputePark(fm) {
+				continue
+			}
 			// 项目级暂停开关：清单 paused 时任何 park 都不解除，等用户手动
 			// 把清单 status 改为 open 才允许恢复流程。
 			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" && grillingListPaused(listPath) {
@@ -2158,6 +2221,37 @@ func (r *Runner) parkedFactRecovery() {
 			}
 		}
 	}
+}
+
+// isDisputePark reports whether a needs-grilling+parked task was parked
+// because its conflicts escalated into the project-level decision list (a
+// dispute/implementation-block park), as opposed to a prerequisite-gate park
+// (D-19 style "park until upstream changes"). The two parks have different
+// recovery gates: a dispute park is recovered ONLY by PM distribute after the
+// user answers the list — never by blocked_by facts converging; a
+// prerequisite-gate park recovers exactly when every upstream lands.
+//
+// The signal comes from the task's OWN frontmatter, not from parsing the
+// decision list, so a placeholder-wording drift in the list (e.g. D-100's
+// "待裁决" being mis-read as answered) can never wrongly un-park a dispute
+// park and re-open the planning→grilling loop (TASK-065: un-parked 4× in one
+// day on landed blocked_by while D-100 stayed unanswered).
+//
+// Writers: PM consolidate parks implementation blocks with grill_prev_status
+// and/or "decision_required" in grill_context; refining Step 4c parks with
+// grill_context "maturity=parked; …已并入 Notes/Grilling-Decisions.md".
+func isDisputePark(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || !fm.GrillParked {
+		return false
+	}
+	// Implementation-block parks carry the phase they were pulled out of.
+	if fm.GrillPrevStatus != "" {
+		return true
+	}
+	ctx := fm.GrillContext
+	return strings.Contains(ctx, "decision_required") ||
+		strings.Contains(ctx, "Grilling-Decisions") ||
+		strings.Contains(ctx, "maturity=parked")
 }
 
 // prereqDepsSatisfied reports whether every blocked_by dependency of a
@@ -2256,7 +2350,8 @@ func (r *Runner) findTaskByRef(projectsDir, projDir, ref string) (*yamlfrontmatt
 // still OPEN).
 func isAutoResumableError(code string) bool {
 	switch code {
-	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted):
+	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted),
+		string(ErrDesignSessionFailed):
 		return true
 	default:
 		// Empty code (legacy phase-failure blocks) is treated as resumable.
@@ -2999,26 +3094,32 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						continue
 					} else {
 						// Normal auto-unblock. R1: skip ready→refining when a plan already exists.
+						// pending_req=true 时**不得清 false**（不变量 #5：仅新
+						// planning 成功可清）——需求已变更的任务必须先回
+						// refining 吸收新 REQ，禁止拿旧计划直接进入实现。
 						dest := "ready"
-						if fm.GrillPrevStatus == "implementing" && fm.PlanVersion > 0 {
+						if fm.PendingReq {
+							dest = "refining"
+							r.logger.Printf("task %s: unblocking with pending_req → refining (new plan must absorb the changed REQ)", t.ID)
+						} else if fm.GrillPrevStatus == "implementing" && fm.PlanVersion > 0 {
 							dest = "plan-review"
 							r.logger.Printf("task %s: deps done, plan v%d exists → plan-review", t.ID, fm.PlanVersion)
 						}
-						if err := r.updateTaskFile(taskPath, t.ID, t.Title, map[string]interface{}{
+						updates := map[string]interface{}{
 							"status":            dest,
-							"pending_req":       false,
 							"blocked_by":        []string{},
 							"blocked_phase":     "",
 							"phase_error":       "",
 							"phase_log":         "",
 							"grill_prev_status": "",
 							"grill_continue":    false,
-						}); err != nil {
+						}
+						if err := r.updateTaskFile(taskPath, t.ID, t.Title, updates); err != nil {
 							r.logger.Printf("task %s: failed to unblock: %v", t.ID, err)
 							continue
 						}
 						t.Status = dest
-						t.PendingReq = false
+						// pending_req 保持原值：t.PendingReq 不重置。
 						if dest == "ready" {
 							notify.SendTaskAction(t.ID, t.Title, "🔓", "解除阻塞", "必填字段已补齐，依赖已满足，任务自动解除阻塞开始执行", r.cfg.Notifications.Desktop)
 						} else {
@@ -3095,6 +3196,16 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		}
 
 		if t.MergeApproved && (t.Status == "review" || t.Status == "conflict") {
+			// phase_concurrency["merge"] gate（此前该键不可达：merge 任务
+			// 在到达通用门禁段前已提前 continue）。在此分支获取，限制
+			// 同时进行的合并/冲突修复会话。
+			if gate := r.phaseGates["merge"]; gate != nil {
+				if ok, _ := gate.tryAcquire(); !ok {
+					r.logger.Printf("task %s: phase gate merge full (%d running), deferring to next scan", t.ID, r.cfg.ConcurrencyFor("merge"))
+					continue
+				}
+				defer gate.release()
+			}
 			// Environmental merge failures (network/GitHub API) retry with a
 			// short backoff here instead of waiting for the next scan batch,
 			// which can be stalled behind a long Round 2 session.
@@ -3109,20 +3220,23 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		var phase, skillPrompt string
 
 		switch {
-		case t.Status == "ready" && projectIsTeam(mapFile, t.Project) && !r.conventionsReviewed(t.Project):
-			// ── Conventions gate（团队项目首次自动化前）──
-			// A team project's first task must pass a read-only conventions
+		case t.Status == "ready" && projectIsExisting(mapFile, t.Project) && !r.conventionsReviewed(t.Project):
+			// ── Conventions/architecture gate（已有项目开发前基线审查）──
+			// An EXISTING project's first task must pass a read-only baseline
 			// review before any requirement work: the review summarizes the
 			// project's design/code/comment/API-doc/documentation/commit
-			// conventions into Notes/PROJECT-CONVENTIONS.md (the artifact
-			// itself is the one-shot gate marker; delete it to re-review).
-			// Failure blocks the task (CONVENTIONS_REVIEW_FAILED); resume
-			// re-runs the review — conventions are a precondition, never
-			// skipped.
+			// conventions AND its architecture constraints (tech stack, DB
+			// engine per environment, ORM/schema field naming, migrations)
+			// into Notes/PROJECT-CONVENTIONS.md (the artifact itself is the
+			// one-shot gate marker; delete it to re-review). This is what
+			// prevents 004-deployd-style drift — features developed against a
+			// dev-only assumption (SQLite) while test/prod run MySQL. Failure
+			// blocks the task (CONVENTIONS_REVIEW_FAILED); resume re-runs the
+			// review — the baseline is a precondition, never skipped.
 			phase = "conventions"
 			model = r.cfg.Model("default")
 			skillPrompt = "/obsidian-task-runner-conventions " + t.FilePath
-			r.logger.Printf("task %s: team project %q conventions review (model=%s)", t.ID, t.Project, dshModelLabel(model))
+			r.logger.Printf("task %s: existing project %q conventions review (model=%s)", t.ID, t.Project, dshModelLabel(model))
 		case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
 			phase = "priority"
 			model = r.cfg.Model("default")
@@ -3154,6 +3268,16 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			phase = "planning"
 			skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 		case t.Status == "plan-review" || t.Status == "implementing":
+			// 宿主内存门禁（REQ 声明 "MemAvailable ≥ N GiB" 或配置全局下限时
+			// 生效）：低于门禁先自动回收可恢复的 k3d 集群，仍不足则升级项目级
+			// 决策，避免烧一次 round2 会话后才在 skill 侧发现内存不足
+			// （2026-08-25 TASK-065：12GiB 门禁差 1GiB，只能人肉
+			// `k3d cluster stop`，否则 implementing/grilling 来回转）。
+			if fm, err := readFrontmatter(t.FilePath); err == nil && fm != nil {
+				if !r.enforceMemoryGate(t.FilePath, t, fm) {
+					continue
+				}
+			}
 			phase = "round2"
 			skillPrompt = "/obsidian-task-runner-round2 " + t.FilePath
 			if t.Status == "plan-review" {
@@ -3191,9 +3315,15 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			handled, gateErr := r.runReplanGate(r.daemonCtx, t, repoDir)
 			if handled {
 				if gateErr != nil {
+					code := designGateErrorCode(gateErr)
 					r.logger.Printf("task %s: %v", t.ID, gateErr)
-					r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, "design", ErrDesignSessionFailed, gateErr.Error(), "")
-					notify.SendTaskAction(t.ID, t.Title, "🏛️", "全局设计修订失败", "重规划已达到阈值，但设计库修订未完成；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+					r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, "design", code, gateErr.Error(), "")
+					if code == ErrDesignTargetUnwritable {
+						notify.SendTaskAction(t.ID, t.Title, "🏛️", "全局设计修订失败：设计库目录不可写",
+							"Vault 的 Projects/{project}/Design/ 目录不可写，重规划门禁无法落盘。修复 Vault 挂载/权限后设置 resume_approved=true 恢复。", r.cfg.Notifications.Desktop)
+					} else {
+						notify.SendTaskAction(t.ID, t.Title, "🏛️", "全局设计修订失败", "重规划已达到阈值，但设计库修订未完成；修复后 resume_approved=true 恢复", r.cfg.Notifications.Desktop)
+					}
 				} else {
 					r.logger.Printf("task %s: replan gate passed after global design revision (plan v%d)", t.ID, t.PlanVersion)
 				}

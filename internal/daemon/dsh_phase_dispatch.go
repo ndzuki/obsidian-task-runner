@@ -30,8 +30,15 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		Model:           model,
 		ReasoningEffort: ompPhaseThinking(phase),
 		SkillPrompt:     skillPrompt,
+		TaskStatus:      t.Status,
 		Timeout:         timeout,
 		WorkingDir:      repoDir,
+	}
+	// 只读基线审查会话（conventions）在 daemon 层限制工具面，与完成审计
+	// 会话（audit）对齐：read/grep/glob/bash 之外的工具一律违规。写操作
+	// 由会话产物（PROJECT-CONVENTIONS.md）之外禁止——审查是零代码修改。
+	if phase == "conventions" {
+		spec.ToolPolicy = "read,grep,glob,bash"
 	}
 	snap := TaskSnapshot{TaskID: t.ID, TaskPath: taskPath, Project: t.Project, RepoDir: repoDir}
 
@@ -50,6 +57,18 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		// 会话完成：清空持久化的 resume token（无未完成会话可恢复）。
 		r.clearExecutorSessionID(taskPath)
 		r.clearQuotaBackoff(taskPath)
+		// Refining success re-stamps refine_req_hash with the REQ bytes as
+		// they stand AFTER the session's own write-back. The pre-dispatch
+		// ensureReqHash stamped the pre-session bytes; a session that rewrites
+		// the REQ (decision write-back, structural cleanup) changes the hash,
+		// and a stale hash keeps failing the refining early-out
+		// (refine_req_hash == current REQ) on every scan — the task then
+		// re-runs the maturity gate forever instead of routing to planning
+		// (TASK-058 observed after TASK-079 merged). The skill also writes
+		// the hash itself, but the daemon must not trust the session here.
+		if phase == "refining" {
+			r.ensureReqHash(taskPath, t.ReqDoc)
+		}
 		r.compactPlanHistory(taskPath, phase)
 		if phase == "round2" {
 			r.recordRound2Completion(taskPath, t.ID)
@@ -65,6 +84,20 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		r.clearPhaseRetry(taskPath, phase)
 		r.clearPhaseError(taskPath, t.ID)
 		r.clearMergeRepairBudget(taskPath, phase)
+		return true
+
+	case OutcomeTimedOutActive:
+		// 超时窗口耗尽但会话仍活跃（近期有 step/工具事件——真实长任务的
+		// Round 2，如 TASK-065 的 dev-up 冒烟）：不 cancel、不计失败、
+		// 不转 blocked。保留 resume token，下一轮 scan 继续等待同一会话。
+		r.logger.Printf("task %s: DSH %s still running (session active past timeout window) — next scan resumes", t.ID, phase)
+		if result != nil && result.ResumeToken != "" {
+			if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+				"executor_session_id": result.ResumeToken,
+			}); err != nil {
+				r.logger.Printf("task %s: persist resume token after active timeout: %v", t.ID, err)
+			}
+		}
 		return true
 
 	case OutcomeInterrupted:

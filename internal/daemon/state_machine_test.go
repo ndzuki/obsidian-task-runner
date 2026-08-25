@@ -207,6 +207,44 @@ func TestDoneWithUnmergedPRReopensMerge(t *testing.T) {
 	}
 }
 
+// TestPrematurePlanApprovalResetSkipsPhaseBlocked guards the 2026-08-25
+// TASK-065 status-flapping fix: a phase-failure blocked task
+// (blocked_phase != "") resumes into the SAME phase with the SAME approved
+// plan. The catch-all "premature plan approval reset" must not wipe
+// plan_approved there, otherwise every transient infra failure
+// (MODEL_QUOTA_EXHAUSTED, agent-server down) clears a legitimately approved
+// plan and forces a fresh "re-approve the same plan" grilling round when
+// implementing resumes without approval. Entry-gate blocks (blocked_phase
+// empty) and non-plan statuses keep the legacy reset.
+func TestPrematurePlanApprovalResetSkipsPhaseBlocked(t *testing.T) {
+	phaseBlocked := &yamlfrontmatter.Frontmatter{
+		Status:       "blocked",
+		BlockedPhase: "implementing",
+		PlanApproved: true,
+	}
+	if transition, ok := nextLocalTransition(phaseBlocked); ok {
+		t.Fatalf("phase-failure blocked produced transition %q (%s), want none (plan approval survives resume)", transition.Status, transition.Reason)
+	}
+
+	entryBlocked := &yamlfrontmatter.Frontmatter{
+		Status:       "blocked",
+		BlockedPhase: "",
+		PlanApproved: true,
+	}
+	transition, ok := nextLocalTransition(entryBlocked)
+	if !ok {
+		t.Fatal("entry-gate blocked with stale approval produced no transition, want premature approval reset")
+	}
+	if got := transition.Updates["plan_approved"]; got != false {
+		t.Fatalf("entry-gate blocked plan_approved = %v, want reset to false", got)
+	}
+
+	other := &yamlfrontmatter.Frontmatter{Status: "review", PlanApproved: true}
+	if _, ok := nextLocalTransition(other); !ok {
+		t.Fatal("non-phase status with stale approval produced no transition, want premature approval reset")
+	}
+}
+
 // TestDoneMergedStaysTerminal guards that a genuinely merged task (or a
 // done task with no PR/branch at all) stays terminal.
 func TestDoneMergedStaysTerminal(t *testing.T) {

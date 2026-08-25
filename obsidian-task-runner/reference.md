@@ -126,6 +126,8 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 
 **人工暂停**：需要暂停任务等待外部条件（如用户完善需求）时，可设 `status=blocked` + `blocked_phase=<原状态>` + `phase_error_code=REQ_MISSING`（非自动恢复错误码），daemon 保持阻塞且不提醒；条件满足后设 `resume_approved=true` 恢复。
 
+**缺字段/依赖 auto-unblock（2026-08-25 修正）**：补齐字段或依赖满足后自动转 `ready`（有旧计划则 `plan-review`）——**但不变量 #5 优先：`pending_req=true` 时不得清 false，且直接转 `refining`**（新 REQ 必须先被新计划吸收，禁止复用旧计划进 plan-review/实现）。`OnReqDeleted`（REQ 被删 → blocked `REQ_MISSING`）同样**保持 `pending_req` 原值**——人工恢复后必须重细化。
+
 ### 4.5 Grilling 所有权
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -141,8 +143,10 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不开 tab/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`;` 分隔追加），用户可推翻后重跑 |
-| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**（含检索库 store 同步）；失败保留 `false` → daemon 每轮 scan 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），不静默丢失。`adr_written` 的逗号串+路径前缀形态在匹配前归一化为裸 ADR id |
-| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见，含检索库同步失败）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动重试中）」 |
+| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**（含检索库 store 同步）；失败保留 `false` → daemon 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），**按 `knowledge_extract_retry_until` 指数退避，不再每轮 scan 无限重试**，不静默丢失。`adr_written` 的逗号串+路径前缀形态在匹配前归一化为裸 ADR id |
+| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见，含检索库同步失败）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动退避重试中）」 |
+| `knowledge_extract_retry_count` | int | `0` | 知识提炼/检索库同步**连续**失败计数（daemon 维护）；首次失败 10m 后重试，逐次加倍，上限 6h。完整成功（提取 + store 同步）时清零——提取成功但同步失败不清零，连续同步失败同样加倍 |
+| `knowledge_extract_retry_until` | string | `""` | 下一次允许重试知识提炼的 RFC3339 截止（daemon 维护，重启不清零）；`recoverUnExtractedKnowledge` 仅在该时点之后重试，防发版时 store 同步失败引发每轮扫描无限重试风暴 |
 TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
 | `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
 | `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
@@ -402,7 +406,7 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - 新项目 planning 不创建目录；Round 2 才创建并 register-project。
 - 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ frontmatter 同样每轮 Normalize**（`NormalizeReqFrontmatter` / `syncReqSchemaDefaults`）：稳定字段（created/updated/tags）回填，必填身份与可选决策字段不伪造——旧 REQ 被重拾（done 任务 breaking 重开）时字段演进不静默断链。
 - **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
-- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 DSH 阶段会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 DSH 阶段会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 生效；`merge` 槽位不可达（merge 任务在门禁段前已提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + in-flight 去重约束）——两 key 置 `0`/调大无效果，属代码追赶项。
+- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 DSH 阶段会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 DSH 阶段会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**消费点（2026-08-25 全部接线）**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 门禁段生效；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。
 
 ### 8.1 Thinking Mode
 
@@ -429,14 +433,16 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 
 ## 9. Skill 安装
 
-Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（团队项目规范审查门禁）、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
+Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（**已有项目**基线审查门禁：规范 + 架构约束）、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
 
 **知识库字段（`kb_db` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
 
 
-**团队项目字段（`projects[].project_type` / `projects[].merge_mode`）**：`project_type: team` 标记已存在的组织仓库（如私有 Gitea）——daemon 禁止自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`，仓库归团队所有。`merge_mode` 三选一：缺省/`auto`（个人项目 gh 全自动）、`manual`（直接在团队仓库上开发：推分支 → `merge_status=pushed` → 人工在仓库 UI 合并 → daemon 远端探测自动 done）、`fork-merge`（fork 开发，`git_remote` 指向自己的 fork：本地 merge 进 fork 默认分支（冲突 AI 解决）→ push → done → 用户手动向团队项目发 PR）。两字段均由用户手工填写，daemon 注册/更新时**保留**（不覆盖）。团队项目首个任务自动过只读规范审查门禁（产物 `Notes/PROJECT-CONVENTIONS.md` 即一次性标记）。详见 docs/workflow.md §6.5.1 与 §8.2。
+**团队项目字段（`projects[].project_type` / `projects[].merge_mode`）**：`project_type: team` 标记已存在的组织仓库（如私有 Gitea）——daemon 禁止自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`，仓库归团队所有。`merge_mode` 三选一：缺省/`auto`（个人项目 gh 全自动）、`manual`（直接在团队仓库上开发：推分支 → `merge_status=pushed` → 人工在仓库 UI 合并 → daemon 远端探测自动 done）、`fork-merge`（fork 开发，`git_remote` 指向自己的 fork：本地 merge 进 fork 默认分支（冲突 AI 解决）→ push → done → 用户手动向团队项目发 PR）。两字段均由用户手工填写，daemon 注册/更新时**保留**（不覆盖）。**team 终态保护（2026-08-25 补全）**：`detectStaleDoneReopens` 与 done→review 自动重开（`DoneReopensMerge`）对 team 均跳过——done+merged 是权威交付证据，forge 生命周期完全人工；用户手动置 done 而 `merge_status=pushed`/残留 PR URL 的 team 任务不会再被拽回 review。
+
+**已有项目基线门禁（所有已存在项目，非仅团队）**：任何**已注册且存在 checkout** 的项目（`projectIsExisting`，含团队项目）首个任务在 refining 前必须先过只读基线审查（`/obsidian-task-runner-conventions`）——产物 `Notes/PROJECT-CONVENTIONS.md`（**规范 + 架构约束**：技术栈、数据库分环境、schema/字段命名、迁移机制）即一次性门禁标记。004-deployd 教训：普通已有项目（非团队）此前不过门禁，开发用 SQLite、测试/生产用 MySQL，字段名结尾不一致导致返工——现在统一拦截。失败转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。**只读工具面由 daemon 层硬限制**（2026-08-25 起）：`ToolPolicy="read,grep,glob,bash"` 随 embed RPC 下发，agent-server 注入硬约束 preamble 并对白名单外 `tool/call` 判 `tool_policy_violation` 失败。详见 docs/workflow.md §6.5.1 与 §8.2。
 
 **vault-map 自主维护（daemon）**：
 

@@ -331,6 +331,27 @@ func taskLeftGrilling(taskID, vaultPath, reqDoc string) bool {
 	return true
 }
 
+// noPendingCloseDelay is how long the zero-pending screen stays visible
+// before the tab auto-closes.
+const noPendingCloseDelay = 3 * time.Second
+
+// noPendingScreen is the clean exit screen for the decision-list mode when
+// the model confirms there are no pending decision points (the list was fully
+// answered between tab launch and questionnaire generation). Previously this
+// path fell through to manualFill, which dumped the model's raw markdown reply
+// and parked the tab at a plain-text "✍️ 你的决策 >" prompt — the user saw an
+// unrendered plain-text tab instead of the bubbletea questionnaire.
+func noPendingScreen() string {
+	return `
+╔══════════════════════════════════════════════════════════════╗
+║  ✅ 清单当前没有待答决策点
+║
+║  全部决策点已答复，daemon 已自动分发写回（或即将分发）。
+║  无需操作，本标签页即将自动关闭。
+╚══════════════════════════════════════════════════════════════╝
+`
+}
+
 func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc string) error {
 	sessionID := ""
 
@@ -357,9 +378,20 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
 	}
 	var q questionnaire
-	if err := json.Unmarshal([]byte(raw), &q); err != nil || len(q.Decisions) == 0 {
+	if err := json.Unmarshal([]byte(raw), &q); err != nil {
 		fmt.Println(resp.Text)
 		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
+	}
+	if len(q.Decisions) == 0 {
+		// 模型确认没有待答决策点（清单 pending 刚清零的竞态：batch 写回落地后
+		// 旧 daemon 仍开出了决策 tab）。不能回退纯文本 manualFill——那会把模型
+		// 的原始 markdown 直接倒给用户并停在「✍️ 你的决策 >」空等（观测：
+		// 2026-08-24 19:32 决策清单 tab 纯文本）。干净收尾并自动关 tab。
+		fmt.Println(noPendingScreen())
+		time.Sleep(noPendingCloseDelay)
+		closeChatSession(addr, sessionID)
+		closeOwnTab()
+		return nil
 	}
 
 	// 阶段 2：TUI 光标交互问卷，一轮完成所有选择。
@@ -490,11 +522,17 @@ const writebackMaxAttempts = 3
 var writebackRetryBackoff = 20 * time.Second
 
 // notifyWritebackFailure 是写回最终失败时的桌面提醒；测试可覆盖。
-var notifyWritebackFailure = func(err error) {
+// what 标明失败对象（如 "TASK-058" 或决策清单文件名），空串表示未知——
+// 用户只看到「Grilling 决策写回失败」无法判断是哪份决策（观测：TASK-058）。
+var notifyWritebackFailure = func(what string, err error) {
 	if _, e := exec.LookPath("notify-send"); e != nil {
 		return
 	}
-	_ = exec.Command("notify-send", "-u", "critical", "⚠️ Grilling 决策写回失败",
+	title := "⚠️ Grilling 决策写回失败"
+	if what != "" {
+		title += "：" + what
+	}
+	_ = exec.Command("notify-send", "-u", "critical", title,
 		fmt.Sprintf("已自动重试 %d 次仍失败（%v）。请稍后重新提交决策问卷，或直接手动编辑 Grilling-Decisions.md。", writebackMaxAttempts, err)).Run()
 }
 
@@ -596,13 +634,23 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx 
 	if answers == "" {
 		return fmt.Errorf("writeback mode requires --answers")
 	}
+	// 失败提醒的归属对象：任务 ID 优先，其次写回目标文档名。
+	what := ""
+	if ctx != nil {
+		switch {
+		case ctx.TaskID != "":
+			what = "TASK-" + ctx.TaskID
+		case ctx.Target != "":
+			what = filepath.Base(ctx.Target)
+		}
+	}
 	if sessionID == "" {
 		// 罕见：问卷会话从未建立（agent-server 启动失败等）→ 直接 fresh。
 		if ctx == nil {
 			return fmt.Errorf("writeback mode requires --session")
 		}
 		if err := freshWriteback(addr, provider, model, effort, ctx); err != nil {
-			notifyWritebackFailure(err)
+			notifyWritebackFailure(what, err)
 			return err
 		}
 		return nil
@@ -632,7 +680,7 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx 
 			return nil
 		}
 	}
-	notifyWritebackFailure(lastErr)
+	notifyWritebackFailure(what, lastErr)
 	return lastErr
 }
 
@@ -816,7 +864,20 @@ func chat(addr, provider, model, effort, sessionID, message string, timeout time
 		return nil, fmt.Errorf("agent-server bad response: %w", err)
 	}
 	if out.Outcome != "completed" {
-		return nil, fmt.Errorf("agent-server outcome %s: %s", out.Outcome, out.ErrorCode)
+		// 详情优先取 error（模型失败消息），errorCode 作为分类码缀上；两者都
+		// 空时给占位文案——「agent-server outcome error: 」空原因是 TASK-058
+		// 决策写回 3 连败时完全不可诊断的直接原因。
+		var parts []string
+		for _, p := range []string{out.Error, out.ErrorCode} {
+			if s := strings.TrimSpace(p); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		detail := strings.Join(parts, ": ")
+		if detail == "" {
+			detail = "(no details)"
+		}
+		return nil, fmt.Errorf("agent-server outcome %s: %s", out.Outcome, detail)
 	}
 	if out.SessionID == "" {
 		return nil, fmt.Errorf("agent-server returned no sessionId")

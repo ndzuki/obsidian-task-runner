@@ -32,7 +32,7 @@ func TestStableErrorCodesAreUnique(t *testing.T) {
 		}
 		seen[code] = true
 	}
-	if len(seen) != 28 {
-		t.Fatalf("stable error code count = %d, want 28", len(seen))
+	if len(seen) != 29 {
+		t.Fatalf("stable error code count = %d, want 29", len(seen))
 	}
 }

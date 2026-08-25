@@ -105,7 +105,7 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, spec PhaseSpec, resumeTok
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return e.startRequest(ctx, spec.Phase, provider, model, taskText, effort, tok.SessionID, skillPrompt, timeout)
+	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, provider, model, taskText, effort, tok.SessionID, skillPrompt, spec.ToolPolicy, timeout)
 }
 
 // Cancel aborts a wedged agent-server session (POST /agent/cancel): the model
@@ -152,6 +152,16 @@ type agentRunRequest struct {
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	SessionID       string `json:"sessionId,omitempty"`
+	// Status is the task's frontmatter status at dispatch time
+	// (refining/planning/plan-review/implementing/review/...). The
+	// agent-server relays it to the monitor so the NPC animation follows
+	// the real task state; it is ignored by the model runtime.
+	Status string `json:"status,omitempty"`
+	// ToolPolicy restricts the session's tool surface ("read,grep,glob,bash"
+	// for the read-only conventions/audit sessions). The agent-server
+	// injects it as a hard session constraint and fails the run when a
+	// disallowed tool call is observed.
+	ToolPolicy string `json:"toolPolicy,omitempty"`
 }
 
 type agentRunResponse struct {
@@ -159,6 +169,7 @@ type agentRunResponse struct {
 	Outcome   string `json:"outcome"`
 	SessionID string `json:"sessionId"`
 	ErrorCode string `json:"errorCode,omitempty"`
+	Error     string `json:"error,omitempty"` // 失败详情消息（agent-server 8.24 起下发）
 }
 
 func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, sessionID string) (ExecutionHandle, error) {
@@ -169,13 +180,13 @@ func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, session
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return e.startRequest(ctx, spec.Phase, provider, model, taskText, effort, sessionID, spec.SkillPrompt, timeout)
+	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, provider, model, taskText, effort, sessionID, spec.SkillPrompt, spec.ToolPolicy, timeout)
 }
 
 // startRequest builds and launches the /agent/run request. dispatch maps the
 // OMP model/effort and injects the skill body; Resume re-uses it with the
 // already-mapped provider/model and re-injected task text.
-func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, provider, model, taskText, effort, sessionID, skillPrompt string, timeout time.Duration) (ExecutionHandle, error) {
+func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, provider, model, taskText, effort, sessionID, skillPrompt, toolPolicy string, timeout time.Duration) (ExecutionHandle, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 
 	h := &embedHandle{
@@ -190,6 +201,8 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, provider, mo
 			Model:           model,
 			ReasoningEffort: effort,
 			SessionID:       sessionID,
+			Status:          status,
+			ToolPolicy:      toolPolicy,
 		},
 		// Fields recorded to build the resume token once the session id is
 		// known (after the /agent/run response).
@@ -197,6 +210,7 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, provider, mo
 		model:       model,
 		effort:      effort,
 		skillPrompt: skillPrompt,
+		idleWindow:  timeout,
 		result:      make(chan *ExecutionResult, 1),
 	}
 	go h.run()
@@ -269,6 +283,12 @@ type embedHandle struct {
 	addr   string
 	phase  string
 	req    agentRunRequest
+	// idleWindow is the phase timeout this dispatch waited. When the HTTP
+	// wait times out, the handle distinguishes a WEDGED session (no recent
+	// event for the whole window — a hung model turn) from an ACTIVE one
+	// (events within the window — a legitimately long turn like a real
+	// smoke Round 2). Only wedged sessions get cancelled.
+	idleWindow time.Duration
 	// provider/model/effort/skillPrompt are recorded at dispatch so the
 	// resume token can be built once the session id arrives in the response.
 	provider    string
@@ -289,10 +309,69 @@ func (h *embedHandle) Wait() (*ExecutionResult, error) {
 		if h.ctx.Err() == context.DeadlineExceeded {
 			// 请求超时但会话可能仍在 agent-server 中运行：持久化 token，
 			// 下一轮 scan resume 同一会话——fresh start 会开双会话并行写。
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: "agent-server request timed out", ResumeToken: h.buildResumeToken(h.req.SessionID)}, nil
+			// 有近期活动的会话判 timeout_active（下一轮继续等），无活动的
+			// 才是 wedged（卡死的模型 turn），交由 caller cancel。
+			return h.timeoutResult("agent-server request timed out"), nil
 		}
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: "agent-server request cancelled", ResumeToken: h.buildResumeToken(h.req.SessionID)}, nil
 	}
+}
+
+// timeoutResult classifies an expired HTTP wait: OutcomeTimedOutActive when
+// the agent-server session produced events within the idle window (turn is
+// alive — do NOT cancel), OutcomeTimedOut otherwise (wedged turn — cancel).
+func (h *embedHandle) timeoutResult(reason string) *ExecutionResult {
+	code := OutcomeTimedOut
+	if h.sessionActive() {
+		code = OutcomeTimedOutActive
+	}
+	return &ExecutionResult{Phase: h.phase, Code: code, Error: reason, ResumeToken: h.buildResumeToken(h.req.SessionID)}
+}
+
+// sessionActive probes GET /agents (fresh short-lived context — the dispatch
+// ctx is expired) and reports whether this handle's session had an event
+// within the idle window. Servers without the lastEventAt field (or probe
+// failures) report inactive so legacy wedged-turn handling is preserved.
+func (h *embedHandle) sessionActive() bool {
+	if h.addr == "" || h.req.SessionID == "" {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+h.addr+"/agents", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var agents []struct {
+		SessionID   string `json:"sessionId"`
+		LastEventAt int64  `json:"lastEventAt"`
+	}
+	if err := json.Unmarshal(body, &agents); err != nil {
+		return false
+	}
+	window := h.idleWindow
+	if window <= 0 {
+		window = 30 * time.Minute
+	}
+	for _, a := range agents {
+		if a.SessionID != h.req.SessionID {
+			continue
+		}
+		if a.LastEventAt <= 0 {
+			return false // older agent-server without activity reporting
+		}
+		return time.Since(time.UnixMilli(a.LastEventAt)) < window
+	}
+	return false
 }
 
 func (h *embedHandle) run() { h.result <- h.doRequest() }
@@ -312,8 +391,9 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 	if err != nil {
 		switch h.ctx.Err() {
 		case context.DeadlineExceeded:
-			// 同 Wait() 超时分支：会话可能仍在 agent-server 中运行。
-			return &ExecutionResult{Phase: h.phase, Code: OutcomeTimedOut, Error: err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
+			// 同 Wait() 超时分支：会话可能仍在 agent-server 中运行；按
+			// 活动度区分 timeout_active（继续等）与 wedged（cancel）。
+			return h.timeoutResult(err.Error())
 		case context.Canceled:
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeInterrupted, Error: err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		default:
@@ -339,10 +419,20 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server bad response: " + err.Error()}
 	}
+	// 失败详情：errorCode（分类码）+ error（消息）都带上——只留分类码时
+	// 「agent-server outcome error」无任何可诊断信息（TASK-058 写回观测）。
+	resErr := strings.TrimSpace(parsed.ErrorCode)
+	if msg := strings.TrimSpace(parsed.Error); msg != "" {
+		if resErr == "" {
+			resErr = msg
+		} else if !strings.Contains(resErr, msg) {
+			resErr += ": " + msg
+		}
+	}
 	res := &ExecutionResult{
 		Phase:       h.phase,
 		Code:        mapEmbedOutcome(parsed.Outcome, parsed.ErrorCode),
-		Error:       parsed.ErrorCode,
+		Error:       resErr,
 		Stdout:      parsed.Text,
 		ResumeToken: h.buildResumeToken(parsed.SessionID),
 	}

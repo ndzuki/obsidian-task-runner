@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -406,6 +407,19 @@ func TestDecisionAnsweredPlaceholderVariants(t *testing.T) {
 		"继续 / supplement:{建议} / end",
 		"（待用户三选一回答，daemon 检测答案 hash 变更后自动分发回 TASK-079）",
 		"待用户确认后自动分发",
+		// TASK-065: D-100 曾用「待裁决」占位，旧识别当“已答”→ parkedFactRecovery
+		// 误 un-park → 一天 4 次 planning/round2/grilling 空转。任何未决措辞都必须
+		// 视为未答。
+		"待裁决",
+		"（待裁决）",
+		"待定",
+		"未答",
+		"未裁决",
+		"未决定",
+		"待回答",
+		"待选择",
+		"TBD",
+		"待议",
 	} {
 		if decisionAnswered(v) {
 			t.Errorf("decisionAnswered(%q) = true, want false (placeholder)", v)
@@ -892,4 +906,52 @@ func TestDecisionListStatusGuardRestoresClosed(t *testing.T) {
 	if g2.restoreIfClosed("002") {
 		t.Fatal("open 快照不应恢复")
 	}
+}
+
+// TestPMConcurrencyGateBoundsSessions guards the pm phase-concurrency slot
+// (gap 3 fix): with phase_concurrency["pm"]=1, a second PM session for a
+// DIFFERENT target must be deferred while the first is in flight — the
+// configured ceiling previously had no acquisition point and never bound
+// anything.
+func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
+	dir := t.TempDir()
+	withAPIKey(t)
+	vault := filepath.Join(dir, "vault")
+	argsPath := filepath.Join(dir, "pm-args")
+	omp := writeSlowArgsOMP(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			Executor:            "dsh",
+			DSHCmd:              omp,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              config.DefaultModels(),
+			PhaseConcurrency:    map[string]int{"pm": 1},
+		},
+		phaseGates: map[string]*phaseGate{"pm": newPhaseGate(1)},
+		logger:     log.New(io.Discard, "", 0),
+	}
+	// First session (distribute) acquires the single pm slot.
+	if err := runner.runGrillingPM(context.Background(), "distribute", filepath.Join(vault, "list.md")); err != nil {
+		t.Fatalf("first pm dispatch: %v", err)
+	}
+	// Second session (consolidate, different in-flight target) must hit the
+	// full gate instead of stacking.
+	err := runner.runGrillingPM(context.Background(), "consolidate", filepath.Join(vault, "other.md"))
+	if !errors.Is(err, errPMGateFull) {
+		t.Fatalf("second pm dispatch err = %v, want errPMGateFull", err)
+	}
+	// Wait for the in-flight session to settle (slow OMP sleeps 2s) → the
+	// slot is released and the deferred target dispatches.
+	waitForPmArgs(t, argsPath)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := runner.runGrillingPM(context.Background(), "consolidate", filepath.Join(vault, "other.md")); err == nil {
+			return // gate released → dispatched
+		} else if !errors.Is(err, errPMGateFull) {
+			t.Fatalf("retry pm dispatch err = %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("pm gate never released after session settled")
 }

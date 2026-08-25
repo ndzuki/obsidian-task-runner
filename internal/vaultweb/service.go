@@ -23,10 +23,20 @@ import (
 // Service serves read-only dashboard DTOs over a vault directory.
 type Service struct {
 	vault string
+	// agentServerAddr is the optional dsh agent-server host:port used to proxy
+	// live agent-monitor data (/agents) into the same-origin dashboard API.
+	agentServerAddr string
 }
 
-// New builds a Service rooted at the vault path.
+// New builds a Service rooted at the vault path. The agent-server proxy is
+// disabled; use NewWithAgentServer when live agent monitoring is desired.
 func New(vault string) *Service { return &Service{vault: vault} }
+
+// NewWithAgentServer builds a Service that can also proxy live agent data from
+// a dsh agent-server (e.g. "127.0.0.1:8799").
+func NewWithAgentServer(vault, agentServerAddr string) *Service {
+	return &Service{vault: vault, agentServerAddr: agentServerAddr}
+}
 
 // projectDirEntry is a directory directly under Projects/. id is the numeric
 // prefix ("001"), name the suffix ("obsidian-task-runner"), dirName the full

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/designlib"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -31,6 +33,13 @@ const grillingConsolidationBatchLimit = 1 // fallback when config is unset
 // list, 14:53-14:54; consolidate has the same shape when a fresh dispute
 // bypasses the 4h cooldown every scan).
 var errPMInFlight = errors.New("grilling pm session already in flight")
+
+// errPMGateFull guards the global pm concurrency slot
+// (phase_concurrency["pm"], default 1): PM sessions are token-heavy, and
+// until now the slot had no acquisition point at all, so the configured
+// ceiling was dead weight. The gate is acquired synchronously before the
+// async session starts and released when it settles.
+var errPMGateFull = errors.New("grilling pm concurrency gate full")
 
 // grillingDecisionListName is the project-level decision list filename.
 const grillingDecisionListName = "Grilling-Decisions.md"
@@ -282,9 +291,40 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 		}
 	}
 
+	// phase_concurrency["pm"] slot: acquired here (the single PM dispatch
+	// point covers distribute/consolidate/stage-review) and held for the
+	// session's lifetime. Without this the configured ceiling never bound
+	// anything — only per-target dedup and the consolidate batch did.
+	var pmGate *phaseGate
+	if gate := r.phaseGates["pm"]; gate != nil {
+		if ok, _ := gate.tryAcquire(); !ok {
+			cancel()
+			if inflightKey != "" {
+				r.pmInFlight.Delete(inflightKey)
+			}
+			r.logger.Printf("grilling pm %s: phase gate pm full (%d running), deferring to next scan", mode, r.cfg.ConcurrencyFor("pm"))
+			return errPMGateFull
+		}
+		pmGate = gate
+	}
+
 	prompt := "/obsidian-task-runner-pm " + mode + " " + strings.Join(args, " ")
+	if mode == "consolidate" {
+		// Inject the dependency closure and replan-gate facts so the PM
+		// session can triage CROSS-REQ conflicts (who blocks whom, who owes
+		// whom a contract, whether the replan gate would swallow the next
+		// planning attempt) instead of only deduping same-REQ questions.
+		// TASK-065: D-97/98/99 answered execution gates but missed the
+		// empty Design library, which the replan gate then hard-failed on.
+		if depCtx := r.pmDependencyContext(args); depCtx != "" {
+			prompt = prompt + "\n\n<dependency_context>\n" + depCtx + "</dependency_context>"
+		}
+	}
 	go func() {
 		defer cancel()
+		if pmGate != nil {
+			defer pmGate.release()
+		}
 		if inflightKey != "" {
 			defer r.pmInFlight.Delete(inflightKey)
 		}
@@ -544,7 +584,12 @@ func grillingDecisionCounts(path string) (total, pending int) {
 	if err != nil {
 		return 0, 0
 	}
-	content := string(data)
+	return grillingDecisionCountsContent(string(data))
+}
+
+// grillingDecisionCountsContent is the content-only form used by daemon-side
+// writers that already hold the list text (e.g. the memory-gate appender).
+func grillingDecisionCountsContent(content string) (total, pending int) {
 	blocks := decisionBlockRE.FindAllStringIndex(content, -1)
 	for i, loc := range blocks {
 		total++
@@ -594,7 +639,15 @@ func decisionAnswered(value string) bool {
 	if strings.Contains(v, "待用户") {
 		return false
 	}
-	for _, placeholder := range []string{"确认 / 修改（列出修改）/ 不拆分", "继续 / supplement:{建议} / end"} {
+	// 未决措辞兜底（TASK-065 教训）：D-100 曾用「待裁决」占位，当时不在识别
+	// 集里被当成「已答」→ pending=0 → parkedFactRecovery 误 un-park → 一天
+	// 4 次 planning/round2/grilling 空转。任何「尚未裁决/待定/未答」类措辞都
+	// 是占位而非真实答案，一律按未答处理；真实答案（A/B/C、日期+用户确认、
+	// 自由文本结论）不会包含这些词。
+	for _, placeholder := range []string{
+		"待裁决", "待定", "未答", "未裁决", "未决定", "待回答", "待选择", "TBD", "待议",
+		"确认 / 修改（列出修改）/ 不拆分", "继续 / supplement:{建议} / end",
+	} {
 		if strings.Contains(v, placeholder) {
 			return false
 		}
@@ -790,6 +843,65 @@ func summarizeOutput(output []byte) string {
 		return trimmed[:300] + "..."
 	}
 	return trimmed
+}
+
+// pmDependencyContext builds the daemon-side dependency closure for a
+// consolidate session: per-task blocked_by/blocks/stage facts, the REQ-level
+// depends_on edges, the replan-gate facts (plan_version vs
+// design_replan_version vs threshold) and the Design library inventory. The
+// PM skill consumes the <dependency_context> block so cross-REQ contract
+// conflicts and machine gates surface in the decision list BEFORE another
+// round of per-task grilling — instead of being discovered afterwards as a
+// hard gate failure (TASK-065: D-97/98/99 answered, then the replan gate
+// failed on the empty Design library the same morning).
+func (r *Runner) pmDependencyContext(taskPaths []string) string {
+	if len(taskPaths) == 0 {
+		return ""
+	}
+	orDash := func(s string) string {
+		if s == "" {
+			return "-"
+		}
+		return s
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("daemon 注入依赖闭包上下文（replan_gate_threshold=%d）：\n", r.cfg.ReplanGateThreshold))
+	for _, p := range taskPaths {
+		fm, err := readFrontmatter(p)
+		if err != nil || fm == nil {
+			continue
+		}
+		depends := "-"
+		if fm.ReqDoc != "" {
+			if data, rerr := os.ReadFile(filepath.Join(r.cfg.ObsidianVault, fm.ReqDoc)); rerr == nil {
+				if rf, perr := yamlfrontmatter.Parse(data); perr == nil && rf != nil {
+					depends = strings.Join(rf.DependsOn, ", ")
+					if depends == "" {
+						depends = "-"
+					}
+				}
+			}
+		}
+		b.WriteString(fmt.Sprintf(
+			"- TASK-%s (%s) stage=%s plan_v=%d design_replan_v=%d blocked_by=[%s] blocks=[%s] req=%s req_depends_on=[%s]\n",
+			fm.ID, orDash(fm.Title), orDash(fm.Stage), fm.PlanVersion, fm.DesignReplanVersion,
+			strings.Join(fm.BlockedBy, ", "), strings.Join(fm.Blocks, ", "), orDash(fm.ReqDoc), depends))
+	}
+	// Design library inventory: an empty library means any planning task with
+	// plan_version >= threshold will be swallowed by the replan gate and never
+	// reach Round 1 — the PM must surface that as a decision point instead of
+	// only answering execution gates.
+	if fm, err := readFrontmatter(taskPaths[0]); err == nil && fm != nil {
+		if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, fm.Project); projDir != "" {
+			if sum, serr := designlib.ForProject(projDir).ReadSummary(); serr == nil {
+				b.WriteString(fmt.Sprintf("设计库: revision=%d contracts=%d decisions=%d waves=%d glossary=%v\n",
+					sum.Revision, len(sum.Contracts), len(sum.Decisions), len(sum.Waves), sum.HasGlossary))
+			} else {
+				b.WriteString("设计库: 空/不可读（replan gate 未通过——规划阶段会被 gate 拦截，必须作为决策点提出）\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // decisionListStatusGuard snapshots a decision list's frontmatter status

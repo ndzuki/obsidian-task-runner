@@ -24,15 +24,20 @@
  *
  * RPC 契约：
  *   GET  /health                      → 200 { ok: true }
- *   GET  /agents                      → 200 [ { sessionId, phase, task, status, elapsed } ]
+ *   GET  /agents                      → 200 [ { sessionId, phase, task, project, status, taskStatus, elapsed, lastEventAt, seq } ]
  *        （仅活跃会话：进行中的 run + 存活中的 chat；已完成的 run 会话不出现在
- *        列表中，其数量经 x-agents-finished 响应头暴露给监控面板）
+ *        列表中，其数量经 x-agents-finished 响应头暴露给监控面板。
+ *        lastEventAt/seq 供 daemon 超时判定：近期有事件 → timeout_active
+ *        继续等；长时间无事件 → wedged 会话 cancel）
  *   GET  /monitor（或 /）             → agent-monitor.html 监控面板
- *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId? }
- *     → 200 { text, outcome, sessionId, errorCode? }
- *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted
+ *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId?, status?, toolPolicy? }
+ *     → 200 { text, outcome, sessionId, errorCode?, error? }
+ *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted | tool_policy_violation
+ *     （error 字段承载失败详情消息；errorCode 为分类码，两者可都缺省。
+ *     toolPolicy="read,grep,glob,bash" 等白名单：只读审查会话注入硬约束
+ *     preamble，且事后校验白名单外的 tool/call → tool_policy_violation）
  *   POST /agent/chat body: { message, provider, model, reasoningEffort?, sessionId? }
- *     → 200 { text, outcome, sessionId, errorCode? }（多轮交互）
+ *     → 200 { text, outcome, sessionId, errorCode?, error? }（多轮交互）
  *   POST /agent/close body: { sessionId } → 200 { ok: true }（取消交互会话）
  */
 import { createServer } from "node:http"
@@ -99,6 +104,53 @@ function mapOutcome(reason) {
   return "error"
 }
 
+/** 工具政策（toolPolicy）支持：daemon 对只读审查会话（conventions/audit）
+ * 传 "read,grep,glob,bash" 等允许工具白名单。这里做两层执行：
+ *  1. prompt 注入：政策作为最高优先级约束块前置到任务文本；
+ *  2. 事后强校验：会话事件中出现白名单外的 tool/call 即判定违规，
+ *     outcome=tool_policy_violation（Go 侧映射为会话失败，禁止接受产物）。 */
+function parseToolPolicy(policy) {
+  if (typeof policy !== "string" || policy.trim() === "") return null
+  const allowed = new Set(policy.split(",").map((t) => t.trim()).filter((t) => t !== ""))
+  if (allowed.size === 0) return null
+  return allowed
+}
+
+function toolPolicyPreamble(policy) {
+  const tools = [...parseToolPolicy(policy)].join(", ")
+  return `<tool_policy>\n本会话是受限工具会话。只允许使用以下工具：${tools}。\n` +
+    `严禁调用任何写工具（edit/write/str_replace_editor 等）——调用即违规。\n` +
+    `唯一允许的写入是会话契约明确指定的产物文件；其余一律只读。\n` +
+    `违反本政策 = 会话失败，产出作废。\n</tool_policy>\n\n`
+}
+
+function toolPolicyViolations(agent, firstSeq, policy) {
+  const allowed = parseToolPolicy(policy)
+  if (allowed === null) return []
+  const violations = new Set()
+  for (const event of agent.session.events) {
+    if (event.seq < firstSeq) continue
+    if (event.type !== "tool/call") continue
+    const name = event.data?.name
+    if (typeof name === "string" && name !== "" && !allowed.has(name)) violations.add(name)
+  }
+  return [...violations]
+}
+
+/** 提取 turn 失败详情（code + message）：客户端只拿到 errorCode/error 两个
+ * 字段，看不到 reason 原文；不把 message 带出去时，kitty-grill 的写回日志
+ * 与桌面提醒只剩「agent-server outcome error: 」空原因，失败完全不可诊断
+ * （观测：TASK-058 决策写回 3 连败，无任何错误信息可查）。 */
+function errorDetail(reason) {
+  if (reason?.kind !== "error") return { errorCode: undefined, error: undefined }
+  const e = reason.error
+  const code = typeof e?.code === "string" ? e.code : undefined
+  let message = undefined
+  if (typeof e?.message === "string" && e.message !== "") message = e.message
+  else if (typeof e === "string" && e !== "") message = e
+  return { errorCode: code, error: message ?? code }
+}
+
 /** 读取 JSON 请求体。 */
 async function readJson(req) {
   let body = ""
@@ -160,7 +212,10 @@ function labelFromText(text) {
     const line = text.split("\n").map((s) => s.trim()).find((s) => s.length > 0) ?? ""
     task = line.length > 48 ? line.slice(0, 45) + "…" : line
   }
-  return { phase, task }
+  let project = ""
+  const pm = text.match(/Projects\/([^/]+)\/Tasks\//)
+  if (pm) project = pm[1]
+  return { phase, task, project }
 }
 
 /** 会话创建时间（ms）；缺省回退首事件时间。 */
@@ -203,6 +258,11 @@ export function apply(ctx, config = {}) {
   /** sessionId -> dispose 闭包（agents.create/resume 返回的生命周期 teardown）。 */
   const disposeBySession = new Map()
 
+  /** sessionId -> 任务 frontmatter 状态（daemon 经 /agent/run 的 status 字段
+   * 传入，供监控面板按真实任务状态播放 NPC 动画：refining / planning /
+   * plan-review / implementing / review / conflict ...）。 */
+  const taskStatusBySession = new Map()
+
   // agent/request（prepend 最外层）：注入 per-请求 reasoningEffort。AgentOptions
   // 不含 reasoningEffort，只能经此 waterfall 注入（对齐 fallback.mjs 的做法）。
   ctx.on("agent/request", async (payload, next) => {
@@ -225,6 +285,7 @@ export function apply(ctx, config = {}) {
       chatLastAt.delete(sid)
       closedChat.delete(sid)
       disposeBySession.delete(sid)
+      taskStatusBySession.delete(sid)
     }
   })
 
@@ -350,23 +411,50 @@ export function apply(ctx, config = {}) {
 
   /** 驱动一个 agent 到 quiescence 并收集结果。 */
   async function runAgent(payload) {
-    const task = payload.task
+    let task = payload.task
     if (typeof task !== "string" || task.length === 0) throw new TypeError("task must be a non-empty string")
+    const policy = parseToolPolicy(payload.toolPolicy)
+    if (policy !== null) {
+      // 只读审查会话：政策前置为最高优先级约束（hard preamble）。
+      task = toolPolicyPreamble(payload.toolPolicy) + task
+    }
     const agent = await acquireAgent(payload, true)
     const sessionKey = String(agent.session.id)
     finishedRuns.delete(sessionKey) // re-attach：会话复活，重新计入活跃
+    // 监控面板按任务真实状态播放 NPC 动画（phase 只有 skill 名，区分不了
+    // plan-review 与 implementing——两者都跑 round2）。
+    if (typeof payload.status === "string" && payload.status !== "") {
+      taskStatusBySession.set(sessionKey, payload.status)
+    }
 
     try {
       await agent.whenIdle()
       const firstSeq = agent.session.seq
       if (!pendingSameTask(agent, task)) agent.followup(userMessage(task))
       await agent.whenIdle()
+      // 工具政策事后强校验：白名单外的 tool/call 直接判会话违规失败，
+      // 客户端不得接受任何产物（防只读审查会话写源码后蒙混过关）。
+      if (policy !== null) {
+        const violations = toolPolicyViolations(agent, firstSeq, payload.toolPolicy)
+        if (violations.length > 0) {
+          console.error(`agent-server: run ${sessionKey} tool-policy violation: ${violations.join(", ")}`)
+          return {
+            text: "",
+            outcome: "tool_policy_violation",
+            sessionId: sessionKey,
+            errorCode: "TOOL_POLICY_VIOLATION",
+            error: `tool policy violation: disallowed tool calls [${violations.join(", ")}] (allowed: ${payload.toolPolicy})`,
+          }
+        }
+      }
       const outcome = summarize(agent.session.events, firstSeq)
+      const detail = errorDetail(outcome.reason)
       return {
         text: outcome.text,
         outcome: mapOutcome(outcome.reason),
         sessionId: sessionKey,
-        errorCode: outcome.reason?.kind === "error" ? outcome.reason.error?.code : undefined,
+        errorCode: detail.errorCode,
+        error: detail.error,
       }
     } finally {
       finishRun(sessionKey)
@@ -405,11 +493,13 @@ export function apply(ctx, config = {}) {
     await agent.whenIdle()
     chatLastAt.set(sessionKey, Date.now())
     const outcome = summarize(agent.session.events, firstSeq)
+    const detail = errorDetail(outcome.reason)
     return {
       text: outcome.text,
       outcome: mapOutcome(outcome.reason),
       sessionId: sessionKey,
-      errorCode: outcome.reason?.kind === "error" ? outcome.reason.error?.code : undefined,
+      errorCode: detail.errorCode,
+      error: detail.error,
     }
   }
 
@@ -425,6 +515,7 @@ export function apply(ctx, config = {}) {
     liveAgents.delete(sessionKey)
     chatLastAt.delete(sessionKey)
     effortByAgent.delete(agent.id)
+    taskStatusBySession.delete(sessionKey)
     closedChat.add(sessionKey)
     const dispose = disposeBySession.get(sessionKey)
     disposeBySession.delete(sessionKey)
@@ -451,6 +542,7 @@ export function apply(ctx, config = {}) {
     }
     finishedRuns.delete(sessionKey)
     effortByAgent.delete(agent.id)
+    taskStatusBySession.delete(sessionKey)
     const dispose = disposeBySession.get(sessionKey)
     disposeBySession.delete(sessionKey)
     if (dispose !== undefined) {
@@ -480,13 +572,30 @@ export function apply(ctx, config = {}) {
       if (closedChat.has(sid)) continue
       if (finishedRuns.has(sid)) continue
       const text = firstUserText(agent.session)
-      const { phase, task } = labelFromText(text)
+      const { phase, task, project } = labelFromText(text)
+      // 最近事件时间：daemon 侧超时判定用——有近期活动 = turn 仍在推进
+      // （timeout_active，继续等）；长时间无事件 = wedged（cancel）。
+      // 事件携带 epoch-ms `time` 字段；回退到会话创建时间。
+      const events = Array.isArray(agent.session?.events) ? agent.session.events : []
+      let lastEventAt = 0
+      for (let i = events.length - 1; i >= 0; i--) {
+        const t = events[i]?.time
+        if (typeof t === "number" && t > 0) {
+          lastEventAt = t
+          break
+        }
+      }
+      if (lastEventAt === 0) lastEventAt = sessionCreatedAtMs(agent.session)
       out.push({
         sessionId: sid,
         phase,
         task,
+        project,
         status: agent.status === "idle" ? "idle" : "working",
+        taskStatus: taskStatusBySession.get(sid) ?? "",
         elapsed: Math.max(0, Math.floor((now - sessionCreatedAtMs(agent.session)) / 1000)),
+        lastEventAt,
+        seq: Number(agent.session?.seq ?? 0),
       })
     }
     return out

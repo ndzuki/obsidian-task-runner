@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -42,6 +43,60 @@ func TestExtractJSONRoundTrip(t *testing.T) {
 	}
 	if len(q.Decisions) != 1 || q.Decisions[0].Recommended != "A" {
 		t.Fatalf("解析结果错误: %+v", q)
+	}
+}
+
+// TestReplZeroDecisionsExitsCleanly guards the decision-list tab regression:
+// when the model returns an empty questionnaire (all decisions answered
+// between tab launch and questionnaire generation — 2026-08-24 19:32 观测),
+// repl must NOT fall into the plain-text manualFill (which dumped the model's
+// raw markdown and parked the tab at "✍️ 你的决策 >"). It shows the clean
+// no-pending screen, recycles the chat session, and returns without reading
+// stdin.
+func TestReplZeroDecisionsExitsCleanly(t *testing.T) {
+	var sawClose bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/chat":
+			_ = json.NewEncoder(w).Encode(chatResponse{
+				Text:      "```json\n" + `{"requirement":"REQ-065","maturity":"fully_mature","decisions":[]}` + "\n```",
+				Outcome:   "completed",
+				SessionID: "session-zero",
+			})
+		case "/agent/close":
+			sawClose = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	// repl 若退回 manualFill 会阻塞在 stdin 读取上——换一个永不写入的管道，
+	// 并用超时守护：阻塞即回归。
+	oldStdin := os.Stdin
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = pr
+	defer func() { os.Stdin = oldStdin }()
+	defer pw.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- repl(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "prompt", "", "", "")
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("repl: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("repl blocked on stdin — regressed into manualFill instead of clean zero-decision exit")
+	}
+	if !sawClose {
+		t.Fatal("zero-decision exit should recycle the chat session via /agent/close")
 	}
 }
 
@@ -310,8 +365,12 @@ func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
 	old := writebackRetryBackoff
 	writebackRetryBackoff = 0
 	var notified bool
+	var notifiedWhat string
 	oldNotify := notifyWritebackFailure
-	notifyWritebackFailure = func(error) { notified = true }
+	notifyWritebackFailure = func(what string, err error) {
+		notified = true
+		notifiedWhat = what
+	}
 	t.Cleanup(func() {
 		writebackRetryBackoff = old
 		notifyWritebackFailure = oldNotify
@@ -324,15 +383,141 @@ func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A",
+		&writebackContext{Kind: "req", TaskID: "058"})
+	if err == nil {
+		t.Fatal("全部尝试失败应返回错误")
+	}
+	// 3 次同会话重试 + 1 次 fresh fallback（同样失败）= 4 次 /agent/chat。
+	if calls != writebackMaxAttempts+1 {
+		t.Fatalf("chat calls = %d, want %d（重试耗尽 + fresh fallback）", calls, writebackMaxAttempts+1)
+	}
+	if !strings.Contains(err.Error(), "fresh fallback failed") {
+		t.Fatalf("错误应标注 fresh fallback 也失败，got %q", err)
+	}
+	if !notified {
+		t.Fatal("重试耗尽后应触发桌面提醒")
+	}
+	if notifiedWhat != "TASK-058" {
+		t.Fatalf("桌面提醒应标明失败对象 TASK-058，got %q", notifiedWhat)
+	}
+}
+
+// TestRunWritebackOutcomeErrorCarriesDetail：outcome=error 时错误必须携带
+// 服务端下发的 error 详情（观测：TASK-058 写回日志只有
+// 「agent-server outcome error: 」空原因，失败不可诊断）。
+func TestRunWritebackOutcomeErrorCarriesDetail(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	t.Cleanup(func() { writebackRetryBackoff = old })
+
+	var notified bool
+	var notifiedErr error
+	oldNotify := notifyWritebackFailure
+	notifyWritebackFailure = func(_ string, err error) {
+		notified = true
+		notifiedErr = err
+	}
+	t.Cleanup(func() { notifyWritebackFailure = oldNotify })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(chatResponse{
+			Outcome:   "error",
+			SessionID: "session-1",
+			Error:     "provider upstream returned 500 (internal server error)",
+		})
+	}))
+	defer srv.Close()
+
 	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil)
 	if err == nil {
 		t.Fatal("全部尝试失败应返回错误")
 	}
-	if calls != writebackMaxAttempts {
-		t.Fatalf("chat calls = %d, want %d", calls, writebackMaxAttempts)
+	if !strings.Contains(err.Error(), "provider upstream returned 500") {
+		t.Fatalf("错误应包含服务端详情，got %q", err)
 	}
-	if !notified {
-		t.Fatal("重试耗尽后应触发桌面提醒")
+	if !notified || notifiedErr == nil || !strings.Contains(notifiedErr.Error(), "provider upstream returned 500") {
+		t.Fatalf("桌面提醒应携带同一详情，got %v", notifiedErr)
+	}
+}
+
+// TestRunWritebackOutcomeErrorWithoutDetailPlaceholder：服务端既无 code 也无
+// message 时给出占位文案，不再出现完全空白的失败原因。
+func TestRunWritebackOutcomeErrorWithoutDetailPlaceholder(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	t.Cleanup(func() { writebackRetryBackoff = old })
+
+	var notifiedErr error
+	oldNotify := notifyWritebackFailure
+	notifyWritebackFailure = func(_ string, err error) { notifiedErr = err }
+	t.Cleanup(func() { notifyWritebackFailure = oldNotify })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(chatResponse{Outcome: "error", SessionID: "session-1"})
+	}))
+	defer srv.Close()
+
+	err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", nil)
+	if err == nil {
+		t.Fatal("全部尝试失败应返回错误")
+	}
+	if strings.HasSuffix(strings.TrimSpace(err.Error()), ":") {
+		t.Fatalf("错误不应以空白结尾，got %q", err)
+	}
+	if !strings.Contains(err.Error(), "no details") {
+		t.Fatalf("空详情应有占位文案，got %q", err)
+	}
+	if notifiedErr == nil || !strings.Contains(notifiedErr.Error(), "no details") {
+		t.Fatalf("桌面提醒应携带占位文案，got %v", notifiedErr)
+	}
+}
+
+// TestRunWritebackSessionGoneViaOutcomeErrorFallsBackFresh：会话丢失经
+// outcome=error + error 消息表达时（服务端带回详情后的形态），第一次失败即
+// 识别 session gone，不再空转 3 次重试同一死会话。
+func TestRunWritebackSessionGoneViaOutcomeErrorFallsBackFresh(t *testing.T) {
+	old := writebackRetryBackoff
+	writebackRetryBackoff = 0
+	t.Cleanup(func() { writebackRetryBackoff = old })
+
+	var chatCalls int
+	var secondSession string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/chat":
+			chatCalls++
+			if chatCalls == 1 {
+				_ = json.NewEncoder(w).Encode(chatResponse{
+					Outcome:   "error",
+					SessionID: "session-1",
+					Error:     `session "session-1" not found`,
+				})
+				return
+			}
+			var req chatRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			secondSession = req.SessionID
+			_ = json.NewEncoder(w).Encode(chatResponse{Text: "写回完成", Outcome: "completed", SessionID: "session-fresh"})
+		case "/agent/close":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	ctx := &writebackContext{
+		SkillPrompt:   "原始问卷指令：把决策写回清单",
+		Questionnaire: questionnaire{Decisions: []decision{{ID: "D1", Question: "Q1"}}},
+		Answers:       "D1=A",
+	}
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "session-1", "D1=A", ctx); err != nil {
+		t.Fatalf("session 丢失后应经 fresh fallback 成功: %v", err)
+	}
+	if chatCalls != 2 {
+		t.Fatalf("chat calls = %d, want 2（一次 session-gone 即降级 + 一次 fresh）", chatCalls)
+	}
+	if secondSession != "" {
+		t.Fatalf("fresh fallback 应用新会话（空 sessionId），got %q", secondSession)
 	}
 }
 
@@ -396,7 +581,7 @@ func TestRunWritebackSessionGoneWithoutCtxNotifies(t *testing.T) {
 	writebackRetryBackoff = 0
 	var notified bool
 	oldNotify := notifyWritebackFailure
-	notifyWritebackFailure = func(error) { notified = true }
+	notifyWritebackFailure = func(_ string, err error) { notified = true }
 	t.Cleanup(func() {
 		writebackRetryBackoff = old
 		notifyWritebackFailure = oldNotify

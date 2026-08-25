@@ -10,17 +10,24 @@ import (
 )
 
 // GrillingTask is a task parked in needs-grilling, eligible for project-level
-// consolidation by the PM coordinator.
+// consolidation by the PM coordinator. Beyond the dispute facts, it carries
+// the dependency edges (blocked_by/blocks/stage) and the replan-gate facts so
+// the PM session can triage CROSS-REQ conflicts — not just same-REQ repeats
+// — before a new round of per-task questions is ever asked.
 type GrillingTask struct {
-	ID          string
-	Title       string
-	Project     string
-	ReqDoc      string
-	FilePath    string
-	GrillParked bool
-	GrillRepeat int
-	PlanVersion int  // high replan count drives single-task consolidation
-	Unstaged    bool // in-flight task with no `stage` field under an active Stage-Plan
+	ID                  string
+	Title               string
+	Project             string
+	ReqDoc              string
+	FilePath            string
+	GrillParked         bool
+	GrillRepeat         int
+	PlanVersion         int      // high replan count drives single-task consolidation
+	DesignReplanVersion int      // replan-gate revision marker (0 = gate still pending)
+	BlockedBy           []string // upstream task ids (dependency closure input)
+	Blocks              []string // downstream task ids (dependency closure input)
+	Stage               string   // stage field ("P4"); empty for unstaged tasks
+	Unstaged            bool     // in-flight task with no `stage` field under an active Stage-Plan
 }
 
 // FindUnstagedTasks returns every in-flight task (not done/closed) whose
@@ -75,15 +82,18 @@ func FindUnstagedTasks(vaultPath string) ([]GrillingTask, error) {
 				continue
 			}
 			pending = append(pending, GrillingTask{
-				ID:          fm.ID,
-				Title:       fm.Title,
-				Project:     fm.Project,
-				ReqDoc:      fm.ReqDoc,
-				FilePath:    path,
-				GrillParked: fm.GrillParked,
-				GrillRepeat: fm.GrillRepeat,
-				PlanVersion: fm.PlanVersion,
-				Unstaged:    true,
+				ID:                  fm.ID,
+				Title:               fm.Title,
+				Project:             fm.Project,
+				ReqDoc:              fm.ReqDoc,
+				FilePath:            path,
+				GrillParked:         fm.GrillParked,
+				GrillRepeat:         fm.GrillRepeat,
+				PlanVersion:         fm.PlanVersion,
+				DesignReplanVersion: fm.DesignReplanVersion,
+				BlockedBy:           fm.BlockedBy,
+				Blocks:              fm.Blocks,
+				Unstaged:            true,
 			})
 		}
 	}
@@ -129,14 +139,18 @@ func FindGrillingTasks(vaultPath string) ([]GrillingTask, error) {
 				continue
 			}
 			pending = append(pending, GrillingTask{
-				ID:          fm.ID,
-				Title:       fm.Title,
-				Project:     fm.Project,
-				ReqDoc:      fm.ReqDoc,
-				FilePath:    path,
-				GrillParked: fm.GrillParked,
-				GrillRepeat: fm.GrillRepeat,
-				PlanVersion: fm.PlanVersion,
+				ID:                  fm.ID,
+				Title:               fm.Title,
+				Project:             fm.Project,
+				ReqDoc:              fm.ReqDoc,
+				FilePath:            path,
+				GrillParked:         fm.GrillParked,
+				GrillRepeat:         fm.GrillRepeat,
+				PlanVersion:         fm.PlanVersion,
+				DesignReplanVersion: fm.DesignReplanVersion,
+				BlockedBy:           fm.BlockedBy,
+				Blocks:              fm.Blocks,
+				Stage:               fm.Stage,
 			})
 		}
 	}

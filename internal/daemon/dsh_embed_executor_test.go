@@ -120,6 +120,7 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 		Model:           "gateway/deepseek-v4-pro",
 		ReasoningEffort: "high",
 		SkillPrompt:     "/obsidian-task-runner-round1 /vault/TASK.md",
+		TaskStatus:      "planning",
 		Timeout:         30 * time.Second,
 	}, TaskSnapshot{})
 	if err != nil {
@@ -150,6 +151,9 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	}
 	if gotReq.SessionID == "" || !strings.HasPrefix(gotReq.SessionID, "session-") {
 		t.Errorf("sessionId = %q, want daemon-preallocated session- prefix (durable resume)", gotReq.SessionID)
+	}
+	if gotReq.Status != "planning" {
+		t.Errorf("status = %q, want task status forwarded for agent-monitor", gotReq.Status)
 	}
 }
 
@@ -208,6 +212,40 @@ func TestDSHEmbedExecutorErrorOutcome(t *testing.T) {
 	}
 	if res.Code != OutcomeQuotaExhausted {
 		t.Fatalf("code = %q, want quota_exhausted", res.Code)
+	}
+}
+
+// TestDSHEmbedExecutorErrorOutcomeCarriesMessage：agent-server 下发 error 消息
+// （errorCode 缺省）时，ExecutionResult.Error 必须携带该详情——旧契约只有
+// errorCode，失败只剩「agent-server outcome error」空原因（TASK-058 观测）。
+func TestDSHEmbedExecutorErrorOutcomeCarriesMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(agentRunResponse{
+			Outcome: "error", SessionID: "s", Error: "provider upstream 502 bad gateway",
+		})
+	}))
+	defer srv.Close()
+
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	handle, err := e.Start(context.Background(), PhaseSpec{
+		Phase:       "planning",
+		Model:       "gateway/deepseek-v4-pro",
+		SkillPrompt: "/x /vault/T.md",
+		Timeout:     30 * time.Second,
+	}, TaskSnapshot{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	res, err := handle.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if res.Code != OutcomeFailed {
+		t.Fatalf("code = %q, want failed", res.Code)
+	}
+	if !strings.Contains(res.Error, "provider upstream 502 bad gateway") {
+		t.Fatalf("error = %q, want server message carried", res.Error)
 	}
 }
 
@@ -378,5 +416,63 @@ func TestDSHEmbedExecutorTimeoutPersistsResumeToken(t *testing.T) {
 	var tok embedResumeToken
 	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil || tok.SessionID != "session-timeout-case" {
 		t.Fatalf("resume token 字段错误: %+v (err=%v)", tok, err)
+	}
+}
+
+// TestDSHEmbedExecutorTimeoutActiveVsWedged guards the TASK-065 fix: when the
+// phase HTTP wait expires, the handle probes GET /agents. A session with
+// recent events is classified timeout_active (do NOT cancel — the model is
+// still working); a session idle past the window stays timeout (wedged turn,
+// caller cancels).
+func TestDSHEmbedExecutorTimeoutActiveVsWedged(t *testing.T) {
+	tests := []struct {
+		name        string
+		lastEventAt int64 // 0 → /agents reports nothing (legacy server)
+		want        ExecOutcome
+	}{
+		{"active session continues", time.Now().UnixMilli(), OutcomeTimedOutActive},
+		{"idle session is wedged", time.Now().Add(-2 * time.Hour).UnixMilli(), OutcomeTimedOut},
+		{"legacy server without activity", 0, OutcomeTimedOut},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/agents" && r.Method == http.MethodGet {
+					w.Header().Set("content-type", "application/json")
+					_ = json.NewEncoder(w).Encode([]map[string]any{{
+						"sessionId":   "session-065",
+						"lastEventAt": tt.lastEventAt,
+					}})
+					return
+				}
+				// /agent/run blocks until the client's deadline fires.
+				select {}
+			}))
+			defer srv.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			h := &embedHandle{
+				ctx:        ctx,
+				cancel:     cancel,
+				client:     &http.Client{},
+				addr:       strings.TrimPrefix(srv.URL, "http://"),
+				phase:      "round2",
+				req:        agentRunRequest{SessionID: "session-065", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
+				provider:   "deepseek_magic",
+				model:      "deepseek-v4-pro",
+				idleWindow: 30 * time.Minute,
+			}
+			res, err := h.Wait()
+			if err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+			if res.Code != tt.want {
+				t.Fatalf("code = %q, want %q (error=%q)", res.Code, tt.want, res.Error)
+			}
+			if res.ResumeToken == "" {
+				t.Fatal("resume token must persist in both timeout variants")
+			}
+		})
 	}
 }

@@ -356,7 +356,14 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 	case "implementing":
 		return !fm.OffPeakOnly || OffPeakFn()
 	case "plan-review":
-		return fm.PlanApproved && (!fm.OffPeakOnly || OffPeakFn())
+		// 已人工批准的计划（plan_approved=true）直接 ready；auto_approve=true
+		// 的任务同样必须 ready——nextLocalTransition 的 plan-review 分支会把
+		// auto_approve 转成 implementing + plan_approved=true（auto_approve 默认
+		// 开，Grilling 是唯一人工关卡）。只放行 plan_approved 会把 auto_approve
+		// 的 plan-review 挡在 IsReady 门外，auto-approve 永远不执行
+		// （2026-08-25 TASK-065：v22 计划停在 plan-review/plan_approved=false，
+		// daemon 每轮 scan 都看不到它）。
+		return (fm.PlanApproved || fm.AutoApprove) && (!fm.OffPeakOnly || OffPeakFn())
 	case "review":
 		// Fresh review (Round 2 completed, no failure) with auto_merge is
 		// ready so the daemon auto-approves and merges without a manual gate.

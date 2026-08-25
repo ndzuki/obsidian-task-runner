@@ -288,6 +288,42 @@ func TestRunDSHPhaseResumeBusyDoesNotFreshStart(t *testing.T) {
 	}
 }
 
+// TestRunDSHPhaseResumeUnreachableDoesNotFreshStart 守护 2026-08-25
+// TASK-065 观测：resume 结果错误为「agent-server unreachable: … EOF」
+// 时，会话状态未知——不得判 terminal 回退 fresh start（fresh start 又会
+// 撞 connection refused → MODEL_FAILED → blocked → 状态来回变）。按可重试
+// 中断上报，下轮 scan 用同一 token 再 resume。
+func TestRunDSHPhaseResumeUnreachableDoesNotFreshStart(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-065.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"065\"\nexecutor_session_id: 'tok-065'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &resumeExecutorStub{
+		result:      &ExecutionResult{Code: OutcomeFailed, Error: `agent-server unreachable: Post "http://127.0.0.1:8799/agent/run": EOF`},
+		startResult: &ExecutionResult{Code: OutcomeSuccess},
+	}
+	r.phaseExecutor = stub
+	res, outcome, code, _ := r.runDSHPhase(context.Background(),
+		PhaseSpec{Phase: "implementing"},
+		TaskSnapshot{TaskID: "065", TaskPath: taskPath})
+
+	if !stub.resumeCalled {
+		t.Fatal("有 executor_session_id 时应走 Resume")
+	}
+	if stub.startCalled {
+		t.Fatal("resume 服务器不可达不得 fresh start：会话状态未知，fresh start 可能形成双会话并行写")
+	}
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED（可重试）", outcome, code)
+	}
+	if res == nil || res.ResumeToken != "tok-065" {
+		t.Fatalf("resume token must be preserved for next-scan retry, got %+v", res)
+	}
+}
+
 // TestRunDSHPhaseResumeUnknownErrorDoesNotFreshStart：Resume RPC 本身报
 // 非「会话已死」错误（unreachable 等）时同样不得 fresh start——会话状态
 // 未知，下轮 scan 再试 resume。

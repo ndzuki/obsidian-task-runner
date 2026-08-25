@@ -63,6 +63,13 @@ type PhaseSpec struct {
 	// runner-round2 <task> ..."). The DSH adapter translates this into a
 	// task prompt that loads the same skill.
 	SkillPrompt string
+	// TaskStatus is the task's frontmatter status at dispatch time
+	// ("refining", "planning", "plan-review", "implementing", "review",
+	// "conflict", ...). Observability-only: the dsh-embed adapter forwards
+	// it to the agent-server so the agent monitor can animate its NPC per
+	// real task state. Empty when the session has no task document (pm,
+	// design, grilling).
+	TaskStatus string
 	// ToolPolicy restricts the session's tool surface. Empty means the
 	// adapter default; the audit phase uses "read,grep,bash".
 	ToolPolicy string
@@ -111,9 +118,16 @@ type ExecutionResult struct {
 type ExecOutcome string
 
 const (
-	OutcomeSuccess        ExecOutcome = "success"
-	OutcomeFailed         ExecOutcome = "failed"
-	OutcomeTimedOut       ExecOutcome = "timeout"
+	OutcomeSuccess  ExecOutcome = "success"
+	OutcomeFailed   ExecOutcome = "failed"
+	OutcomeTimedOut ExecOutcome = "timeout"
+	// OutcomeTimedOutActive reports a phase whose timeout window elapsed but
+	// whose agent-server session shows RECENT activity (model still producing
+	// steps/tool calls — e.g. a long real-smoke Round 2). The caller keeps
+	// the durable token and re-waits on the next scan instead of cancelling
+	// a working turn (TASK-065: 60m window hit while the session was
+	// actively committing and running dev-up smoke).
+	OutcomeTimedOutActive ExecOutcome = "timeout_active"
 	OutcomeInterrupted    ExecOutcome = "interrupted" // daemon shutdown / cancel
 	OutcomeQuotaExhausted ExecOutcome = "quota_exhausted"
 	OutcomeKeyUnavailable ExecOutcome = "key_unavailable"
@@ -170,6 +184,8 @@ func mapExecOutcome(result *ExecutionResult) (ExecOutcome, ErrorCode, string) {
 		return OutcomeSuccess, "", ""
 	case OutcomeTimedOut:
 		return OutcomeTimedOut, ErrPhaseTimeout, "phase timed out"
+	case OutcomeTimedOutActive:
+		return OutcomeTimedOutActive, ErrPhaseInterrupted, "phase session still active after timeout window (next scan resumes)"
 	case OutcomeInterrupted:
 		return OutcomeInterrupted, ErrPhaseInterrupted, "interrupted by daemon shutdown"
 	case OutcomeQuotaExhausted:

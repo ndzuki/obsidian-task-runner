@@ -14,6 +14,49 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
+// TestProjectIsExisting pins the "existing project" signal used by the
+// conventions/architecture gate (004-deployd regression): a project counts as
+// existing when its vault-map entry has a path that exists on disk — team or
+// not. Registered-but-missing paths and unregistered names must NOT count, so
+// the ready→refining fast path is never blocked for greenfield work.
+func TestProjectIsExisting(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing-repo")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing-repo")
+	skillDir := filepath.Join(dir, "skill")
+	if err := os.MkdirAll(filepath.Join(skillDir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries := []map[string]string{
+		{"name": "existing-app", "path": existing},
+		{"name": "team-app", "path": existing, "project_type": "team"},
+		{"name": "missing-app", "path": missing},
+		{"name": "no-path-app"},
+	}
+	data, err := json.Marshal(map[string]any{"projects": entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapFile := filepath.Join(skillDir, "config", "vault-map.json")
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{
+		"existing-app": true,  // registered + path exists → existing
+		"team-app":     true,  // team projects are existing repos too
+		"missing-app":  false, // registered but path missing → not existing
+		"no-path-app":  false, // registered without a path → not existing
+		"unknown-app":  false, // unregistered → not existing
+	} {
+		if got := projectIsExisting(mapFile, name); got != want {
+			t.Errorf("projectIsExisting(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestNormalizeGitRepo(t *testing.T) {
 	for _, tt := range []struct {
 		in, want string

@@ -57,6 +57,14 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 					outcome, code, reason := mapExecOutcome(result)
 					return result, outcome, code, reason
 				}
+				if result.Code == OutcomeTimedOutActive {
+					// 超时窗口耗尽但会话近期仍有活动（模型还在推 step/工具
+					// 调用——TASK-065：Round 2 真实冒烟远超 60 分钟窗口）。
+					// 不 cancel、不记失败：保留 token，下一轮 scan 继续等。
+					r.logger.Printf("task %s: resumed session still active after timeout window (%s) — keeping token, next scan continues waiting", snap.TaskID, spec.Phase)
+					outcome, code, reason := mapExecOutcome(result)
+					return result, outcome, code, reason
+				}
 				if result.Code == OutcomeTimedOut || result.Code == OutcomeInterrupted {
 					// 超时：会话可能是死锁的模型 turn（gateway 挂起，TASK-079
 					// refining 观测 6.8h）——cancel 后下一轮 resume 才能落到
@@ -70,14 +78,18 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 					outcome, code, reason := mapExecOutcome(result)
 					return result, outcome, code, reason
 				}
-				if sessionBusyEvidence(result.Error) {
-					// 会话明确仍在跑（busy）：可重试中断，绝不 fresh start
-					// （否则两个会话并行写同一任务文档）。
-					r.logger.Printf("task %s: resume attach failed (%s), session may still be running — retrying next scan (no fresh start)", snap.TaskID, result.Error)
+				if sessionBusyEvidence(result.Error) || resumeUnknownStateEvidence(result.Error) {
+					// 会话明确仍在跑（busy），或服务器不可达（unreachable/EOF/
+					// connection refused——会话状态未知）：都可重试中断，绝不
+					// fresh start（否则两个会话并行写同一任务文档；2026-08-25
+					// TASK-065 观测：agent-server unreachable: EOF 被当 terminal
+					// → fresh start 撞 connection refused → MODEL_FAILED 再写
+					// blocked → 状态来回变）。
+					r.logger.Printf("task %s: resume attach failed (%s), session state unknown — retrying next scan (no fresh start)", snap.TaskID, result.Error)
 					res := &ExecutionResult{
 						Phase:       spec.Phase,
 						Code:        OutcomeInterrupted,
-						Error:       "resume attach failed, session may still be running: " + result.Error,
+						Error:       "resume attach failed, session state unknown: " + result.Error,
 						ResumeToken: token,
 					}
 					outcome, code, reason := mapExecOutcome(res)
@@ -115,6 +127,13 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	result, err := handle.Wait()
 	if err != nil {
 		return nil, OutcomeFailed, ErrModelFailed, err.Error()
+	}
+	if result != nil && result.Code == OutcomeTimedOutActive {
+		// 全新派发的超时窗口耗尽但会话仍活跃：不 cancel（会话在真实推进），
+		// 保留 token 下一轮 scan 继续等。
+		r.logger.Printf("task %s: phase session still active after timeout window (%s) — next scan continues waiting", snap.TaskID, spec.Phase)
+		outcome, code, reason := mapExecOutcome(result)
+		return result, outcome, code, reason
 	}
 	if result != nil && result.Code == OutcomeTimedOut {
 		// 全新派发也超时：cancel 服务器侧会话（同样的死 turn 问题），下一轮
@@ -161,6 +180,25 @@ func sessionGoneEvidence(errText string) bool {
 // create a parallel writer.
 func sessionBusyEvidence(errText string) bool {
 	return strings.Contains(strings.ToLower(errText), "active work")
+}
+
+// resumeUnknownStateEvidence reports whether a resume failure says the
+// agent-server itself was unreachable (EOF, connection refused, dial
+// errors, no such host) rather than confirming the session is gone. The
+// session's state is then UNKNOWN: fresh start is forbidden — the old turn
+// may still be alive server-side and would become a parallel writer the
+// moment the server returns (2026-08-25 TASK-065: unreachable: EOF 被误判
+// terminal → fresh start → MODEL_FAILED → blocked → 状态来回变)。
+func resumeUnknownStateEvidence(errText string) bool {
+	lower := strings.ToLower(errText)
+	for _, marker := range []string{
+		"unreachable", "connection refused", "dial tcp", "no such host", " eof", "network is down",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // readExecutorSessionID reads the persisted durable-resume token from the task

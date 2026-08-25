@@ -396,15 +396,33 @@ func (r *Runner) recoverUnExtractedKnowledge() int {
 			if fm.Status != "done" || fm.PendingReq {
 				continue
 			}
+			if knowledgeExtractRetryPending(fm) {
+				continue
+			}
 			r.logger.Printf("health %s: TASK-%s delivered but knowledge not extracted, re-extracting", projectEntry.Name(), fm.ID)
 			// 完整管道：提取 + 重分类/提升 + 应用记录 + verified 翻转
 			// + INDEX + 检索库同步。内部失败写 knowledge_extract_error
-			// + 通知并保持 marker false，下一轮 scan 再次重试。
+			// + 退避期限并保持 marker false；补救扫描在期限前不再重试，
+			// 避免发版时同步失败导致每轮扫描无限重试风暴。
 			r.extractProjectKnowledge(projectEntry.Name(), path)
 			retried++
 		}
 	}
 	return retried
+}
+
+// knowledgeExtractRetryPending reports whether a task's next knowledge
+// extraction retry is still in the future. Unparseable or empty deadlines are
+// treated as due (conservative: retry rather than starve a lesson forever).
+func knowledgeExtractRetryPending(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || fm.KnowledgeExtractRetryUntil == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, fm.KnowledgeExtractRetryUntil)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(until)
 }
 
 // validateDependencyRefs surfaces broken dependency references before they
@@ -467,12 +485,13 @@ func (r *Runner) validateDependencyRefs() {
 					// that has not advanced for a long time silently blocks
 					// everything downstream (TASK-067: 019/057/066/069 waited
 					// a month+ on an unmerged PR with no signal). Notify once
-					// per (project, upstream) when its last update crosses
-					// the threshold.
+					// per (project, upstream, DAY) when its last update
+					// crosses the threshold — the date suffix makes it a
+					// daily reminder instead of once per daemon process.
 					if threshold := r.upstreamStallDays(); threshold > 0 {
 						if updated, ok := updatedByID[id]; ok {
 							if time.Since(updated) > time.Duration(threshold)*24*time.Hour {
-								key := projectEntry.Name() + "|blocked_by_stale|" + id
+								key := projectEntry.Name() + "|blocked_by_stale|" + id + "|" + time.Now().Format("2006-01-02")
 								if !r.diagNotified(key) {
 									days := int(time.Since(updated).Hours() / 24)
 									r.logger.Printf("health %s: TASK-%s blocked by TASK-%s (no update for %dd)", projectEntry.Name(), fm.ID, id, days)
@@ -498,6 +517,68 @@ func (r *Runner) validateDependencyRefs() {
 				r.logger.Printf("health %s: TASK-%s blocked_by references missing TASK-%s", projectEntry.Name(), fm.ID, id)
 				r.notifyDiag(projectEntry.Name(), "依赖引用失效",
 					"TASK-"+fm.ID+" 的 blocked_by 引用了不存在的 TASK-"+id+"，依赖永不满足；请修正引用（otg update-status blocked_by=...）")
+			}
+		}
+
+		// REQ `depends_on` 引用校验（gap 1 修复）：此前只校验 TASK 的
+		// blocked_by——REQ 的 depends_on 悬空引用被 syncDependencyInheritance
+		// 静默丢弃，下游任务永久等待且无信号。这里逐 REQ 检查同项目引用
+		// （跨项目 `x:REQ-n` 经 vault-map 解析，跳过）。
+		reqDir := filepath.Join(projDir, "Requirements")
+		reqEntries, reqErr := os.ReadDir(reqDir)
+		if reqErr != nil {
+			continue
+		}
+		reqIDs := make(map[string]bool)
+		for _, re := range reqEntries {
+			if re.IsDir() || !strings.HasPrefix(re.Name(), "REQ-") || !strings.HasSuffix(re.Name(), ".md") {
+				continue
+			}
+			if id := reqIDFromPath(re.Name()); id != "" {
+				reqIDs[id] = true
+			}
+		}
+		for _, re := range reqEntries {
+			if re.IsDir() || !strings.HasPrefix(re.Name(), "REQ-") || !strings.HasSuffix(re.Name(), ".md") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(reqDir, re.Name()))
+			if err != nil {
+				continue
+			}
+			rf, err := yamlfrontmatter.Parse(data)
+			if err != nil || rf == nil {
+				continue
+			}
+			deps := rf.DependsOn
+			if len(deps) == 0 {
+				if raw, ok := rf.Extra["depends_on"]; ok {
+					deps = toStringSlice(raw)
+				}
+			}
+			if len(deps) == 0 {
+				continue
+			}
+			reqID := reqIDFromPath(re.Name())
+			if reqID == "" {
+				continue
+			}
+			for _, dep := range deps {
+				dep = strings.TrimSpace(dep)
+				if dep == "" || strings.Contains(dep, ":") {
+					continue // cross-project: resolved via vault-map, not checked here
+				}
+				id := strings.TrimPrefix(dep, "REQ-")
+				if reqIDs[id] {
+					continue
+				}
+				key := projectEntry.Name() + "|req_depends_on|" + reqID + "->" + id
+				if r.diagNotified(key) {
+					continue
+				}
+				r.logger.Printf("health %s: REQ-%s depends_on references missing REQ-%s", projectEntry.Name(), reqID, id)
+				r.notifyDiag(projectEntry.Name(), "需求依赖引用失效",
+					"REQ-"+reqID+" 的 depends_on 引用了不存在的 REQ-"+id+"；该依赖不会被继承到任务，相关任务将无阻塞地开始（或依赖永缺信号）。请修正 REQ 的 depends_on 列表。")
 			}
 		}
 	}

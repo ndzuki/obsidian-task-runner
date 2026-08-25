@@ -15,7 +15,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 - `skill://obsidian-task-runner-round1`
 - `skill://obsidian-task-runner-round2`
 - `skill://obsidian-task-runner-merge`
-- `skill://obsidian-task-runner-conventions`（团队项目规范审查门禁）
+- `skill://obsidian-task-runner-conventions`（**已有项目**基线审查门禁：规范 + 架构约束）
 - `skill://obsidian-task-runner-priority`
 - `skill://obsidian-task-runner-pm`
 - `skill://obsidian-task-runner-split`
@@ -45,7 +45,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 | status | 行为 |
 | -------- | ------ |
 | `blocked` | 五类：① 缺字段/依赖——补齐后自动 `ready`/`plan-review`；② 阶段失败——`resume_approved=true` 后恢复 `blocked_phase`，**但可恢复错误码（MODEL_FAILED/PHASE_TIMEOUT/MODEL_QUOTA_EXHAUSTED/PHASE_INTERRUPTED 或空码）的阶段失败子集若 `pending_req=true`（REQ 已变更）则 daemon 自动转 `refining` 重细化（`recoverBlockedPendingReq`）而不复用旧 phase**——手动 resume 会拿旧需求重新实现，方向错误；③ `API_KEY_UNAVAILABLE`——daemon 每轮探测 key，可用即自动恢复（无需 resume）；④ 人工暂停——`blocked_phase` 非空 + `REQ_MISSING` 等非瞬时错误码，保持阻塞直到手动 resume；⑤ **前置门禁失败**（`PREREQUISITE_SMOKE_FAILED`）——round2 入口门禁（如 AC-066-17）未通过时由 round2 转 blocked，daemon 每轮按 `blocked_by` **事实**（上游 `done` 且 `phase_error_code` 空 = PR 已合入）自动恢复，无用户干预；门禁失败禁止 replan 循环 |
-| `ready` | daemon 转 `refining`；**团队项目（`project_type: team`）首个任务先拦截过只读规范审查（`/obsidian-task-runner-conventions`，产物 `Notes/PROJECT-CONVENTIONS.md` 即一次性门禁标记，见「团队项目模式」）**；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
+| `ready` | daemon 转 `refining`；**已有项目（已注册且存在 checkout，即非全新 greenfield）首个任务先拦截过只读基线审查（`/obsidian-task-runner-conventions`，产物 `Notes/PROJECT-CONVENTIONS.md` = 规范 + 架构约束，即一次性门禁标记，见「已有项目基线门禁」）**——004-deployd 教训：开发前不审查架构，dev 用 SQLite、test/prod 用 MySQL 导致字段命名漂移返工；priority_assessment 由 daemon 在 scan 末尾并行评估（每轮 ≤2），不阻塞调度 |
 | `refining` | daemon 直接调用 refining Skill，使用 models.default；大型需求先生成 Wayfinder Map 决策地图（内联规则见 refining 4a，无需外部 skill），作为 Grilling 焦点；failed 项三分类收敛——fact 自修正 REQ、auto 采纳建议留 `auto_accepted` 审计（可推翻）、仅 dispute 进 grilling；重复争议（grill_repeat≥2）park 升级到项目级清单。**成功后 daemon 兜底重写 `refine_req_hash` = 当前 REQ bytes**（会话改写 REQ 后 hash 变化，写漏则 early-out 永不成立、maturity gate 每轮重跑——TASK-058 教训：TASK-079 done 后仍无法转 planning） |
 | `needs-refining` | 旧版遗留状态；scan 拾起后自动迁移为 needs-grilling（`nextLocalTransition`），随后走正常 Grilling 路径（Kitty tab、提醒、lease） |
 | `needs-grilling` | daemon 检查 owner/timeout并创建 Kitty；pending_req 优先强制 refining，否则 resume 恢复 prev status、replan 转 refining，空值继续等待；支持异步 Grilling（grill_continue）；**清单 `status=paused` 时该项目 grilling 流程整体暂停**——不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 不解除；恢复靠用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）；**清单 `status=closed` 是显式项目冻结**（「暂时不想开始这项目开发」）——同样整体暂停，但**只有用户手动改回 `open` 才恢复**：REQ 更新不自动激活、阶段会话写回清单时 daemon 守护恢复 closed（模型不得擅自解锁，2026-08-22 magic-models-manager 观测）；`grill_parked=true` 时**为项目创建「决策清单」Kitty tab**（每项目一个、5min debounce、待答决策点 >0 时）——tab 内 **kitty-grill 光标问卷（批量）**：模型把待答决策点 + 选项 + 推荐结构化输出，用户 `j/k` 选选项、`Enter` 确认、`q` 一轮提交；提交后 **detached 子进程异步写回**（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，10 分钟超时，spawn 失败回退同步；**写回失败自动重试 3 次**，**会话丢失（session not found）时降级全新会话重建上下文写回**，全部失败桌面提醒）并 **kitty 自动关闭本 tab**（不再卡「写回中」）；**写回守卫**：启动与写回前复查任务状态，已离开 needs-grilling（closed/done 等）阻止写回；问卷 prompt 以 `任务 TASK-<id>` 开头（agent-server 监控面板按第一个 TASK-xxx 打标签）；答案写回清单后 daemon 按答案 hash 变更**自动分发**（无需手动 grill_continue）；**禁止任何自动转换**（残留 grill_resolution 不得触发 replan——TASK-066 17 轮零收敛的教训）；争议由 PM 统筹（`skill://obsidian-task-runner-pm`）汇总到 Notes/Grilling-Decisions.md |
@@ -72,9 +72,20 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 - **`project_type: team`**：daemon 禁止对该项目自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`——仓库归团队所有，操作面只读 + 推送。
 - **`merge_mode: manual`**：交付停在**推分支**（`git push` 用仓库自身 SSH/https 凭据，不注入 gh credential helper）；不创建 PR、不轮询 CI、不自动合并。push 后写 `merge_status=pushed`、保持 `review` 并通知「请到仓库 UI 合并」；**daemon 每轮探测远端默认分支（`git ls-remote --symref` + fetch + `merge-base --is-ancestor`，默认分支名不硬编码）**，人工合入后自动转 `done`。完成审计（AC 证据复核）在 push 前照常执行。
 - **`merge_mode: fork-merge`**（fork 开发）：自动化推进到**本地 merge 完成**——在任务 worktree 中把 feature 分支 `merge --no-ff` 进 fork 默认分支（默认分支名经 `ls-remote --symref` 解析，不硬编码 main）；**冲突由 AI 会话自动解决**（`merge_retry_count` 预算，与 PR 冲突共享）；merge 成功后用仓库自身凭据 push fork 默认分支，任务自动转 `done` 并通知**「请手动向团队项目提交 PR」**——团队侧 PR/review/合入完全人工，daemon 不接触团队仓库。失败（预算耗尽）转 conflict 交还用户，与 manual 同语义。
-- **规范审查门禁**：团队项目**首个任务**在 refining 前必须通过只读规范审查（`/obsidian-task-runner-conventions`，models.default）——汇总项目的设计/代码/注释语言/API 文档/文档/提交规范到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性标记**，删除可重审）；审查只总结规范、零优化建议、零代码修改。失败转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
-- **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复全部会话，**优先级高于全局默认约定**——项目注释用中文就用中文、技术栈按项目既有模式、commit 按项目习惯；不引入项目没有的框架，不做计划外重构（团队 review 认知负担优先）。
-- **防误重开**：`detectStaleDoneReopens` 与 done 重开 merge 对团队项目跳过（squash 合入后 checkpoint 不是 main 祖先，但 `merge_status=merged` 由远端探测/本地 merge 完成写入，是权威交付证据）。
+- **规范审查门禁**：团队项目（`project_type: team` 是已有项目的子集）**首个任务**在 refining 前必须通过只读基线审查（`/obsidian-task-runner-conventions`，models.default）——汇总项目的设计/代码/注释语言/API 文档/文档/提交规范 **+ 架构约束**（技术栈、数据库分环境、schema/字段命名、迁移机制）到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性标记**，删除可重审）；审查只总结现状、零优化建议、零代码修改。失败转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
+- **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复全部会话，**优先级高于全局默认约定**——项目注释用中文就用中文、技术栈按项目既有模式、commit 按项目习惯；**数据库/schema 决策以 `## 架构约束` 的 test/prod 引擎为准**；不引入项目没有的框架，不做计划外重构（团队 review 认知负担优先）。
+- **防误重开**：`detectStaleDoneReopens` 与 done 重开 merge 对团队项目跳过（squash 合入后 checkpoint 不是 main 祖先，但 `merge_status=merged` 由远端探测/本地 merge 完成写入，是权威交付证据）。**done→review 自动重开（`DoneReopensMerge`）同样对 team 跳过**（2026-08-25 接线：用户手动置 done 而 `merge_status=pushed`/残留 PR URL 的 team 任务不再被拽回 review，team forge 生命周期完全人工）。
+
+## 已有项目基线门禁（Existing-Project Baseline Gate）
+
+**对所有已存在的项目**（vault-map 已注册且 `path` 是已存在 checkout 的项目；新 greenfield 项目除外）**首个任务在 refining 前必须先过只读基线审查**，否则后续开发可能带着对项目现状的错误假设（004-deployd 教训：开发用 SQLite、测试/生产用 MySQL，字段名结尾不一致导致上线 bug、返工）。
+
+- **触发**：`status=ready` + 项目已注册且 checkout 存在（`projectIsExisting`）+ `Notes/PROJECT-CONVENTIONS.md` 缺失。团队项目天然命中（已注册已有仓库），普通已有项目同样命中——不再是 `project_type: team` 专属。
+- **产物**：`Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束），本身即一次性门禁标记；删除可重审（架构大改后建议重审）。
+- **架构约束重点（必查）**：数据库引擎分环境（dev vs test/prod）、schema/字段名结尾（`_at`/`_id` 等）、迁移机制与方言绑定。环境间引擎不一致 = 最高优先级硬约束，写入基线并进「需要人工确认」。
+- **消费**：基线随 `[Project Context]` 注入 refining/planning/round2/merge；Round 1 Step 1.8 与 Round 2「项目规范与架构约束对齐」强制按 test/prod 引擎设计 schema，不以 dev 引擎（如 SQLite）语义为准。
+- **失败**：审查失败/产物缺失 → 转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑，不跳过。
+- **只读工具面（daemon 层硬限制，2026-08-25 接线）**：conventions 会话以 `ToolPolicy="read,grep,glob,bash"` 派发（与 audit 会话对齐）——embed 路径经 `/agent/run` 的 `toolPolicy` 下发，agent-server 注入硬约束 preamble 并在白名单外 `tool/call` 出现时判 `tool_policy_violation` 会话失败；spawn 路径把政策前置进 prompt。仅靠 skill prompt 自约束的日子结束。
 
 ## Core Invariants（核心不变量）
 
@@ -86,7 +97,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 6. MUST NOT merge when pending_req=true；绝对禁止。
 7. MUST prioritize pending_req over grill_resolution=resume，过期需求不能恢复旧实现。
 8. MUST atomically clear grill_done/resolution/context/prev_status after consuming Grilling results。
-9. plan_approved MUST only be valid during plan-review；提前批准自动清 false。
+9. plan_approved MUST only be valid during plan-review；提前批准自动清 false，**并在 TASK `## 变更记录` 追加 `PLAN_APPROVAL_RESET` 审计记录**（2026-08-25 接线）。
 10. MUST NOT create directories during planning for new projects；Round 2 才创建。
 11. MUST NOT push during Round 1/Round 2；Merge Phase 才允许远程操作。
 12. MUST use system local time for all timestamps。
@@ -107,7 +118,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 并发语义的权威定义（代码实现 = `internal/daemon/implementation_gate.go`；其余阶段 = `phase_gate.go`）：
 
 - **implementing / Round 2**：`max_concurrent_tasks_per_project`（每项目上限，默认 `2`，缺失/`0` 回落默认）——N 个项目最多并行 N×2 个实现会话，一个项目的满负荷不会饿死其它项目；`max_concurrent_tasks` 为可选**全局总封顶**（`0` = 不限，默认 `0`），两上限同时生效、取更严格者。**旧配置仅含 `max_concurrent_tasks: 2` 时行为不变**（等效全局封顶 2 + 每项目 2）。
-- **其它阶段**：`phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`；key 置 `0` 或删除 = 不限），防止一轮 scan 同时拉起 20+ 个 dsh 会话烧 token、触发 API 限速与本地资源抢占。**实际消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 映射生效；`merge` 槽位当前不可达（review/conflict+merge_approved 在到达门禁段前已进入 merge 分支提前 `continue`）、`pm` 槽位无获取点（PM 由 `grilling_consolidation_batch` 默认 1 + `pmInFlight` 按目标去重约束）——这两个 key 置 `0`/调大均无效果，属代码追赶项。
+- **其它阶段**：`phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`；key 置 `0` 或删除 = 不限），防止一轮 scan 同时拉起 20+ 个 dsh 会话烧 token、触发 API 限速与本地资源抢占。**消费点**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 门禁段生效；**`merge` 槽位在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放**（2026-08-25 接线，此前不可达）；**`pm` 槽位在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有**，满时 `errPMGateFull` 下一轮 scan 重试（2026-08-25 接线，此前无获取点）。
 - **daemon 重启存活会话**：dsh-embed 无 PID 文件，daemon 重启后按 frontmatter 状态重派发（round2 有 checkpoint 复用，从断点继续）；`executor_session_id` 持久化支持 durable resume——resume 成功复用会话；**超时/中断如实上报**（PHASE_TIMEOUT / PHASE_INTERRUPTED，不 fresh start：daemon 侧 HTTP 超时不终止 agent-server 会话，fresh start 会造成同任务双会话并行写，TASK-058 教训）；仅终态失败（session not found 等）回退 fresh start；resume 等待超时对齐阶段 spec（不再硬编码 30m）。
 - 修改配置后重启 daemon 生效。
 
@@ -136,14 +147,14 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 每轮 scan 自动执行，防"任务静默饿死/冲突延迟暴露/队列虚胖"：
 
-- **依赖引用校验**：`blocked_by` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）；**目标文件存在但 frontmatter 暂解析失败（dsh 会话写回瞬时窗口，如重复 YAML 键）→ 只记 deferring 日志跳过本轮，下一轮自动重查，不误报**；closed 上游按 `closure_reason` 判定：`already-implemented` 视为已交付，`duplicate` 通过 `replacement_task` 解析，均不报警/不阻塞；仅 `cancelled`/`wont-fix`/`not-bet`/空原因等无交付关闭才对非终态下游发一次性「依赖永不满足」通知；done/closed 下游的历史引用不诊断（legacy 噪音）。**上游长期未完成提醒（`upstream_stall_days`，默认 3）**：`blocked_by` 上游非终态且 `updated` 距今超阈值 → `diagNotified` 每进程一次通知（TASK-067：019/057/066/069 静默阻塞一个多月无信号，直到用户被动发现）。
+- **依赖引用校验**：`blocked_by` 引用不存在的任务 → 日志 + 一次性通知（引用写错 = 依赖永不满足 = 下游永久等待且无信号）；**REQ `depends_on` 同项目悬空引用同样校验**（2026-08-25 新增：此前被 `syncDependencyInheritance` 静默丢弃，跨项目 `x:REQ-n` 跳过）；**目标文件存在但 frontmatter 暂解析失败（dsh 会话写回瞬时窗口，如重复 YAML 键）→ 只记 deferring 日志跳过本轮，下一轮自动重查，不误报**；closed 上游按 `closure_reason` 判定：`already-implemented` 视为已交付，`duplicate` 通过 `replacement_task` 解析，均不报警/不阻塞；仅 `cancelled`/`wont-fix`/`not-bet`/空原因等无交付关闭才对非终态下游发一次性「依赖永不满足」通知；done/closed 下游的历史引用不诊断（legacy 噪音）。**上游长期未完成提醒（`upstream_stall_days`，默认 3）**：`blocked_by` 上游非终态且 `updated` 距今超阈值 → 通知 key 带日期后缀，**每日一次**（TASK-067：019/057/066/069 静默阻塞一个多月无信号，直到用户被动发现）。
 - **依赖链自动恢复**（`resolveBlockedDependencies`）：**任一非终态任务**（blocked/ready/refining/planning/implementing/review 等）的 `blocked_by` 上游若为阶段失败 blocked（MODEL_FAILED/PHASE_TIMEOUT/MODEL_QUOTA_EXHAUSTED/PHASE_INTERRUPTED；空错误码且上游自身无 `blocked_by` 的 legacy 阶段失败）→ 自动 `resume_approved=true`（上限 2 次、防循环）；**空错误码 + 上游自身 `blocked_by` 非空的 blocked 是入口门禁形态**（round2 写回丢码），不自动恢复——scan 先由 `fixBlockedGateErrorCodes` 补记 `PREREQUISITE_SMOKE_FAILED` 归入门禁事实恢复分支（TASK-019 8/11：空码 blocked 被误恢复成 completed→blocked→resume 死循环，10+ 轮烧 token）。此前只扫描 blocked 下游，refining/ready 下游的阻塞上游无人解析（TASK-019 教训）。前置门禁（`PREREQUISITE_SMOKE_FAILED`）仅对 blocked 任务按事实变化恢复。
 - **24h 老化兜底恢复**（`autoResumeAgedBlocks`，2026-08 新增；窗口可配置 `auto_resume_aged_after_hours`，默认 24）：`status=blocked` 且错误码可自动恢复（MODEL_FAILED/QUOTA/PHASE_TIMEOUT/PHASE_INTERRUPTED/空码，以及 DESIGN_SESSION_FAILED）且阻断超过配置窗口（基线 `blocked_at`，缺失回退 `updated`）且 `auto_resume_count < 2` → 每轮 scan 自动 `resume_approved=true`。覆盖两类依赖链覆盖不到的场景：daemon 迭代/重启丢失恢复状态、`blocks=[]` 叶子任务无下游拉起（TASK-015/065 教训）。进入 blocked 统一盖 `blocked_at` 时间戳，恢复时清空；人为决策块（REQ_MISSING/DOCUMENT_INVALID/API_KEY_UNAVAILABLE/PREREQUISITE_SMOKE_FAILED 门禁）不按年龄恢复。
 
 - **计划文件重叠自动串行**：同 repo 并发 implementing 任务的 `plan_files`（Round 1 写回）重叠时，调度器**自动延迟派发**排序靠后的任务（按项目内 stage → priority → created），待前序任务实现会话结束（状态离开 implementing 即释放重叠，不跨 merge 生命周期）后自动继续——把合并冲突从 merge 阶段前置消除；等待受 `max_overlap_wait_minutes`（默认 720，大于 round2 空转冷却上限）约束，超限放行并发、merge 冲突走既有兜底，防上游卡死饿死下游；另发一次性通知告知已自动串行（无 `plan_files` 信息的任务跳过重叠检查，正常并发派发）。
 - **项目健康诊断**：每轮输出 in-flight / stage 空 / merged-未收口 计数；超阈值（每日一次）通知——`merged 未收口 ≥5 且 in-flight ≥20` 提示跑 `project-rebaseline`；`stage 空 ≥5` 提示 `otg stage-plan init`；in-progress 阶段任务 >8 提示拆阶段。
 - **任务自动收口**（D4）：`merge_status=merged` + 非 done/closed + 无 `pending_req` + `plan_version<2` 的任务自动转 `done`（PR 合入是确定性证据；pending_req 增量任务与 plan_version≥2 的增量 replan 任务不误收口）+ 通知 + Roadmap 里程碑。**反向防锁**（`detectStaleDoneReopens`）：done + `merge_status=merged` + `plan_version≥2` + checkpoint 非 origin/main 祖先 → 未交付增量被假终态锁死（TASK-018 教训）→ 自动重开 refining + 代际重置 + 通知；git 检查不确定保守不动。
-- **知识提炼自动补救**（D5）：`knowledge_extracted` 标记仅在提炼**全成功**时写入（= ADR/踩坑落盘 **且** 检索库 store 同步成功；同步失败重置 marker=false）；失败写 `knowledge_extract_error` + 通知（「知识提炼失败，自动重试中」）。每轮 scan 对 `done`+`merged`+未提炼+无 `pending_req` 的任务自动重新提炼——覆盖 daemon 强杀/异常退出截断提炼 goroutine、部分失败与 store 同步失败场景（此前静默永久丢失）；提炼 goroutine 计入 `activeTasks`，优雅停机等待落地。`adr_written` 逗号串+`Notes/adr/` 前缀在匹配前归一化为裸 ADR id（否则扫描 N 提取 0）。
+- **知识提炼自动补救**（D5）：`knowledge_extracted` 标记仅在提炼**全成功**时写入（= ADR/踩坑落盘 **且** 检索库 store 同步成功；同步失败重置 marker=false）；失败写 `knowledge_extract_error` + 通知（「知识提炼失败，自动退避重试中」）。daemon 对 `done`+`merged`+未提炼+无 `pending_req` 的任务自动重新提炼——**失败按 `knowledge_extract_retry_until` 指数退避（10m 起、逐次加倍、上限 6h，计数持久化重启不清零），不再每轮 scan 无限重试**（发版时 store 同步失败导致重试风暴的教训）；覆盖 daemon 强杀/异常退出截断提炼 goroutine、部分失败与 store 同步失败场景（此前静默永久丢失）；提炼 goroutine 计入 `activeTasks`，优雅停机等待落地。`adr_written` 逗号串+`Notes/adr/` 前缀在匹配前归一化为裸 ADR id（否则扫描 N 提取 0）。
 - **决策归档兜底**（D3）：主决策清单 >50KB 且未答 ≤3 时，daemon 确定性归档已答决策点至 `Grilling-Decisions-archive.md`（PM Step 4.5 是主路径，此为无会话兜底，主清单永不膨胀）。
 - **阶段状态 daemon 翻转**（D2）：用户填「评审决策:」后，daemon 在 PM 分发**前**确定性翻转 Stage-Plan 状态机（continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）；PM 会话只做 REQ 标注与知识沉淀。
 

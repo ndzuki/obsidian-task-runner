@@ -707,6 +707,8 @@ func TestIsReadyCompleteStateMachine(t *testing.T) {
 		{name: "closed is terminal", fm: yamlfrontmatter.Frontmatter{Status: "closed", Assignee: "gpt"}, want: false},
 		{name: "review feedback resumes", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "resume"}, want: true},
 		{name: "plan review replans", fm: yamlfrontmatter.Frontmatter{Status: "plan-review", Assignee: "gpt", ReworkResolution: "replan"}, want: true},
+		{name: "plan review auto-approve is ready", fm: yamlfrontmatter.Frontmatter{Status: "plan-review", Assignee: "gpt", AutoApprove: true}, want: true},
+		{name: "plan review awaiting manual approval not ready", fm: yamlfrontmatter.Frontmatter{Status: "plan-review", Assignee: "gpt", AutoApprove: false}, want: false},
 		{name: "close gate waits for approval", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close"}, want: false},
 		{name: "close gate approved", fm: yamlfrontmatter.Frontmatter{Status: "review", Assignee: "gpt", ReworkResolution: "close", CloseApproved: true}, want: true},
 		{name: "done remains terminal without change", fm: yamlfrontmatter.Frontmatter{Status: "done", Assignee: "gpt"}, want: false},

@@ -32,6 +32,7 @@ const (
 	ErrPrerequisiteSmokeFailed  ErrorCode = "PREREQUISITE_SMOKE_FAILED"
 	ErrConventionsReviewFailed  ErrorCode = "CONVENTIONS_REVIEW_FAILED"
 	ErrDesignSessionFailed      ErrorCode = "DESIGN_SESSION_FAILED"
+	ErrDesignTargetUnwritable   ErrorCode = "DESIGN_TARGET_UNWRITABLE"
 	ErrInternal                 ErrorCode = "INTERNAL"
 	ErrAuditFailed              ErrorCode = "AUDIT_FAILED"
 )
@@ -64,6 +65,7 @@ var stableErrorCodes = []ErrorCode{
 	ErrPrerequisiteSmokeFailed,
 	ErrConventionsReviewFailed,
 	ErrDesignSessionFailed,
+	ErrDesignTargetUnwritable,
 	ErrAuditFailed,
 }
 

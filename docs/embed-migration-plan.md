@@ -47,10 +47,17 @@ POST /agent/run
     task: string,                 // 已注入 SKILL.md 正文的任务文本
     provider: string, model: string,
     reasoningEffort: string,      // off/low/high/max（omp 语义）
-    sessionId?: string            // 首次为空（新建）；resume 时传 durable id
+    sessionId?: string,           // 首次为空（新建）；resume 时传 durable id
+    status?: string               // 任务 frontmatter 状态（供 /agents 监控面板按
+                                  // 真实状态动画：refining/plan-review/implementing/
+                                  // review/...；模型运行时忽略该字段）
+    toolPolicy?: string           // 工具白名单（如 "read,grep,glob,bash"）：
+                                  // 只读审查会话（conventions/audit）注入硬约束
+                                  // preamble；事后校验白名单外 tool/call →
+                                  // outcome=tool_policy_violation（2026-08-25 接线）
   }
   → 200 { text, outcome, sessionId, errorCode? }
-    outcome: success | failed | timeout | interrupted | quota | key_unavailable
+    outcome: success | failed | timeout | interrupted | quota | key_unavailable | tool_policy_violation
 ```
 
 ## 4. 修改面

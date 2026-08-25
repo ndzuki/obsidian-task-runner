@@ -175,6 +175,14 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	if !filepath.IsAbs(reqPath) {
 		reqPath = filepath.Join(r.cfg.ObsidianVault, reqPath)
 	}
+	// target_branch 自愈（TASK-079）：round2 会话被 daemon 重启/超时打断时，
+	// 分支建好了但 frontmatter 的 target_branch 没写回——merge 授权于是永远
+	// 卡在 "precondition: target_branch is required"，且每次 scan 都把用户刚设
+	// 的 merge_approved 清掉。任务 worktree 本来就 checkout 在 round2 分支上，
+	// 从这里恢复一次并持久化，merge 直接继续。
+	if healTargetBranch(r.cfg.WorktreeBase, repoDir, candidate, fm) {
+		r.logger.Printf("task %s: recovered target_branch=%s from task worktree (round2 interrupted before write-back)", candidate.ID, fm.TargetBranch)
+	}
 	if err := validateMergeAuthorization(mergeAuthorization{
 		Status: fm.Status, MergeApproved: fm.MergeApproved, PendingReq: fm.PendingReq,
 		ReqPath: reqPath, PlanReqHash: fm.PlanReqHash, TargetBranch: fm.TargetBranch,
@@ -1405,6 +1413,7 @@ func (r *Runner) runMergeAISessionDSH(ctx context.Context, candidate task.ReadyT
 		Model:           model,
 		ReasoningEffort: "high",
 		SkillPrompt:     skillPrompt,
+		TaskStatus:      candidate.Status,
 		Timeout:         timeout,
 		WorkingDir:      repoDir,
 	}
@@ -1656,38 +1665,97 @@ func (r *Runner) measureKnowledgeApplied(taskPath, vaultDir string) error {
 	return nil
 }
 
+// Knowledge-extraction retry backoff. A persistent extraction/store-sync
+// failure must NOT re-run the full pipeline every scan forever (release-time
+// retry storm lesson): the first failure retries after
+// knowledgeExtractRetryBase, each consecutive failure doubles it, capped at
+// knowledgeExtractRetryCap. The deadline is persisted on the task so daemon
+// restarts do not reset the backoff.
+const (
+	knowledgeExtractRetryBase = 10 * time.Minute
+	knowledgeExtractRetryCap  = 6 * time.Hour
+)
+
+func knowledgeExtractRetryDelay(count int) time.Duration {
+	if count < 1 {
+		count = 1
+	}
+	d := knowledgeExtractRetryBase
+	for i := 1; i < count; i++ {
+		d *= 2
+		if d >= knowledgeExtractRetryCap {
+			return knowledgeExtractRetryCap
+		}
+	}
+	if d > knowledgeExtractRetryCap {
+		return knowledgeExtractRetryCap
+	}
+	return d
+}
+
+// noteKnowledgeExtractFailure records a failed extraction/sync on the task and
+// arms the next retry deadline. It keeps knowledge_extracted=false so the
+// done+merged recovery scan remains the retry path, but that scan now respects
+// knowledge_extract_retry_until instead of hammering the pipeline each scan.
+func noteKnowledgeExtractFailure(taskPath, msg string) {
+	count := 0
+	if data, err := os.ReadFile(taskPath); err == nil {
+		if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil {
+			count = fm.KnowledgeExtractRetryCount
+		}
+	}
+	next := count + 1
+	until := time.Now().Add(knowledgeExtractRetryDelay(next)).UTC().Format(time.RFC3339)
+	_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"knowledge_extracted":           false,
+		"knowledge_extract_error":       msg,
+		"knowledge_extract_retry_count": next,
+		"knowledge_extract_retry_until": until,
+	})
+}
+
+// clearKnowledgeExtractBackoff clears the retry backoff after a fully
+// successful extraction + store sync, so a later unrelated failure starts from
+// count 0 instead of inheriting an exhausted budget.
+func clearKnowledgeExtractBackoff(taskPath string) {
+	_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"knowledge_extract_error":       "",
+		"knowledge_extract_retry_count": 0,
+		"knowledge_extract_retry_until": "",
+	})
+}
+
 func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	vaultDir := r.cfg.ObsidianVault
 
 	result, err := knowledge.ExtractTaskKnowledge(vaultDir, projectName, taskPath)
 	if err != nil {
 		// 硬失败（任务不可读/不可解析）：记录到任务上让丢失可见，
-		// 通知用户，保持 knowledge_extracted=false——补救扫描下一轮
-		// 重试，而不是静默丢弃教训。
+		// 通知用户，保持 knowledge_extracted=false——补救扫描按退避
+		// 期限重试，而不是静默丢弃教训或每轮扫描无限重试。
 		msg := fmt.Sprintf("knowledge extraction failed: %v", err)
-		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": msg})
+		noteKnowledgeExtractFailure(taskPath, msg)
 		r.logger.Printf("knowledge-base Step 0 failed: project=%s task=%s error=%v", projectName, filepath.Base(taskPath), err)
 		if data, rerr := os.ReadFile(taskPath); rerr == nil {
 			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
-				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼失败（自动重试中）",
-					"任务知识未入库："+msg+"。daemon 每轮扫描自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼失败（自动退避重试中）",
+					"任务知识未入库："+msg+"。daemon 已按退避期限安排自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
 			}
 		}
 		return
 	}
 	if len(result.Errors) > 0 {
 		// 部分失败：部分 ADR/踩坑已提取，其余出错。marker 保持 false，
-		// 下一轮 scan 重试剩余部分。
+		// 补救扫描按退避期限重试剩余部分。注意：这里不清退避计数，
+		// 连续失败必须逐次加倍（释放风暴防线）。
 		msg := "knowledge extraction partial failure: " + strings.Join(result.Errors, "; ")
-		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": msg})
+		noteKnowledgeExtractFailure(taskPath, msg)
 		if data, rerr := os.ReadFile(taskPath); rerr == nil {
 			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
-				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼部分失败（自动重试中）",
-					"部分任务知识未入库："+strings.Join(result.Errors, "; ")+"。daemon 每轮扫描自动重试。", r.cfg.Notifications.Desktop)
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识提炼部分失败（自动退避重试中）",
+					"部分任务知识未入库："+strings.Join(result.Errors, "; ")+"。daemon 已按退避期限安排自动重试。", r.cfg.Notifications.Desktop)
 			}
 		}
-	} else {
-		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{"knowledge_extract_error": ""})
 	}
 	if result.ADRCount > 0 || result.NewRefs > 0 || result.UpdatedRefs > 0 {
 		r.logger.Printf("knowledge-base extracted: project=%s adrs=%d new=%d updated=%d",
@@ -1749,9 +1817,11 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	// degrade to FTS-only, never fail the merge. A store-sync failure is a
 	// REAL 提炼收入 failure though: the marker is reset to false and the
 	// error recorded so the done+merged recovery scan re-runs the whole
-	// idempotent pipeline next round instead of leaving a stale retrieval
-	// store behind a true marker (2026-08-21 TASK-001: sync failed with
-	// "database is locked" and only a log line was left).
+	// idempotent pipeline — but only after the retry backoff deadline
+	// (release-time retry storm lesson: a persistent "database is locked"
+	// failure used to re-run extraction + INDEX + sync EVERY scan with no
+	// bound; 2026-08-21 TASK-001 first observed the sync failure, the
+	// missing backoff turned it into an infinite storm at release).
 	stats, serr := r.syncKnowledgeStore()
 	if serr != nil {
 		r.logger.Printf("knowledge-base store sync failed: %v", serr)
@@ -1759,16 +1829,11 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 		if len(result.Errors) > 0 {
 			syncMsg = strings.Join(result.Errors, "; ") + "; " + syncMsg
 		}
-		if uerr := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-			"knowledge_extracted":     false,
-			"knowledge_extract_error": syncMsg,
-		}); uerr != nil {
-			r.logger.Printf("knowledge-base store sync failure marker update failed: %v", uerr)
-		}
+		noteKnowledgeExtractFailure(taskPath, syncMsg)
 		if data, rerr := os.ReadFile(taskPath); rerr == nil {
 			if fm, perr := yamlfrontmatter.Parse(data); perr == nil && fm != nil && !r.diagNotified("kbextract|"+fm.ID) {
-				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识库同步失败（自动重试中）",
-					"任务知识未完整收入检索库："+serr.Error()+"。daemon 每轮扫描自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
+				notify.SendTaskAction(fm.ID, fm.Title, "📚", "知识库同步失败（自动退避重试中）",
+					"任务知识未完整收入检索库："+serr.Error()+"。daemon 已按退避期限安排自动重试，无需手动操作。", r.cfg.Notifications.Desktop)
 			}
 		}
 	} else {
@@ -1777,5 +1842,8 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 		if stats.VecError != nil {
 			r.logger.Printf("knowledge-base vector refresh failed: %v", stats.VecError)
 		}
+		// 完整成功（提取 + INDEX + 检索库同步）才清退避计数；提取成功但
+		// 同步失败的路径不清，连续同步失败也必须逐次加倍退避。
+		clearKnowledgeExtractBackoff(taskPath)
 	}
 }

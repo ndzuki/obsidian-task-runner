@@ -97,6 +97,10 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 	// whose filename does not match the canonical derivation must not be
 	// duplicated by a new TASK.
 	matchedAny := false
+	direct := 0 // results produced by the direct req_doc pass (create fallback only considers these)
+	// processed tracks every task path already written by the direct pass so
+	// the reverse dependency propagation never double-updates it.
+	processed := make(map[string]bool)
 	projEntries, _ := os.ReadDir(projectsDir)
 	for _, proj := range projEntries {
 		if !proj.IsDir() {
@@ -141,6 +145,8 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 					continue
 				}
 				affected = append(affected, AffectedResult{TaskID: fm.ID, File: entry.Name(), Action: "rename_req", OldStatus: fm.Status})
+				processed[taskPath] = true
+				direct++
 				continue
 			}
 			// Normalize paths for comparison
@@ -165,135 +171,24 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 				}
 			}
 
-			switch fm.Status {
-			case "blocked":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"pending_req": true,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error updating blocked task %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "ready":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"pending_req": true,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error updating ready task %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "refining", "planning":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"pending_req": true,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "needs-grilling":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"pending_req": true,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "plan-review":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"status":            "refining",
-					"pending_req":       true,
-					"plan_approved":     false,
-					"grill_done":        false,
-					"grill_context":     "",
-					"grill_prev_status": "",
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error resetting plan-review task %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "reset_to_ready", OldStatus: fm.Status,
-				})
-			case "implementing":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"pending_req":    true,
-					"merge_approved": false,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "review", "conflict":
-				if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
-					"status":         "refining",
-					"pending_req":    true,
-					"merge_approved": false,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "done":
-				// 已交付终态任务的 REQ 变更按类型路由：breaking/未标注 →
-				// 重开新一轮交付；additive → 保持终态，提示新建 TASK 承接
-				// 增量；cosmetic → 忽略（不改契约，不打扰）。
-				switch reqChangeType {
-				case ReqChangeAdditive:
-					affected = append(affected, AffectedResult{
-						TaskID: fm.ID, File: entry.Name(),
-						Action: ActionReqAdditive, OldStatus: fm.Status,
-					})
-					continue
-				case ReqChangeCosmetic:
-					continue
-				}
-				updates := map[string]interface{}{"status": "refining", "pending_req": true}
-				for key, value := range generationResetUpdates(fm) {
-					updates[key] = value
-				}
-				if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
-					fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
-					continue
-				}
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "pending_req", OldStatus: fm.Status,
-				})
-			case "closed":
-				// closed is terminal; REQ change does not reopen
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "warn_only", OldStatus: fm.Status,
-				})
-			default:
-				affected = append(affected, AffectedResult{
-					TaskID: fm.ID, File: entry.Name(),
-					Action: "warn_only", OldStatus: fm.Status,
-				})
+			if res := applyReqChangeToTask(taskPath, fm, entry.Name(), reqChangeType); res != nil {
+				affected = append(affected, *res)
+				direct++
 			}
+			processed[taskPath] = true
 		}
 	}
 
+	// Reverse propagation: REQ-B whose frontmatter depends_on includes this
+	// REQ consumes its contracts. A breaking (or unannotated) change to
+	// REQ-A must therefore re-open REQ-B's tasks for re-alignment — without
+	// this, a merged upstream contract change is only discovered later by an
+	// audit or a gate failure (TASK-058: REQ-058 vs merged TASK-079
+	// canonical contracts diverged until the audit caught it).
+	affected = append(affected, propagateReqChangeToDependents(vaultPath, reqID, reqChangeType, processed)...)
+
 	// Fallback: auto-create task if no existing task matched
-	if len(affected) == 0 && !matchedAny {
+	if direct == 0 && !matchedAny {
 		created := createTaskForReq(vaultPath, reqRelPath, defaultAssignee)
 		if created != nil {
 			affected = append(affected, *created)
@@ -301,6 +196,195 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 	}
 
 	return affected
+}
+
+// applyReqChangeToTask applies the direct REQ-change updates for one task
+// (the status switch formerly inlined in OnReqChanged) and reports the
+// result. Branches that write nothing still report warn_only/additive so the
+// caller's result accounting matches the historical contract — except the
+// done+cosmetic case, which historically produced NO result and must stay
+// silent (the daemon treats an absent result as "nothing to notify").
+func applyReqChangeToTask(taskPath string, fm *yamlfrontmatter.Frontmatter, fileName, reqChangeType string) *AffectedResult {
+	result := AffectedResult{TaskID: fm.ID, File: fileName, OldStatus: fm.Status}
+	switch fm.Status {
+	case "blocked", "ready", "refining", "planning", "needs-grilling":
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"pending_req": true}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+			result.Action = "warn_only"
+			return &result
+		}
+		result.Action = "pending_req"
+		return &result
+	case "plan-review":
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":            "refining",
+			"pending_req":       true,
+			"plan_approved":     false,
+			"grill_done":        false,
+			"grill_context":     "",
+			"grill_prev_status": "",
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error resetting plan-review task %s: %v\n", taskPath, err)
+			result.Action = "warn_only"
+			return &result
+		}
+		result.Action = "reset_to_ready"
+		return &result
+	case "implementing":
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"pending_req":    true,
+			"merge_approved": false,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error marking pending_req on %s: %v\n", taskPath, err)
+			result.Action = "warn_only"
+			return &result
+		}
+		result.Action = "pending_req"
+		return &result
+	case "review", "conflict":
+		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"status":         "refining",
+			"pending_req":    true,
+			"merge_approved": false,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
+			result.Action = "warn_only"
+			return &result
+		}
+		result.Action = "pending_req"
+		return &result
+	case "done":
+		// 已交付终态任务的 REQ 变更按类型路由：breaking/未标注 →
+		// 重开新一轮交付；additive → 保持终态，提示新建 TASK 承接
+		// 增量；cosmetic → 忽略（不改契约，不打扰，零结果）。
+		switch reqChangeType {
+		case ReqChangeAdditive:
+			result.Action = ActionReqAdditive
+			return &result
+		case ReqChangeCosmetic:
+			return nil
+		}
+		updates := map[string]interface{}{"status": "refining", "pending_req": true}
+		for key, value := range generationResetUpdates(fm) {
+			updates[key] = value
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+			fmt.Fprintf(os.Stderr, "Error setting %s to refining on %s: %v\n", fm.Status, taskPath, err)
+			result.Action = "warn_only"
+			return &result
+		}
+		result.Action = "pending_req"
+		return &result
+	case "closed":
+		// closed is terminal; REQ change does not reopen
+		result.Action = "warn_only"
+		return &result
+	default:
+		result.Action = "warn_only"
+		return &result
+	}
+}
+
+// propagateReqChangeToDependents marks tasks pending whose REQ depends_on
+// the changed REQ. Only breaking (or unannotated) changes propagate —
+// additive/cosmetic deltas are backward-compatible and dependents re-align
+// the next time their own REQ is refined. The pass is conservative: it never
+// reopens a done/closed dependent task (its own REQ did not change), but it
+// does force re-alignment for every in-flight dependent so an upstream
+// contract break cannot silently reach a later audit or gate failure.
+func propagateReqChangeToDependents(vaultPath, reqID, reqChangeType string, processed map[string]bool) []AffectedResult {
+	if reqID == "" || reqChangeType == ReqChangeAdditive || reqChangeType == ReqChangeCosmetic {
+		return nil
+	}
+	projectsDir := filepath.Join(vaultPath, "Projects")
+	projects, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil
+	}
+	var affected []AffectedResult
+	for _, proj := range projects {
+		if !proj.IsDir() {
+			continue
+		}
+		reqsDir := filepath.Join(projectsDir, proj.Name(), "Requirements")
+		reqEntries, err := os.ReadDir(reqsDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range reqEntries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			reqPath := filepath.Join(reqsDir, entry.Name())
+			data, err := os.ReadFile(reqPath)
+			if err != nil {
+				continue
+			}
+			rf, err := yamlfrontmatter.Parse(data)
+			if err != nil || rf == nil || !containsReqID(rf.DependsOn, reqID) {
+				continue
+			}
+			relReq := filepath.ToSlash(filepath.Join("Projects", proj.Name(), "Requirements", entry.Name()))
+			tasksDir := filepath.Join(projectsDir, proj.Name(), "Tasks")
+			tEntries, _ := os.ReadDir(tasksDir)
+			for _, te := range tEntries {
+				if te.IsDir() || !strings.HasSuffix(te.Name(), ".md") {
+					continue
+				}
+				taskPath := filepath.Join(tasksDir, te.Name())
+				if processed[taskPath] {
+					continue
+				}
+				td, err := os.ReadFile(taskPath)
+				if err != nil {
+					continue
+				}
+				tfm, err := yamlfrontmatter.Parse(td)
+				if err != nil || tfm == nil || tfm.ReqDoc == "" {
+					continue
+				}
+				if !pathsMatch(normalizePath(tfm.ReqDoc), normalizePath(relReq)) {
+					continue
+				}
+				if tfm.Status == "done" || tfm.Status == "closed" {
+					continue // its own REQ unchanged; terminal stays terminal
+				}
+				updates := map[string]interface{}{"pending_req": true}
+				switch tfm.Status {
+				case "plan-review":
+					updates["status"] = "refining"
+					updates["plan_approved"] = false
+					updates["grill_done"] = false
+					updates["grill_context"] = ""
+					updates["grill_prev_status"] = ""
+				case "review", "conflict":
+					updates["status"] = "refining"
+					updates["merge_approved"] = false
+				}
+				if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
+					fmt.Fprintf(os.Stderr, "Error propagating upstream REQ change to %s: %v\n", taskPath, err)
+					continue
+				}
+				affected = append(affected, AffectedResult{
+					TaskID: tfm.ID, File: te.Name(),
+					Action: "pending_req_dependent", OldStatus: tfm.Status,
+				})
+				processed[taskPath] = true
+			}
+		}
+	}
+	return affected
+}
+
+// containsReqID reports whether the depends_on list contains the given
+// requirement id (exact "065" match; substrings like "0650" must not match).
+func containsReqID(dependsOn []string, reqID string) bool {
+	for _, d := range dependsOn {
+		if strings.TrimSpace(d) == reqID {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePath(p string) string {
@@ -362,6 +446,10 @@ func generationResetUpdates(fm *yamlfrontmatter.Frontmatter) map[string]interfac
 		"merge_status":        "",
 		"completed":           "",
 		"knowledge_extracted": false,
+		// 新交付代际不得继承上一代的知识提炼退避（retry_count/retry_until），
+		// 否则重开后的正常提炼可能被旧 backoff 挡住。
+		"knowledge_extract_retry_count": 0,
+		"knowledge_extract_retry_until": "",
 	}
 }
 
@@ -388,8 +476,11 @@ func OnReqDeleted(vaultPath, reqRelPath string) []AffectedResult {
 			if err != nil || fm == nil || normalizePath(fm.ReqDoc) != normalizePath(reqRelPath) {
 				continue
 			}
+			// 不变量 #5：pending_req 仅在新 planning 成功后清 false。REQ 被
+			// 删除时保持 pending_req 原值——若为 true（需求已变更但未吸收），
+			// 人工 resume 后必须走 refining 重新规划，而不是拿旧实现继续。
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
-				"status": "blocked", "pending_req": false,
+				"status":        "blocked",
 				"plan_approved": false, "merge_approved": false, "resume_approved": false,
 				"phase_error_code": "REQ_MISSING", "phase_error": "requirement document was deleted",
 			}); err != nil {

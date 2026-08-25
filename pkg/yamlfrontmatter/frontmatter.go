@@ -39,6 +39,7 @@ type Frontmatter struct {
 	ReqDoc         string   `yaml:"req_doc"`
 	NewProject     bool     `yaml:"new_project"`
 	BlockedBy      []string `yaml:"blocked_by"`
+	DependsOn      []string `yaml:"depends_on"` // REQ documents: upstream requirement ids
 	AutoApprove    bool     `yaml:"auto_approve"`
 	AutoMerge      bool     `yaml:"auto_merge"`
 	OffPeakOnly    bool     `yaml:"off_peak_only"`
@@ -76,34 +77,41 @@ type Frontmatter struct {
 	// reopen、stale-done 重开等）递增；attempt_id / executor_session_id
 	// 记录当前执行 attempt 的身份。阶段回写必须携带期望 generation，
 	// 不匹配视为旧会话晚到写回，拒绝并仅记审计（见 internal/task/store.go）。
-	Generation          int      `yaml:"generation"`
-	AttemptID           string   `yaml:"attempt_id"`
-	ExecutorSessionID   string   `yaml:"executor_session_id"`
-	QuotaBackoffLevel   int      `yaml:"quota_backoff_level"`
-	QuotaBackoffUntil   string   `yaml:"quota_backoff_until"`
-	AdrApproved         bool     `yaml:"adr_approved"`
-	AdrProposed         any      `yaml:"adr_proposed"`
-	AdrWritten          any      `yaml:"adr_written"`
-	KnowledgeExtracted  bool     `yaml:"knowledge_extracted"`
-	KnowledgeExtractErr string   `yaml:"knowledge_extract_error"`
-	KnowledgeRefs       []string `yaml:"knowledge_refs"`
-	KnowledgeApplied    string   `yaml:"knowledge_applied"`
-	GrillOwner          string   `yaml:"grill_owner"`
-	GrillStartedAt      string   `yaml:"grill_started_at"`
-	GrillHeartbeatAt    string   `yaml:"grill_heartbeat_at"`
-	GrillTimeoutMinutes int      `yaml:"grill_timeout_minutes"`
-	GrillDone           bool     `yaml:"grill_done"`
-	GrillResolution     string   `yaml:"grill_resolution"`
-	GrillContext        string   `yaml:"grill_context"`
-	GrillContinue       bool     `yaml:"grill_continue"`
-	GrillPrevStatus     string   `yaml:"grill_prev_status"`
-	GrillParked         bool     `yaml:"grill_parked"`
-	GrillRepeat         int      `yaml:"grill_repeat"`
-	AutoAccepted        string   `yaml:"auto_accepted"`
-	ReqRefineCount      int      `yaml:"req_refine_count"`
-	TaskSchemaVersion   int      `yaml:"task_schema_version"`
-	Round2StallUntil    string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
-	Round2StallLevel    int      `yaml:"round2_stall_level"` // consecutive no-progress round2 completions (restart-safe; caps at block level)
+	Generation          int    `yaml:"generation"`
+	AttemptID           string `yaml:"attempt_id"`
+	ExecutorSessionID   string `yaml:"executor_session_id"`
+	QuotaBackoffLevel   int    `yaml:"quota_backoff_level"`
+	QuotaBackoffUntil   string `yaml:"quota_backoff_until"`
+	AdrApproved         bool   `yaml:"adr_approved"`
+	AdrProposed         any    `yaml:"adr_proposed"`
+	AdrWritten          any    `yaml:"adr_written"`
+	KnowledgeExtracted  bool   `yaml:"knowledge_extracted"`
+	KnowledgeExtractErr string `yaml:"knowledge_extract_error"`
+	// Knowledge-extraction retry backoff for done+merged tasks whose
+	// extraction or store sync keeps failing (release-time retry storm
+	// lesson: without a deadline the recovery scan re-ran the full pipeline
+	// every scan forever). Count = consecutive failures; until = next
+	// allowed retry (RFC3339, daemon-maintained).
+	KnowledgeExtractRetryCount int      `yaml:"knowledge_extract_retry_count"`
+	KnowledgeExtractRetryUntil string   `yaml:"knowledge_extract_retry_until"`
+	KnowledgeRefs              []string `yaml:"knowledge_refs"`
+	KnowledgeApplied           string   `yaml:"knowledge_applied"`
+	GrillOwner                 string   `yaml:"grill_owner"`
+	GrillStartedAt             string   `yaml:"grill_started_at"`
+	GrillHeartbeatAt           string   `yaml:"grill_heartbeat_at"`
+	GrillTimeoutMinutes        int      `yaml:"grill_timeout_minutes"`
+	GrillDone                  bool     `yaml:"grill_done"`
+	GrillResolution            string   `yaml:"grill_resolution"`
+	GrillContext               string   `yaml:"grill_context"`
+	GrillContinue              bool     `yaml:"grill_continue"`
+	GrillPrevStatus            string   `yaml:"grill_prev_status"`
+	GrillParked                bool     `yaml:"grill_parked"`
+	GrillRepeat                int      `yaml:"grill_repeat"`
+	AutoAccepted               string   `yaml:"auto_accepted"`
+	ReqRefineCount             int      `yaml:"req_refine_count"`
+	TaskSchemaVersion          int      `yaml:"task_schema_version"`
+	Round2StallUntil           string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
+	Round2StallLevel           int      `yaml:"round2_stall_level"` // consecutive no-progress round2 completions (restart-safe; caps at block level)
 	// Completion audit (independent verification, daemon-maintained).
 	AuditStatus    string `yaml:"audit_status"`     // "" | "pending" | "passed"
 	AuditFailCount int    `yaml:"audit_fail_count"` // consecutive failed audits before block
@@ -348,7 +356,7 @@ var taskFieldOrder = []string{
 	"scaffold", "remote_create", "github_owner", "repository_name",
 	"repository_visibility", "repository_description", "repository_url",
 	// ADR bookkeeping.
-	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_extract_error", "knowledge_refs", "knowledge_applied",
+	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_extract_error", "knowledge_extract_retry_count", "knowledge_extract_retry_until", "knowledge_refs", "knowledge_applied",
 	// Deprecated migration-only field.
 	"switch_settings",
 }
@@ -473,6 +481,8 @@ var taskFieldDefaults = map[string]interface{}{
 	"knowledge_refs":                 []interface{}{},
 	"knowledge_applied":              "",
 	"knowledge_extract_error":        "",
+	"knowledge_extract_retry_count":  0,
+	"knowledge_extract_retry_until":  "",
 }
 
 // missingDefaults computes the ordered list of absent keys with their

@@ -1,11 +1,14 @@
 package vaultweb
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
@@ -29,9 +32,25 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /api/vault/projects/{project}/design", s.handleDesignSummary)
 	mux.HandleFunc("GET /api/vault/projects/{project}/design/{kind}/{name}", s.handleDesignArtifact)
 	mux.HandleFunc("PATCH /api/vault/projects/{project}/tasks/{taskID}", s.handleTaskUpdate)
+	mux.HandleFunc("GET /api/vault/agents", s.handleAgents)
+	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	mux.HandleFunc("GET /vault", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
-	return mux
+	return cors(mux)
+}
+
+// cors 为回环监控页开放跨源读写。
+func cors(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func serveDashboard(w http.ResponseWriter, dashboard []byte) {
@@ -57,6 +76,35 @@ func (s *Service) handleProjects(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, projects)
+}
+
+// handleAgents proxies the live agent-server /agents summary so the dsh-web
+// dashboard can observe agents from the same origin. If no agent-server is
+// configured, the endpoint reports 503 instead of leaking a cross-origin call.
+func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
+	if s.agentServerAddr == "" {
+		writeError(w, http.StatusServiceUnavailable, errors.New("agent-server not configured"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+s.agentServerAddr+"/agents", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	defer resp.Body.Close()
+	if v := resp.Header.Get("X-Agents-Finished"); v != "" {
+		w.Header().Set("X-Agents-Finished", v)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *Service) handleTasks(w http.ResponseWriter, r *http.Request) {

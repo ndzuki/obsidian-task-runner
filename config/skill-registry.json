@@ -11,7 +11,12 @@
         "obsidian-task-runner-refining",
         "obsidian-task-runner-round1",
         "obsidian-task-runner-round2",
-        "obsidian-task-runner-merge"
+        "obsidian-task-runner-merge",
+        "obsidian-task-runner-conventions",
+        "obsidian-task-runner-priority",
+        "obsidian-task-runner-pm",
+        "obsidian-task-runner-split",
+        "obsidian-task-runner-design"
       ]
     },
     "obsidian-task-runner (external required)": {

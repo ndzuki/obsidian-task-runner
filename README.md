@@ -449,9 +449,13 @@ journalctl --user -u otg-task-watcher.service -n 50
 `otg-task-watcher.service`（daemon）、`dsh-agent-server.service`
 （常驻 headless agent-server，阶段会话 RPC 后端）、`dsh-web.service`（可选 Web UI）。
 
-**升级/重装 daemon**：`make install-force` —— 重建二进制（`-tags sqlite_fts5`，
-知识库必需）、停 watcher（agent-server 保持运行，在飞会话可持久恢复）、
-重装 systemd 单元、重启 watcher、同步 skill 包到 `~/.dsh/skills/`。
+**升级/重装 daemon**：`make deploy` —— 一条命令完成：构建（`-tags sqlite_fts5`，
+知识库必需）→ 全仓单测 → busy-safe 安装 → 同步 skill/插件到 `~/.dsh/skills/` 与
+`~/.dsh/plugins/` → 写 systemd drop-in override（daemon 从此始终加载仓库最新 otg，
+每次重启/崩溃恢复自动换新代码）→ daemon-reload → 重启 watcher → agent-server.mjs
+有变更时顺带重启 dsh-agent-server。`make install-force` 仍是 `deploy` 的别名（旧
+肌肉记忆兼容），但新部署一律用 `make deploy`。附带 `make deploy-status`（看仓库 vs
+运行时同步差异）与 `make rollback`（撤 drop-in 回固定安装路径）。
 
 如果暂时不想安装常驻服务，可以手动运行一次扫描：
 
@@ -521,7 +525,10 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 
 | 命令 | 用途 |
 | ------ | ------ |
-| `make install-force` | 重建二进制 + 停/启 watcher + 重装 systemd 单元 + 同步 skill（daemon 升级标准路径） |
+| `make deploy` | **daemon 升级标准路径（推荐）**：构建 + 单测 + 安装 + 同步 skill/插件 + 写 drop-in override + 重启 watcher + 条件重启 agent-server |
+| `make deploy-status` | 看仓库 vs 运行时代码/skill/插件的同步差异（改完忘了同步一眼可见） |
+| `make rollback` | 撤 drop-in override，daemon 回固定安装路径 `~/.local/bin/otg` |
+| `make install-force` | `deploy` 的别名（旧兼容，不再有独立逻辑） |
 | `otg install` | 安装 Skill、配置和 systemd |
 | `otg install --dry-run` | 预览安装动作 |
 | `otg install-systemd` | 重新生成并启用 systemd 单元（vault 迁移后或单元缺失时使用；vault/轮询间隔从 `vault-map.json` 读取） |

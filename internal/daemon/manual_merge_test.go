@@ -455,6 +455,66 @@ req_doc: Projects/001-team-app/Requirements/REQ-001-x.md
 	}
 }
 
+// TestExistingProjectConventionsGateNonTeam is the 004-deployd regression: an
+// ordinary existing project (NOT project_type=team, e.g. a normal app that
+// runs SQLite in dev and MySQL in test/prod) must ALSO pass the
+// conventions/architecture baseline review before its first task refines.
+// Previously only team projects were gated, so normal existing projects
+// developed features with no architecture review and shipped DB drift.
+func TestExistingProjectConventionsGateNonTeam(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"existing-app": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	argsDir := filepath.Join(dir, "args")
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+	t.Setenv("ARGS_DIR", argsDir)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-existing-app", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks: %v", err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-x.md")
+	content := `---
+id: "001"
+title: T
+project: existing-app
+status: ready
+assignee: default
+req_doc: Projects/001-existing-app/Requirements/REQ-001-x.md
+---
+# T
+`
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "001", Title: "T", Project: "existing-app", FilePath: taskPath,
+		Status: "ready", Assignee: "default",
+	}})
+	waitForStartCount(t, startDir, 1)
+	waitForArgsFile(t, argsDir)
+	releaseBarrier(t, releaseFile)
+	if processed := waitForBatch(t, done); processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+	args, err := readSingleArgsFile(t, argsDir)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if !strings.Contains(args, "obsidian-task-runner-conventions") {
+		t.Fatalf("existing non-team project first task must dispatch conventions review, got: %s", args)
+	}
+}
+
 // readSingleArgsFile returns the concatenated content of the first file in
 // dir (the barrier OMP writes one argv-capture file per invocation, named by
 // PID).
@@ -491,5 +551,132 @@ func TestCheckRemoteMergedAndCompleteIgnoresTransientFetchError(t *testing.T) {
 	}
 	if merged {
 		t.Fatal("broken repo must not report merged")
+	}
+}
+
+// TestMergePhaseGateDefersWhenFull guards the phase_concurrency["merge"] slot
+// (gap 2 fix): an authorized merge task must NOT dispatch while another merge
+// session holds the single slot — the configured ceiling previously had no
+// acquisition point (the merge branch continues before the generic gate).
+func TestMergePhaseGateDefersWhenFull(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	skillDir := writeVaultMap(t, dir, map[string]string{"merge-app": repo})
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-merge-app", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks: %v", err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-m.md")
+	content := "---\nid: \"001\"\ntitle: M\nproject: merge-app\nstatus: review\nassignee: default\nmerge_approved: true\nauto_merge: true\n---\n# M\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+	runner.phaseGates = map[string]*phaseGate{"merge": newPhaseGate(1)}
+	// 预占唯一的 merge 槽位：本轮 scan 的授权 merge 必须被延迟，不能派发。
+	gate := runner.phaseGates["merge"]
+	if ok, _ := gate.tryAcquire(); !ok {
+		t.Fatal("acquire merge slot")
+	}
+	done := runBatch(runner, []task.ReadyTask{{
+		ID: "001", Title: "M", Project: "merge-app", FilePath: taskPath,
+		Status: "review", Assignee: "default", MergeApproved: true, AutoMerge: true,
+	}})
+	// processBatch counts SCHEDULED tasks (1), not dispatched phases — the
+	// defer signal is that no execution session starts while the slot is
+	// held (the merge branch continues before dispatching anything). The
+	// slot stays held for the whole test: a follow-up scan racing TempDir
+	// cleanup must also defer instead of running real merge machinery.
+	_ = waitForBatch(t, done)
+	if n := countStartFiles(t, startDir); n != 0 {
+		t.Fatalf("started %d sessions, want 0 (merge gate full)", n)
+	}
+}
+
+// TestTeamDoneTaskNeverAutoReopens guards the gap-8 fix: a team project's
+// done task with a residual PR/push record must NOT be yanked back into
+// review by the DoneReopensMerge branch — the team forge lifecycle is manual.
+// The same shape WITHOUT project_type=team still reopens (sanity).
+func TestTeamDoneTaskNeverAutoReopens(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	skillDir := writeTeamVaultMap(t, dir, "team-app", repo)
+	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	t.Setenv("START_DIR", startDir)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-team-app", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks: %v", err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-x.md")
+	content := "---\nid: \"001\"\ntitle: T\nproject: team-app\nstatus: done\nassignee: default\nmerge_status: pushed\npr_url: https://github.com/team/app/pull/1\nauto_merge: false\n---\n# T\n"
+	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	dispatch := func(runner *Runner) {
+		t.Helper()
+		done := runBatch(runner, []task.ReadyTask{{
+			ID: "001", Title: "T", Project: "team-app", FilePath: taskPath,
+			Status: "done", Assignee: "default",
+		}})
+		_ = waitForBatch(t, done)
+	}
+	readStatus := func() string {
+		t.Helper()
+		data, err := os.ReadFile(taskPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil || fm == nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return fm.Status
+	}
+
+	// Team: stays done, no session starts.
+	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner.cfg.ObsidianVault = vault
+	dispatch(runner)
+	if got := readStatus(); got != "done" {
+		t.Fatalf("team done task reopened to %q, want done", got)
+	}
+	if n := countStartFiles(t, startDir); n != 0 {
+		t.Fatalf("started %d sessions, want 0", n)
+	}
+
+	// Same shape without project_type: the reopen branch applies again.
+	raw, _ := os.ReadFile(filepath.Join(skillDir, "config", "vault-map.json"))
+	var vm map[string]any
+	if err := json.Unmarshal(raw, &vm); err != nil {
+		t.Fatal(err)
+	}
+	proj := vm["projects"].([]any)[0].(map[string]any)
+	delete(proj, "project_type")
+	delete(proj, "merge_mode")
+	plainMap, _ := json.Marshal(vm)
+	if err := os.WriteFile(filepath.Join(skillDir, "config", "vault-map.json"), plainMap, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner2 := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner2.cfg.ObsidianVault = vault
+	dispatch(runner2)
+	if got := readStatus(); got != "review" {
+		t.Fatalf("plain project done task status = %q, want review (reopen)", got)
 	}
 }

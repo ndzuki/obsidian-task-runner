@@ -12,6 +12,7 @@ func TestMapExecOutcome(t *testing.T) {
 	}{
 		{name: "success", result: &ExecutionResult{Code: OutcomeSuccess}, wantOut: OutcomeSuccess, wantCode: "", wantErr: ""},
 		{name: "timeout", result: &ExecutionResult{Code: OutcomeTimedOut}, wantOut: OutcomeTimedOut, wantCode: ErrPhaseTimeout, wantErr: "phase timed out"},
+		{name: "timeout active", result: &ExecutionResult{Code: OutcomeTimedOutActive}, wantOut: OutcomeTimedOutActive, wantCode: ErrPhaseInterrupted, wantErr: "phase session still active after timeout window (next scan resumes)"},
 		{name: "interrupted", result: &ExecutionResult{Code: OutcomeInterrupted}, wantOut: OutcomeInterrupted, wantCode: ErrPhaseInterrupted, wantErr: "interrupted by daemon shutdown"},
 		{name: "quota", result: &ExecutionResult{Code: OutcomeQuotaExhausted}, wantOut: OutcomeQuotaExhausted, wantCode: ErrModelQuotaExhausted, wantErr: "model quota exhausted"},
 		{name: "key unavailable", result: &ExecutionResult{Code: OutcomeKeyUnavailable}, wantOut: OutcomeKeyUnavailable, wantCode: ErrAPIKeyUnavailable, wantErr: "api key unavailable"},

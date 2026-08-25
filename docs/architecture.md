@@ -73,6 +73,7 @@
 | 层 | 触发 | 行为 |
 |----|------|------|
 | 阶段内重试 | refining/planning 首次失败 | 记 `refine_retry_count`/`planning_retry_count`，下一轮 scan 自动重试一次 |
+| **活动会话续期（2026-08 TASK-065）** | 阶段 HTTP 等待超过 phase timeout，但 agent-server 会话近期仍有事件（模型还在推 step/工具调用） | 判 `timeout_active`：不 cancel、不计失败、不转 blocked；保留 `executor_session_id`，下一轮 scan 继续等待同一会话。只有长时间无事件的会话才按 wedged cancel |
 | quota 退避 | `MODEL_QUOTA_EXHAUSTED` | `quota_backoff_until` 指数退避（2m→4m→…→4h），到期前不重派；重启不清零 |
 | API key 探测 | `API_KEY_UNAVAILABLE` | 每轮 scan 探测，恢复即自动 resume |
 | 重启中断自愈 | `PHASE_INTERRUPTED` | 重启后自动重派（daemon 优雅停机路径） |
@@ -93,11 +94,26 @@
 4. 独立审计会话逐条复核 AC → `auto_merge` 授权 → push/PR/CI/merge → `done` → 知识提炼入库（SQLite FTS5 + 向量）。
 5. 任何阶段失败按 §5 层级恢复；人为决策块（REQ_MISSING/DOCUMENT_INVALID 等）不自动恢复。
 
+### 全局设计会话（replan gate）契约（2026-08-24 TASK-065 修复后）
+
+- 会话 `WorkingDir` = Vault 的 `Design/` 目录（workspace-write 沙箱范围即制品树）；
+  `repo_dir` 作为只读证据路径经 prompt 传入，不再把仓库当工作目录。
+- daemon 派发前对 `Design/` 做写探针（秒级失败，不烧 10-90 分钟会话）；探针失败
+  → `DESIGN_TARGET_UNWRITABLE`（确定性环境缺陷，不做 24h 老化盲重试）。
+- 会话成功后 daemon 校验**真实** `Design/` 四类制品；无效时回退校验并导入
+  `repo/.design-stage/Projects/<proj>/Design`（旧契约会话的暂存产物，daemon
+  侧有 Vault 写权限）——导入后仍无效才报 `DESIGN_SESSION_FAILED`。
+- replan gate 的设计会话**不持 repo 锁**（只读仓库、只写 Vault），避免
+  长会话饿死同 repo 其他任务的 worktree 准备（`repo busy` 风暴）。
+- PM consolidate 的 prompt 注入 `<dependency_context>`（blocked_by/blocks/
+  depends_on/设计库清单），跨 REQ 契约冲突与「设计库为空会被 gate 拦截」
+  在 grilling 之前进入决策清单。
+
 ## 7. 运维速查
 
 ```bash
 make build            # go build -tags sqlite_fts5（知识库必需）
-make install-force    # 重建二进制 + 停 watcher（agent-server 存活）+ 装 3 个 systemd 单元 + 重启 watcher + 同步 skill
+make deploy           # 重建二进制 + 单测 + 同步 skill/插件 + 写 drop-in override + 重启 watcher（agent-server 存活）+ 条件重启 agent-server；install-force 为其别名
 systemctl --user status otg-task-watcher dsh-agent-server dsh-web
 tail -f ~/.dsh/logs/otg-daemon.log              # daemon 主日志
 ls ~/.dsh/logs/tasks/                           # 每任务阶段日志/审计日志

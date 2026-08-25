@@ -18,7 +18,7 @@ func (r *Runner) startVaultWeb() error {
 	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           vaultweb.New(r.cfg.ObsidianVault).Handler(),
+		Handler:           vaultweb.NewWithAgentServer(r.cfg.ObsidianVault, r.cfg.AgentServerAddr).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	r.vaultWebServer = srv

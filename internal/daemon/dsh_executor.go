@@ -130,9 +130,25 @@ func readSkillBody(skillDir, skillName string) string {
 	return string(data)
 }
 
+// toolPolicyPrompt renders the hard tool-surface constraint for spawn-mode
+// sessions. The agent-server enforces the same policy at its RPC layer for
+// embed sessions; this preamble is the spawn-path equivalent.
+func toolPolicyPrompt(policy string) string {
+	return "<tool_policy>\n本会话是受限工具会话。只允许使用以下工具：" + policy + "。\n" +
+		"严禁调用任何写工具（edit/write/str_replace_editor/skill 写类工具等）——调用即违规。\n" +
+		"唯一允许的写入是会话契约明确指定的产物文件；其余一律只读。\n" +
+		"违反本政策 = 会话失败，产出作废。\n</tool_policy>\n\n"
+}
+
 func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapshot) (ExecutionHandle, error) {
 	// DSH headless takes the task as a positional argument.
 	taskText := e.dshTaskText(spec.SkillPrompt)
+	if spec.ToolPolicy != "" {
+		// Spawn 路径没有 agent-server 的 RPC 层工具约束：把政策作为
+		// 会话最高优先级硬约束注入 prompt（read-only 审查会话如
+		// conventions/audit 不得调用写工具）。
+		taskText = toolPolicyPrompt(spec.ToolPolicy) + taskText
+	}
 	args := []string{"--profile", e.defaultProfile, taskText}
 
 	timeout := spec.Timeout

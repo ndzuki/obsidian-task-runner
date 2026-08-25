@@ -264,6 +264,140 @@ grill_continue: true
 	}
 }
 
+// TestParkedFactRecoveryHoldsDisputeParkOnPlaceholderDrift guards the
+// TASK-065 loop: a dispute park must stay parked even when the decision
+// list's answer placeholder uses wording the list parser does NOT recognize
+// as unanswered. On 2026-08-24 D-100 used "待裁决" — decisionAnswered treated
+// it as ANSWERED → grillingDecisionPendingForTask returned 0 → parkedFactRecovery
+// wrongly un-parked TASK-065 on converged blocked_by, re-routing it to
+// planning → round2 → grilling (4× that day). The park-type signal must come
+// from the task's OWN frontmatter (isDisputePark), never from list text
+// parsing, so a placeholder wording drift can't re-open the loop.
+func TestParkedFactRecoveryHoldsDisputeParkOnPlaceholderDrift(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Upstream done + merged — blocked_by facts fully converged.
+	upstream := filepath.Join(tasksDir, "TASK-001-up.md")
+	if err := os.WriteFile(upstream, []byte(`---
+id: "001"
+project: test
+status: done
+phase_error_code: ""
+assignee: default
+---
+# Up
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// TASK-065-style implementation-block dispute park (PM consolidate set
+	// grill_prev_status=implementing + grill_context decision_required).
+	parked := filepath.Join(tasksDir, "TASK-065-dev-env.md")
+	writeFile(t, parked, `---
+id: "065"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_done: true
+grill_resolution: resume
+grill_prev_status: implementing
+grill_context: '{"task":"TASK-065","parked":true,"reason":"awaiting_user_decision_D100","decision_required":{"id":"D-100"}}'
+blocked_by: ["TASK-001"]
+assignee: default
+---
+# Dev env
+`)
+	// The list carries D-100 sourced from TASK-065 with the OLD buggy
+	// placeholder "待裁决" — which decisionAnswered() (before the hardening)
+	// mis-read as answered, i.e. the exact condition that used to un-park.
+	listPath := filepath.Join(notesDir, "Grilling-Decisions.md")
+	writeFile(t, listPath, `---
+id: "grilling-decisions"
+project: test
+status: open
+grill_continue: false
+---
+# Grilling Decisions
+
+## 决策点
+
+### D-100: REQ-065 — bundle ingress 服务令牌 seam
+- 来源任务: TASK-065
+- 冲突: 未决
+- 建议: 三选一
+- 决策: 待裁决
+`)
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.parkedFactRecovery()
+
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "needs-grilling" || !fm.GrillParked {
+		t.Fatalf("dispute park must stay parked on placeholder drift, got status=%s parked=%v (TASK-065 loop)", fm.Status, fm.GrillParked)
+	}
+}
+
+// TestIsDisputePark classifies parked tasks by their own frontmatter:
+// implementation-block parks (grill_prev_status) and list-escalation parks
+// (decision_required / maturity=parked / Grilling-Decisions) are dispute
+// parks that only PM distribute may recover; a bare prerequisite-gate park
+// (park-until-upstream, no dispute markers) is not.
+func TestIsDisputePark(t *testing.T) {
+	cases := []struct {
+		name string
+		fm   *yamlfrontmatter.Frontmatter
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unparked", &yamlfrontmatter.Frontmatter{GrillParked: false, GrillPrevStatus: "implementing"}, false},
+		{"impl-block-park", &yamlfrontmatter.Frontmatter{GrillParked: true, GrillPrevStatus: "implementing"}, true},
+		{
+			"decision-required-ctx",
+			&yamlfrontmatter.Frontmatter{
+				GrillParked:  true,
+				GrillContext: `{"parked":true,"reason":"awaiting_user_decision_D100","decision_required":{"id":"D-100"}}`,
+			},
+			true,
+		},
+		{
+			"maturity-parked-ctx",
+			&yamlfrontmatter.Frontmatter{
+				GrillParked:  true,
+				GrillContext: "maturity=parked; refine_version=4; 争议已并入 Notes/Grilling-Decisions.md",
+			},
+			true,
+		},
+		{
+			"prereq-gate-park",
+			&yamlfrontmatter.Frontmatter{
+				GrillParked:  true,
+				GrillContext: "PREREQUISITE_SMOKE_FAILED: park until TASK-001 merges",
+			},
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDisputePark(tc.fm); got != tc.want {
+				t.Fatalf("isDisputePark(%+v) = %v, want %v", tc.fm, got, tc.want)
+			}
+		})
+	}
+}
+
 // writeFile is a small test helper writing a file at path.
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()

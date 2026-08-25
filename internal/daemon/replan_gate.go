@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
@@ -14,6 +15,28 @@ import (
 // triggering plan version and suppresses duplicate design sessions on scans.
 func replanGateRequired(t task.ReadyTask, threshold int) bool {
 	return threshold > 0 && t.PlanVersion >= threshold && t.DesignReplanVersion < t.PlanVersion
+}
+
+// designGateErrorCode classifies a global-design failure for
+// handlePhaseFailure. DESIGN_TARGET_UNWRITABLE is a deterministic environment
+// defect (the vault Design directory cannot be written) that no retry can
+// converge — it must never fall into the transient DESIGN_SESSION_FAILED
+// bucket that the aged auto-resume re-arms after 24h. A daemon shutdown /
+// context cancel that interrupts the design session mid-flight is a transient
+// interruption (ErrPhaseInterrupted, in the auto-resume whitelist) — mapping
+// it to DESIGN_SESSION_FAILED would leave the task blocked for the 24h aged
+// window after every daemon restart (2026-08-25 TASK-065: user restarted the
+// daemon, the in-flight replan-gate design session died with context canceled,
+// and the task sat blocked awaiting the aged window). Everything else keeps
+// the generic design-session code.
+func designGateErrorCode(err error) ErrorCode {
+	if errors.Is(err, errDesignTargetUnwritable) {
+		return ErrDesignTargetUnwritable
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ErrPhaseInterrupted
+	}
+	return ErrDesignSessionFailed
 }
 
 // runReplanGate performs the design-library escalation for a planning task.

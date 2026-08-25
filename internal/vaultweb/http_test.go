@@ -2,6 +2,7 @@ package vaultweb
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -94,5 +95,37 @@ func TestHTTPTaskUpdate(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 404 {
 		t.Fatalf("unknown task status=%d, want 404", rec.Code)
+	}
+}
+
+func TestHTTPAgentsProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Agents-Finished", "3")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"sessionId":"s1","phase":"refining","task":"TASK-001","taskStatus":"refining","status":"working","elapsed":12}]`))
+	}))
+	defer backend.Close()
+
+	addr := strings.TrimPrefix(backend.URL, "http://")
+	s := NewWithAgentServer(newTestVault(t), addr)
+	h := s.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/vault/agents", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agents proxy status=%d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Agents-Finished"); got != "3" {
+		t.Fatalf("x-agents-finished=%q, want 3", got)
+	}
+	if !strings.Contains(rec.Body.String(), `"sessionId":"s1"`) {
+		t.Fatalf("agents body missing session data: %s", rec.Body.String())
+	}
+
+	// Without an agent-server address the endpoint is intentionally unavailable.
+	rec = httptest.NewRecorder()
+	New(newTestVault(t)).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/vault/agents", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("agents without server status=%d, want 503", rec.Code)
 	}
 }

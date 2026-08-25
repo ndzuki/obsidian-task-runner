@@ -200,7 +200,7 @@ otg kb absorb --project deployd <<'EOF'
 - 失败方案: `await mutation.mutateAsync()` 未 try/catch，依赖 onError 兜底。
 - 根因: mutateAsync 的拒绝未被捕获，onError 只负责 UI 文案不负责吞掉 Promise 拒绝。
 - 成功方案: handleFinish 内 try/catch 吞掉拒绝（错误仍由 onError 展示）。教训：写失败场景测试能暴露"错误未捕获"这类非 UI 缺陷。
-- 相关文档: extended/frontend
+- 相关文档: uncategorized  # extended/frontend 不存在，归档到 uncategorized
 EOF
 ```
 
