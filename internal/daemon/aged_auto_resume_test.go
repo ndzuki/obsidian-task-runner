@@ -140,6 +140,65 @@ func TestHandlePhaseFailureStampsBlockedAt(t *testing.T) {
 	}
 }
 
+// TestConventionsPhaseFailureRecordsGateCode guards the C1 contract: a
+// conventions baseline-review failure blocks with the documented
+// CONVENTIONS_REVIEW_FAILED gate code (not the raw executor error). blocked_phase
+// records the pre-dispatch status ("ready" for the conventions gate), so a
+// manual resume restores `ready` and the gate re-dispatches the review.
+func TestConventionsPhaseFailureRecordsGateCode(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tasksDir, "TASK-001-t.md")
+	if err := os.WriteFile(path, []byte("---\nid: \"001\"\ntitle: T\nproject: test\nassignee: default\nstatus: ready\n---\n# T\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	// Underlying session failed with MODEL_FAILED; the recorded gate code must
+	// still be CONVENTIONS_REVIEW_FAILED. The status arg is the pre-dispatch
+	// "ready", so blocked_phase (the resume target) is "ready".
+	runner.handlePhaseFailure(path, "001", "T", "ready", "conventions", ErrModelFailed, "model outage", "")
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(raw)
+	if err != nil || fm == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if fm.Status != "blocked" {
+		t.Fatalf("status=%q, want blocked", fm.Status)
+	}
+	if fm.BlockedPhase != "ready" {
+		t.Fatalf("blocked_phase=%q, want ready (pre-dispatch status)", fm.BlockedPhase)
+	}
+	if fm.PhaseErrorCode != string(ErrConventionsReviewFailed) {
+		t.Fatalf("phase_error_code=%q, want CONVENTIONS_REVIEW_FAILED", fm.PhaseErrorCode)
+	}
+	if fm.PhaseError == "" {
+		t.Fatalf("phase_error must carry the original reason")
+	}
+
+	// Manual resume restores `ready` (the gate re-dispatches the review).
+	if err := runner.restoreBlockedPhase(path, fm.BlockedPhase, true); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	fm, _ = yamlfrontmatter.Parse(raw)
+	if fm.Status != "ready" {
+		t.Fatalf("resume status=%q, want ready", fm.Status)
+	}
+	if fm.BlockedPhase != "" || fm.PhaseErrorCode != "" {
+		t.Fatalf("resume must clear gate fields: blocked_phase=%q phase_error_code=%q", fm.BlockedPhase, fm.PhaseErrorCode)
+	}
+}
+
 // TestAutoResumeAgedBlocksCustomWindow guards the configurable window: with
 // auto_resume_aged_after_hours=2 a task blocked 3h resumes while one blocked
 // 90min stays blocked.

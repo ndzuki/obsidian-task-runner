@@ -202,6 +202,18 @@ func TestLayout_ValidateRejectsInvalidLibrary(t *testing.T) {
 			},
 			want: "duplicate id",
 		},
+		{
+			name: "glossary left as placeholder",
+			mutate: func(t *testing.T, layout *Layout) {
+				writeValidDesignArtifacts(t, layout)
+				// A session that left Ensure()'s placeholder glossary untouched
+				// must not pass — the skill requires real domain vocabulary.
+				if err := os.WriteFile(layout.GlossaryPath(), []byte(defaultGlossary), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "glossary is still the default placeholder",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

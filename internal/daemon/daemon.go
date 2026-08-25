@@ -3240,7 +3240,18 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		case t.Status == "ready" && (t.PriorityAssessmentStatus == "pending" || t.PriorityAssessmentStatus == "failed"):
 			phase = "priority"
 			model = r.cfg.Model("default")
-			skillPrompt = "/obsidian-task-runner-priority " + t.FilePath
+			// The skill reads the REQ document, not the TASK file — align the
+			// direct-dispatch path with runPriorityAssessmentDSH (which passes
+			// the REQ path). Fall back to the task file only when no req_doc
+			// is resolvable.
+			prioReq := t.ReqDoc
+			if prioReq != "" && !filepath.IsAbs(prioReq) {
+				prioReq = filepath.Join(r.cfg.ObsidianVault, prioReq)
+			}
+			if prioReq == "" {
+				prioReq = t.FilePath
+			}
+			skillPrompt = "/obsidian-task-runner-priority " + prioReq
 			r.logger.Printf("task %s: priority assessment (model=%s)", t.ID, dshModelLabel(model))
 		case t.Status == "refining":
 			model = r.cfg.Model("default")
@@ -3537,6 +3548,15 @@ func readFrontmatter(taskPath string) (*yamlfrontmatter.Frontmatter, error) {
 }
 
 func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase string, code ErrorCode, reason, logPath string) {
+	// Conventions phase failure always records the documented gate code
+	// CONVENTIONS_REVIEW_FAILED: the baseline review is a precondition that
+	// must re-run on resume regardless of the underlying session error, so the
+	// stable gate code is what the task carries (main SKILL.md「已有项目基线
+	// 门禁」/reference.md §9 contract). The original error text stays in
+	// phase_error for diagnostics.
+	if phase == "conventions" {
+		code = ErrConventionsReviewFailed
+	}
 	// Auto-sink the first occurrence of this failure code+phase into the
 	// knowledge base as a bug pattern (dedup inside AppendFailurePattern).
 	// Synchronous: small IO, and the file-level dedup store needs no locking.

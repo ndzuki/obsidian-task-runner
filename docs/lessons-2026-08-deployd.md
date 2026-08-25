@@ -223,3 +223,59 @@ EOF
 2. 验证：`otg kb search "失败场景"`、`otg kb search "flaky"`、`otg kb search "warmup"` 应命中。
 3. **部署 skill 更新**：`make sync-docs`（或 `make install-force`）把 round2 SKILL.md（失败场景验证节 + 完成检查 + Review Bundle）同步到 `~/.dsh/skills/`；代码改动（audit prompt 失败场景复核）随下一次 `make build`/`otg install` 生效。
 4. **回看 004-deployd 后续任务**：新实现任务将按 round2「失败场景验证」执行，独立审计（audit prompt 第 7 条）会复核负向测试与 prod 引擎实测证据。
+
+## 六、第三批教训（2026-08-25 二轮复盘：还能强化到 task-runner 的能力）
+
+> 二轮复盘翻出 3 条「task-runner 自动化能力缺口」，每条对应本次真实翻车：
+> ① 遇到疑似环境阻塞就绕开；② debug 日志不先行导致猜测；③ 只测失败本身不测恢复路径。
+
+### L15: 阻塞必须附根因证据，禁止归咎环境绕开
+
+```bash
+otg kb absorb --project deployd <<'EOF'
+### 2026-08-25: "CR 不处理"被误判为环境问题绕开，实际是空配置 Noop 正常行为 + 一个真 bug
+- 现象: server 模式 CR 重建后 status 一直不更新，被当成"环境混乱/operator 不 reconcile"绕开；实际 operator 一直在处理（空配置 action=Noop 不写 status 是正常），且同环境还潜伏一个跨 revision 状态污染真 bug。
+- 失败方案: 遇到"看似没处理/像环境问题"就归咎环境、绕过继续，不做根因确认。
+- 根因: 空配置（configVersion=0）时 operator sync 成功但无变化 → action=Noop → 不写 status，被误读为卡住；加上 operator 日志默认 info 不显示 reconcile 决策，更难判断。
+- 成功方案: 遇阻塞必附根因证据（debug 日志/复现输出）再下结论；开 LOG_LEVEL=debug 后 `sync succeeded configVersion=0 + action=Noop` 一眼定性。task-runner 强化：round2 遇"疑似环境阻塞"必须附证据才能转 blocked。
+- 相关文档: core/daemon-stuck-task-patterns.md
+EOF
+```
+
+### L16: 排障先开 debug/verbose 日志看真实决策，不要猜
+
+```bash
+otg kb absorb --project deployd <<'EOF'
+### 2026-08-25: debug 日志先行，一眼定性空配置 Noop
+- 现象: 花大量时间猜"CR 为什么不动"，一开 operator LOG_LEVEL=debug，`kubectl logs | grep decision made` 直接看到 action=Noop 与 configVersion=0，立即定性。
+- 失败方案: 用默认 info 日志看 7 行启动信息就下结论，反复绕圈。
+- 根因: reconcile 决策是 V(1)/debug 级，info 不显示；没有"先开 debug 看真实决策"的习惯。
+- 成功方案: 排障第一步开 debug/verbose，用决策日志定位，再谈环境/配置。task-runner 强化：round2 排障节 + diagnosing-bugs 明确"先开 debug 看决策日志"。
+- 相关文档: core/daemon-stuck-task-patterns.md
+EOF
+```
+
+### L17: 失败场景要测"失败→恢复"路径，不只测失败本身
+
+```bash
+otg kb absorb --project deployd <<'EOF'
+### 2026-08-25: 跨 revision 状态污染只在"坏 tag 失败→发正确版本恢复"暴露
+- 现象: 坏 tag 发版 sync_failed（失败路径正常），再发正确版本被旧失败状态污染，仍 SyncFailed——恢复路径坏了，但单测只测了失败本身，没测"失败后重发"。
+- 失败方案: 失败场景矩阵只覆盖"失败会发生 + 失败处理正确"，不覆盖"失败后修正输入重跑"。
+- 根因: status 残留（Sync[] 旧 failed 条目）跨 revision 未清理，Check 聚合误判；恢复路径未纳入验证范围。
+- 成功方案: 对每个可失败点补一条"失败后修正输入重跑/重试"验证，确认不被旧状态污染。task-runner 强化：Failure Scenario Verification 的清单加"恢复路径"类别。
+- 相关文档: core/daemon-stuck-task-patterns.md
+EOF
+```
+
+## 七、task-runner 强化建议（待可写环境落地）
+
+| # | 强化 | 落点 | 状态 |
+|---|------|------|------|
+| A1 | 阻塞必须附根因证据（debug 日志/复现），禁止无证据归咎环境 | round2 Implementation Blockers + audit prompt | 建议 |
+| A2 | 排障先开 debug 看决策日志 | round2 排障 + diagnosing-bugs | 建议 |
+| A3 | 失败场景补"恢复路径"（失败后重跑不污染） | round2 Failure Scenario 清单 | 建议 |
+| A4 | 生命周期/复用场景（同资源重跑、状态残留、events 过期）入矩阵 | round2 Failure Scenario 清单 | 建议 |
+| A5 | 环境走项目幂等 up/down 脚本 + 验证成功判定 fail-fast | round2 Environment Cleanup | 建议 |
+| A6 | 按变更文件域映射验证层（存储→生产引擎 sql_mode / RBAC→交付 manifest / 并发→-count） | round2 按 plan_files | 建议 |
+| A7 | 改代码必须同步文档/CHANGELOG/约束清单，audit 加文档对齐轴 | audit + code-review | 建议 |

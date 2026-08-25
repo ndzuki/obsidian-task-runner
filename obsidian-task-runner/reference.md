@@ -285,7 +285,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 `auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 运行**独立只读审计会话**（受限工具面 `read`/`grep`/`bash`，无写工具——实现者不能自证完成）。完整语义见仓库 docs/workflow.md §7.4；要点：
 
 - **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`；人工已授权或 `audit.enabled=false` 跳过。
-- **会话**：assignee 模型（`audit.model` 覆盖）、`--thinking off`、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
+- **会话**：assignee 模型（`audit.model` 覆盖）、`reasoningEffort=low`（DSH 无 `off` 级，low 是最省显式推理）、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
 - **环境清理核验（强制）**：审计同时复核实现会话的清理证据——自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）残留，或发现会话曾停用用户常驻服务（kb-reranker、ollama-sycl、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
 - **pass** → `audit_status=passed`、清 `audit_fail_count`，继续合并授权流程。
 - **fail + implementation** → `phase_error_code=AUDIT_FAILED` + 审计摘要，转 implementing 自动修复（round2 加载 `skill://diagnosing-bugs` 消费 `phase_error`/`audit_log`）；连续 `audit.max_fixes` 次 → 升级 **needs-grilling 决策**（`grill_prev_status=implementing`；resume 回 implementing 重置预算 / replan 回 refining），非 blocked。
@@ -403,10 +403,10 @@ Daemon 锁：`${TMPDIR}/otg-daemon-<vault-path-sha256>.lock`。
 - refining 不需要仓库（但 `resolveRepo` 会对 vault 回退且配置 `git_remote` 的项目做一次性的独立 checkout 提升与远端仓库补建，见仓库 docs/workflow.md §6.5）。
 - 既有项目 planning 使用主工作区独占锁；Merge 无仓库锁（push/merge 在主 checkout 上执行，与 worktree 阶段会话隔离，避免被 planning/refining 读锁长期阻塞）。
 - Round 2 使用任务专属 worktree。
-- 新项目 planning 不创建目录；Round 2 才创建并 register-project。
+- 新项目 planning 不创建目录；Round 2 才创建 checkout，项目注册由 daemon 自动完成（`ensureProjectRegistered`，无 `otg register-project` 命令）。
 - 每轮 scan 自动 Normalize 全部任务 frontmatter：缺失的 schema 字段按默认值补齐（不覆盖已有值，必填字段不补）、字段顺序按规范序维护（用户关注在前、系统维护在后，未知字段保持相对顺序置尾）；写前/写后均做 Parse 校验，损坏文档拒绝改写；补齐后校验必填完整性并记录诊断。`otg migrate-tasks <path> --write` 手动执行同一逻辑。**REQ frontmatter 同样每轮 Normalize**（`NormalizeReqFrontmatter` / `syncReqSchemaDefaults`）：稳定字段（created/updated/tags）回填，必填身份与可选决策字段不伪造——旧 REQ 被重拾（done 任务 breaking 重开）时字段演进不静默断链。
 - **异步调度**：`processBatch` 只调度（dispatch）不等待——每个任务在独立 `runTask` goroutine 中执行，完成后释放仓库锁并 `requestScan()` 触发下一轮 scan（scan-gate coalesce，任务批量完成只多一轮）。一个长 Round 2（最长 1h）不再冻结 scan 循环：plan-review transition、merge 重试、REQ 变更等全部实时响应。`--once`（systemd timer）保持同步等待语义（dispatch 后等任务归零）。shutdown 时 `activeTasks` 计数等待在跑任务落盘（PHASE_INTERRUPTED 写回）后退出。
-- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 DSH 阶段会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 DSH 阶段会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。key 置 `0`/删除 = 不限；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**消费点（2026-08-25 全部接线）**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 门禁段生效；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。
+- **阶段并发上限（`phase_concurrency`）**：`max_concurrent_tasks_per_project`（每项目 implementing 上限，默认 2）与 `max_concurrent_tasks`（可选全局总封顶，0=不限）只限制 implementing。其它启动 DSH 阶段会话的阶段由 vault-map.json 顶层 `phase_concurrency` 按阶段限并发（默认 `refining: 3, planning: 2, merge: 1, priority: 1, pm: 1, audit: 1`）——防止一轮 scan 同时拉起 20+ 个 DSH 阶段会话造成 token 快速消耗、API 限速与本地资源抢占。调度循环非阻塞 tryAcquire：上限满的任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度。**仅显式置 `0` = 不限**（缺失 key 会在配置加载时被回填默认值，不是不限）；`round2` 由两个 implementing 上限控制。修改后重启 daemon 生效。**消费点（2026-08-25 全部接线）**：`refining`/`planning`/`priority`/`audit` 由 `phaseGateKey` 门禁段生效；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。
 
 ### 8.1 Thinking Mode
 
@@ -451,9 +451,9 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 - **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
 - **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回均走知识库检索（能力主题文档承担描述/冲突元数据）；存量 registries.json 文件不再被读取，可手动删除。
 
-**Skill 清单**：installer 安装 core、refining、round1、round2、merge、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）。
+**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 与 `kulala-http` 到 `~/.dsh/skills/`。
 
-外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality。
+外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
 
 ## 10. 故障排查
 

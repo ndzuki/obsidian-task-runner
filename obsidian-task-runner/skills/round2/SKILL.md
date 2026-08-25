@@ -34,7 +34,7 @@ disable-model-invocation: true
 - **代码风格**：命名、错误处理、包结构、测试风格按项目既有模式；不引入项目没有的框架/模式。
 - **提交信息**：commit 语言与格式对齐项目 `git log` 习惯（feat/fix/chore/中文描述…）。
 - **文档/API 文档**：新增/修改的文档按项目的文档规范与 API 文档形式。
-- **架构约束强制对齐（004-deployd 教训）**：`## 架构约束` 节是硬约束。凡实现涉及数据模型/新字段/新表/迁移/环境配置：
+- **架构约束强制对齐**：`## 架构约束` 节是硬约束。凡实现涉及数据模型/新字段/新表/迁移/环境配置：
   - **以项目 test/prod 实际数据库引擎为准**（如 test/prod=MySQL），不得用 dev 的 SQLite 语义实现——字段名结尾（`_at`/`_id` 等）、类型（`DATETIME(6)`/自增）、方言差异必须与 `## 架构约束` 一致；多引擎项目必须双引擎兼容并**在 test/prod 引擎上验证**（不只 dev 冒烟）。
   - 迁移按项目既有机制（AutoMigrate/alembic/手写 SQL…）落库，新迁移必须在 test/prod 引擎可执行。
   - 基线未覆盖处按常识 + 最小变更执行，保持与项目现状一致。
@@ -88,7 +88,7 @@ disable-model-invocation: true
 
 ### Failure Scenario Verification（失败场景验证，强制）
 
-实现 AC 时**禁止只验证主成功路径**——"测试全绿、生产爆炸"是验收打回与返工的头号来源（004-deployd 2026-08-25 复盘：8 个真实 bug 中一半只在某一种失败场景或某一种环境才暴露）。每条涉及**可失败路径**的 AC 必须补负向测试，按失败场景矩阵逐项过：
+实现 AC 时**禁止只验证主成功路径**——"测试全绿、生产爆炸"是验收打回与返工的头号来源（大量 bug 只在某一种失败场景或某一种环境才暴露）。每条涉及**可失败路径**的 AC 必须补负向测试，按失败场景矩阵逐项过：
 
 1. **逐项构造失败场景**（按相关类别，不必全做）：
    - 权限/认证：401/403、无权限调用、token 失效。
@@ -98,9 +98,27 @@ disable-model-invocation: true
    - 序列化/契约形状：`null` vs `[]`、字段缺失、时间戳/枚举边界。
    - 跨引擎方言：dev 用 SQLite 但 test/prod 用 MySQL 时，存储/迁移必须**在 prod 引擎实测**（如本地 MySQL 8.4 严格模式，核对 sql_mode/零日期/TEXT 默认值/字符集）。
    - 失败被容错掩盖：脚本/代码对错误"打印后继续"产生假成功——失败必须 fail-fast。
+   - **恢复路径（状态机/重试类）**：对每个可失败点，补一条"失败后修正输入重跑/重试"验证，确认恢复不被旧失败状态污染——例如失败 tag 的同步失败后，改正确输入必须能正常走到成功。**只测失败本身、不测恢复路径 = 覆盖不完整。**
+   - **生命周期/复用**：同名资源内容变化（同标识重跑产生新内容）、状态残留（旧失败条目跨迭代残留）、长生命周期复用（事件/TTL 过期）——状态机与清理类功能必须覆盖。
 2. **测试要驱动真实实现**：优先用 httptest/真实依赖/内存版真实组件（如内存 registry server），不要只用 mock/fake——mock 发现不了"远程调用多了一次/参数没传对"这类问题。
 3. **失败信息要可断言**：错误串稳定（如 `digest mismatch after push ...`），测试锁住这些串；分类逻辑（permanent/retryable）依赖子串时尤其如此。
 4. 每个失败场景的测试/证据在 `## 验收记录` 标注（命令 + 预期 + 通过输出），并写入 Review Bundle 的失败场景摘要。
+
+### Debug-First Troubleshooting（排障先开 debug 看决策，不猜）
+
+遇到"看似没生效 / 没处理 / 像环境问题"的异常，**第一步开 debug/verbose 日志看真实决策**，再下结论——禁止靠 info 日志的启动行猜测（例如把组件日志调到 debug 后，`grep` 决策/关键事件行，能一眼看到"空配置正常等待"的 Noop 决策，而非误判为卡住）。
+
+- 本地/测试环境：把组件日志级别调到 debug/verbose（如 operator `LOG_LEVEL=debug`），`grep` 决策/关键事件行。
+- 用**决策日志**（decision made / action=X / sync succeeded version=N）而不是只看启动信息判断"有没有干活"。
+- 存疑时记录证据到 `## 踩坑记录`，不要静默跳过。
+
+### Blocked 必须附根因证据（禁止归咎环境绕开）
+
+转 `## Round 2 阻塞` 或 `needs-grilling` 前，**阻塞必须附根因证据**（debug 日志片段、复现命令输出、代码路径），禁止把"疑似环境问题 / 看起来没处理"当作阻塞理由绕开（常见陷阱：某个正常行为——如空配置时状态机 Noop——被误判为"系统不处理"，从而绕过排查、漏掉潜伏的真实缺陷）。
+
+- 证据要求：至少一条可复现的日志/命令输出 + 一句根因判断。
+- "看起来没处理"先走 Debug-First（上一节）确认是 Noop、还是真卡住。
+- 无法确认根因时，如实记录"根因未明 + 已排除 X/Y"，而不是归咎环境。
 
 ### Independent Audit Expectation（独立审计预期）
 
@@ -298,7 +316,7 @@ otg update-status {task} status=review
 
 ## New Project（新项目）
 
-只有 Round 2 可以创建项目目录、Git repo 和脚手架。创建成功后执行 `otg register-project`。
+只有 Round 2 可以创建项目目录、Git repo 和脚手架。项目注册由 daemon 自动完成（`ensureProjectRegistered`，按 vault-map `new_project_root`/既有 `git_remote` 推断写入 projects 条目），无需手工执行任何 register 命令——Round 2 只需在 checkout 创建后正常退出，daemon 下一轮 scan 即自动注册。
 
 ## Frontmatter Safety（安全规范）
 

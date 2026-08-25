@@ -5,7 +5,9 @@ description: "需求分解器：把新项目首 REQ（用户通常把需求揉�
 
 # Split（需求分解）
 
-> 由 PM 统筹（`obsidian-task-runner-pm` consolidate 阶段）对**新项目首个 REQ** 或**体积明显过大（>200 行）的 REQ** 调用。目标：减少新项目初期重复 grilling——一次性给出拆分建议，让用户只回答一轮。
+> **可选**，由 PM 统筹（`obsidian-task-runner-pm` consolidate 阶段）在会话内调用：对**新项目首个 REQ** 或**体积明显过大（>200 行）的 REQ** 生成拆分建议。目标：减少新项目初期重复 grilling——一次性给出拆分建议，让用户只回答一轮。
+>
+> > **可达性说明（daemon 派发）**：本 Skill **没有独立的 daemon 派发点**——它只能由 PM consolidate 会话按 `skill://obsidian-task-runner-split` 在会话内加载；新需求/大 REQ 的**阶段分组**由 daemon 确定性 `processAutoStaging`（`otg stage-plan init`）秒级完成（无 LLM 会话），不依赖本拆分。因此「必拆分」不成立：拆分是 PM 发现值得拆时的**可选增强**，不是门禁。
 
 ## 输入
 

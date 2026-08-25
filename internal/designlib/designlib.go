@@ -174,6 +174,12 @@ func (l *Layout) Validate() error {
 	var problems []string
 	if err := validateArtifact(l.GlossaryPath(), "glossary-v1", false); err != nil {
 		problems = append(problems, err.Error())
+	} else if isPlaceholderGlossary(l.GlossaryPath()) {
+		// The skill contract requires "a useful domain vocabulary (not the
+		// placeholder table)". Ensure() seeds a placeholder glossary before a
+		// design session; a session that leaves it untouched must not pass —
+		// otherwise the "global design produced" verdict is a lie.
+		problems = append(problems, fmt.Sprintf("%s: glossary is still the default placeholder (no domain vocabulary)", l.GlossaryPath()))
 	}
 	for _, spec := range specs {
 		files, err := mdFiles(filepath.Join(l.Root, spec.dir))
@@ -220,6 +226,18 @@ type artifactFrontmatter struct {
 	ID     string `yaml:"id"`
 	Title  string `yaml:"title"`
 	Status string `yaml:"status"`
+}
+
+// isPlaceholderGlossary reports whether the glossary file at path still holds
+// the default placeholder body (Ensure()'s seed), i.e. no domain vocabulary
+// was written by a design session. Mirrors the HasGlossary comparison in
+// ReadSummary so Validate and ReadSummary agree on what "empty glossary" means.
+func isPlaceholderGlossary(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(data), bytes.TrimSpace([]byte(defaultGlossary)))
 }
 
 func validateArtifact(path, schema string, requireStatus bool) error {

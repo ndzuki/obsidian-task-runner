@@ -68,7 +68,7 @@ type Config struct {
 	MaxAutoMergeFixes          int `json:"max_auto_merge_fixes"`          // AI repair budget per merge authorization
 	CompactOversizeThresholdKB int `json:"compact_oversize_threshold_kb"` // TASK docs above this size get history folding
 	GrillingConsolidationBatch int `json:"grilling_consolidation_batch"`  // PM sessions per scan
-	MaxAutoFixConflicts        int `json:"max_auto_fix_conflicts"`        // conflict-size circuit breaker: skip AI repair above N conflicting files (0 = disabled)
+	MaxAutoFixConflicts        int `json:"max_auto_fix_conflicts"`        // conflict-size circuit breaker: skip AI repair above N conflicting files (0 or missing falls back to the default 40)
 	UpstreamStallDays          int `json:"upstream_stall_days"`           // blocked_by upstreams idle this many days trigger a one-time warning (0 = disabled)
 	MergePollWaitTicks         int `json:"merge_poll_wait_ticks"`         // CI polling ticks (30s each) per merge attempt
 	StageMinPerPhase           int `json:"stage_min_per_phase"`           // deterministic staging: tasks per phase floor
@@ -289,8 +289,9 @@ func DefaultModels() map[string]string {
 }
 
 // DefaultPhaseConcurrency returns the per-phase phase concurrency ceilings.
-// Keys are phase names (refining/planning/merge/priority/pm/audit); a missing
-// key or 0 means unlimited. round2 is governed by
+// Keys are phase names (refining/planning/merge/priority/pm/audit); only an
+// explicit 0 means unlimited — a missing key is backfilled with the default
+// during config merging (see mergeDefaults). round2 is governed by
 // max_concurrent_tasks_per_project (per-project cap, default 2) plus
 // max_concurrent_tasks (optional global total cap, 0 = unlimited). These caps
 // bound simultaneous execution sessions to protect API rate limits, token spend,

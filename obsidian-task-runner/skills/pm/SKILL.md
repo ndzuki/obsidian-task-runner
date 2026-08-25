@@ -16,8 +16,11 @@ hide: true
 ## 触发模式
 
 - `consolidate {task1} {task2} ...` — daemon 发现共享 REQ 的多任务处于 needs-grilling（含 grill_parked 或 grill_repeat≥2）时调用。输入是同项目任务路径列表，并注入 `<dependency_context>`（依赖闭包 + 设计库/replan gate 事实）。
-- `distribute {list_path}` — daemon 检测到 `Notes/Grilling-Decisions.md` **或** `Notes/Stage-Review.md` 满足分发条件时调用：**全部决策点已填（自动分发，无需用户操作）**，或 `grill_continue=true`（手动分批发/推翻重发）。输入是清单路径（按文件名识别处理类型）。
-- `stage-review {stage_plan_path}` — daemon 检测到某项目某阶段 TASK 全部完成（done+merged）时调用。输入是 `Notes/Stage-Plan.md` 路径。产出阶段评分与建议（Mode 3）。
+- `distribute {list_path}` — daemon 检测到 `Notes/Grilling-Decisions.md` **或** `Notes/Stage-Review.md` 满足分发条件时调用。**两类触发不同**：
+  - `Grilling-Decisions.md`：**全部决策点已填即自动分发**（daemon 按答案区 hash 变更检测，无需 `grill_continue`）；`grill_continue=true` 仅用于**部分/修订批次**手动分发。
+  - `Stage-Review.md`：**必须 `grill_continue=true`** 才分发（daemon 只按该标志触发；阶段状态翻转由 daemon 先行完成）。
+  输入是清单路径（按文件名识别处理类型）。
+- `stage-review {stage_plan_path}` — daemon 检测到某项目某阶段**可评审**时调用：阶段 TASK 全部完成（done+merged），**或剩余任务全部 blocked/closed（无可推进任务，防卡死放宽）**。输入是 `Notes/Stage-Plan.md` 路径。产出阶段评分与建议（Mode 3）。
 
 ## 共享输入
 
@@ -116,7 +119,8 @@ updated: {ISO8601}
 
 规则：
 - 已有清单（status=open）→ **追加**新决策点，不删除旧条目；已决策条目保留为审计历史。
-- **status=paused（需求未想好，项目级暂停）**：daemon 对该项目的 grilling 流程整体暂停——不创建 Kitty 决策 tab、不提醒、grill_continue 不重置 refining、**不分发**（填答案也不写回任务）、不 consolidate、parked 任务不解除。**恢复**：用户手动把 status 改回 `open`，或**关联 REQ 更新时 daemon 自动激活回 `open`**（用户/团队主动补充需求 = 恢复信号）——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程。
+- **status=paused（需求未想好，项目级暂停）**：daemon 对该项目的 grilling 流程整体暂停——不创建 Kitty 决策 tab、不提醒、grill_continue 不重置 refining、**不分发**（填答案也不写回任务）、不 consolidate、parked 任务不解除。**恢复**：用户手动把 status 改回 `open`，或**关联 REQ 更新时 daemon 自动激活回 `open`**（用户/团队主动补充需求 = 恢复信号；`paused`/`pause` 均自动激活）——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程。
+- **status=closed（显式项目冻结）**：「暂时不想开始这项目开发」——与 paused 同样整体暂停，但**只有用户手动改回 `open` 才恢复**：REQ 更新**不会**自动解锁（`activatePausedDecisionList` 对 closed 直接返回），阶段会话写回清单时 daemon 也守护恢复 closed（模型不得擅自解锁）。
 - **status=answered 的清单追加新决策点时，必须重置 `status: open`**（`grill_continue` 保持 false 等用户）——否则清单状态与「有新未答决策」的事实不一致（distribute 触发不受影响，但状态语义混乱）。
 - **决策点去重（防清单膨胀，强制）**：open 清单中已存在 normalize 标题相同（同 REQ + 同问题标题）的决策点 → **不追加新条目**。仅当本次「冲突/建议」内容有实质增量时，更新该条目的「来源任务」列表与 `updated` 时间戳；完全无增量（问题、冲突、建议与已有条目一致，REQ hash 未变）→ 直接跳过并在日志记录（TASK-025 的 D-11 曾被追加 6 次的教训——同一问题反复 park 不得反复膨胀清单）。
 - **清单收敛上限**：open 清单决策点 > 15 条时，不再追加新的非紧急决策点；在清单顶部「收敛提示」区提示用户优先回答存量决策点（堆积 19 条未答会使用户失去回答意愿）。
@@ -145,7 +149,9 @@ otg update-status {task} \
 
 ### Step 1: 读取清单（只读未答决策点）
 
-- 校验 `grill_continue=true`；**只读取未答决策点**——「决策:」为空或占位符的 D-n 条目，以及「拆分:」「评审决策:」未填项。**占位符判定与 daemon `decisionAnswered` 一致**：空值或含「用户填写」字样即未答（三种括号形态 `（用户填写）`/`{用户填写}`/`<用户填写>` 全覆盖；遗漏任一变体会把未答项当已答）。**已答条目一律跳过、不加载**（清单会累积数百条历史，全量读取单次浪费 10 万+ token；daemon 的决策 tab 与计数同样只面向未答项）。
+> 本会话可能由两条路触发：**自动分发**（Grilling-Decisions 全部决策点已填，daemon 按答案 hash 变更触发，此时 `grill_continue` 为 false）或**手动分发**（`grill_continue=true` 的部分/修订批次）。因此**不要**把 `grill_continue=true` 当作前置校验——会话本身即分发证据；写回完成后由 daemon 确定性关闭标志并记 `distributed_answers_hash`。
+
+- **只读取未答决策点**——「决策:」为空或占位符的 D-n 条目，以及「拆分:」「评审决策:」未填项。**占位符判定与 daemon `decisionAnswered` 一致**：空值或含「用户填写」字样即未答（三种括号形态 `（用户填写）`/`{用户填写}`/`<用户填写>` 全覆盖；遗漏任一变体会把未答项当已答）。**已答条目一律跳过、不加载**（清单会累积数百条历史，全量读取单次浪费 10 万+ token；daemon 的决策 tab 与计数同样只面向未答项）。
 - 未填写的决策点 → 不处理该点，在日志中标注，其余照常分发。
 - 已答条目的决策内容如需引用（如推翻前次决策），按 D-n 定位后**分段读取**该条目，禁止全文加载。
 
@@ -193,8 +199,9 @@ otg update-status {task} \
 
 若用户填写了「阶段:」或「阶段规划确认」答案（确认 / 修改 / 追加新阶段）：
 
-1. **追加新阶段**（用户主动提出或新需求确认）→ 在 Stage-Plan.md 追加 `### Phase N: {名称}` 块（目标/tasks 参考/`status: planned`），并把 park 在该决策点上的任务（`grill_context=stage=unassigned`）归入：
-   - 用户确认的阶段 → `otg update-status {task} stage="P{N}"` 解除 park（`grill_parked=false`），REQ frontmatter 同步 `stage: "P{N}"`；
+1. **追加新阶段**（用户主动提出或新需求确认）→ **PM 不直接手写 Stage-Plan 块**（Stage-Plan 只由 `stageplan` 包写入，PM 手写会与 daemon 确定性追加产生双阶段归属冲突）。正确做法：把 park 在该决策点上的任务（`grill_context=stage=unassigned`）按用户确认归入新阶段：
+   - 在清单「阶段规划确认」区记下「追加 Phase N + 目标/任务」建议，由 daemon/`otg stage-plan init` 落块（或按用户意图调整既有块命名/目标行）；
+   - 任务归属：`otg update-status {task} stage="P{N}"` 解除 park（`grill_parked=false`），REQ frontmatter 同步 `stage: "P{N}"`；
    - 仍无法归属 → 保持 park 并标注，用户后续单独决定。
    > 注意：daemon 的 auto-staging 可能已按依赖拓扑**自动追加**了临时阶段（编号接续、目标占位）——distribute 只需按用户确认**调整命名/目标/归属**（改 Stage-Plan 块与 stage 字段），无需重复创建。
 2. **修改既有阶段**（用户调整阶段划分）→ 按答案更新 Stage-Plan 对应块 + 相关 REQ/TASK 的 stage 字段（TASK 用 `otg update-status`，REQ 直接编辑 frontmatter）。**手动调整 TASK stage 时必须同时清空 `stage_source`**（`otg update-status {task} stage="P{N}" stage_source=`）——否则该任务会继续跟随 REQ stage（daemon `syncStageInheritance` 按 `stage_source=req` 覆盖手动分配）；REQ 上的 stage 变更则自动传播给 `stage_source=req` 的任务，无需逐任务改。
@@ -371,8 +378,10 @@ updated: {ISO8601}
 - 评审决策: <continue / supplement:{建议} / end>
 ```
 
+> **daemon 只消费「评审决策:」行**（`stage_flip` 按 continue/supplement/end 翻转 Stage-Plan 状态机）；上方四维评分表是**PM 自评估指南**（帮助用户判断决策），daemon 不解析评分/总分——评分仅供参考，用户决策仍以「评审决策:」为准。
+
 ### Step 4: 更新阶段状态
-Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon 重复触发评审）。
+Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon 重复触发评审；实际状态机翻转由 daemon `flipStageReviewDecision` 在分发前确定性完成，本步为语义记录）。
 
 ### 完成标准
 - [ ] Stage-Review.md 已创建（评分四维 + 建议 + 决策区）

@@ -106,9 +106,9 @@ merge_status: conflict-resolve-attempted
 
 记录冲突文件、PR URL、分支和解决指引。`merge_status=conflict-resolve-attempted` 标记 AI 自动修复已达上限（`merge_retry_count >= max_auto_merge_fixes`）或**冲突规模超阈值被熔断**。交还用户后两条出路（均无需手动解冲突）：① 清 `merge_retry_count` 后重设 `merge_approved: true` 继续 AI 修复；② 在 REQ 文档追加歧义裁决记录并保存（建议含 `> 变更类型: breaking` 行）→ daemon 自动转 refining 重审需求后重新出计划。同一计划内重复授权不重置计数（防无限自动修复循环）。
 
-**冲突规模熔断（`max_auto_fix_conflicts`，vault-map 配置，默认 40）**：AI 冲突会话有界超时无法解决超大冲突集，启动前 daemon 在任务 worktree 统计未合并文件数（`git diff --diff-filter=U`）；超过阈值直接写 `conflict + conflict-resolve-attempted` 交还用户，**不启动会话、不消耗 `merge_retry_count`**（TASK-067：90+ 文件冲突 → 15min 会话超时 exit 143；~22 文件 5min 成功）。仅 pre-push sync 路径有本地冲突状态；PR 侧 DIRTY（GitHub 计算）不受熔断影响。0 或缺失 = 禁用。
+**冲突规模熔断（`max_auto_fix_conflicts`，vault-map 配置，默认 40）**：AI 冲突会话有界超时无法解决超大冲突集，启动前 daemon 在任务 worktree 统计未合并文件数（`git diff --diff-filter=U`）；超过阈值直接写 `conflict + conflict-resolve-attempted` 交还用户，**不启动会话、不消耗 `merge_retry_count`**（TASK-067：90+ 文件冲突 → 15min 会话超时 exit 143；~22 文件 5min 成功）。仅 pre-push sync 路径有本地冲突状态；PR 侧 DIRTY（GitHub 计算）不受熔断影响。**0 或缺失不是禁用**——配置加载时 `0`/缺失都会回落默认 40（`config.go` 默认值合并），只有显式大于 0 的阈值才生效。
 
-**人工合入自动收口（`autoCloseMergedConflictPRs`）**：预算耗尽/熔断交还用户的 conflict/review 任务（`auto_merge=true` + `merge_approved=false` + 预算耗尽），若 PR 已被**人工在 forge UI 合并**（`gh pr view` 报 MERGED），daemon 每轮以每任务 5 分钟冷却探测并自动 `completeMerge` 转 `done`——否则任务永久卡 conflict 静默阻塞下游 `blocked_by` 链（TASK-067：PR #51 手动合入后任务仍卡 conflict，需手动改 frontmatter）。
+**人工合入自动收口（`autoCloseMergedConflictPRs`）**：**预算耗尽**（`merge_retry_count >= max_auto_merge_fixes`）交还用户的 conflict/review 任务（`auto_merge=true` + `merge_approved=false`），若 PR 已被**人工在 forge UI 合并**（`gh pr view` 报 MERGED），daemon 每轮以每任务 5 分钟冷却探测并自动 `completeMerge` 转 `done`——否则任务永久卡 conflict 静默阻塞下游 `blocked_by` 链（TASK-067：PR #51 手动合入后任务仍卡 conflict，需手动改 frontmatter）。**注意：熔断交还（`conflict-resolve-attempted` 但 `merge_retry_count` 未达上限）不在此探测范围**（探测条件按预算耗尽过滤，`dep_health.go`）——熔断任务合入需人工重设 `merge_approved=true` 或走 replan。
 
 如果 conflict 期间 REQ 发生变更：取消旧 Merge 流程，保留冲突审计记录和分支，直接转 refining，不继续解决旧需求版本的冲突。
 

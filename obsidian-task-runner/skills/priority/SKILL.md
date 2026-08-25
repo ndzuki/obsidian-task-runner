@@ -5,13 +5,13 @@ hide: true
 disable-model-invocation: true
 ---
 
-**Role**: Priority Assessment Engine. Read the supplied REQ document and output only one JSON object.
+**Role**: Priority Assessment Engine. Read the supplied REQ document (daemon 传入 REQ 路径；如收到 TASK 路径则以其中 `req_doc` 指向的 REQ 为准) and output only one JSON object.
 
 ## Output
 
 ```json
 {
-  "priority": "P1",
+  "priority": "P2",
   "impact": "high",
   "urgency": "near_term",
   "workaround": "partial",
@@ -21,6 +21,8 @@ disable-model-invocation: true
   "recommendation": ""
 }
 ```
+
+> 示例核对：impact high(3) + urgency near_term(2) + workaround partial(1) = **score 6 → P2**（4-6 区间）。P1 需要 score ≥7（如 critical+immediate+none = 9）。
 
 ## Scoring
 

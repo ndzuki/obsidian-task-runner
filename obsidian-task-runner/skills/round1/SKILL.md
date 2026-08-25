@@ -10,7 +10,7 @@ disable-model-invocation: true
 ## 输入
 
 - TASK `status: planning`
-- daemon 使用 TASK `assignee` 模型调用本 Skill
+- daemon 按 TASK `assignee` 路由模型调用本 Skill：显式 `assignee`（非空且非 `default`）覆盖一切；默认/空 assignee 的 planning 走 `models.deepseek_magic` 免费旗舰（v4-pro，见 daemon 权威模型路由表）
 - **Daemon 已将项目上下文（Constraints + Anti-patterns + Domain Terms + ADR 摘要）注入到 prompt 顶部 `[Project Context]` 块中。以此为基线；仅在需要完整决策上下文时读取 `Notes/adr/` 中的完整 ADR 文件。**
 - `Notes/CONTEXT.md` 的完整术语表仅在注入摘要不覆盖所需术语时补充读取。
 - **必须在出计划前加载 `skill://knowledge-base`**：执行 Step -1（项目知识图谱）合成 CONTEXT + ADR + References 三源交叉引用，输出技术全景表。计划涉及的技术栈（Go、K8s、Helm、Docker 等），检索 core/ 文档的关键约束和版本要求纳入计划。发现知识缺口（ADR 引用了未入库的技术）标注在计划的"风险"或"前序契约"中。
@@ -134,7 +134,7 @@ otg update-status <task> adr_proposed='["ADR: <decision title>", ...]'
 Skill 与全局 AGENTS.md 默认约定**：
 
 1. 计划中每个涉及代码/文档的 Step，其实现约定（注释语言、代码风格、文档格式、commit 语言）必须声明遵循项目规范；项目规范与全局默认冲突时以项目规范为准。
-2. **架构约束强制对齐（004-deployd 教训）**：`## 架构约束` 节中的数据库分环境、schema/字段命名、迁移机制是硬约束——计划中任何涉及数据模型/新字段/新表的 Step 必须：
+2. **架构约束强制对齐**：`## 架构约束` 节中的数据库分环境、schema/字段命名、迁移机制是硬约束——计划中任何涉及数据模型/新字段/新表的 Step 必须：
    - **以项目 test/prod 实际使用的数据库引擎为准设计 schema**（如 test/prod=MySQL），不得假设 dev 用的 SQLite 语义（字段名结尾 `_at`、`DATETIME`、自增等）；涉及多引擎时声明「双引擎兼容」。
    - 字段名结尾/命名按项目既有 schema 规范，引用 `## 架构约束` 中的代表例（路径+行号）。
    - 迁移方式按项目既有机制（`gorm AutoMigrate` / `alembic` / 手写 SQL…），新迁移必须能在 test/prod 引擎上执行。
@@ -251,7 +251,7 @@ Step -1 知识图谱与 core/ 检索命中的知识文档，**必须写入 TASK 
 - 每次 planning 成功，`plan_version = old + 1`。
 - 在 `## 实现计划` 追加 `### vN`，不覆盖历史版本。
 - 更新执行摘要和变更记录。
-- 可提议 ADR；写 ADR 仍需 `adr_approved=true`。
+- 可提议 ADR（写 `adr_proposed`）；`adr_approved` 由 daemon 在 plan-review→implementing 过渡时自动置为 `hasADRProposal(adr_proposed)`——`adr_proposed` 非空即自动 true，无需人工批准（见 Step 6 ADR 护栏）。
 
 ## Step 6: Gate Update（Gate更新）
 
@@ -272,7 +272,7 @@ blocked_phase: ""
 resume_approved: false
 ```
 
-> **ADR 护栏**：`adr_proposed` 非空时保持 `adr_approved=false`——架构决策由人工批准（`otg update-status adr_approved=true`），不阻断实现自动进入（auto_approve 默认开启时 Round 2 照常开始）。
+> **ADR 护栏**：daemon 在 plan-review→implementing 过渡时自动置 `adr_approved = hasADRProposal(adr_proposed)`——`adr_proposed` 非空即 true，Round 2 照常开始；空（`""`/`[]`/`null`）即 false。架构决策无需人工批准步骤（Round 2 按 `adr_approved=true` + `adr_proposed` 写 ADR，见 round2「Write ADRs」）。
 > `adr_proposed` 的空值形态以 `""` 或 `[]` 为准——两者均视为空（无架构决策）。
 
 新项目与 replan 同样适用：`new_project` 仅影响目录创建时机（Round 2 才创建），不阻断自动批准。

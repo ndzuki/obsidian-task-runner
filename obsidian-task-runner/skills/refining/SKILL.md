@@ -116,21 +116,14 @@ refine_error: ""
 
 **内联规则**：将模糊大需求拆成决策票（decision tickets），每张票独立可解决——拆分维度为业务边界与依赖域，每张票写明「决策点 + 选项 + 推荐」；输出写入 `## 实现计划` 的 `### Wayfinder Map` 小节。随后将单个决策票作为 Grilling 的焦点，而非整个需求。
 
-### 4b0: 无增量 replan 拦截（防 replan 空转）
+### 4b0: 无增量 replan 拦截（防 replan 空转，daemon 层拥有，非会话步骤）
 
-**触发条件**（全部满足）：
-- 本次 refine 由 replan 触发：`pending_req=true`；
-- `plan_req_hash` 非空 且 `refine_req_hash == plan_req_hash`（REQ 相对上次 plan **无实质内容变化**）；
-- maturity 为 `fully_mature`（成熟度门禁本身已通过）。
-
-**判定**：无增量 replan。REQ 未变而 replan 已无新信息——继续 planning 只会重新产出相同计划（TASK-066 教训：17 轮 replan 全部在同一 REQ hash 上零收敛，每轮烧一次 planning + round2 的 token）。
-
-**处置**：不路由 planning，直接走 **Step 4c park 升级**，决策点标题：「需求无增量变更，{plan_version} 轮 replan 空转」，建议三选一：
-- (A) 解除/收窄前置门禁（若门禁由上游事实阻塞，改为 blocked + PREREQUISITE_SMOKE_FAILED，由 daemon 事实恢复）；
-- (B) 拆分 REQ 收窄范围（走 `skill://obsidian-task-runner-split`）；
-- (C) 结束任务（close）。
-
-> 该拦截只拦「REQ 内容未变」的 replan；REQ 有实质变化（hash 不同）时正常走 4b 流程。
+> **本小节不是 refining 会话的步骤**：`maturity=fully_mature` 且 `refine_req_hash == 当前 REQ` 的任务在 daemon 派发 refining 会话**之前**就被 early-out 直接转 planning（`daemon.go` refining early-out），会话根本读不到这些条件，因此 4b0 的触发条件在会话内不可达。防 replan 空转的职责归属：
+> - **daemon early-out**：fully_mature + 当前 hash → 直接 planning，不烧 refining 会话；
+> - **PM 统筹层**：同 REQ 反复 replan（`plan_version >= 3`）由 `needsConsolidation` 升级到项目级决策清单 park（见 pm 技能），而非 refining 拦截；
+> - **round2 前置门禁**：门禁类失败禁止 replan 循环（`PREREQUISITE_SMOKE_FAILED`，见 round2）。
+>
+> 若 REQ 未变而 replan 被触发（`grill_resolution=replan` 但 REQ 无实质变化），不在此处拦截——走正常 4b 流程；如出现同 REQ 连续 replan 空转，由 PM 层 plan_version≥3 park 收口。
 
 ### 4b: fully_mature
 
@@ -185,9 +178,9 @@ Dispute 已重复 ≥2 轮且 REQ hash 未变时：
      grill_context="maturity=parked; refine_version={N}; 争议已并入 Notes/Grilling-Decisions.md，等待项目级一次性回答（见 skill://obsidian-task-runner-pm）"
    ```
 3. 替换 TASK body `## Grilling 待回答` 为简短指引：指向项目级清单，说明用户回答清单后 daemon 自动分发。
-4. 不再创建 Kitty tab、不再发送逐任务提醒（daemon 对 `grill_parked=true` 的任务静默等待）。
+4. 不发送**逐任务** Kitty tab/提醒（daemon 对 `grill_parked=true` 的任务静默等待）。注意：若项目级决策清单 `Notes/Grilling-Decisions.md` 有待答决策点且清单未 paused/closed，daemon 仍会为项目创建**项目级**「决策清单」Kitty tab（每项目一个）——park 只停逐任务提醒，不停项目级清单 tab。
 
-> **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a Kitty tab on the next scan (unless `grill_parked=true`).
+> **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a per-task Kitty tab on the next scan (unless `grill_parked=true`; a project-level decision-list tab may still open).
 
 ### 4d: 标准 needs-grilling 写入
 

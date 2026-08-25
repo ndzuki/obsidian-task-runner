@@ -1,6 +1,6 @@
 ---
 name: obsidian-task-runner-conventions
-description: "Project baseline review: read-only audit of an EXISTING project's design/code/comment/API-doc/documentation/commit conventions AND architecture constraints (tech stack, DB engine per environment, ORM/schema field naming, migrations), written to Notes/PROJECT-CONVENTIONS.md. Mandatory once per existing project before the first task is automated (004-deployd lesson: features were developed without an architecture review and dev/test-prod DB drift shipped)."
+description: "Project baseline review: read-only audit of an EXISTING project's design/code/comment/API-doc/documentation/commit conventions AND architecture constraints (tech stack, DB engine per environment, ORM/schema field naming, migrations), written to Notes/PROJECT-CONVENTIONS.md. Mandatory once per existing project before the first task is automated (lesson: features were developed without an architecture review and dev/test-prod DB drift shipped)."
 hide: true
 disable-model-invocation: true
 ---
@@ -36,7 +36,7 @@ disable-model-invocation: true
 
 ## Step 2: 架构约束走查（MANDATORY，20 分钟内）
 
-**Purpose**：本步产出「架构约束」——后续任何开发（尤其是新增数据/接口/环境相关功能）必须遵守的**项目运行时事实**。004-deployd 教训：开发用 SQLite、测试/生产用 MySQL，字段名结尾（`_at`/`At`/`_id` 等）不一致导致上线 bug——因为开发前没人先审查项目真实架构。本步把这类事实**强制**变成硬约束。
+**Purpose**：本步产出「架构约束」——后续任何开发（尤其是新增数据/接口/环境相关功能）必须遵守的**项目运行时事实**。常见教训：开发用 SQLite、测试/生产用 MySQL，字段名结尾（`_at`/`At`/`_id` 等）不一致导致上线 bug——因为开发前没人先审查项目真实架构。本步把这类事实**强制**变成硬约束。
 
 逐项探测（每项都必须给出证据，无证据标 `未确认`）：
 
@@ -124,8 +124,12 @@ daemon 检测到 `Notes/PROJECT-CONVENTIONS.md` 存在即判定审查完成，�
 后续任务直接进入 refining，无需任何 frontmatter/vault-map 写回。
 
 若 Step 4 写入失败：如实报告错误并退出非零——daemon 将任务转 blocked
-（`CONVENTIONS_REVIEW_FAILED`），resume 后重跑审查，不跳过门禁。
-正常退出但产物缺失时，daemon 同样按失败处理（防静默空转）。
+（`CONVENTIONS_REVIEW_FAILED`，见 daemon `handlePhaseFailure` conventions 分支），
+resume 后重跑审查，不跳过门禁。
+
+正常退出但产物缺失（`Notes/PROJECT-CONVENTIONS.md` 未落盘）时：daemon 按
+`conventionsReviewed` 产物存在性判定门禁未过，**下一轮 scan 直接重跑门禁**
+（不转 blocked、不烧 token 写错误码）——审查产物本身即一次性门禁标记。
 
 ## 幂等与重审
 
