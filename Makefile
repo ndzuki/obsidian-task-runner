@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -74,22 +74,39 @@ sync-docs:
 		mkdir -p $(HOME)/.dsh/skills/obsidian-task-runner-$$s; \
 		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md; \
 	done
-	@echo "=== Pruning stale managed docs/skills (repo 已删除的运行时文件) ==="
-	@for d in $(HOME)/.dsh/skills/obsidian-task-runner/skills/*; do \
+	@echo "=== Pruning stale managed docs/skills (仅清单内、且 repo 已移除的) ==="
+	@# 安全兜底（2026-08-31 误删 dsh home patch 插件教训）：
+	@#   1. 只清理受管目录内、且 repo 曾经管理、现已在清单中消失的文件；
+	@#   2. 不直接 rm——先 mv 到 ~/.dsh/trash/<ts>/ 可恢复；
+	@#   3. 清单外文件（dsh home patch 插件、用户自装）一律保留。
+	@TRASH="$${TRASH_DIR:-$(HOME)/.dsh/trash}/$$(date +%Y%m%d-%H%M%S)"; \
+	SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+	pruned=0; \
+	for d in "$$SKILL_DIR/skills"/*; do \
 		[ -d "$$d" ] || continue; \
 		b=$$(basename "$$d"); \
-		[ -d "obsidian-task-runner/skills/$$b" ] || { echo "  prune stale skill: $$b"; rm -rf "$$d"; }; \
-	done
-	@for f in $(HOME)/.dsh/skills/obsidian-task-runner/*.md; do \
+		[ -d "obsidian-task-runner/skills/$$b" ] || { \
+			if [ "$${DRY_RUN:-0}" = "1" ]; then echo "  [dry-run] would prune skill: $$b"; \
+			else echo "  prune stale skill: $$b"; mkdir -p "$$TRASH"; mv "$$d" "$$TRASH/skill-$$b"; pruned=$$((pruned+1)); fi; \
+		}; \
+	done; \
+	for f in "$$SKILL_DIR"/*.md; do \
 		[ -f "$$f" ] || continue; \
 		b=$$(basename "$$f"); \
-		[ -f "obsidian-task-runner/$$b" ] || { echo "  prune stale doc: $$b"; rm -f "$$f"; }; \
-	done
-	@for d in $(HOME)/.dsh/skills/obsidian-task-runner-*; do \
+		[ -f "obsidian-task-runner/$$b" ] || { \
+			if [ "$${DRY_RUN:-0}" = "1" ]; then echo "  [dry-run] would prune doc: $$b"; \
+			else echo "  prune stale doc: $$b"; mkdir -p "$$TRASH"; mv "$$f" "$$TRASH/doc-$$b"; pruned=$$((pruned+1)); fi; \
+		}; \
+	done; \
+	for d in $(HOME)/.dsh/skills/obsidian-task-runner-*; do \
 		[ -d "$$d" ] || continue; \
 		b=$${d##*obsidian-task-runner-}; \
-		grep -qx "$$b" obsidian-task-runner/skills/manifest 2>/dev/null || { echo "  prune stale phase-skill: $$b"; rm -rf "$$d"; }; \
-	done
+		grep -qx "$$b" obsidian-task-runner/skills/manifest 2>/dev/null || { \
+			if [ "$${DRY_RUN:-0}" = "1" ]; then echo "  [dry-run] would prune phase-skill: $$b"; \
+			else echo "  prune stale phase-skill: $$b"; mkdir -p "$$TRASH"; mv "$$d" "$$TRASH/phase-$$b"; pruned=$$((pruned+1)); fi; \
+		}; \
+	done; \
+	[ "$$pruned" -gt 0 ] && echo "  → 已回收 $$pruned 项到 $$TRASH（可手动恢复）" || echo "  无受管残留需要清理"
 	@find $(HOME)/.dsh/skills/obsidian-task-runner* -name '*.old' -delete 2>/dev/null || true
 	@echo "=== Done ==="
 
@@ -107,13 +124,19 @@ sync-plugins:
 		cp $$f $(HOME)/.dsh/plugins/$$b; \
 		chmod 600 $(HOME)/.dsh/plugins/$$b; \
 	done
-	@echo "=== 清理 repo 自身旧版 .old（仅清 repo 会覆盖的那批） ==="
-	@for b in $$(ls deploy/dsh-plugins/ 2>/dev/null); do \
-		rm -f "$(HOME)/.dsh/plugins/$$b.old" 2>/dev/null || true; \
-	done
+	@echo "=== 清理 repo 自身旧版 .old（仅清 repo 会覆盖的那批，进回收站） ==="
+	@TRASH="$${TRASH_DIR:-$(HOME)/.dsh/trash}/$$(date +%Y%m%d-%H%M%S)"; \
+	cleaned=0; \
+	for b in $$(ls deploy/dsh-plugins/ 2>/dev/null); do \
+		if [ -f "$(HOME)/.dsh/plugins/$$b.old" ]; then \
+			if [ "$${DRY_RUN:-0}" = "1" ]; then echo "  [dry-run] would clear old: $$b.old"; \
+			else mkdir -p "$$TRASH"; mv "$(HOME)/.dsh/plugins/$$b.old" "$$TRASH/$$b.old"; cleaned=$$((cleaned+1)); fi; \
+		fi; \
+	done; \
+	[ "$$cleaned" -gt 0 ] && echo "  → 已回收 $$cleaned 个 .old 到 $$TRASH" || echo "  无旧版 .old 需要清理"
 	@echo "=== Done ==="
-	@echo "  ⚠ ~/.dsh/plugins/ 可能还有 dsh home patch（cordis.patch.yml）手工引用的插件"
-	@echo "    （fallback/dsh-commands/kb-distill/vault 等）——它们不属于 repo，deploy 绝不删除。"
+	@echo "  ⚠ ~/.dsh/plugins/ 还可能有 dsh home patch（cordis.patch.yml）手工引用的插件"
+	@echo "    （fallback/dsh-commands/kb-distill/vault 等）——它们不在受管清单，deploy 绝不删除。"
 
 
 # sync-registry: 把 skill-registry.json（技能安装源清单）同步到 ~/.dsh/config/。
@@ -288,6 +311,16 @@ daemon-recover:
 	@echo "=== 验证 ==="
 	@echo "  tail -20 ~/.dsh/logs/otg-daemon.log   # 应看到 agent-server starting → healthy → daemon started"
 	@echo "  ss -tlnp | grep 8799                  # daemon 自管的 agent-server"
+
+# deploy-dryrun: 安全预演——只打印 make deploy 会覆盖/清理哪些文件，不实际改动。
+# 误删兜底的第一道防线：跑它确认没有意外删除目标，再跑真正 deploy。
+# 用法：make deploy-dryrun
+deploy-dryrun:
+	@echo "=== [dry-run] sync-docs 将清理的受管残留 ==="
+	@DRY_RUN=1 $(MAKE) -s sync-docs 2>&1 | grep -E "\[dry-run\]|无受管残留|prune stale|回收" || true
+	@echo "=== [dry-run] sync-plugins 将清理的 .old ==="
+	@DRY_RUN=1 $(MAKE) -s sync-plugins 2>&1 | grep -E "\[dry-run\]|无旧版|回收" || true
+	@echo "=== [dry-run] 完成：以上即会删除/回收的内容；无输出=无删除。正式运行：make deploy ==="
 
 # install-force 保留为 deploy 的别名（旧肌肉记忆兼容），不再有独立逻辑。
 install-force: deploy
