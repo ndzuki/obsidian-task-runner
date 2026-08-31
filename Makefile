@@ -168,11 +168,11 @@ deploy: build test
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → daemon 自管 agent-server；停掉 systemd 实例并清理孤儿，避免 8799 冲突"; \
 			systemctl --user disable --now dsh-agent-server 2>/dev/null || true; \
-			# 括号断匹配：pkill/pgrep 不会命中本 recipe 自己的 shell（cmdline 含字面串）
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
 			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
 			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出，daemon 可能误连旧实例，建议手动 systemctl --user restart dsh-agent-server"; \
+			if ss -tln | grep -q ':8799 '; then echo "  ⚠ 8799 仍被占用，daemon 启动可能误连旧实例"; else echo "  8799 已释放"; fi; \
 			echo "  (重启 daemon 后由其拉起全新 agent-server，插件/技能变更即生效)"; \
 		else \
 			echo "  agent_server_managed=false → 由 systemd 管理 agent-server，deploy 不干预其生命周期"; \
