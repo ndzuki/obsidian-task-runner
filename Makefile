@@ -7,6 +7,14 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
+# $(SCTL) 需要 user bus 环境。make deploy / daemon-recover 可能在
+# 无该环境的 shell 运行（cron、非登录 SSH、脚本），裸调 $(SCTL) 会
+# 静默失败被 || true 吞掉——2026-08-31 事故：systemd dsh-agent-server 停不掉、
+# 8799 被占用、daemon 自管 agent-server 永远起不来。显式注入环境，让这些
+# 目标在任何 shell 下都能正确操控 user systemd。
+USER_BUS_ENV := XDG_RUNTIME_DIR=/run/user/$(shell id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(shell id -u)/bus
+SCTL := $(USER_BUS_ENV) systemctl --user
+
 build:
 	go build -tags sqlite_fts5 $(LDFLAGS) -o $(BINARY) ./cmd/otg/
 	go build -o $(GRILL) ./cmd/kitty-grill/
@@ -190,25 +198,25 @@ deploy: build test
 		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → daemon 自管 agent-server；停掉 systemd 实例并清理孤儿，避免 8799 冲突"; \
-			systemctl --user disable --now dsh-agent-server 2>/dev/null || true; \
+			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server（bus 或服务状态异常），8799 可能仍被占用，请检查 systemctl --user status dsh-agent-server"; fi; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
 			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
-			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出，daemon 可能误连旧实例，建议手动 systemctl --user restart dsh-agent-server"; \
+			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出，daemon 可能误连旧实例，建议手动 $(SCTL) restart dsh-agent-server"; \
 			if ss -tln | grep -q ':8799 '; then echo "  ⚠ 8799 仍被占用，daemon 启动可能误连旧实例"; else echo "  8799 已释放"; fi; \
 			echo "  (重启 daemon 后由其拉起全新 agent-server，插件/技能变更即生效)"; \
 		else \
 			echo "  agent_server_managed=false → 由 systemd 管理 agent-server，deploy 不干预其生命周期"; \
 		fi
 	@echo "=== [5/6] daemon-reload + restart watcher ==="
-	systemctl --user daemon-reload
-	-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
-	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
+	$(SCTL) daemon-reload
+	-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true
+	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
 	@sleep 2
-	@if ! systemctl --user -q is-active otg-task-watcher.service; then \
+	@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
 		echo "  Watcher didn't start — retrying..."; \
-		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
-		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
+		$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
+		$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
 	fi
 	@echo "=== [5b/6] externally-managed agent-server: restart if plugin changed ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
@@ -221,7 +229,7 @@ deploy: build test
 			done; \
 			if [ -n "$$changed" ]; then \
 				echo "  agent-server plugin/monitor changed — restarting dsh-agent-server"; \
-				systemctl --user restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
+				$(SCTL) restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
 			else \
 				echo "  agent-server plugin/monitor unchanged — no restart needed"; \
 			fi; \
@@ -274,8 +282,8 @@ deploy-status:
 rollback:
 	@echo "=== Removing deploy drop-in (daemon -> ~/.local/bin/otg) ==="
 	rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
-	systemctl --user daemon-reload
-	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
+	$(SCTL) daemon-reload
+	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
 	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
 
 # daemon-recover: 流水线停摆恢复。停掉 systemd 版 agent-server（收回 8799，
@@ -290,7 +298,7 @@ daemon-recover:
 		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → 停 systemd 实例 + 清孤儿 + 等端口释放"; \
-			systemctl --user disable --now dsh-agent-server 2>/dev/null || true; \
+			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
 			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
@@ -299,14 +307,14 @@ daemon-recover:
 			echo "  agent_server_managed=false → 由 systemd 管理，跳过所有权收敛"; \
 		fi
 	@echo "=== 拉起 otg-task-watcher ==="
-	@systemctl --user daemon-reload
-	@-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
-	@-systemctl --user start otg-task-watcher.service 2>/dev/null || true
+	@$(SCTL) daemon-reload
+	@-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true
+	@-$(SCTL) start otg-task-watcher.service 2>/dev/null || true
 	@sleep 2
-	@if ! systemctl --user -q is-active otg-task-watcher.service; then \
+	@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
 		echo "  watcher 未启动，重试一次..."; \
-		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
-		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
+		$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
+		$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
 	fi
 	@echo "=== 验证 ==="
 	@echo "  tail -20 ~/.dsh/logs/otg-daemon.log   # 应看到 agent-server starting → healthy → daemon started"

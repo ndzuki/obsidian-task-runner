@@ -72,6 +72,17 @@ func (r *Runner) startAgentServer(ctx context.Context) error {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				r.logger.Printf("agent-server healthy (%s)", r.cfg.AgentServerAddr)
+				// 防御：健康检查通过后，确认响应 8799 的是我们自管的子进程，
+				// 而非外部残留（如 systemd dsh-agent-server）占着端口。自管子
+				// 进程若因 bind 失败已退出（如 8799 被占），Signal(0) 探测失败
+				// ——此时 "healthy" 其实是外部进程在服务，必须告警（2026-08-31：
+				// systemd 占 8799、daemon 自管子进程 bind 失败死亡，081 审计发到
+				// 卡死的外部实例而冻结、任务永久 skipping）。
+				if r.cfg.AgentServerManaged && r.agentServerCmd != nil && r.agentServerCmd.Process != nil {
+					if err := r.agentServerCmd.Process.Signal(syscall.Signal(0)); err != nil {
+						r.logger.Printf("⚠ agent-server 自管子进程(pid=%d)已退出：8799 可能被外部进程占用，实际服务该端口的并非 daemon 自管实例", r.agentServerCmd.Process.Pid)
+					}
+				}
 				return nil
 			}
 		}
