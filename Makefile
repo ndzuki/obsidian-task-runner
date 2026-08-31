@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins sync-registry
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -74,11 +74,29 @@ sync-docs:
 		mkdir -p $(HOME)/.dsh/skills/obsidian-task-runner-$$s; \
 		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md; \
 	done
+	@echo "=== Pruning stale managed docs/skills (repo 已删除的运行时文件) ==="
+	@for d in $(HOME)/.dsh/skills/obsidian-task-runner/skills/*; do \
+		[ -d "$$d" ] || continue; \
+		b=$$(basename "$$d"); \
+		[ -d "obsidian-task-runner/skills/$$b" ] || { echo "  prune stale skill: $$b"; rm -rf "$$d"; }; \
+	done
+	@for f in $(HOME)/.dsh/skills/obsidian-task-runner/*.md; do \
+		[ -f "$$f" ] || continue; \
+		b=$$(basename "$$f"); \
+		[ -f "obsidian-task-runner/$$b" ] || { echo "  prune stale doc: $$b"; rm -f "$$f"; }; \
+	done
+	@for d in $(HOME)/.dsh/skills/obsidian-task-runner-*; do \
+		[ -d "$$d" ] || continue; \
+		b=$${d##*obsidian-task-runner-}; \
+		grep -qx "$$b" obsidian-task-runner/skills/manifest 2>/dev/null || { echo "  prune stale phase-skill: $$b"; rm -rf "$$d"; }; \
+	done
+	@find $(HOME)/.dsh/skills/obsidian-task-runner* -name '*.old' -delete 2>/dev/null || true
 	@echo "=== Done ==="
 
 # sync-plugins: 把 deploy/dsh-plugins/ 下的 DSH 插件同步到 ~/.dsh/plugins/
 #（dsh profile 按绝对路径加载）。busy-safe 替换；agent-server.mjs 变更需
-# 重启 dsh-agent-server 才生效（install-force 末尾有提示）。
+# 重启 dsh-agent-server 才生效（install-force 末尾有提示）。同步后清理
+# repo 已删除的残留插件（~/.dsh/plugins 是受管目录）。
 sync-plugins:
 	@echo "=== Syncing dsh plugins to ~/.dsh/plugins/ ==="
 	mkdir -p $(HOME)/.dsh/plugins
@@ -89,12 +107,33 @@ sync-plugins:
 		cp $$f $(HOME)/.dsh/plugins/$$b; \
 		chmod 600 $(HOME)/.dsh/plugins/$$b; \
 	done
+	@echo "=== Pruning stale dsh plugins (repo 已删除的残留) ==="
+	@for f in $(HOME)/.dsh/plugins/*; do \
+		[ -f "$$f" ] || continue; \
+		b=$$(basename "$$f"); \
+		case "$$b" in *.old) continue;; esac; \
+		[ -f "deploy/dsh-plugins/$$b" ] || { echo "  prune stale plugin: $$b"; rm -f "$$f"; }; \
+	done
+	@echo "=== Done ==="
+
+# sync-registry: 把 skill-registry.json（技能安装源清单）同步到 ~/.dsh/config/。
+# 只有 otg install 会写它，make deploy 此前漏了 —— 导致仓库 v2 清单与运行时
+# v1 长期漂移（skill-doctor 依据它判断缺失依赖）。
+sync-registry:
+	@echo "=== Syncing skill-registry.json to ~/.dsh/config/ ==="
+	@mkdir -p $(HOME)/.dsh/config
+	@-rm -f $(HOME)/.dsh/config/skill-registry.json.old 2>/dev/null || true
+	@-mv $(HOME)/.dsh/config/skill-registry.json $(HOME)/.dsh/config/skill-registry.json.old 2>/dev/null || true
+	@cp config/skill-registry.json $(HOME)/.dsh/config/skill-registry.json
 	@echo "=== Done ==="
 
 # ===========================================================================
 # deploy — 唯一部署入口（替代 install-force）。
-#   构建 → 单测 → busy-safe 安装 → 同步 skill/插件 → 写 drop-in override
-#   → daemon-reload → 重启 watcher → 插件变更时顺带重启 agent-server。
+#   构建 → 单测 → busy-safe 安装 → 同步 skill/插件/技能清单
+#   → vault-map 补默认字段 → 写 drop-in override
+#   → agent-server 所有权收敛（managed=true 停 systemd/清孤儿，防 8799 冲突）
+#   → daemon-reload → 重启 watcher
+#   → managed=false 时按 checksum 判断是否重启 dsh-agent-server。
 # 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
 # ===========================================================================
 deploy: build test
@@ -106,9 +145,10 @@ deploy: build test
 		cp $$b $(HOME)/.local/bin/$$b; \
 		cp $$b $(GOBIN)/$$b; \
 	done
-	@echo "=== [2/6] sync skill docs + plugins ==="
+	@echo "=== [2/6] sync skill docs + plugins + skill-registry ==="
 	@$(MAKE) sync-docs
 	@$(MAKE) sync-plugins
+	@$(MAKE) sync-registry
 	@echo "=== [2b/6] append missing vault-map.json default fields (safe merge) ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
@@ -121,7 +161,20 @@ deploy: build test
 	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
 	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
 	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
-	@echo "=== [4/6] daemon-reload + restart watcher ==="
+	@echo "=== [4/6] agent-server ownership reconcile (before daemon restart) ==="
+	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+		CFG="$$SKILL_DIR/config/vault-map.json"; \
+		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
+		if [ "$$managed" = "true" ]; then \
+			echo "  agent_server_managed=true → daemon 自管 agent-server；停掉 systemd 实例并清理孤儿，避免 8799 冲突"; \
+			systemctl --user disable --now dsh-agent-server 2>/dev/null || true; \
+			pkill -f "headless-agent-server" 2>/dev/null || true; \
+			sleep 1; \
+			echo "  (重启 daemon 后由其拉起全新 agent-server，插件/技能变更即生效)"; \
+		else \
+			echo "  agent_server_managed=false → 由 systemd 管理 agent-server，deploy 不干预其生命周期"; \
+		fi
+	@echo "=== [5/6] daemon-reload + restart watcher ==="
 	systemctl --user daemon-reload
 	-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
 	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
@@ -131,13 +184,24 @@ deploy: build test
 		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
 		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
 	fi
-	@echo "=== [5/6] agent-server (restart only if plugin changed) ==="
-	@if [ -n "$$(git diff --name-only -- deploy/dsh-plugins/agent-server.mjs deploy/dsh-plugins/agent-monitor.html 2>/dev/null | head -1)" ]; then \
-		echo "  agent-server plugin/monitor changed — restarting dsh-agent-server"; \
-		systemctl --user restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
-	else \
-		echo "  agent-server plugin/monitor unchanged — no restart needed"; \
-	fi
+	@echo "=== [5b/6] externally-managed agent-server: restart if plugin changed ==="
+	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+		CFG="$$SKILL_DIR/config/vault-map.json"; \
+		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
+		if [ "$$managed" = "false" ]; then \
+			changed=""; \
+			for f in agent-server.mjs agent-monitor.html; do \
+				cmp -s "deploy/dsh-plugins/$$f" "$(HOME)/.dsh/plugins/$$f" 2>/dev/null || changed="yes"; \
+			done; \
+			if [ -n "$$changed" ]; then \
+				echo "  agent-server plugin/monitor changed — restarting dsh-agent-server"; \
+				systemctl --user restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
+			else \
+				echo "  agent-server plugin/monitor unchanged — no restart needed"; \
+			fi; \
+		else \
+			echo "  (agent_server_managed=true — daemon 已拉起新 agent-server，无需 systemd 重启)"; \
+		fi
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"
 	@echo "  rollback: make rollback"
@@ -159,6 +223,12 @@ deploy-status:
 		else st=MISSING; fi; \
 		[ "$$st" != "SAME" ] && echo "  $$st  $$rel"; \
 	done; \
+	for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
+		if [ -f "$(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md" ]; then \
+			diff -q obsidian-task-runner/skills/$$s/SKILL.md "$(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md" >/dev/null 2>&1 && st=SAME || st=DIFF; \
+		else st=MISSING; fi; \
+		[ "$$st" != "SAME" ] && echo "  $$st  obsidian-task-runner-$$s/SKILL.md"; \
+	done; \
 	echo "  (仅列出 DIFF/MISSING；无输出 = 全部已同步)"
 	@echo "=== plugin sync status ==="
 	@for f in deploy/dsh-plugins/*; do \
@@ -169,6 +239,10 @@ deploy-status:
 		[ "$$st" != "SAME" ] && echo "  $$st  plugins/$$b"; \
 	done; \
 	echo "  (仅列出 DIFF/MISSING；无输出 = 全部已同步)"
+	@echo "=== skill-registry sync status ==="
+	@if [ -f $(HOME)/.dsh/config/skill-registry.json ]; then \
+		diff -q config/skill-registry.json $(HOME)/.dsh/config/skill-registry.json >/dev/null 2>&1 && echo "  SAME" || echo "  DIFF → 跑 make deploy"; \
+	else echo "  MISSING → 跑 make deploy"; fi
 
 # rollback: 撤掉 drop-in override，daemon 回固定安装路径 ~/.local/bin/otg。
 rollback:
