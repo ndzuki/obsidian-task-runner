@@ -52,6 +52,11 @@ Projects/ (ADR, REQ, 实现) ──提取──> References/ (知识库)
 
 **默认触发（本地优先，零豁免）**：任何工作会话开始（自动化任务进入 project / 用户提问）先执行 Step 1 快查（读 INDEX.md 标题+topics+摘要列，约 1-2k token）；命中即引用，未命中才进入外部搜索。以下信号必须命中且优先深入检索：
 
+> **交互会话自动触发（agent-server 落地）**：`/agent/chat`（grilling / web 聊天 / 临时需求解决）的全新会话由 agent-server **自动注入**两类 KB-first 上下文到首条消息，模型只需按注入块执行，无需自己先建库：
+> 1. **项目工作区上下文**（`project` 字段命中 `<vault>/Projects/<dir>`）：注入该项目 `Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径，涉及项目本身的问题先据此回答。
+> 2. **全局 KB 预检索命中**（服务端 spawn `otg kb search --json`）：注入 top-3 命中 + 规则（先 read 踩坑/约束、不足再 `otg kb search`、未命中才外搜）。
+> 两者缺省经 daemon 的 `OTR_KB_VAULT` / `OTR_PROJECT_VAULT` 配置；未配置时注入整体关闭，交互会话回退人工 `otg kb search`。
+
 - 技术名词：Kubernetes、Docker、Go、Connect、gRPC、Helm、ArgoCD、
   Prometheus、OpenSearch、Nginx、APISIX、Istio、Git、Linux、SQL 等
 - 操作意图：怎么配置、如何部署、命令、参数、API、速查、cheatsheet

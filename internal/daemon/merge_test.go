@@ -233,6 +233,22 @@ target_branch: %s
 	if output, err := exec.Command("git", "-C", repo, "commit", "--allow-empty", "-m", "base").CombinedOutput(); err != nil {
 		t.Fatalf("commit base: %v: %s", err, output)
 	}
+	// Local bare origin (hermetic): the fixture repo must never touch the real
+	// GitHub. A remote pointing at a fake https URL leaks `git ls-remote --symref
+	// origin HEAD` / `fetch origin` to the network — on a machine with internet
+	// git then prompts "Username for 'https://github.com':" and `make test`
+	// hangs forever at the terminal (observed). A local bare origin keeps every
+	// git probe offline while still resolving a real default branch (main).
+	origin := filepath.Join(dir, "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", repo, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("add origin: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", repo, "push", "-q", "-u", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("push main: %v: %s", err, output)
+	}
 	// Create the feature branch and its WIP commit, then return the primary
 	// checkout to main so the task worktree can bind the feature branch.
 	if output, err := exec.Command("git", "-C", repo, "checkout", "-b", mergeFixtureBranch).CombinedOutput(); err != nil {
@@ -243,9 +259,6 @@ target_branch: %s
 	}
 	if output, err := exec.Command("git", "-C", repo, "checkout", "main").CombinedOutput(); err != nil {
 		t.Fatalf("checkout main: %v: %s", err, output)
-	}
-	if output, err := exec.Command("git", "-C", repo, "remote", "add", "origin", "https://github.com/x/y.git").CombinedOutput(); err != nil {
-		t.Fatalf("add origin: %v: %s", err, output)
 	}
 	// The task worktree is created with the same key the daemon uses, so
 	// processMergeTask reuses it instead of creating a second one.
@@ -737,6 +750,72 @@ exit 0
 	}
 	if !fm.MergeApproved {
 		t.Fatal("merge_approved must stay true after environmental retry exhaustion")
+	}
+}
+
+// TestCompleteMergeRefreshesCheckpointFromApprovedHead guards the TASK-065
+// 2026-08-28 reopen: completeMerge writes done with the checkpoint_commit
+// carried forward to approved_head (the head that actually merged). Round 2's
+// checkpoint may be a commit a later rebase dropped; leaving it behind makes
+// detectStaleDoneReopens misread the freshly-merged task as an undelivered
+// increment and reopen it seconds after merge.
+func TestCompleteMergeRefreshesCheckpointFromApprovedHead(t *testing.T) {
+	f := newMergeFixture(t)
+	const oldCkpt = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const approved = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := yamlfrontmatter.Update(f.taskPath, map[string]interface{}{
+		"checkpoint_commit": oldCkpt,
+		"approved_head":     approved,
+	}); err != nil {
+		t.Fatalf("set frontmatter: %v", err)
+	}
+	if err := f.runner.completeMerge(f.candidate, f.repo, mergeFixturePR); err != nil {
+		t.Fatalf("completeMerge: %v", err)
+	}
+	raw, err := os.ReadFile(f.taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(raw)
+	if err != nil || fm == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if fm.Status != "done" || fm.MergeStatus != "merged" {
+		t.Fatalf("status=%q merge_status=%q, want done/merged", fm.Status, fm.MergeStatus)
+	}
+	if fm.CheckpointCommit != approved {
+		t.Fatalf("checkpoint_commit = %q, want approved_head %q carried forward", fm.CheckpointCommit, approved)
+	}
+}
+
+// TestCompleteMergeKeepsCheckpointWithoutApprovedHead guards the conservative
+// fallback: legacy tasks with no approved_head keep their checkpoint untouched
+// (no worse than before — the stale-done check owns reopen semantics).
+func TestCompleteMergeKeepsCheckpointWithoutApprovedHead(t *testing.T) {
+	f := newMergeFixture(t)
+	const oldCkpt = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := yamlfrontmatter.Update(f.taskPath, map[string]interface{}{
+		"checkpoint_commit": oldCkpt,
+		"approved_head":     "",
+	}); err != nil {
+		t.Fatalf("set frontmatter: %v", err)
+	}
+	if err := f.runner.completeMerge(f.candidate, f.repo, mergeFixturePR); err != nil {
+		t.Fatalf("completeMerge: %v", err)
+	}
+	raw, err := os.ReadFile(f.taskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(raw)
+	if err != nil || fm == nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if fm.Status != "done" || fm.MergeStatus != "merged" {
+		t.Fatalf("status=%q merge_status=%q, want done/merged", fm.Status, fm.MergeStatus)
+	}
+	if fm.CheckpointCommit != oldCkpt {
+		t.Fatalf("checkpoint_commit = %q, want unchanged %q", fm.CheckpointCommit, oldCkpt)
 	}
 }
 

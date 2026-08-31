@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -94,6 +95,16 @@ var kbSearchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// --vault/--db override the vault-map targets so callers (e.g.
+		// agent-server's interactive KB-first precompute) can search an
+		// explicit global knowledge vault without a map file. Embedding
+		// backend config (if any) still comes from the loaded map.
+		if kbSearchVault != "" {
+			cfg.ObsidianVault = kbSearchVault
+		}
+		if kbSearchDB != "" {
+			cfg.KBDb = kbSearchDB
+		}
 		query := strings.Join(args, " ")
 		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
 		// SQLite-backed retrieval: FTS5 BM25 (persistent, incremental) with
@@ -106,10 +117,10 @@ var kbSearchCmd = &cobra.Command{
 			ready, stored := knowledge.VecStatus(dbPath)
 			switch {
 			case !ready:
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
+				fmt.Fprintln(cmd.ErrOrStderr(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
 				client = nil
 			case stored != "" && stored != cfg.KBEmbedding.Model:
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
+				fmt.Fprintf(cmd.ErrOrStderr(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
 				client = nil
 			}
 		}
@@ -126,6 +137,18 @@ var kbSearchCmd = &cobra.Command{
 				hits = hits[:cfg.KBRerank.TopN]
 			}
 			hits = knowledge.RerankResults(hits, query, rc, kbSearchLimit)
+		}
+		if kbSearchJSON {
+			// Machine-readable output for the interactive KB-first precompute
+			// (agent-server spawns `otg kb search --json`). Deterministic
+			// field order; warnings stay on stderr. Nil hits encode as [] not
+			// null so the consumer always sees an array.
+			if hits == nil {
+				hits = []knowledge.SearchResult{}
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetEscapeHTML(false)
+			return enc.Encode(hits)
 		}
 		if len(hits) == 0 {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no local knowledge matched %q — try web_search/Context7\n", query)
@@ -425,6 +448,9 @@ var kbIndexCmd = &cobra.Command{
 var (
 	kbSearchLimit    int
 	kbSearchArchived bool
+	kbSearchVault    string
+	kbSearchDB       string
+	kbSearchJSON     bool
 )
 
 func init() {
@@ -433,6 +459,9 @@ func init() {
 	kbSearchCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbSearchCmd.Flags().IntVar(&kbSearchLimit, "limit", 5, "max results")
 	kbSearchCmd.Flags().BoolVar(&kbSearchArchived, "archived", false, "include the archived/ layer in search (default: core + extended)")
+	kbSearchCmd.Flags().StringVar(&kbSearchVault, "vault", "", "explicit knowledge vault root (overrides map-file obsidian_vault)")
+	kbSearchCmd.Flags().StringVar(&kbSearchDB, "db", "", "explicit kb store path (overrides map-file kb_db)")
+	kbSearchCmd.Flags().BoolVar(&kbSearchJSON, "json", false, "emit machine-readable JSON array (for interactive KB-first precompute)")
 	kbAskCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbAskCmd.Flags().IntVar(&kbAskLimit, "limit", 5, "max retrieved references")
 	kbAskCmd.Flags().StringVar(&kbAskModel, "model", "", "chat model override (default: kb_chat.model)")

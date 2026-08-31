@@ -51,6 +51,10 @@ POST /agent/run
     status?: string               // 任务 frontmatter 状态（供 /agents 监控面板按
                                   // 真实状态动画：refining/plan-review/implementing/
                                   // review/...；模型运行时忽略该字段）
+    taskId?: string               // 精确任务标识（2026-08-28 会话残留修复新增）：
+                                  // agent-server 经 /agents 回传，daemon 重启后
+                                  // fresh Start 前据此 cancel 上一代残留的 working
+                                  // 会话，保证同一任务同一时刻只有一个活跃写者
     toolPolicy?: string           // 工具白名单（如 "read,grep,glob,bash"）：
                                   // 只读审查会话（conventions/audit）注入硬约束
                                   // preamble；事后校验白名单外 tool/call →
@@ -59,6 +63,12 @@ POST /agent/run
   → 200 { text, outcome, sessionId, errorCode? }
     outcome: success | failed | timeout | interrupted | quota | key_unavailable | tool_policy_violation
 ```
+
+`GET /agents` 元素含 `taskId` 与 `task` 两个任务字段：`taskId` 是派发时携带的
+精确标识（reconcile 的权威匹配键）；`task` 是从 prompt 正则推导的展示标签，
+仅在 `taskId` 缺失（旧版本会话）时作回退匹配。daemon 侧 reconcile 只 cancel
+`status=working` 的同任务会话——idle 会话是等待 durable resume 的已完成 run，
+不动。
 
 ## 4. 修改面
 

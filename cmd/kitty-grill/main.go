@@ -34,6 +34,12 @@ type chatRequest struct {
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	SessionID       string `json:"sessionId,omitempty"`
+	// KBQuery 是新会话（sessionId 空）时给 agent-server 的精准 KB-first
+	// 预检索查询词（通常为任务标题）；服务端据此注入预检索命中块。
+	KBQuery string `json:"kbQuery,omitempty"`
+	// Project 是当前工作区项目名（从任务文件路径推导）；命中已注册项目时
+	// 服务端注入项目上下文（CONTEXT/ADR/规范），让 agent 不用从零推理。
+	Project string `json:"project,omitempty"`
 }
 
 type chatResponse struct {
@@ -100,7 +106,7 @@ func main() {
 			prompt += "\n\n" + ctx
 		}
 	}
-	if err := repl(*addr, *provider, *model, *effort, prompt, *taskID, *vaultPath, *reqDoc); err != nil {
+	if err := repl(*addr, *provider, *model, *effort, prompt, *taskID, *taskTitle, *vaultPath, *reqDoc); err != nil {
 		fmt.Fprintf(os.Stderr, "kitty-grill: %v\n", err)
 		os.Exit(1)
 	}
@@ -249,6 +255,20 @@ func extractJSON(text string) (string, bool) {
 	return strings.TrimSpace(text[start : start+end]), true
 }
 
+// taskProject derives the project directory name from a task's resolved file
+// path (…/Projects/<dir>/Tasks/…), or "" when unresolvable.
+func taskProject(vaultPath, reqDoc, taskID string) string {
+	taskPath := resolveTaskFile(vaultPath, reqDoc, taskID)
+	marker := "Projects" + string(os.PathSeparator)
+	if i := strings.Index(taskPath, marker); i >= 0 {
+		rest := taskPath[i+len(marker):]
+		if j := strings.IndexByte(rest, os.PathSeparator); j > 0 {
+			return rest[:j]
+		}
+	}
+	return ""
+}
+
 // grillingStillActive resolves the task file for taskID (project derived from
 // the requirement path) and reports whether its frontmatter status is still
 // needs-grilling. Unresolvable/unparseable tasks report active — the guard must
@@ -352,7 +372,7 @@ func noPendingScreen() string {
 `
 }
 
-func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc string) error {
+func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, reqDoc string) error {
 	sessionID := ""
 
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════╗\n")
@@ -365,7 +385,7 @@ func repl(addr, provider, model, effort, prompt, taskID, vaultPath, reqDoc strin
 
 	// 阶段 1：生成问卷。
 	fmt.Print("⏳ 正在深度勘察并生成问卷（可能需要 1-3 分钟）…\n\n")
-	resp, err := chat(addr, provider, model, effort, sessionID, prompt, 0)
+	resp, err := chat(addr, provider, model, effort, sessionID, prompt, 0, taskTitle, taskProject(vaultPath, reqDoc, taskID))
 	if err != nil {
 		return err
 	}
@@ -657,7 +677,7 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx 
 	}
 	var lastErr error
 	for attempt := 1; attempt <= writebackMaxAttempts; attempt++ {
-		resp, err := chat(addr, provider, model, effort, sessionID, answers, writebackTimeout)
+		resp, err := chat(addr, provider, model, effort, sessionID, answers, writebackTimeout, "", "")
 		if err == nil {
 			fmt.Printf("writeback ok (attempt %d): session=%s\n%s\n", attempt, sessionID, resp.Text)
 			closeChatSession(addr, sessionID)
@@ -689,7 +709,7 @@ func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx 
 // and closes it afterwards. No resume dependency on the lost session.
 func freshWriteback(addr, provider, model, effort string, ctx *writebackContext) error {
 	prompt := ctx.FreshPrompt()
-	resp, err := chat(addr, provider, model, effort, "", prompt, writebackTimeout)
+	resp, err := chat(addr, provider, model, effort, "", prompt, writebackTimeout, "", "")
 	if err != nil {
 		return err
 	}
@@ -791,11 +811,34 @@ func closeTabArgs(windowID string) []string {
 	return []string{"kitty", "@", "close-window", "--match", "id:" + windowID}
 }
 
+// isTestProcess reports whether the current process is a `go test` binary.
+// go test always passes `-test.*` flags to the test binary, and the binary is
+// named `*.test` — either check reliably identifies a test run. closeOwnTab()
+// must NEVER fire under tests: a `make test` run inside a kitty tab inherits
+// KITTY_WINDOW_ID/KITTY_LISTEN_ON, so the remote-control close would delete the
+// user's real tab (observed 2026-08-28: make test killed the tab running it).
+func isTestProcess() bool {
+	for _, a := range os.Args {
+		if strings.HasPrefix(a, "-test.") {
+			return true
+		}
+	}
+	if exe, err := os.Executable(); err == nil && strings.HasSuffix(exe, ".test") {
+		return true
+	}
+	return false
+}
+
 // closeOwnTab closes the kitty tab this questionnaire runs in via remote
 // control, using KITTY_WINDOW_ID injected by kitty into launched windows.
 // Silent no-op when not running inside kitty (manual runs, tests) or when
 // kitty is unavailable — the daemon's debounce re-opens a tab when needed.
+// Also a hard no-op under `go test`: the test binary must never close the
+// user's tab even when the inherited env makes it look like a real session.
 func closeOwnTab() {
+	if isTestProcess() {
+		return
+	}
 	windowID := os.Getenv("KITTY_WINDOW_ID")
 	if windowID == "" {
 		return
@@ -823,13 +866,15 @@ func closeOwnTab() {
 
 // chat sends one message to the agent-server and returns the model reply.
 // timeout == 0 means no timeout (interactive questionnaire generation).
-func chat(addr, provider, model, effort, sessionID, message string, timeout time.Duration) (*chatResponse, error) {
+func chat(addr, provider, model, effort, sessionID, message string, timeout time.Duration, kbQuery, project string) (*chatResponse, error) {
 	body, err := json.Marshal(chatRequest{
 		Message:         message,
 		Provider:        provider,
 		Model:           model,
 		ReasoningEffort: effort,
 		SessionID:       sessionID,
+		KBQuery:         kbQuery,
+		Project:         project,
 	})
 	if err != nil {
 		return nil, err

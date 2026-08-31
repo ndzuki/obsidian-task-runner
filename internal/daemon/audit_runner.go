@@ -362,6 +362,12 @@ func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoD
 		executor = newPhaseExecutor(r.cfg)
 		r.phaseExecutor = executor
 	}
+	// 审计会话同样先 reconcile 上一代 daemon 残留的 working 会话：daemon 重启
+	// 时旧审计会话仍在外部 agent-server 跑，fresh Start 会形成两个会话并发
+	// 审计同一 worktree（会话残留 Bug 报告观测的 3 个并行 CI-fix/审计会话）。
+	if err := r.cancelStaleTaskSessions(executor, t.ID); err != nil {
+		return nil, "", fmt.Errorf("audit stale-session reconcile: %w", err)
+	}
 	handle, err := executor.Start(ctx, spec, TaskSnapshot{TaskID: t.ID, TaskPath: t.FilePath, Project: t.Project, RepoDir: repoDir})
 	if err != nil {
 		return nil, "", fmt.Errorf("audit start: %w", err)

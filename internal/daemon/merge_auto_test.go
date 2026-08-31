@@ -8,8 +8,10 @@ import (
 
 // TestCanAutoApproveMerge guards the auto_merge re-authorization gate
 // (TASK-051/059 lesson): a merge-failure fallback that is REQ-stable with
-// repair budget left re-authorizes automatically, while permanent defects
-// (gh unavailable, repo mismatch), REQ drift, exhausted budget, and manual
+// repair budget left re-authorizes automatically — including GITHUB_UNAVAILABLE
+// (transient keyring/network failures recover; the merge gate re-checks gh
+// auth and revokes again when the CLI is genuinely absent) — while the
+// permanent repo-mismatch defect, REQ drift, exhausted budget, and manual
 // tasks stay human-gated. A fresh review (no phase error) always qualifies.
 func TestCanAutoApproveMerge(t *testing.T) {
 	const reqHash = "sha256:abc"
@@ -60,9 +62,17 @@ func TestCanAutoApproveMerge(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "gh unavailable is permanent",
+			name: "gh unavailable without req hash stays manual",
 			task: task.ReadyTask{Status: "review", AutoMerge: true, PhaseErrorCode: "GITHUB_UNAVAILABLE"},
 			want: false,
+		},
+		{
+			name: "gh unavailable with stable req re-authorizes (transient keyring/network)",
+			task: task.ReadyTask{Status: "review", AutoMerge: true,
+				PhaseErrorCode: "GITHUB_UNAVAILABLE", PlanReqHash: reqHash, MergeRetryCount: 0},
+			hash: reqHash,
+			max:  3,
+			want: true,
 		},
 		{
 			name: "repo mismatch is permanent",

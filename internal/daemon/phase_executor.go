@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -22,6 +23,38 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
 	}
 	return newDSHEmbedExecutor(cfg.AgentServerAddr, "")
+}
+
+// staleSessionReconciler is implemented by executors with server-side durable
+// sessions (dsh-embed). Before any fresh Start for a task, the runner cancels
+// still-working sessions of a previous daemon incarnation (daemon restarts
+// leave them alive inside the externally managed agent-server), so restarts
+// can never accumulate concurrent writers on the same worktree. Spawn-style
+// executors without server-side sessions do not implement it.
+type staleSessionReconciler interface {
+	CancelStaleTaskSessions(ctx context.Context, taskID string) error
+}
+
+// cancelStaleTaskSessions cancels still-working agent-server sessions labelled
+// with the given task, when the executor supports it. No-op for task-less
+// sessions (pm/grilling) and for executors without server-side sessions. Uses
+// a short detached context: the dispatch ctx may already be near its deadline
+// and the reconcile must not ride it. Errors are returned so callers abort
+// the fresh Start (a failed enumeration means the writer set is unknown).
+func (r *Runner) cancelStaleTaskSessions(executor PhaseExecutor, taskID string) error {
+	if taskID == "" || executor == nil {
+		return nil
+	}
+	rec, ok := executor.(staleSessionReconciler)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := rec.CancelStaleTaskSessions(ctx, taskID); err != nil {
+		return fmt.Errorf("cancel stale task sessions: %w", err)
+	}
+	return nil
 }
 
 // runDSHPhase executes one phase through the configured phaseExecutor and maps
@@ -118,6 +151,18 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 			}
 			r.logger.Printf("task %s: resume failed (%v), falling back to fresh start", snap.TaskID, err)
 		}
+	}
+
+	// Fresh start：先 reconcile 同一任务上一代 daemon 残留的 working 会话。
+	// 残留会话（daemon 重启后仍跑在外部 agent-server 里）与本次新会话会并发
+	// 写同一 worktree——必须先把旧会话 cancel 掉，保证同一任务同一时刻只有
+	// 一个活跃写者。reconcile 失败（服务器不可达/响应异常）时中止本次派发，
+	// 按可重试中断上报：宁可这轮不跑，也不冒险叠加第二个写者。
+	if err := r.cancelStaleTaskSessions(executor, snap.TaskID); err != nil {
+		r.logger.Printf("task %s: cancel stale sessions before fresh start failed: %v", snap.TaskID, err)
+		res := &ExecutionResult{Phase: spec.Phase, Code: OutcomeInterrupted, Error: "stale-session reconcile failed: " + err.Error()}
+		outcome, code, reason := mapExecOutcome(res)
+		return res, outcome, code, reason
 	}
 
 	handle, err := executor.Start(ctx, spec, snap)

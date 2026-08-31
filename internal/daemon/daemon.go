@@ -52,6 +52,7 @@ type Runner struct {
 	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (free-tier exhaustion exponential backoff)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
 	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
+	envCleanupSeen     sync.Map              // taskPath → dead-end episode signature (env teardown ran once per episode)
 	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
@@ -892,6 +893,14 @@ func (r *Runner) scanAndProcess() error {
 	r.autoCloseMergedConflictPRs()
 	r.detectStaleDoneReopens()
 	r.recoverUnExtractedKnowledge()
+	// Env teardown safety net: blocked / needs-grilling / closed tasks may be
+	// outside the ready batch (IsReady filters blocked-with-phase-failure and
+	// closed), and a pending_req blocked task is routed to refining by
+	// recoverBlockedPendingReq (below) in the SAME scan — so this sweep must
+	// run BEFORE the recovery passes, while the task is still blocked, or that
+	// block episode's k3d leftovers are never cleaned (TASK-066: k3d left
+	// after a requirement-driven block).
+	r.cleanupDeadEndTaskEnvs()
 	r.fixBlockedGateErrorCodes()
 	r.autoResumeAgedBlocks()
 	r.resolveBlockedDependencies()
@@ -1355,6 +1364,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if transition.Status == "done" || transition.Status == "closed" {
 				r.cleanupTaskArtifacts(t.FilePath, r.repoDirForTask(t.Project))
 			}
+			if transition.Status == "closed" {
+				// Closing a task freezes it; tear down disposable k3d
+				// environments left by a previously interrupted implementing
+				// session (TASK-066 blocked-residual lesson).
+				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
+			}
 			if strings.Contains(transition.Reason, "auto_approve") {
 				// Default plan automation (auto_approve defaults true, so
 				// Grilling is the only manual gate): tell the user the plan
@@ -1412,6 +1427,9 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// (5-min debounce) that walks the pending decisions; answers
 				// are written back to the list and the daemon's answer-hash
 				// change detection auto-distributes.
+				// Dead-end: no round2 runs here, so tear down any k3d the
+				// implementing session left (TASK-066 blocked-residual lesson).
+				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 && !grillingListPaused(listPath) {
 					gp, gm := mapDSHModel(r.cfg.Model("default"))
 					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm)
@@ -1419,6 +1437,10 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
 				continue
 			} else {
+				// Waiting for a grilling answer is a dead-end (no round2
+				// runs); tear down any k3d the implementing session left
+				// behind (TASK-066 blocked-residual lesson).
+				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 				r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
 				// Debounce: suppress repeated reminders during active grilling sessions.
 				if last, ok := r.grillNotified.Load(t.ID); ok {
@@ -1433,6 +1455,9 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			}
 		}
 		if t.Status == "closed" {
+			// A closed task is frozen and never runs another phase; clean up
+			// disposable k3d environments left behind before it was closed.
+			r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 			continue
 		}
 
@@ -3020,7 +3045,20 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 	for _, t := range tasks {
 		taskPath := t.FilePath
 
+		// Env teardown episode marker: a task that left the dead-end states
+		// and is running again must be eligible for a fresh teardown the next
+		// time it blocks (and the marker map stays bounded).
+		if t.Status != "blocked" {
+			r.envCleanupSeen.Delete(taskPath)
+		}
+
 		if t.Status == "blocked" {
+			// The implementing session may have left disposable k3d clusters /
+			// registries / networks behind when it wrote blocked (requirement
+			// change / phase failure / pending_req replan). Tear them down
+			// once per blocked episode (TASK-066: k3d left running after a
+			// requirement-driven block).
+			r.cleanupBlockedEnv(taskPath, t.ID, t.Title)
 			// Cooldown: don't touch a task that was recently blocked by phase failure.
 			if ts, ok := r.phaseFailures.Load(taskPath); ok {
 				if time.Since(ts.(time.Time)) < 2*time.Minute {

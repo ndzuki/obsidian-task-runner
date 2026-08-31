@@ -4,10 +4,42 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 )
+
+// agentServerEnv returns the environment for the managed agent-server
+// subprocess. It carries the global shared knowledge-base root so general
+// interactive sessions (/agent/chat) can do a KB-first precompute
+// (`otg kb search --json`) even when the session is not tied to a project,
+// plus the vault that holds the registered projects (Projects/) so a
+// workspace-scoped session can also resolve and consult that project's own
+// Notes/CONTEXT.md, Notes/adr/ and PROJECT-CONVENTIONS.md instead of
+// reasoning from scratch. OTR_KB_VAULT falls back to the daemon's
+// ObsidianVault; OTR_OTG_PATH pins the daemon's own otg binary for the
+// precompute subprocess (systemd PATH may not include it). Empty KB vault on
+// both sides disables the injection.
+func (r *Runner) agentServerEnv() []string {
+	kbVault := r.cfg.KBVault
+	if kbVault == "" {
+		kbVault = r.cfg.ObsidianVault
+	}
+	otgPath := ""
+	if exe, err := os.Executable(); err == nil {
+		otgPath = exe
+	}
+	return append(os.Environ(),
+		"OTR_KB_VAULT="+kbVault,
+		"OTR_KB_DB="+knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb),
+		"OTR_PROJECT_VAULT="+r.cfg.ObsidianVault,
+		"OTR_MAP_FILE="+r.cfg.ConfigPath,
+		"OTR_OTG_PATH="+otgPath,
+	)
+}
 
 // startAgentServer 拉起长驻 agent-server（`dsh --profile headless-agent-server`）
 // 并等待健康检查通过。executor != "dsh-embed" 时 no-op。子进程日志写入 daemon
@@ -22,6 +54,7 @@ func (r *Runner) startAgentServer(ctx context.Context) error {
 		cmd := exec.CommandContext(ctx, r.cfg.DSHCmd, "--profile", "headless-agent-server")
 		cmd.Stdout = r.logWriter
 		cmd.Stderr = r.logWriter
+		cmd.Env = r.agentServerEnv()
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("start agent-server: %w", err)

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
+	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
 type phaseExecutorStub struct {
@@ -454,5 +456,144 @@ func TestRunDSHPhaseResumeServerEndedTurnFallsBackFresh(t *testing.T) {
 	}
 	if outcome != OutcomeSuccess || code != "" {
 		t.Fatalf("outcome/code = %q/%q, want fresh-start success", outcome, code)
+	}
+}
+
+// reconcileExecutorStub 记录 CancelStaleTaskSessions（reconcile）调用并支持
+// Resume/Start，用于验证 fresh Start 前的会话残留清理接线。
+type reconcileExecutorStub struct {
+	resumeResult    *ExecutionResult
+	startResult     *ExecutionResult
+	resumeCalled    bool
+	startCalled     bool
+	reconcileCalled bool
+	reconcileTaskID string
+	reconcileErr    error
+}
+
+func (e *reconcileExecutorStub) Name() string                         { return "reconcile-stub" }
+func (e *reconcileExecutorStub) Cancel(context.Context, string) error { return nil }
+func (e *reconcileExecutorStub) Resume(_ context.Context, _ PhaseSpec, _ string, _ time.Duration) (ExecutionHandle, error) {
+	e.resumeCalled = true
+	return phaseHandleStub{result: e.resumeResult}, nil
+}
+func (e *reconcileExecutorStub) Start(context.Context, PhaseSpec, TaskSnapshot) (ExecutionHandle, error) {
+	e.startCalled = true
+	return phaseHandleStub{result: e.startResult}, nil
+}
+func (e *reconcileExecutorStub) CancelStaleTaskSessions(_ context.Context, taskID string) error {
+	e.reconcileCalled = true
+	e.reconcileTaskID = taskID
+	return e.reconcileErr
+}
+
+// TestRunDSHPhaseFreshStartReconcilesStaleSessions 守护会话残留修复：
+// fresh Start 之前必须先 reconcile（cancel 上一代 daemon 残留的同任务 working
+// 会话），之后才允许派发新会话。
+func TestRunDSHPhaseFreshStartReconcilesStaleSessions(t *testing.T) {
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &reconcileExecutorStub{startResult: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+
+	_, outcome, code, _ := r.runDSHPhase(context.Background(), PhaseSpec{Phase: "round2"}, TaskSnapshot{TaskID: "TASK-065"})
+	if !stub.reconcileCalled || stub.reconcileTaskID != "TASK-065" {
+		t.Fatalf("fresh start 前必须 reconcile 同任务旧会话，reconcile=%v taskID=%q", stub.reconcileCalled, stub.reconcileTaskID)
+	}
+	if !stub.startCalled {
+		t.Fatal("reconcile 通过后应继续 Start")
+	}
+	if outcome != OutcomeSuccess || code != "" {
+		t.Fatalf("outcome/code = %q/%q, want success", outcome, code)
+	}
+}
+
+// TestRunDSHPhaseReconcileFailureAbortsFreshStart：reconcile 失败（服务器
+// 不可达/响应异常）时必须中止 fresh Start，按可重试中断上报——写者集合未知
+// 时绝不叠加新会话。
+func TestRunDSHPhaseReconcileFailureAbortsFreshStart(t *testing.T) {
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &reconcileExecutorStub{reconcileErr: errors.New("agent-server /agents unreachable")}
+	r.phaseExecutor = stub
+
+	res, outcome, code, _ := r.runDSHPhase(context.Background(), PhaseSpec{Phase: "audit"}, TaskSnapshot{TaskID: "TASK-065"})
+	if !stub.reconcileCalled {
+		t.Fatal("fresh start 前必须尝试 reconcile")
+	}
+	if stub.startCalled {
+		t.Fatal("reconcile 失败后不得 Start：未知写者集合上叠新会话会复现并行写")
+	}
+	if outcome != OutcomeInterrupted || code != ErrPhaseInterrupted {
+		t.Fatalf("outcome/code = %q/%q, want interrupted/PHASE_INTERRUPTED（可重试）", outcome, code)
+	}
+	if res == nil || res.Code != OutcomeInterrupted {
+		t.Fatalf("result = %+v, want interrupted", res)
+	}
+}
+
+// TestRunDSHPhaseResumeSkipsReconcile：durable resume 复用已有会话（token 仍
+// 有效），不是 fresh Start，不得 cancel 任何会话——会话上下文必须保留。
+func TestRunDSHPhaseResumeSkipsReconcile(t *testing.T) {
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "TASK-065.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"065\"\nexecutor_session_id: 'tok-065'\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &reconcileExecutorStub{resumeResult: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+
+	_, outcome, code, _ := r.runDSHPhase(context.Background(), PhaseSpec{Phase: "round2"}, TaskSnapshot{TaskID: "TASK-065", TaskPath: taskPath})
+	if !stub.resumeCalled {
+		t.Fatal("有 token 应走 Resume")
+	}
+	if stub.reconcileCalled {
+		t.Fatal("resume 复用会话时不得 reconcile（会话还在推进，cancel 会烧掉上下文）")
+	}
+	if outcome != OutcomeSuccess || code != "" {
+		t.Fatalf("outcome/code = %q/%q, want success", outcome, code)
+	}
+}
+
+// TestRunMergeAISessionReconcilesBeforeStart：CI-fix/conflict 会话直连 Start，
+// 派发前必须 reconcile 同任务旧会话（Bug 报告复现路径：CI-fix 并行写
+// worktree 导致修复反复失败）。
+func TestRunMergeAISessionReconcilesBeforeStart(t *testing.T) {
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &reconcileExecutorStub{startResult: &ExecutionResult{Code: OutcomeSuccess}}
+	r.phaseExecutor = stub
+
+	candidate := task.ReadyTask{ID: "TASK-065", FilePath: filepath.Join(t.TempDir(), "TASK-065.md"), Project: "demo"}
+	if err := r.runMergeAISessionDSH(context.Background(), candidate, ".", mergeFixCI, "gateway/gpt-5.4-mini", "prompt", time.Minute); err != nil {
+		t.Fatalf("runMergeAISessionDSH: %v", err)
+	}
+	if !stub.reconcileCalled || stub.reconcileTaskID != "TASK-065" {
+		t.Fatalf("CI-fix 派发前必须 reconcile，reconcile=%v taskID=%q", stub.reconcileCalled, stub.reconcileTaskID)
+	}
+	if !stub.startCalled {
+		t.Fatal("reconcile 通过后应继续 Start")
+	}
+}
+
+// TestRunAuditSessionReconcilesBeforeStart：审计会话同样直连 Start，派发前
+// 必须 reconcile 同任务旧会话。
+func TestRunAuditSessionReconcilesBeforeStart(t *testing.T) {
+	r := New(&config.Config{Executor: "dsh-embed"})
+	r.logger = log.New(io.Discard, "", 0)
+	stub := &reconcileExecutorStub{startResult: &ExecutionResult{Code: OutcomeFailed, Error: "boom"}}
+	r.phaseExecutor = stub
+
+	candidate := task.ReadyTask{ID: "TASK-065", FilePath: filepath.Join(t.TempDir(), "TASK-065.md"), Project: "demo", Status: "implementing"}
+	if _, _, err := r.runAuditSessionDSH(context.Background(), candidate, ".", ".", "gateway/gpt-5.4-mini", "prompt"); err == nil {
+		t.Fatal("stub 返回失败，runAuditSessionDSH 应报错")
+	}
+	if !stub.reconcileCalled || stub.reconcileTaskID != "TASK-065" {
+		t.Fatalf("审计派发前必须 reconcile，reconcile=%v taskID=%q", stub.reconcileCalled, stub.reconcileTaskID)
+	}
+	if !stub.startCalled {
+		t.Fatal("reconcile 通过后应继续 Start")
 	}
 }

@@ -1514,6 +1514,11 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 		t.Fatalf("second round dispatched = %d, want 1", got)
 	}
 	waitForStartCount(t, startDir, 3)
+	// The release file already exists from the first round, so the third OMP
+	// exits immediately; still wait for its runTask goroutine to fully unwind
+	// before the test returns — otherwise TempDir cleanup races the OMP's
+	// startDir writes and flakes with "directory not empty".
+	waitForTasksIdle(t, runner)
 }
 
 // TestRunScanCycleCoalescesRequestsDuringScan verifies the scan gate: a

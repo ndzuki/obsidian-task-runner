@@ -370,9 +370,9 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 		// Merge-failure fallbacks with repair budget left also enter the
 		// batch so the daemon's canAutoApproveMerge re-authorizes them
 		// (TASK-051/059: a strict empty-phase-error requirement stranded
-		// auto_merge tasks forever). Permanent defects (gh unavailable,
-		// wrong remote) and exhausted budgets are coarse-filtered here; the
-		// gate makes the precise REQ-hash/budget decision.
+		// auto_merge tasks forever). Permanent defects (wrong remote) and
+		// exhausted budgets are coarse-filtered here; the gate makes the
+		// precise REQ-hash/budget decision.
 		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && !isPermanentMergeDefect(fm.PhaseErrorCode))
 	case "conflict":
 		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && !isPermanentMergeDefect(fm.PhaseErrorCode))
@@ -390,12 +390,23 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 }
 
 // isPermanentMergeDefect reports whether a merge failure code is a permanent
-// environment/config defect that no retry can fix (gh CLI unavailable or the
-// origin remote points at the wrong repository). Both require a human action
-// (gh auth login / config fix); everything else — conflicts, CI failures,
-// base-commit drift — is re-attemptable while the repair budget lasts.
+// environment/config defect that no retry can fix. Only REPO_MISMATCH (the
+// origin remote points at the wrong repository) is truly permanent — it needs
+// a human config fix before any retry can succeed.
+//
+// GITHUB_UNAVAILABLE is NOT permanent here: it covers both a missing gh CLI
+// (human action needed) and transient failures (keyring lock hiccups, TLS
+// connect errors, timeouts) that recover on their own. Blocking the task
+// from the ready batch on GITHUB_UNAVAILABLE strands it forever even after
+// the environment heals — the re-authorization gate canAutoApproveMerge
+// already handles the "still broken" case by re-checking gh auth and
+// revoking authorization when the CLI is genuinely absent (TASK-065
+// 2026-08-28: gh keyring was unavailable for one scan, the task was
+// coarse-filtered out of the batch, and never re-entered even after gh
+// auth recovered). Everything else — conflicts, CI failures, base-commit
+// drift — is re-attemptable while the repair budget lasts.
 func isPermanentMergeDefect(phaseErrorCode string) bool {
-	return phaseErrorCode == "GITHUB_UNAVAILABLE" || phaseErrorCode == "REPO_MISMATCH"
+	return phaseErrorCode == "REPO_MISMATCH"
 }
 
 // OffPeakFn is the off-peak evaluator used by readiness checks. The daemon

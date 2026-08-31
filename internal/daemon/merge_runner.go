@@ -663,6 +663,7 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 		return err
 	}
 	r.cleanupTaskArtifacts(candidate.FilePath, repoDir)
+	r.cleanupMergeEnv(candidate.ID, candidate.Title)
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "已合入 fork 默认分支",
 		fmt.Sprintf("实现已 merge 到 %s 的 %s 分支并推送；请手动向团队项目提交 PR，团队 review 后合入", candidate.Project, defaultBranch), r.cfg.Notifications.Desktop)
 	r.logger.Printf("task %s: fork-merge delivery: %s merged into fork %s and pushed, awaiting manual team PR", candidate.ID, fm.TargetBranch, defaultBranch)
@@ -685,14 +686,35 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	// 2026-08-14: reopened minutes after PR #76 merged). Failure is silent —
 	// detectStaleDoneReopens re-fetches before reopening anyway.
 	fetchOriginMain(r.daemonCtx, repoDir)
-	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
+
+	updates := map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
 		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
-	}); err != nil {
+	}
+
+	// Delivery-evidence refresh: re-point checkpoint_commit at the head that
+	// actually merged (approved_head — recorded at push time and consumed by
+	// the PR). Round 2's checkpoint can be a commit that later rebases
+	// dropped, and detectStaleDoneReopens then misreads the freshly-merged
+	// task as an undelivered increment and reopens it seconds after merge
+	// (TASK-065 2026-08-28: PR #89 merged → "stale done reopened to
+	// refining" 10s later because checkpoint 581b371 was abandoned by the
+	// rebase that produced the delivered head). approved_head is in
+	// origin/main by construction after `gh pr merge --merge`, so the
+	// ancestry re-check passes. When approved_head is missing (legacy
+	// tasks), keep the old checkpoint — conservative, no worse than before.
+	if data, err := os.ReadFile(candidate.FilePath); err == nil {
+		if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.ApprovedHead != "" {
+			updates["checkpoint_commit"] = fm.ApprovedHead
+		}
+	}
+
+	if err := yamlfrontmatter.Update(candidate.FilePath, updates); err != nil {
 		return err
 	}
 	r.cleanupTaskArtifacts(candidate.FilePath, repoDir)
+	r.cleanupMergeEnv(candidate.ID, candidate.Title)
 	notify.SendTaskAction(candidate.ID, candidate.Title, "✅", "合并成功",
 		fmt.Sprintf("PR %s 已合并，任务完成", prURL), r.cfg.Notifications.Desktop)
 	// Step 0：把本任务知识提取到知识库（非阻塞，但计入 activeTasks——
@@ -1421,6 +1443,12 @@ func (r *Runner) runMergeAISessionDSH(ctx context.Context, candidate task.ReadyT
 	if executor == nil {
 		executor = newPhaseExecutor(r.cfg)
 		r.phaseExecutor = executor
+	}
+	// CI-fix/conflict 会话写 worktree，派发前必须先 cancel 上一代 daemon
+	// 残留的同任务 working 会话：daemon 重启叠新会话 → 并发改同一 worktree
+	// → CI 修复反复失败（会话残留 Bug 报告，3 个并行 CI-fix/审计会话）。
+	if err := r.cancelStaleTaskSessions(executor, candidate.ID); err != nil {
+		return fmt.Errorf("merge fix session %s stale-session reconcile: %w", mode, err)
 	}
 	handle, err := executor.Start(ctx, spec, TaskSnapshot{
 		TaskID:   candidate.ID,

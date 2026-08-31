@@ -185,6 +185,26 @@ otg install \
 }
 ```
 
+### 环境收尾（`env_cleanup`，默认开）
+
+实现会话（round2）常为冒烟测试自建 k3d 集群 / k3d registry / docker 网络，偶尔忘记拆除：任务合并后（TASK-065）或任务因需求/门禁阻塞、暂停（TASK-066）后这些临时环境会一直残留。daemon 在任务 merge 完成或进入阻塞/暂停终态时自动兜底删除这些可丢弃资源：
+
+```json
+"env_cleanup": {
+  "on_merge": true,
+  "on_block": true,
+  "exclude": ["kb-reranker", "ollama-sycl", "deployd-customer"],
+  "dry_run": false
+}
+```
+
+- `on_merge`（默认 `true`）：任务进入 merged/done 终态时自动删除 k3d 集群、k3d registry 及其残留网络。先删 registry（断开与集群网络的连接）再删集群，最后兜底删 `k3d-<cluster>` 网络。
+- `on_block`（默认 `true`）：任务停止实现但未合并时自动删除同样的可丢弃资源——`blocked`（阶段失败 / 需求变更 / pending_req 重规划）、`needs-grilling`（等待 grilling 或 parked）、`closed`。每段阻塞只清理一次（按 `blocked_at` 等状态签名去重），任务恢复后再阻塞会再次清理。
+- `exclude`：名称子串白名单，永不删除（用户常驻服务、想保留的持久集群）。
+- `dry_run`：只记录和通知"将清理什么"，不实际删除，用于先审计再信任。
+- 该清理只针对 k3d 集群 / k3d registry / k3d 网络，不触碰任意 docker 容器（kb-reranker、ollama-sycl 等常驻服务天然不在 k3d 列表内）。
+- 想保留冒烟环境人工检查就设 `"on_merge": false` / `"on_block": false`。
+
 `project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
 
 **团队已有项目（私有 Gitea 等）**：手动注册并标记 `project_type: team`（daemon 禁止自动建仓/提升/gh 操作，首个任务自动过只读规范审查门禁）。`merge_mode` 按开发方式选择——`manual`：直接在团队仓库上开发，交付停在推分支、你在仓库 UI 人工合并；`fork-merge`（推荐）：`git_remote` 指向你自己的 fork，自动化 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。详见 `docs/workflow.md` §6.5.1。
@@ -256,6 +276,22 @@ flowchart LR
 配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；**注意**：配置 `kb_db` 覆盖路径后，`otg kb hit` 的 hits 同步仍走默认库（该命令无配置上下文）——保持默认路径则实时生效，覆盖路径下 hits 在下次内容变更同步时从 frontmatter 补入。
 
 **Intel Arc 显卡方案**：Ollama 官方镜像不带 Intel GPU 后端。Intel Arc 独显请用社区 SYCL 构建 `eleiton/ollama-intel-arc`（本机副本 `~/src/repos/github.com/ndzuki/ollama-intel-arc`，`docker compose -f docker-compose.ollama-sycl.yml up -d --build`，端口仍为 11434，`kb_embedding` 配置无需改动）。完整部署、验证与排障见知识库 `core/containers/ollama-intel-arc.md`。
+
+### 交互会话本地优先（`kb_vault`，KB-first）
+
+自动化任务（round1/round2/refining 等）已强制"先查知识库"。这里把同一原则扩展到**普通交互会话**（`/agent/chat`：grilling、web 聊天、临时需求解决）——即便会话不属于任何 vault 项目，agent 也**带着问题先查全局共享知识库**，命中即引用（标注来源路径 + verified），未命中才自行推理/外搜，减少思考摸索与踩坑：
+
+```json
+"kb_vault": "/path/to/global-knowledge-vault"   // 全局共享知识库根（其 References/ 作为语料）
+```
+
+- 为空时回退 `obsidian_vault`；两者皆空则交互会话跳过注入（agent-server 仍可独立运行）。
+- daemon 拉起 agent-server 时经 `OTR_KB_VAULT` / `OTR_KB_DB` / `OTR_PROJECT_VAULT` 传入。**每个全新交互会话首条消息**，agent-server 注入两块：
+  1. **项目工作区上下文**（`/agent/chat` 带 `project` 字段，命中 `<vault>/Projects/<dir>` 已注册项目时）：注入该项目 `Notes/CONTEXT.md`（约束/反模式）、`Notes/adr/`（架构决策）、`Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束，最高优先）的紧凑摘要 + 文件路径，并明确"涉及项目本身的问题先据此回答、不要从零推理，需要细节用 read 读全文"。kitty-grill 会自动从任务文件推导项目名并传递。
+  2. **KB-first 全局预检索**：spawn `otg kb search --json --vault … --db …`（FTS5 BM25，配 embedding 自动混合、后端不可用回退 BM25），把 top-3 命中（来源/标题/摘要）注入——保证知识库必然被消费；命中不足时模型可再 `otg kb search` 深挖。检索失败（otg 不可用/库未建）自动回退注入 `References/INDEX.md` 索引摘要。
+- 客户端可带 `kbQuery` 字段提供更精准的全局检索查询词（kitty-grill 传任务标题）；否则服务端从首条消息派生。
+- 预检索带 TTL 缓存（同 vault+库+查询 10 分钟）+ 子进程超时，不会卡住聊天会话；只注入新会话首条，多轮不重复膨胀。`/agent/run`（daemon 阶段派发）不受影响。
+- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `deepseek_magic/deepseek-v4-pro`）。改 `agent-monitor.html` 后 `make deploy` 会重启 dsh-agent-server 使面板生效。
 
 ### 检索精排（`kb_rerank`，可选）
 

@@ -45,7 +45,7 @@ func (e *dshEmbedExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskS
 	// 预生成 sessionId：daemon 侧持有它，中断时即使 /agent/run 响应未返回，
 	// 也能用它持久化 executor_session_id 供 durable resume（否则 sessionId 由
 	// agent-server 内部生成，中断瞬间拿不到，resume 退化为 fresh start）。
-	return e.dispatch(ctx, spec, newSessionID())
+	return e.dispatch(ctx, spec, snap.TaskID, newSessionID())
 }
 
 // newSessionID 生成一个 agent-server 可接受的会话 id（daemon 侧预分配，
@@ -68,6 +68,12 @@ type embedResumeToken struct {
 	Model           string `json:"model"`
 	SkillPrompt     string `json:"skillPrompt"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// TaskID is the task this session was dispatched for. The agent-server
+	// labels the session with it (taskId), and the daemon cancels still-working
+	// sessions with the same taskId before a fresh Start — restarts must never
+	// accumulate concurrent writers on one worktree. Legacy tokens lack it and
+	// re-attach without re-labelling.
+	TaskID string `json:"taskId,omitempty"`
 }
 
 // Resume re-attaches to a durable session by decoding the resume token
@@ -105,7 +111,7 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, spec PhaseSpec, resumeTok
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, provider, model, taskText, effort, tok.SessionID, skillPrompt, spec.ToolPolicy, timeout)
+	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, tok.TaskID, provider, model, taskText, effort, tok.SessionID, skillPrompt, spec.ToolPolicy, timeout)
 }
 
 // Cancel aborts a wedged agent-server session (POST /agent/cancel): the model
@@ -121,7 +127,80 @@ func (e *dshEmbedExecutor) Cancel(ctx context.Context, resumeToken string) error
 	if err := json.Unmarshal([]byte(resumeToken), &tok); err != nil || tok.SessionID == "" {
 		return fmt.Errorf("dsh-embed cancel: invalid resume token")
 	}
-	body, err := json.Marshal(map[string]string{"sessionId": tok.SessionID})
+	return e.cancelSession(ctx, tok.SessionID)
+}
+
+// agentListEntry mirrors the GET /agents element the agent-server publishes
+// (deploy/dsh-plugins/agent-server.mjs): the taskId label is the authoritative
+// task identity; task is the display label derived from the prompt and only
+// used as a fallback for sessions created before the taskId field existed.
+type agentListEntry struct {
+	SessionID string `json:"sessionId"`
+	TaskID    string `json:"taskId"`
+	Task      string `json:"task"`
+	Status    string `json:"status"`
+}
+
+// CancelStaleTaskSessions cancels every agent-server session that is still
+// working for the given task. It is the daemon's restart reconcile step: a
+// previous daemon incarnation left its session running inside the (possibly
+// externally managed) agent-server, and any fresh Start for the same task
+// would otherwise add a second concurrent writer to the same worktree
+// (observed: 3 parallel CI-fix/audit sessions after repeated daemon restarts).
+// Only working sessions are cancelled — idle sessions are finished runs the
+// durable-resume token may still re-attach, and cancelling them would burn
+// resumable context. An enumeration failure is returned so the caller aborts
+// the fresh Start instead of risking a parallel writer.
+func (e *dshEmbedExecutor) CancelStaleTaskSessions(ctx context.Context, taskID string) error {
+	if taskID == "" {
+		return nil
+	}
+	agents, err := e.listAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range agents {
+		if a.Status != "working" {
+			continue // idle = finished run kept for durable resume — not a writer
+		}
+		if a.TaskID != taskID && a.Task != taskID {
+			continue
+		}
+		if err := e.cancelSession(ctx, a.SessionID); err != nil {
+			return fmt.Errorf("cancel stale session %s: %w", a.SessionID, err)
+		}
+	}
+	return nil
+}
+
+// listAgents fetches the agent-server's live session registry (GET /agents).
+func (e *dshEmbedExecutor) listAgents(ctx context.Context) ([]agentListEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+e.addr+"/agents", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent-server /agents HTTP %d", resp.StatusCode)
+	}
+	var agents []agentListEntry
+	if err := json.Unmarshal(body, &agents); err != nil {
+		return nil, fmt.Errorf("agent-server /agents bad response: %w", err)
+	}
+	return agents, nil
+}
+
+// cancelSession disposes one session on the agent-server (POST /agent/cancel).
+func (e *dshEmbedExecutor) cancelSession(ctx context.Context, sessionID string) error {
+	body, err := json.Marshal(map[string]string{"sessionId": sessionID})
 	if err != nil {
 		return err
 	}
@@ -157,6 +236,10 @@ type agentRunRequest struct {
 	// agent-server relays it to the monitor so the NPC animation follows
 	// the real task state; it is ignored by the model runtime.
 	Status string `json:"status,omitempty"`
+	// TaskID labels the session with the precise task identity. The
+	// agent-server reports it via GET /agents so a restarted daemon can
+	// cancel still-working sessions of the same task before a fresh Start.
+	TaskID string `json:"taskId,omitempty"`
 	// ToolPolicy restricts the session's tool surface ("read,grep,glob,bash"
 	// for the read-only conventions/audit sessions). The agent-server
 	// injects it as a hard session constraint and fails the run when a
@@ -172,7 +255,7 @@ type agentRunResponse struct {
 	Error     string `json:"error,omitempty"` // 失败详情消息（agent-server 8.24 起下发）
 }
 
-func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, sessionID string) (ExecutionHandle, error) {
+func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, taskID, sessionID string) (ExecutionHandle, error) {
 	provider, model := mapDSHModel(spec.Model)
 	taskText := e.dshTaskText(spec.SkillPrompt)
 	effort := mapDSHEffort(spec.ReasoningEffort)
@@ -180,13 +263,13 @@ func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, session
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
-	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, provider, model, taskText, effort, sessionID, spec.SkillPrompt, spec.ToolPolicy, timeout)
+	return e.startRequest(ctx, spec.Phase, spec.TaskStatus, taskID, provider, model, taskText, effort, sessionID, spec.SkillPrompt, spec.ToolPolicy, timeout)
 }
 
 // startRequest builds and launches the /agent/run request. dispatch maps the
 // OMP model/effort and injects the skill body; Resume re-uses it with the
 // already-mapped provider/model and re-injected task text.
-func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, provider, model, taskText, effort, sessionID, skillPrompt, toolPolicy string, timeout time.Duration) (ExecutionHandle, error) {
+func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, taskID, provider, model, taskText, effort, sessionID, skillPrompt, toolPolicy string, timeout time.Duration) (ExecutionHandle, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 
 	h := &embedHandle{
@@ -202,6 +285,7 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, prov
 			ReasoningEffort: effort,
 			SessionID:       sessionID,
 			Status:          status,
+			TaskID:          taskID,
 			ToolPolicy:      toolPolicy,
 		},
 		// Fields recorded to build the resume token once the session id is
@@ -209,6 +293,7 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, prov
 		provider:    provider,
 		model:       model,
 		effort:      effort,
+		taskID:      taskID,
 		skillPrompt: skillPrompt,
 		idleWindow:  timeout,
 		result:      make(chan *ExecutionResult, 1),
@@ -294,6 +379,7 @@ type embedHandle struct {
 	provider    string
 	model       string
 	effort      string
+	taskID      string
 	skillPrompt string
 	result      chan *ExecutionResult
 }
@@ -455,6 +541,7 @@ func (h *embedHandle) buildResumeToken(sessionID string) string {
 		Model:           h.model,
 		SkillPrompt:     h.skillPrompt,
 		ReasoningEffort: h.effort,
+		TaskID:          h.taskID,
 	}
 	if b, err := json.Marshal(tok); err == nil {
 		return string(b)

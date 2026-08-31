@@ -106,6 +106,11 @@ func (r *Runner) runPriorityAssessmentDSH(ctx context.Context, candidate task.Pr
 		executor = newPhaseExecutor(r.cfg)
 		r.phaseExecutor = executor
 	}
+	// 优先级评估同样写任务文档：派发前 reconcile 上一代 daemon 残留的
+	// working 会话（与 audit/merge CI-fix 同一会话残留问题）。
+	if err := r.cancelStaleTaskSessions(executor, candidate.ID); err != nil {
+		return r.recordPriorityFailure(candidate, attempts, fmt.Sprintf("priority stale-session reconcile: %v", err))
+	}
 	handle, err := executor.Start(ctx, spec, TaskSnapshot{
 		TaskID:   candidate.ID,
 		TaskPath: candidate.FilePath,

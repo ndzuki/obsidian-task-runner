@@ -13,6 +13,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// TestMain 防御：测试进程永远不允许继承真实 kitty 的窗口/套接字环境变量。
+// 否则任何触发 closeOwnTab() 的测试（如 repl 零决策分支）都会用
+// `kitty @ close-window --match id:<KITTY_WINDOW_ID>` 关闭用户正在跑
+// `make test` 的那个 tab（2026-08-28 观测：make test 卡死 + kitty tab 被删）。
+func TestMain(m *testing.M) {
+	os.Unsetenv("KITTY_WINDOW_ID")
+	os.Unsetenv("KITTY_LISTEN_ON")
+	os.Exit(m.Run())
+}
+
 func TestExtractJSON(t *testing.T) {
 	text := "前置说明\n```json\n{\"decisions\":[{\"id\":\"D1\"}]}\n```\n后续"
 	raw, ok := extractJSON(text)
@@ -85,7 +95,7 @@ func TestReplZeroDecisionsExitsCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- repl(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "prompt", "", "", "")
+		done <- repl(strings.TrimPrefix(srv.URL, "http://"), "p", "m", "low", "prompt", "", "", "", "")
 	}()
 	select {
 	case err := <-done:
@@ -249,6 +259,29 @@ func TestCloseTabArgs(t *testing.T) {
 		if args[i] != want[i] {
 			t.Fatalf("closeTabArgs = %v, want %v", args, want)
 		}
+	}
+}
+
+// TestCloseOwnTabNoopUnderTest 守护 make test 卡死 + kitty tab 被删的回归：
+// closeOwnTab() 在 go test 进程里必须是硬 no-op——即使 PATH 里有 kitty、环境
+// 注入了 KITTY_WINDOW_ID（用户在 kitty tab 里跑 make test 就是这种状态），也
+// 绝不能执行 `kitty @ close-window` 去关用户正在跑测试的那个 tab。
+func TestCloseOwnTabNoopUnderTest(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "kitty-called")
+	kittyScript := "#!/bin/sh\ntouch '" + marker + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "kitty"), []byte(kittyScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 手工恢复被 TestMain 清掉的环境，模拟「在真实 kitty tab 里跑测试」。
+	t.Setenv("PATH", dir)
+	t.Setenv("KITTY_WINDOW_ID", "win-42")
+	t.Setenv("KITTY_LISTEN_ON", "unix:/tmp/kitty-test-sock")
+
+	closeOwnTab()
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("closeOwnTab 在测试进程里必须 no-op：不得执行 kitty @ close-window（否则会关掉用户跑 make test 的 tab）")
 	}
 }
 

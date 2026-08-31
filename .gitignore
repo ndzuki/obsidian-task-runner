@@ -31,3 +31,6 @@ models/
 
 # local Go build caches (sandbox has no writable ~/.cache)
 .cache/
+
+# local scratch / test reference assets (never commit)
+tmp/

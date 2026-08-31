@@ -86,6 +86,18 @@ type Config struct {
 	// `k3d cluster stop`).
 	MemoryGate MemoryGateConfig `json:"memory_gate"`
 
+	// EnvCleanup is the daemon-side environment teardown that runs when an
+	// automated task stops implementing: at a terminal merge (OnMerge) or at
+	// a blocked / needs-grilling / closed dead-end (OnBlock). Implementing
+	// sessions build disposable staging environments (k3d clusters, k3d
+	// registries, docker networks) for smoke tests; when the session forgets
+	// to tear them down the audit gate reports "in-flight residual" and the
+	// merge completes (or the task blocks) with the environment still running
+	// (2026-08-28 TASK-065: 5 k3d clusters + 1 registry survived merge;
+	// TASK-066: k3d containers left after a requirement-driven block). This
+	// gate deletes those leftovers, bounded by Exclude and DryRun.
+	EnvCleanup *EnvCleanupConfig `json:"env_cleanup,omitempty"`
+
 	// Knowledge-base vector search (optional). When configured and the
 	// vector index exists, otg kb search blends embedding cosine similarity
 	// with BM25; otherwise BM25 alone is used (zero-dependency fallback).
@@ -103,6 +115,16 @@ type Config struct {
 	// Retrieval store path override (default: ~/.local/share/otg/kb.sqlite).
 	// Keep it outside the vault when the vault is cloud-synced.
 	KBDb string `json:"kb_db,omitempty"`
+
+	// KBVault is the global shared knowledge-base vault root whose
+	// References/ corpus is consulted by general interactive sessions
+	// (/agent/chat — grilling, web chat, ad-hoc requirement solving) that are
+	// NOT tied to a specific project. It lets non-vault / cross-project
+	// interactions apply existing validated experience and failure patterns
+	// first (KB-first) instead of re-deriving them from scratch. Empty falls
+	// back to ObsidianVault; when both are empty the interactive KB injection
+	// is disabled.
+	KBVault string `json:"kb_vault,omitempty"`
 	// Completion audit (independent verification before auto-merge).
 	Audit *AuditConfig `json:"audit,omitempty"`
 
@@ -218,6 +240,33 @@ type MemoryGateConfig struct {
 	MaxStops int `json:"max_stops"`
 	// Exclude holds name substrings never auto-stopped by recovery.
 	Exclude []string `json:"exclude"`
+}
+
+// EnvCleanupConfig drives the daemon-side environment teardown (see
+// Config.EnvCleanup). It deletes disposable k3d clusters, k3d registries,
+// and their leftover docker networks — resources that an implementing
+// session built for smoke tests and forgot to remove. It never touches user
+// services (kb-reranker, ollama-sycl, desktop processes) or anything in
+// Exclude.
+type EnvCleanupConfig struct {
+	// OnMerge enables teardown when a task reaches the merged/done terminal
+	// state. Disable it to keep smoke environments alive for manual
+	// inspection after merge.
+	OnMerge bool `json:"on_merge"`
+	// OnBlock enables teardown when a task stops implementing without
+	// merging: blocked by a phase failure, blocked by a requirement change /
+	// pending_req replan, held in needs-grilling, or closed. Implementing
+	// sessions can leave k3d clusters / registries / networks behind on these
+	// paths too (2026-08-28 release-manager TASK-066: k3d containers left
+	// running after a requirement-driven block). Same Exclude/DryRun guards
+	// as OnMerge.
+	OnBlock bool `json:"on_block"`
+	// Exclude holds name substrings never deleted by the teardown (persistent
+	// clusters the user wants to keep, e.g. "deployd-customer").
+	Exclude []string `json:"exclude"`
+	// DryRun logs and notifies what would be deleted without deleting it.
+	// Useful for auditing the teardown before trusting it.
+	DryRun bool `json:"dry_run"`
 }
 
 // Project defines a project mapping.
@@ -413,17 +462,27 @@ func Defaults() *Config {
 			MaxStops:        2,
 			Exclude:         []string{"kb-reranker", "ollama-sycl"},
 		},
-		SkillInstallDir:            filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
-		Models:                     DefaultModels(),
-		DSHCmd:                     "dsh",
-		DSHProfile:                 "headless",
-		AgentServerAddr:            "127.0.0.1:8799",
-		AgentServerManaged:         true,
-		VaultWebAddr:               "127.0.0.1:8787",
-		ReplanGateThreshold:        5,
-		Executor:                   "dsh-embed",
-		DefaultAssignee:            "",
-		Notifications:              NotifConfig{Desktop: true},
+		EnvCleanup: &EnvCleanupConfig{
+			// merge/blocked 后自动删除任务自建的可丢弃 k3d 集群/registry/网络，
+			// 兜底实现会话忘删的冒烟环境（TASK-065 merge 收尾缺口、TASK-066
+			// blocked 收尾缺口）。Exclude 与 memory_gate 同款红线，永不触碰
+			// 用户常驻服务。
+			OnMerge: true,
+			OnBlock: true,
+			Exclude: []string{"kb-reranker", "ollama-sycl"},
+			DryRun:  false,
+		},
+		SkillInstallDir:     filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
+		Models:              DefaultModels(),
+		DSHCmd:              "dsh",
+		DSHProfile:          "headless",
+		AgentServerAddr:     "127.0.0.1:8799",
+		AgentServerManaged:  true,
+		VaultWebAddr:        "127.0.0.1:8787",
+		ReplanGateThreshold: 5,
+		Executor:            "dsh-embed",
+		DefaultAssignee:     "",
+		Notifications:       NotifConfig{Desktop: true},
 	}
 }
 
@@ -611,6 +670,13 @@ func mergeDefaults(cfg *Config) {
 		}
 		if len(cfg.MemoryGate.Exclude) == 0 {
 			cfg.MemoryGate.Exclude = defaults.MemoryGate.Exclude
+		}
+	}
+	if cfg.EnvCleanup == nil {
+		cfg.EnvCleanup = defaults.EnvCleanup
+	} else {
+		if len(cfg.EnvCleanup.Exclude) == 0 {
+			cfg.EnvCleanup.Exclude = defaults.EnvCleanup.Exclude
 		}
 	}
 	if cfg.Audit == nil {

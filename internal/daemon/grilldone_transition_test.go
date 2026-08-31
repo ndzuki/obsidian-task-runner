@@ -189,6 +189,7 @@ title: Grill Done Not Approved
 project: release-manager
 status: needs-grilling
 plan_approved: false
+auto_approve: false
 grill_done: true
 grill_context: ""
 assignee: gpt
@@ -269,6 +270,7 @@ project: release-manager
 project_id: "001"
 status: needs-grilling
 plan_approved: false
+auto_approve: false
 plan_version: 0
 grill_done: false
 grill_prev_status: implementing

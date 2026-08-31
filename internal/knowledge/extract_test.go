@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -427,6 +428,56 @@ func TestAbsorbKnowledgeUnclassifiedArchived(t *testing.T) {
 	entries, _ := filepath.Glob(filepath.Join(vault, "References", "uncategorized", "TASK-interactive-pitfall-*.md"))
 	if len(entries) != 1 {
 		t.Fatalf("archived files = %v, want 1", entries)
+	}
+}
+
+// TestSlugTruncateKeepsUTF8Boundary guards the TASK-065 2026-08-28 pitfall
+// filename bug: byte slicing (slug[:30]) split Chinese titles mid-character,
+// producing invalid UTF-8 filenames the KB intake watcher could not re-read
+// (spurious 知识库格式不合规 toasts). Truncation must cut on rune boundaries.
+func TestSlugTruncateKeepsUTF8Boundary(t *testing.T) {
+	long := strings.Repeat("内存门禁阻断", 8) // 6 runes × 8 = 48 runes
+	got := slugTruncate(long, 30)
+	if !utf8.ValidString(got) {
+		t.Fatalf("slugTruncate produced invalid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n > 30 {
+		t.Fatalf("slugTruncate length = %d runes, want ≤ 30", n)
+	}
+	if strings.HasSuffix(got, "-") {
+		t.Fatalf("slugTruncate left trailing dash: %q", got)
+	}
+	short := "short"
+	if slugTruncate(short, 30) != short {
+		t.Fatalf("short slug modified: %q", slugTruncate(short, 30))
+	}
+}
+
+// TestAppendUnclassifiedPitfallUTF8Filename archives a pitfall with a long
+// Chinese title and asserts the generated filename is valid UTF-8.
+func TestAppendUnclassifiedPitfallUTF8Filename(t *testing.T) {
+	refsDir := filepath.Join(t.TempDir(), "References")
+	p := taskPitfall{
+		Title:     "内存门禁阻断真实环境续跑（v19 本会话）",
+		Time:      "2026-08-24",
+		Symptom:   "现象",
+		Failed:    "失败方案",
+		RootCause: "根因",
+		Success:   "成功方案",
+	}
+	if err := appendUnclassifiedPitfall(refsDir, p, "release-manager", "065"); err != nil {
+		t.Fatalf("appendUnclassifiedPitfall: %v", err)
+	}
+	entries, err := filepath.Glob(filepath.Join(refsDir, "uncategorized", "TASK-065-pitfall-*.md"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("archived files = %v (err=%v), want 1", entries, err)
+	}
+	name := filepath.Base(entries[0])
+	if !utf8.ValidString(name) {
+		t.Fatalf("pitfall filename is invalid UTF-8: %q", name)
+	}
+	if len([]rune(name)) == 0 {
+		t.Fatal("pitfall filename empty")
 	}
 }
 

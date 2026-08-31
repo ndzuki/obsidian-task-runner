@@ -358,17 +358,20 @@ func decodeFloat32(b []byte) []float32 {
 	return out
 }
 
-// SearchResult is one ranked hit.
+// SearchResult is one ranked hit. JSON tags are lowercase so machine
+// consumers (e.g. agent-server's interactive KB-first precompute running
+// `otg kb search --json`) get stable field names; the human CLI output and
+// `kb ask` reference blocks read the Go fields directly, unaffected by tags.
 type SearchResult struct {
-	Path    string
-	Title   string
-	Summary string
-	Score   float64
-	Chunk   string // best-matching section heading ("" when unknown)
+	Path    string  `json:"path"`
+	Title   string  `json:"title"`
+	Summary string  `json:"summary"`
+	Score   float64 `json:"score"`
+	Chunk   string  `json:"chunk,omitempty"` // best-matching section heading ("" when unknown)
 	// ChunkText is the embedded chunk text of the best-matching section
 	// ("" on the BM25-only path) — used by `kb ask` reference blocks and
 	// the rerank stage.
-	ChunkText string
+	ChunkText string `json:"chunkText,omitempty"`
 }
 
 // tokenize splits text into lowercase terms: ASCII word runs and CJK

@@ -8,6 +8,8 @@
     "temperature": 0.2
   },
   "kb_db": "/home/you/.local/share/otg/kb.sqlite",
+  "kb_vault": "/home/you/Obsidian/MainVault",
+  "_comment_kb_vault": "全局共享知识库根（可选）：普通交互会话（/agent/chat：grilling / web 聊天 / 临时需求解决）做 KB-first 服务端预检索的语料来源。缺省回退 obsidian_vault；两者皆空则交互会话跳过 KB 注入（agent-server 仍可独立运行）。设独立全局知识库后，已注册项目工作区的提问仍会从 obsidian_vault 的 Projects/ 查项目自身 CONTEXT/ADR/规范。",
   "kb_embedding": {
     "_comment": "知识库语义检索（可选）。配置后 otg kb search 混合 BM25 + 余弦；缺省此项则纯 BM25。ollama 需先运行并 ollama pull bge-m3。",
     "backend": "ollama",
@@ -66,6 +68,13 @@
     "model": ""
   },
   "auto_resume_aged_after_hours": 24,
+  "env_cleanup": {
+    "_comment": "环境收尾（默认开）：实现会话自建的 k3d 集群/registry/网络在任务 merge 完成（on_merge）或阻塞/暂停终态（on_block：blocked / needs-grilling / closed，TASK-066）时由 daemon 自动删除。exclude 是名称子串白名单，永不删除用户常驻服务（kb-reranker、ollama-sycl 等）；dry_run=true 只审计不删除。",
+    "on_merge": true,
+    "on_block": true,
+    "exclude": ["kb-reranker", "ollama-sycl"],
+    "dry_run": false
+  },
   "poll_interval_minutes": 30,
   "projects": [
     {

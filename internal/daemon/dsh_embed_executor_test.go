@@ -122,7 +122,7 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 		SkillPrompt:     "/obsidian-task-runner-round1 /vault/TASK.md",
 		TaskStatus:      "planning",
 		Timeout:         30 * time.Second,
-	}, TaskSnapshot{})
+	}, TaskSnapshot{TaskID: "TASK-001"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -154,6 +154,19 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	}
 	if gotReq.Status != "planning" {
 		t.Errorf("status = %q, want task status forwarded for agent-monitor", gotReq.Status)
+	}
+	if gotReq.TaskID != "TASK-001" {
+		t.Errorf("taskId = %q, want TASK-001 forwarded (agent-server labels the session for restart reconcile)", gotReq.TaskID)
+	}
+	if res == nil || res.ResumeToken == "" {
+		t.Fatal("resume token must be built")
+	}
+	var rtok embedResumeToken
+	if err := json.Unmarshal([]byte(res.ResumeToken), &rtok); err != nil {
+		t.Fatalf("resume token JSON: %v", err)
+	}
+	if rtok.TaskID != "TASK-001" {
+		t.Errorf("resume token taskId = %q, want TASK-001 (Resume re-labels the session)", rtok.TaskID)
 	}
 }
 
@@ -474,5 +487,71 @@ func TestDSHEmbedExecutorTimeoutActiveVsWedged(t *testing.T) {
 				t.Fatal("resume token must persist in both timeout variants")
 			}
 		})
+	}
+}
+
+// TestDSHEmbedExecutorCancelStaleTaskSessions 守护会话残留修复的 RPC 侧契约：
+// CancelStaleTaskSessions 枚举 GET /agents，只 cancel 与目标 taskId 匹配且仍
+// status=working 的会话（idle 会话是待 durable resume 的已完成 run，不得动；
+// taskId 缺失时回退 task 展示标签精确匹配）。枚举失败必须报错——调用方据此
+// 中止 fresh Start，避免在未知写者集合上叠加新会话。
+func TestDSHEmbedExecutorCancelStaleTaskSessions(t *testing.T) {
+	var cancels []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/agents":
+			w.Header().Set("content-type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"sessionId": "stale-1", "taskId": "TASK-065", "status": "working"},
+				{"sessionId": "stale-2", "taskId": "", "task": "TASK-065", "status": "working"},
+				{"sessionId": "keep-idle", "taskId": "TASK-065", "status": "idle"},
+				{"sessionId": "other-task", "taskId": "TASK-066", "status": "working"},
+				{"sessionId": "working-nolabel", "status": "working"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/agent/cancel":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			cancels = append(cancels, body["sessionId"])
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	if err := e.CancelStaleTaskSessions(context.Background(), "TASK-065"); err != nil {
+		t.Fatalf("CancelStaleTaskSessions: %v", err)
+	}
+	if len(cancels) != 2 || cancels[0] != "stale-1" || cancels[1] != "stale-2" {
+		t.Fatalf("cancelled sessions = %v, want [stale-1 stale-2]（只取消同任务 working 会话；idle 留给 resume，别任务/无标签不动）", cancels)
+	}
+}
+
+// TestDSHEmbedExecutorCancelStaleTaskSessionsEnumFailure：/agents 枚举失败时
+// 必须返回错误（调用方中止 fresh Start），绝不能静默通过后在未知写者集合上
+// 叠新会话。
+func TestDSHEmbedExecutorCancelStaleTaskSessionsEnumFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	if err := e.CancelStaleTaskSessions(context.Background(), "TASK-065"); err == nil {
+		t.Fatal("枚举失败必须报错，调用方需据此中止 fresh Start")
+	}
+}
+
+// TestDSHEmbedExecutorCancelStaleTaskSessionsEmptyTaskNoop：无任务标识的会话
+// （pm/grilling）不参与 reconcile，空 taskId 直接 no-op 不发请求。
+func TestDSHEmbedExecutorCancelStaleTaskSessionsEmptyTaskNoop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request for empty taskId: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	if err := e.CancelStaleTaskSessions(context.Background(), ""); err != nil {
+		t.Fatalf("empty taskId must be a no-op: %v", err)
 	}
 }

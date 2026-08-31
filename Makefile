@@ -1,4 +1,4 @@
-.PHONY: build test test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -11,15 +11,30 @@ build:
 	go build -tags sqlite_fts5 $(LDFLAGS) -o $(BINARY) ./cmd/otg/
 	go build -o $(GRILL) ./cmd/kitty-grill/
 
+# test/test-cover/bench：加 GIT_TERMINAL_PROMPT=0（任何泄漏到网络 git 的调用
+# 快速失败而非在终端卡死）与 -timeout 5m（单个包测试挂起时自行超时并打印
+# 卡住的测试名 + goroutine dump，而不是让 make 无限等待）。-p 4 限制并行包数，
+# 避免与运行中的 otg daemon / dsh-agent-server 抢资源导致机器卡顿。
+# test 顺带跑 agent-server 的 node 单测（node 不可用则跳过，不阻塞 Go 测试）。
 test:
-	go test -race -tags sqlite_fts5 -cover ./...
+	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -cover -p 4 -timeout 5m ./...
+	@$(MAKE) test-node
+
+# test-node: agent-server.mjs 的纯函数单测（KB-first 摘要/查询词推导/项目上下文）。
+# node 不可用时静默跳过——agent-server 本身由 dsh 的 node 运行时驱动，测试只是辅助。
+test-node:
+	@if command -v node >/dev/null 2>&1; then \
+		node deploy/dsh-plugins/agent-server.kb.test.mjs; \
+	else \
+		echo "  (node not found — skipping agent-server JS unit tests)"; \
+	fi
 
 test-cover:
-	go test -race -tags sqlite_fts5 -coverprofile=coverage.out ./...
+	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -coverprofile=coverage.out -p 4 -timeout 5m ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 bench:
-	go test -race -tags sqlite_fts5 -bench=. -benchmem ./...
+	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -bench=. -benchmem -timeout 5m ./...
 
 lint:
 	golangci-lint run ./...
@@ -108,11 +123,11 @@ deploy: build test
 		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
 	fi
 	@echo "=== [5/6] agent-server (restart only if plugin changed) ==="
-	@if [ -n "$$(git diff --name-only -- deploy/dsh-plugins/agent-server.mjs 2>/dev/null | head -1)" ]; then \
-		echo "  agent-server.mjs changed — restarting dsh-agent-server"; \
+	@if [ -n "$$(git diff --name-only -- deploy/dsh-plugins/agent-server.mjs deploy/dsh-plugins/agent-monitor.html 2>/dev/null | head -1)" ]; then \
+		echo "  agent-server plugin/monitor changed — restarting dsh-agent-server"; \
 		systemctl --user restart dsh-agent-server 2>/dev/null || echo "  (dsh-agent-server not running as user service; restart manually if needed)"; \
 	else \
-		echo "  agent-server.mjs unchanged — no restart needed"; \
+		echo "  agent-server plugin/monitor unchanged — no restart needed"; \
 	fi
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"

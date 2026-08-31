@@ -18,6 +18,11 @@ func newMemGateTestRunner(t *testing.T, vault string, gate config.MemoryGateConf
 	cfg := config.Defaults()
 	cfg.ObsidianVault = vault
 	cfg.MemoryGate = gate
+	// Hermetic tests: config.Defaults() turns desktop notifications ON, and
+	// TestEnforceMemoryGate* reaches the real notify path (ensureMemoryDecision
+	// / auto-recovery). Running `make test` must not pop real-looking
+	// "TASK-065 内存门禁…" toasts on the user's desktop — disable them.
+	cfg.Notifications.Desktop = false
 	r := New(cfg)
 	r.logger = log.New(io.Discard, "", 0)
 	return r

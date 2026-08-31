@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -809,6 +810,20 @@ func appendPitfallNote(path string, p taskPitfall, projectName, taskID string) (
 	return true, yamlfrontmatter.AtomicWrite(path, []byte(content))
 }
 
+// slugTruncate cuts a slug to at most max runes without splitting a
+// multi-byte UTF-8 character. The previous byte slicing (slug[:30]) split
+// Chinese titles mid-character and produced invalid UTF-8 filenames that the
+// KB intake watcher then could not re-read ("no such file or directory"),
+// which fired repeated 知识库格式不合规 toasts (TASK-065 2026-08-28:
+// pitfall filenames ended in broken byte sequences like 内存门禁阻断�).
+func slugTruncate(slug string, max int) string {
+	if utf8.RuneCountInString(slug) <= max {
+		return slug
+	}
+	cut := []rune(slug)[:max]
+	return strings.TrimRight(string(cut), "-")
+}
+
 // appendUnclassifiedPitfall archives a pitfall with no knowledge match under
 // References/uncategorized/ so the lesson is never dropped; Reclassify
 // vocabulary growth can migrate it later.
@@ -820,9 +835,7 @@ func appendUnclassifiedPitfall(refsDir string, p taskPitfall, projectName, taskI
 	slug := strings.ToLower(p.Title)
 	re := regexp.MustCompile(`[^\p{L}\p{N}]+`)
 	slug = strings.Trim(re.ReplaceAllString(slug, "-"), "-")
-	if len(slug) > 30 {
-		slug = slug[:30]
-	}
+	slug = slugTruncate(slug, 30)
 	if slug == "" {
 		slug = "pitfall"
 	}
@@ -989,9 +1002,7 @@ func appendUnclassifiedSummary(refsDir, title, text, projectName string) error {
 	slug := strings.ToLower(title)
 	re := regexp.MustCompile(`[^\p{L}\p{N}]+`)
 	slug = strings.Trim(re.ReplaceAllString(slug, "-"), "-")
-	if len(slug) > 30 {
-		slug = slug[:30]
-	}
+	slug = slugTruncate(slug, 30)
 	if slug == "" {
 		slug = "summary"
 	}
