@@ -15,9 +15,13 @@ disable-model-invocation: true
 
 ## 工具限制（强制）
 
-只允许 **read / grep / glob / bash（只读 git 查询）**。禁止 edit/write 之外的任何写操作——**唯一允许的写入是审查产物文档**（见 Step 4）。禁止修改任何源码、配置、文档。
+允许工具：**read / grep / glob / bash（只读 git 查询）** + **skill（加载技能）** +
+**todo_write（仅会话自身检查清单，非工作区文件）** + **job_output·job_list·job_kill（查看/
+管理你自己起的后台任务）** + **read_image（查看截图）** + **write（仅用于落盘审查产物文档，
+见 Step 4）**。禁止 edit / str_replace_editor；禁止修改任何源码、配置、文档——**唯一允许的
+写入是审查产物文档**（见 Step 4）。
 
-> daemon 层同步硬限制（2026-08-25 起）：本会话以 `ToolPolicy="read,grep,glob,bash"` 派发——embed 路径由 agent-server 注入硬约束 preamble 并对白名单外的 `tool/call` 判 `tool_policy_violation` 会话失败；spawn 路径政策前置进 prompt。本节自约束与 daemon 政策互为双保险，不是替代品。
+> daemon 层同步硬限制（2026-08-25 起，2026-08-31 修复）：本会话以 `ToolPolicy="read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image,write"` 派发——embed 路径由 agent-server 注入硬约束 preamble 并对白名单外的 `tool/call` 判 `tool_policy_violation` 会话失败；spawn 路径政策前置进 prompt。本节自约束与 daemon 政策互为双保险，不是替代品。此前漏掉 `skill/todo_write/job_output/write` 导致 TASK-080 的 conventions 门禁 2026-08-31 以 `CONVENTIONS_REVIEW_FAILED`（disallowed skill/todo_write/write）卡死。
 
 ## 禁止事项（需求契约）
 

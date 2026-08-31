@@ -655,7 +655,7 @@ daemon 在阶段会话成功后调用 `validateChangedDocs`：
 
 ### 7.4 完成审计（独立验证门禁）
 
-`auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 会运行**独立只读审计会话**（受限工具面 `--tools read,grep,bash`，无 write/edit——实现者不能自证完成，也不能修改工作区"种植证据"）：
+`auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 会运行**独立只读审计会话**（受限工具面 `auditToolPolicy` = `read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image`，无 write/edit——实现者不能自证完成，也不能修改工作区"种植证据"）：
 
 1. **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`。人工已设 `merge_approved=true` 的任务跳过审计（人工门禁优先）。
 2. **会话契约**：审计 prompt 要求逐条 AC 独立复核，输出 strict JSON `{"verdict":"pass|fail","failure_type":"implementation|requirement","summary":"...","ac_results":[...]}`，每条 AC 附原始证据（测试输出/命令输出/文件+行号）。模型取任务 assignee（可用 `audit.model` 覆盖），`--thinking off` 控成本，超时 `audit.timeout_minutes`（默认 15）。审计在**任务 worktree** 内运行（与 round2 同一分支状态——主 checkout 可能停在别的分支，验证错代码状态），worktree 不可用降级主 checkout 并告警。
@@ -1098,7 +1098,7 @@ flowchart LR
 4. ✅ **`upstream_stall_days` 每日一次**：通知 key 追加日期后缀（`|blocked_by_stale|<id>|<2006-01-02>`），进程内按日去重。
 5. ✅ **`executeMergeCLI` 死代码**：已删除（连同其测试）；生产合并只走 `mergePushCommand`（gh credential helper 注入）。
 6. ✅ **`pending_req` 无 planning 旁路**：auto-unblock 不再清 `pending_req`，且 `pending_req=true` 时 unblock 直接转 `refining`（禁止复用旧计划进 plan-review）；`OnReqDeleted` 保持 `pending_req` 原值（REQ_MISSING 恢复后必须重细化）。
-7. ✅ **conventions 会话只读工具面**：daemon 层为 conventions 会话注入 `ToolPolicy="read,grep,glob,bash"`（与 audit 对齐）——embed 路径经 `/agent/run` 的 `toolPolicy` 字段下发，agent-server 注入硬约束 preamble 并在白名单外 `tool/call` 出现时判 `tool_policy_violation` 失败；spawn 路径把政策前置进 prompt。
+7. ✅ **conventions 会话受限工具面**：daemon 层为 conventions 会话注入 `ToolPolicy=conventionsToolPolicy`（`read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image,write`——与 audit 对齐，额外允许 `write` 用于落盘审查产物 `Notes/PROJECT-CONVENTIONS.md`）——embed 路径经 `/agent/run` 的 `toolPolicy` 字段下发，agent-server 注入硬约束 preamble 并在白名单外 `tool/call` 出现时判 `tool_policy_violation` 失败；spawn 路径把政策前置进 prompt。白名单包含 harness 常规工具（skill/todo_write/job_*）否则会话必然被 `TOOL_POLICY_VIOLATION` 卡死（TASK-080/081 2026-08-31 教训）。
 8. ✅ **`DoneReopensMerge` team 守卫**：`processBatchSequential` 对 team 项目的 done 任务跳过 done→review 自动重开（team forge 生命周期完全人工）；非 team 形状照旧重开。
 9. ✅ **提前批准重置审计记录**：premature-plan-approval 重置现在向 TASK `## 变更记录` 追加 `PLAN_APPROVAL_RESET` 记录（`AppendAuditRecord` 首个生产调用方）。
 

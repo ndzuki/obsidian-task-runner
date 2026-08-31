@@ -74,8 +74,11 @@ const auditPromptTemplate = `你是独立完成审计员（independent completio
    - **阻塞证据（实现会话转 blocked/grilling 的）**：实现记录里标"疑似环境问题/未处理"的阻塞，必须有 debug 日志/复现输出佐证；无证据的归咎环境判 fail。
    - 上述任一类失败路径缺测试/证据 → verdict=fail（failure_type=implementation，summary 指出缺失的失败场景）。
 
-工具限制：你只有 read / grep / bash 三个工具（bash 仅用于运行测试与查询命令）。
-禁止修改任何文件、禁止任何 git 写操作、禁止提交。`
+工具限制：你只有只读/查询工具——read / grep / glob / bash（仅用于运行测试与查询命令）/
+skill（加载技能指令）/ todo_write（维护你自己的检查清单，仅会话自身记录，非工作区文件）/
+job_output·job_list·job_kill（查看与管理你自己启动的后台任务）/ read_image（查看截图）。
+禁止修改任何任务/代码/配置文件、禁止任何 git 写操作、禁止 edit/write/str_replace_editor
+等写工具、禁止提交。`
 
 // auditFailureType classifies a failed audit so the daemon can route the
 // task to the right recovery path: implementation defects go back to the
@@ -343,9 +346,8 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 // runAuditSessionDSH executes the read-only verification through the DSH
 // phase executor. DSH headless returns the STRICT-JSON verdict as free text;
 // parseAuditResult already isolates the object from surrounding prose/fences.
-// ToolPolicy (read,grep,bash) is carried in the spec; exact enforcement on the
-// DSH side is verified in the audit smoke pass (docs/phase5-executor-migration.md
-// §5.5).
+// auditToolPolicy is carried in the spec; exact enforcement on the DSH side is
+// verified in the audit smoke pass (docs/phase5-executor-migration.md §5.5).
 func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoDir, workDir, model, prompt string) (*auditResult, string, error) {
 	spec := PhaseSpec{
 		Phase:           "audit",
@@ -353,7 +355,7 @@ func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoD
 		ReasoningEffort: "low", // off 不是 DSH 声明的级别；low 是最省的显式推理
 		SkillPrompt:     prompt,
 		TaskStatus:      t.Status,
-		ToolPolicy:      "read,grep,bash",
+		ToolPolicy:      auditToolPolicy,
 		Timeout:         r.auditTimeout(),
 		WorkingDir:      workDir,
 	}

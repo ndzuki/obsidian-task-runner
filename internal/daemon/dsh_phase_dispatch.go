@@ -35,10 +35,14 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		WorkingDir:      repoDir,
 	}
 	// 只读基线审查会话（conventions）在 daemon 层限制工具面，与完成审计
-	// 会话（audit）对齐：read/grep/glob/bash 之外的工具一律违规。写操作
-	// 由会话产物（PROJECT-CONVENTIONS.md）之外禁止——审查是零代码修改。
+	// 会话（audit）对齐：白名单外（edit/str_replace_editor 等写源码工具）
+	// 一律违规。与 audit 的唯一差别是 conventions 允许 write——技能契约的
+	// 唯一写入就是审查产物 Notes/PROJECT-CONVENTIONS.md（一次性门禁标记），
+	// 该产物必须用 write 落盘；禁止 write 会让门禁永远无法完成
+	// （TASK-080 2026-08-31 CONVENTIONS_REVIEW_FAILED：disallowed write）。
+	// 审查本身仍是零代码修改。
 	if phase == "conventions" {
-		spec.ToolPolicy = "read,grep,glob,bash"
+		spec.ToolPolicy = conventionsToolPolicy
 	}
 	snap := TaskSnapshot{TaskID: t.ID, TaskPath: taskPath, Project: t.Project, RepoDir: repoDir}
 

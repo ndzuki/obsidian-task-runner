@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
@@ -240,10 +241,44 @@ func (e *specCaptureExecutor) Start(_ context.Context, spec PhaseSpec, _ TaskSna
 	return phaseHandleStub{result: e.result}, nil
 }
 
+// mustContain / mustExclude are sets of tool names for assertToolPolicy.
+type mustContain []string
+type mustExclude []string
+
+// assertToolPolicy verifies a comma-separated tool policy includes every
+// mustContain tool and excludes every mustExclude tool. It guards the
+// review-session whitelists against regressing to a list that omits the
+// harness's benign operating tools (skill/todo_write/job_*) or lets the
+// worktree-mutating edit/str_replace_editor back in.
+func assertToolPolicy(t *testing.T, policy string, include mustContain, exclude mustExclude) {
+	t.Helper()
+	set := make(map[string]bool)
+	for _, name := range strings.Split(policy, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			set[name] = true
+		}
+	}
+	for _, name := range include {
+		if !set[name] {
+			t.Errorf("tool policy %q missing required tool %q", policy, name)
+		}
+	}
+	for _, name := range exclude {
+		if set[name] {
+			t.Errorf("tool policy %q must exclude %q", policy, name)
+		}
+	}
+}
+
 // TestRunDSHPhaseDispatchConventionsRestrictsTools guards the gap-7 fix: the
-// conventions baseline-review session must carry the read-only tool policy at
+// conventions baseline-review session must carry the restricted tool policy at
 // the daemon layer (parity with the audit session), not rely on the skill's
-// prompt self-restraint.
+// prompt self-restraint. The policy must include the harness's benign tools
+// (skill/todo_write/job_output/job_kill/read_image) and write (the review
+// artifact), but must exclude the worktree-mutating edit/str_replace_editor —
+// otherwise the session fails with TOOL_POLICY_VIOLATION before it can write
+// PROJECT-CONVENTIONS.md (TASK-080 2026-08-31 CONVENTIONS_REVIEW_FAILED).
 func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeSuccess})
 	captor := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}
@@ -252,9 +287,10 @@ func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
 	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "conventions", "gateway/gpt-5.4-mini", "/obsidian-task-runner-conventions "+taskPath, "/tmp/task.log"); !handled {
 		t.Fatal("conventions dispatch must be handled")
 	}
-	if captor.spec.ToolPolicy != "read,grep,glob,bash" {
-		t.Fatalf("conventions ToolPolicy = %q, want read,grep,glob,bash", captor.spec.ToolPolicy)
+	if captor.spec.ToolPolicy != conventionsToolPolicy {
+		t.Fatalf("conventions ToolPolicy = %q, want %q", captor.spec.ToolPolicy, conventionsToolPolicy)
 	}
+	assertToolPolicy(t, captor.spec.ToolPolicy, mustContain{"read", "grep", "glob", "bash", "skill", "todo_write", "job_output", "job_kill", "read_image", "write"}, mustExclude{"edit", "str_replace_editor"})
 
 	// 对照组：普通阶段（refining）无工具限制。
 	captor2 := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}

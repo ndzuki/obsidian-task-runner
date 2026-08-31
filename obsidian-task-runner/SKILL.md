@@ -85,7 +85,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 - **架构约束重点（必查）**：数据库引擎分环境（dev vs test/prod）、schema/字段名结尾（`_at`/`_id` 等）、迁移机制与方言绑定。环境间引擎不一致 = 最高优先级硬约束，写入基线并进「需要人工确认」。
 - **消费**：基线随 `[Project Context]` 注入 refining/planning/round2/merge；Round 1 Step 1.8 与 Round 2「项目规范与架构约束对齐」强制按 test/prod 引擎设计 schema，不以 dev 引擎（如 SQLite）语义为准。
 - **失败**：审查失败/产物缺失 → 转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑，不跳过。
-- **只读工具面（daemon 层硬限制，2026-08-25 接线）**：conventions 会话以 `ToolPolicy="read,grep,glob,bash"` 派发（只读会话家族；audit 会话为 `read,grep,bash`，无 glob——两者都以只读为界，工具面略异）——embed 路径经 `/agent/run` 的 `toolPolicy` 下发，agent-server 注入硬约束 preamble 并在白名单外 `tool/call` 出现时判 `tool_policy_violation` 会话失败；spawn 路径把政策前置进 prompt。仅靠 skill prompt 自约束的日子结束。
+- **只读工具面（daemon 层硬限制，2026-08-25 接线，2026-08-31 修复）**：conventions 会话以 `ToolPolicy="read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image,write"` 派发（比 audit 多 `write`，用于落盘审查产物 `PROJECT-CONVENTIONS.md`）；audit 会话为 `read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image`（无 write）——两者都以「不修改工作区源码」为界，但白名单必须含 harness 常规工具（skill/todo_write/job_*），否则会话必然被 `TOOL_POLICY_VIOLATION` 卡死（TASK-080/081 2026-08-31 教训）——embed 路径经 `/agent/run` 的 `toolPolicy` 下发，agent-server 注入硬约束 preamble 并在白名单外 `tool/call` 出现时判 `tool_policy_violation` 会话失败；spawn 路径把政策前置进 prompt。仅靠 skill prompt 自约束的日子结束。
 
 ## Core Invariants（核心不变量）
 

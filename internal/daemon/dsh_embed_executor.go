@@ -240,10 +240,10 @@ type agentRunRequest struct {
 	// agent-server reports it via GET /agents so a restarted daemon can
 	// cancel still-working sessions of the same task before a fresh Start.
 	TaskID string `json:"taskId,omitempty"`
-	// ToolPolicy restricts the session's tool surface ("read,grep,glob,bash"
-	// for the read-only conventions/audit sessions). The agent-server
-	// injects it as a hard session constraint and fails the run when a
-	// disallowed tool call is observed.
+	// ToolPolicy restricts the session's tool surface (auditToolPolicy /
+	// conventionsToolPolicy for the read-only review sessions). The
+	// agent-server injects it as a hard session constraint and fails the run
+	// when a disallowed tool call is observed.
 	ToolPolicy string `json:"toolPolicy,omitempty"`
 }
 

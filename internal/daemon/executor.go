@@ -71,7 +71,8 @@ type PhaseSpec struct {
 	// design, grilling).
 	TaskStatus string
 	// ToolPolicy restricts the session's tool surface. Empty means the
-	// adapter default; the audit phase uses "read,grep,bash".
+	// adapter default; the audit/conventions review sessions carry
+	// auditToolPolicy / conventionsToolPolicy (see below).
 	ToolPolicy string
 	// Timeout bounds one execution. Zero uses the adapter default.
 	Timeout time.Duration
@@ -80,6 +81,30 @@ type PhaseSpec struct {
 	// ExtraEnv is passed to the child process (task temp env, credentials).
 	ExtraEnv []string
 }
+
+// auditToolPolicy and conventionsToolPolicy are the tool-surface whitelists for
+// the read-only review sessions (independent completion audit / project
+// conventions baseline review). They MUST include the harness's benign
+// operating tools the agent uses as standard procedure — skill (load skill
+// instructions), todo_write (agent scratch todo list, never the worktree),
+// job_output/job_list/job_kill (spawn & poll the background test jobs it
+// runs), read_image (inspect screenshots) — or the agent-server's post-hoc
+// whitelist enforcement fails EVERY session with TOOL_POLICY_VIOLATION and the
+// gate can never pass. This exact failure froze both review/merge automation
+// and the conventions gate on 2026-08-31: TASK-081 stuck in review through 14
+// consecutive audit failures (disallowed skill/todo_write/job_output), and
+// TASK-080 blocked with CONVENTIONS_REVIEW_FAILED (disallowed
+// skill/todo_write/write). The worktree-mutating tools that could plant
+// evidence or alter code (edit / str_replace_editor) stay excluded from both.
+//
+// conventions additionally allows write: its skill contract's ONLY write is
+// the review artifact Notes/PROJECT-CONVENTIONS.md (the one-shot gate marker),
+// which must be produced with `write` — forbidding it made the gate
+// unfinishable by design.
+const (
+	auditToolPolicy       = "read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image"
+	conventionsToolPolicy = "read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image,write"
+)
 
 // TaskSnapshot is the minimal durable task state an executor needs beyond the
 // spec: identity and the frontmatter path for write-back. The adapter itself

@@ -38,8 +38,12 @@
  *     → 200 { text, outcome, sessionId, errorCode?, error? }
  *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted | tool_policy_violation
  *     （error 字段承载失败详情消息；errorCode 为分类码，两者可都缺省。
- *     toolPolicy="read,grep,glob,bash" 等白名单：只读审查会话注入硬约束
- *     preamble，且事后校验白名单外的 tool/call → tool_policy_violation）
+ *     toolPolicy="read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image"（audit）
+ *     或追加 ",write"（conventions，用于落盘审查产物）等白名单：只读审查会话注入
+ *     硬约束 preamble，且事后校验白名单外的 tool/call → tool_policy_violation。
+ *     白名单必须含 harness 常规工具（skill/todo_write/job_*），否则会话必被
+ *     TOOL_POLICY_VIOLATION 卡死（TASK-080/081 2026-08-31 教训）；真正要挡的
+ *     是工作区写工具 edit/str_replace_editor。）
  *   POST /agent/chat body: { message, provider, model, reasoningEffort?, sessionId?, kbQuery?, project? }
  *     → 200 { text, outcome, sessionId, errorCode?, error? }（多轮交互）
  *     kbQuery 为可选的精准查询词（如任务标题）；project 为当前工作区项目名
@@ -113,7 +117,9 @@ function mapOutcome(reason) {
 }
 
 /** 工具政策（toolPolicy）支持：daemon 对只读审查会话（conventions/audit）
- * 传 "read,grep,glob,bash" 等允许工具白名单。这里做两层执行：
+ * 传 auditToolPolicy / conventionsToolPolicy 等允许工具白名单（含 harness
+ * 常规工具 skill/todo_write/job_*——漏了它们会话必被 TOOL_POLICY_VIOLATION
+ * 卡死，TASK-080/081 2026-08-31 教训）。这里做两层执行：
  *  1. prompt 注入：政策作为最高优先级约束块前置到任务文本；
  *  2. 事后强校验：会话事件中出现白名单外的 tool/call 即判定违规，
  *     outcome=tool_policy_violation（Go 侧映射为会话失败，禁止接受产物）。 */

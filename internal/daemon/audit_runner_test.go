@@ -13,6 +13,24 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
+// TestAuditToolPolicy guards the completion-audit tool whitelist: it must
+// carry the harness's benign operating tools (skill/todo_write/job_*/glob/
+// read_image) or the agent-server fails every session with
+// TOOL_POLICY_VIOLATION — the 2026-08-31 TASK-081 failure that kept the task
+// stuck in review with no merge. It must stay free of worktree-mutating tools
+// (write/edit/str_replace_editor) so the auditor cannot plant evidence.
+func TestAuditToolPolicy(t *testing.T) {
+	assertToolPolicy(t, auditToolPolicy,
+		mustContain{"read", "grep", "glob", "bash", "skill", "todo_write", "job_output", "job_list", "job_kill", "read_image"},
+		mustExclude{"write", "edit", "str_replace_editor"})
+	// The audit prompt must not tell the model to use a broader tool set than
+	// the hard enforcement allows (they are double insurance, not divergent).
+	// Specifically it must still prohibit the worktree-write tools.
+	if !strings.Contains(auditPromptTemplate, "edit/write/str_replace_editor") {
+		t.Errorf("audit prompt must explicitly prohibit edit/write/str_replace_editor (excluded by auditToolPolicy)")
+	}
+}
+
 // writeAuditOMP writes a fake OMP that records argv and emits a verdict JSON
 // selected by the AUDIT_VERDICT env var: pass / fail / invalid, anything else
 // exits non-zero (simulating a crashed session).
@@ -130,13 +148,14 @@ func TestReviewAuditPassProceedsToMergeAuthorization(t *testing.T) {
 	if fm.Status != "review" {
 		t.Fatalf("status = %q, want review kept", fm.Status)
 	}
-	// The audit session must run with the restricted tool surface.
+	// The audit session must run with the restricted tool surface: the
+	// agent-server preamble embeds the exact auditToolPolicy whitelist.
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatalf("read audit args: %v", err)
 	}
-	if !strings.Contains(string(args), "read / grep / bash") {
-		t.Fatalf("audit args = %q, want restricted read / grep / bash", args)
+	if !strings.Contains(string(args), auditToolPolicy) {
+		t.Fatalf("audit args = %q, want tool policy %q", args, auditToolPolicy)
 	}
 	// Audit log must be persisted for the implementer/user.
 	if fm.AuditLog == "" {
@@ -429,7 +448,7 @@ func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit args: %v", err)
 	}
-	if !strings.Contains(string(args), "read / grep / bash") {
-		t.Fatalf("audit args = %q, want restricted tools", args)
+	if !strings.Contains(string(args), auditToolPolicy) {
+		t.Fatalf("audit args = %q, want tool policy %q", args, auditToolPolicy)
 	}
 }
