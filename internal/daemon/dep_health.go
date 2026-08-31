@@ -441,6 +441,15 @@ func (r *Runner) validateDependencyRefs() {
 			continue
 		}
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
+		// 项目决策清单 paused/closed 是用户的主动暂停开关：该项目的依赖诊断
+		// 提醒（上游长期未完成、引用失效等）本质是"催促用户推进"，而用户已
+		// 明确搁置该项目，继续提醒只会形成桌面提醒风暴（TASK-003/004/005
+		// 被 paused 项目的 needs-grilling 上游阻塞时，每次 daemon 重启都会重发
+		// blocked_by_stale 提醒——diagNotifyAt 是纯内存）。暂停期静默诊断，
+		// 待清单 status 改回 open 后自动恢复。
+		if listPath := filepath.Join(projDir, "Notes", grillingDecisionListName); grillingListPaused(listPath) {
+			continue
+		}
 		tasksDir := filepath.Join(projDir, "Tasks")
 		taskIDs, taskStatus, closedReason, closedReplacement, unparsable, updatedByID, err := r.depIDs(tasksDir)
 		if err != nil {
@@ -742,6 +751,11 @@ func (r *Runner) projectHealthDiagnostics() {
 		}
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
 		tasksDir := filepath.Join(projDir, "Tasks")
+		// 项目决策清单 paused/closed 是用户的主动暂停开关：交付健康类诊断
+		// （rebaseline / stage-empty / oversize）本质是催促收口，用户已明确
+		// 搁置项目时继续提醒属于噪音。暂停期仍输出 in-flight 统计日志（观察
+		// 用），但跳过一切 notifyDiag 桌面提醒。
+		listPaused := grillingListPaused(filepath.Join(projDir, "Notes", grillingDecisionListName))
 		entries, err := os.ReadDir(tasksDir)
 		if err != nil {
 			continue
@@ -780,13 +794,13 @@ func (r *Runner) projectHealthDiagnostics() {
 		}
 
 		today := time.Now().Format("2006-01-02")
-		if mergedNotDone >= rebaselineWarnMergedNotDone && inFlight >= rebaselineWarnInFlight {
+		if !listPaused && mergedNotDone >= rebaselineWarnMergedNotDone && inFlight >= rebaselineWarnInFlight {
 			if !r.diagNotified(projectEntry.Name() + "|rebaseline|" + today) {
 				r.notifyDiag(projectEntry.Name(), "交付健康预警",
 					"in-flight="+itoa(inFlight)+" 个任务，其中 "+itoa(mergedNotDone)+" 个已合入但未收口——状态与代码事实脱节，建议运行 project-rebaseline skill 收口并重排阶段")
 			}
 		}
-		if stageEmpty >= stageEmptyWarn && !r.diagNotified(projectEntry.Name()+"|stage-empty|"+today) {
+		if !listPaused && stageEmpty >= stageEmptyWarn && !r.diagNotified(projectEntry.Name()+"|stage-empty|"+today) {
 			r.notifyDiag(projectEntry.Name(), "阶段缺失预警",
 				itoa(stageEmpty)+" 个进行中任务无 stage，依赖拓扑失效；建议 otg stage-plan init 或由 PM 统筹归组")
 		}
@@ -799,7 +813,7 @@ func (r *Runner) projectHealthDiagnostics() {
 					continue
 				}
 				stageID := stageIDFor(phase.Name)
-				if stageID != "" && stageCount[stageID] > phaseOversizeWarn && !r.diagNotified(projectEntry.Name()+"|oversize|"+today) {
+				if stageID != "" && stageCount[stageID] > phaseOversizeWarn && !listPaused && !r.diagNotified(projectEntry.Name()+"|oversize|"+today) {
 					r.notifyDiag(projectEntry.Name(), "阶段规模预警",
 						"阶段 "+phase.Name+" 持有 "+itoa(stageCount[stageID])+" 个任务，超过单阶段建议上限；建议 PM 拆阶段或收窄范围")
 				}
