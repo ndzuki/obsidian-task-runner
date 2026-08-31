@@ -199,6 +199,13 @@ deploy: build test
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → daemon 自管 agent-server；停掉 systemd 实例并清理孤儿，避免 8799 冲突"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server（bus 或服务状态异常），8799 可能仍被占用，请检查 systemctl --user status dsh-agent-server"; fi; \
+			# 关键：移除 watcher 对 dsh-agent-server 的 Requires 依赖。旧 install 生成
+			# 的 otg-task-watcher.service 无条件 Requires=dsh-agent-server（为
+			# managed=false 设计），导致每次 restart watcher 都强制拉起 dsh-agent-server
+			# 抢占 8799（2026-08-31 死锁）。写 drop-in 覆盖为无依赖。
+			mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d; \
+			printf '[Unit]\nAfter=\nRequires=\n' > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
+			$(SCTL) daemon-reload; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
 			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
@@ -299,6 +306,9 @@ daemon-recover:
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → 停 systemd 实例 + 清孤儿 + 等端口释放"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
+			mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d; \
+			printf '[Unit]\nAfter=\nRequires=\n' > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
+			$(SCTL) daemon-reload; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
 			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \

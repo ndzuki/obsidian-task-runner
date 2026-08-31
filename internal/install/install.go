@@ -2,6 +2,7 @@
 package install
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -533,10 +534,35 @@ func ConfigureSystemd(opts Options) error {
 		dshExec = abs
 	}
 
-	// Write service files. dsh-web and dsh-agent-server are independent user
-	// services; otg-task-watcher depends on the externally managed
-	// agent-server (agent_server_managed=false) so it starts after it is
-	// healthy instead of spawning a conflicting child process.
+	// agent_server_managed 决定 agent-server 所有权，systemd 单元必须跟随，
+	// 否则形成死锁（2026-08-31 事故）：
+	//   - managed=true（daemon 自管，默认）：watcher 不得 Requires dsh-agent-server，
+	//     也不启用该 service——否则每次 watcher 启动，systemd 强制拉起
+	//     dsh-agent-server（Requires + Restart=always）抢占 8799，daemon 自管
+	//     agent-server 永远 bind 失败、健康检查误连外部实例、任务审计冻结。
+	//   - managed=false（systemd 外部管理）：watcher Requires dsh-agent-server，
+	//     等它 healthy 后 watcher 再启动（现状）。
+	agentServerManaged := true
+	if mapFile := filepath.Join(home, ".dsh", "skills", "obsidian-task-runner", "config", "vault-map.json"); fileExists(mapFile) {
+		if data, err := os.ReadFile(mapFile); err == nil {
+			var m map[string]any
+			if json.Unmarshal(data, &m) == nil {
+				if v, ok := m["agent_server_managed"].(bool); ok {
+					agentServerManaged = v
+				}
+			}
+		}
+	}
+
+	// Write service files. dsh-web is an independent user service.
+	// dsh-agent-server + otg-task-watcher 的关系由 agent_server_managed 决定
+	//（见上）：managed=false 时 watcher 依赖外部 systemd 的 agent-server。
+	watcherRequires := ""
+	enableUnits := []string{"dsh-web.service", "otg-task-watcher.service"}
+	if !agentServerManaged {
+		watcherRequires = "After=dsh-agent-server.service\nRequires=dsh-agent-server.service\n"
+		enableUnits = []string{"dsh-agent-server.service", "dsh-web.service", "otg-task-watcher.service"}
+	}
 	services := map[string]string{
 		"dsh-agent-server.service": fmt.Sprintf(`[Unit]
 Description=DSH Agent Server (headless-agent-server for obsidian-task-runner)
@@ -574,10 +600,7 @@ WantedBy=default.target
 `, path, dshExec),
 		"otg-task-watcher.service": fmt.Sprintf(`[Unit]
 Description=Obsidian Task Watcher — 监听 Projects/ 文件变化,触发任务处理
-After=dsh-agent-server.service
-Requires=dsh-agent-server.service
-
-[Service]
+%s[Service]
 Type=simple
 Environment=OBSIDIAN_VAULT=%s
 Environment=PATH=%s
@@ -589,7 +612,7 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target
-`, opts.ObsidianVault, path, home),
+`, watcherRequires, opts.ObsidianVault, path, home),
 	}
 
 	for name, content := range services {
@@ -603,9 +626,15 @@ WantedBy=default.target
 		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n%s\n", err, out)
 		}
-		for _, unit := range []string{"dsh-agent-server.service", "dsh-web.service", "otg-task-watcher.service"} {
+		for _, unit := range enableUnits {
 			if out, err := exec.Command("systemctl", "--user", "enable", "--now", unit).CombinedOutput(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: systemctl enable %s failed: %v\n%s\n", unit, err, out)
+			}
+		}
+		// managed=true：确保 dsh-agent-server 不常驻（避免抢占 8799）。
+		if agentServerManaged {
+			if out, err := exec.Command("systemctl", "--user", "disable", "--now", "dsh-agent-server.service").CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: systemctl disable dsh-agent-server failed: %v\n%s\n", err, out)
 			}
 		}
 		fmt.Println("systemd units installed and enabled")
