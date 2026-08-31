@@ -205,7 +205,7 @@ deploy: build test
 			# 都强制拉起 dsh-agent-server 抢占 8799（2026-08-31 死锁）。用 sed 移除
 			# 这两行（保留 PATH/env/其余配置），再 daemon-reload。
 			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			sed -i -e '/^After=dsh-agent-server.service$/d' -e '/^Requires=dsh-agent-server.service$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
+			sed -i -e '/^After=dsh-agent-server.service$$/d' -e '/^Requires=dsh-agent-server.service$$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
 			$(SCTL) daemon-reload; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
@@ -308,7 +308,7 @@ daemon-recover:
 			echo "  agent_server_managed=true → 停 systemd 实例 + 移除 watcher Requires + 清孤儿 + 等端口释放"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
 			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			sed -i -e '/^After=dsh-agent-server.service$/d' -e '/^Requires=dsh-agent-server.service$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
+			sed -i -e '/^After=dsh-agent-server.service$$/d' -e '/^Requires=dsh-agent-server.service$$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
 			$(SCTL) daemon-reload; \
 			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
 			i=0; \
