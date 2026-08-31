@@ -1053,6 +1053,38 @@ func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
 	}
 }
 
+// TestIsManagedWorktreePath guards the worktree self-heal safety boundary: the
+// daemon may only auto-remove worktrees it created (under the managed
+// worktree root). A user's manual clone/checkout on the task branch (e.g.
+// release-manager-t081) lives OUTSIDE the managed root and must never be
+// considered managed — otherwise `git worktree remove --force` would delete
+// the user's directory (2026-08-31 TASK-081 branch held by release-manager-t081).
+func TestIsManagedWorktreePath(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "release-manager")
+	base := "" // 默认：<repo parent>/.otg-worktrees
+	managedRoot := worktreeRoot(base, repo)
+
+	managed := filepath.Join(managedRoot, repoHashOf(repo), "TASK-284659329fc947d9")
+	if !isManagedWorktreePath(managed, base, repo) {
+		t.Fatalf("task worktree %q must be managed (under %q)", managed, managedRoot)
+	}
+
+	userClone := filepath.Join(dir, "release-manager-t081") // 用户手动克隆，与 repo 同父级
+	if isManagedWorktreePath(userClone, base, repo) {
+		t.Fatalf("user clone %q must NOT be managed (outside %q)", userClone, managedRoot)
+	}
+
+	// 显式 worktree_base 覆盖下，管理根随之改变。
+	explicitBase := filepath.Join(dir, ".otg-wt")
+	if !isManagedWorktreePath(filepath.Join(explicitBase, repoHashOf(repo), "TASK-x"), explicitBase, repo) {
+		t.Fatalf("worktree under explicit base must be managed")
+	}
+	if isManagedWorktreePath(filepath.Join(dir, "elsewhere"), explicitBase, repo) {
+		t.Fatalf("path outside explicit base must not be managed")
+	}
+}
+
 func TestIsRound2(t *testing.T) {
 	tests := []struct {
 		name string

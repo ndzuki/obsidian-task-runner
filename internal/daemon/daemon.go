@@ -2655,6 +2655,26 @@ func taskWorktreePath(base, repoDir, taskID string) string {
 	return filepath.Join(worktreeRoot(base, repoDir), repoHashOf(repoDir), "TASK-"+taskID)
 }
 
+// isManagedWorktreePath reports whether p is a worktree the daemon owns —
+// i.e. under the managed worktree root (worktree_base, default
+// <repo parent>/.otg-worktrees). The self-heal in ensureTaskWorktree may only
+// auto-remove worktrees the daemon created; a branch may instead be checked
+// out by a user's manual clone/worktree (e.g. release-manager-t081, a
+// standalone checkout on the task branch), which `git worktree remove
+// --force` would DELETE. Guarding the removal keeps user working copies safe
+// (2026-08-31: TASK-081's branch was held by release-manager-t081 and merge
+// looped on the conflict — the remedy must be manual, never destructive).
+func isManagedWorktreePath(p, base, repoDir string) bool {
+	root := worktreeRoot(base, repoDir)
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		!filepath.IsAbs(rel)
+}
+
 // RemoveProjectWorktrees 注销项目前清理其全部任务 worktree：移除每个 TASK-*
 // 子目录、删除 repoHash 目录、并 prune 主仓库的失效注册。必须在项目条目仍
 // 在 vault-map 时调用（repoDir 已知）；条目删除后 cleanupOrphanWorktrees 不再
@@ -2726,6 +2746,20 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 				// detached round2 worktree and fell back to the main checkout).
 				cmd := exec.Command("git", "-C", path, "checkout", targetBranch)
 				if output, err := cmd.CombinedOutput(); err != nil {
+					// 目标分支可能被另一个 worktree 占用：若占用者是受管残留
+					// worktree（本 daemon 创建，属安全清理），remove --force 后
+					// 重试 checkout；若是用户手动 checkout/克隆（不在受管根下），
+					// 绝不自动删除——保留错误交由 merge notify 提示人工处理
+					// （release-manager-t081 持有 task/081 的场景）。
+					if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path && isManagedWorktreePath(occupied, base, repoDir) {
+						log.Printf("task worktree: detached %s blocked by stale managed worktree %s, removing and retrying checkout", path, occupied)
+						exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+						if output2, err2 := cmd.CombinedOutput(); err2 == nil {
+							return path, nil
+						} else {
+							return "", fmt.Errorf("checkout existing worktree %s to %q (after stale removal): %w: %s", path, targetBranch, err2, strings.TrimSpace(string(output2)))
+						}
+					}
 					return "", fmt.Errorf("checkout existing worktree %s to %q: %w: %s", path, targetBranch, err, strings.TrimSpace(string(output)))
 				}
 				return path, nil
@@ -2768,13 +2802,14 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 		return path, nil
 	}
 	// 分支占用自愈：add 失败可能是 targetBranch 被另一个残留 worktree 占用
-	// （如 merge ci-fix 的 taskxxx-cifix worktree 中断残留）。这不算危险操作
-	// —— 被占用的是任务自己的临时 worktree，remove --force 释放分支后重试，
-	// 不阻塞任务；无法自动清理时保留错误交由调用方（merge 已走 notifyFailure
-	// 桌面提醒）。
+	// （如 merge ci-fix 的 taskxxx-cifix worktree 中断残留）。只允许自动移除
+	// 受管 worktree（本 daemon 在 worktree_root 下创建的）；分支若被用户手动
+	// checkout/克隆占用（不在受管根下，如 release-manager-t081），绝不自动
+	// remove --force——那是用户的目录，删除会造成数据丢失（2026-08-31
+	// TASK-081 分支被 release-manager-t081 占用时 merge 必须人工处理）。
 	if targetBranch != "" {
-		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
-			log.Printf("task worktree: branch %s occupied by %s, removing stale worktree", targetBranch, occupied)
+		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path && isManagedWorktreePath(occupied, base, repoDir) {
+			log.Printf("task worktree: branch %s occupied by stale managed worktree %s, removing", targetBranch, occupied)
 			exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
 			if _, err3 := add(); err3 == nil {
 				return path, nil

@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback sync-docs sync-plugins sync-registry
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -254,6 +254,40 @@ rollback:
 	systemctl --user daemon-reload
 	-systemctl --user restart otg-task-watcher.service 2>/dev/null || true
 	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
+
+# daemon-recover: 流水线停摆恢复。停掉 systemd 版 agent-server（收回 8799，
+# 避免与 daemon 自管实例冲突）、清孤儿进程（括号断匹配防自误杀）、等端口释放，
+# 再拉起 otg-task-watcher。仅在有 agent_server_managed=true 时执行——daemon
+# 重启后自己拉起全新 agent-server。2026-08-31 事故现场：旧 Makefile 的
+# pkill 把 daemon 连带杀掉、systemd agent-server 残留占 8799。
+daemon-recover:
+	@echo "=== daemon-recover: agent-server 所有权收敛 ==="
+	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+		CFG="$$SKILL_DIR/config/vault-map.json"; \
+		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
+		if [ "$$managed" = "true" ]; then \
+			echo "  agent_server_managed=true → 停 systemd 实例 + 清孤儿 + 等端口释放"; \
+			systemctl --user disable --now dsh-agent-server 2>/dev/null || true; \
+			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
+			i=0; \
+			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
+			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出"; \
+		else \
+			echo "  agent_server_managed=false → 由 systemd 管理，跳过所有权收敛"; \
+		fi
+	@echo "=== 拉起 otg-task-watcher ==="
+	@systemctl --user daemon-reload
+	@-systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true
+	@-systemctl --user start otg-task-watcher.service 2>/dev/null || true
+	@sleep 2
+	@if ! systemctl --user -q is-active otg-task-watcher.service; then \
+		echo "  watcher 未启动，重试一次..."; \
+		systemctl --user reset-failed otg-task-watcher.service 2>/dev/null || true; \
+		systemctl --user start otg-task-watcher.service 2>/dev/null || true; \
+	fi
+	@echo "=== 验证 ==="
+	@echo "  tail -20 ~/.dsh/logs/otg-daemon.log   # 应看到 agent-server starting → healthy → daemon started"
+	@echo "  ss -tlnp | grep 8799                  # daemon 自管的 agent-server"
 
 # install-force 保留为 deploy 的别名（旧肌肉记忆兼容），不再有独立逻辑。
 install-force: deploy
