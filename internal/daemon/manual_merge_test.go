@@ -453,6 +453,11 @@ req_doc: Projects/001-team-app/Requirements/REQ-001-x.md
 	if strings.Contains(args2, "obsidian-task-runner-conventions") {
 		t.Fatalf("gate must release after artifact exists, got: %s", args2)
 	}
+	// 等后台 runTask（含 background scan）全部结束再返回：processBatch 是
+	// dispatch-only，立即返回；若这里直接结束，TempDir 清理会与仍在写回的
+	// 会话 goroutine 竞态（directory not empty flaky，Go 1.26 TempDir 编号
+	// 子目录重创建）。
+	waitForTasksIdle(t, runner)
 }
 
 // TestExistingProjectConventionsGateNonTeam is the 004-deployd regression: an
