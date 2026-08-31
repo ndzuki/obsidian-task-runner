@@ -109,6 +109,15 @@ deploy: build test
 	@echo "=== [2/6] sync skill docs + plugins ==="
 	@$(MAKE) sync-docs
 	@$(MAKE) sync-plugins
+	@echo "=== [2b/6] append missing vault-map.json default fields (safe merge) ==="
+	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
+		CFG="$$SKILL_DIR/config/vault-map.json"; \
+		mkdir -p "$$SKILL_DIR/config"; \
+		if [ -f "$$CFG" ]; then \
+			./otg config migrate --map-file "$$CFG" --write && echo "  vault-map.json merged with new defaults (kb_vault/env_cleanup etc.)" || echo "  (config migrate skipped — check ./otg)"; \
+		else \
+			echo "  (no vault-map.json yet — run \`otg install\` or create from obsidian-task-runner/config/vault-map.example.json)"; \
+		fi
 	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
 	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
 	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf

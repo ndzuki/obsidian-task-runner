@@ -120,7 +120,10 @@ func newConfigMigrateCommand() *cobra.Command {
 			if path == "" {
 				return fmt.Errorf("configuration path is required for --write")
 			}
-			return os.WriteFile(path, data, 0o600)
+			// Atomic write (temp + fsync + rename): a crash mid-write must not
+			// leave a half-written vault-map.json that breaks the daemon on the
+			// next start. Matches generateVaultMap's transactional semantics.
+			return yamlfrontmatter.AtomicWrite(path, data)
 		},
 	}
 	command.Flags().StringVar(&mapFile, "map-file", "", "path to vault-map.json")
@@ -147,8 +150,13 @@ func mergeRawConfig(path string, cfg *config.Config) (map[string]interface{}, er
 	if err := json.Unmarshal(data, &effective); err != nil {
 		return nil, err
 	}
+	// 只追加缺失键，绝不覆盖用户已有的值（vault-map.json 保护条款：
+	// install/migrate 不得覆盖用户手工设置）。effective 是 Load 后
+	// 的完整配置（含默认），缺失的 schema 字段在此补齐。
 	for key, value := range effective {
-		raw[key] = value
+		if _, exists := raw[key]; !exists {
+			raw[key] = value
+		}
 	}
 	return raw, nil
 }

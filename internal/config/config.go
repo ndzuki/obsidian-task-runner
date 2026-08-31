@@ -123,8 +123,9 @@ type Config struct {
 	// interactions apply existing validated experience and failure patterns
 	// first (KB-first) instead of re-deriving them from scratch. Empty falls
 	// back to ObsidianVault; when both are empty the interactive KB injection
-	// is disabled.
-	KBVault string `json:"kb_vault,omitempty"`
+	// is disabled. No omitempty: the key must stay visible so config migrate /
+	// `config show` surface it as a configurable field even when unset.
+	KBVault string `json:"kb_vault"`
 	// Completion audit (independent verification before auto-merge).
 	Audit *AuditConfig `json:"audit,omitempty"`
 

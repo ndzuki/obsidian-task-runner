@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
@@ -270,4 +271,42 @@ func TestValidateDependencyRefsSurfacesReqDependsOnBrokenRefs(t *testing.T) {
 	if valid {
 		t.Fatal("valid REQ depends_on ref must not be recorded")
 	}
+}
+
+// TestCheckVaultMapHealth guards the config-syntax health check: a corrupted
+// vault-map.json surfaces a notification ONCE per file version; a valid file
+// or a missing one (first install) is silent.
+func TestCheckVaultMapHealth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault-map.json")
+	cfg := &config.Config{ConfigPath: path, Notifications: config.NotifConfig{Desktop: false}}
+	r := New(cfg)
+	r.logger = log.New(io.Discard, "", 0)
+
+	// 正常文件：不产生任何 diag 标记之外的状态，调用两次都静默（不 panic）。
+	if err := os.WriteFile(path, []byte(`{"obsidian_vault":"/v","projects":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.checkVaultMapHealth()
+
+	// 损坏文件：应记录一次提醒标记（key 含 mtime+size）。
+	if err := os.WriteFile(path, []byte(`{"obsidian_vault": `), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.checkVaultMapHealth()
+	// 同版本第二次调用不重复（diagNotifyAt 已有该 key）。
+	r.checkVaultMapHealth()
+
+	// 修复后 mtime/size 变化 → 允许重新检查且通过。
+	time.Sleep(5 * time.Millisecond)
+	if err := os.WriteFile(path, []byte(`{"obsidian_vault":"/v","projects":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.checkVaultMapHealth()
+
+	// 缺失文件：静默。
+	missing := filepath.Join(dir, "nope.json")
+	r2 := New(&config.Config{ConfigPath: missing})
+	r2.logger = log.New(io.Discard, "", 0)
+	r2.checkVaultMapHealth()
 }

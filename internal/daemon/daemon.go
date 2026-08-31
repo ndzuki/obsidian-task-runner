@@ -907,6 +907,11 @@ func (r *Runner) scanAndProcess() error {
 	r.recoverBlockedPendingReq()
 	r.parkedFactRecovery()
 	r.compactOversizedTasks()
+	// Config syntax health: vault-map.json is loaded once at startup; a syntax
+	// error introduced while running stays invisible until restart (which then
+	// fails to boot). Surface it now, once per file version, without modifying
+	// the user's file.
+	r.checkVaultMapHealth()
 	// Discover requirement files the watcher never delivered (new
 	// directories, daemon downtime). Runs before the TASK scan so freshly
 	// created tasks dispatch in this very cycle.

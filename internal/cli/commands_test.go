@@ -28,6 +28,64 @@ func TestConfigShowEffectiveRedactsModels(t *testing.T) {
 	}
 }
 
+// TestConfigMigrateAppendsMissingDefaultsOnly guards `config migrate --write`:
+// it must APPEND missing schema fields (kb_vault, env_cleanup, …) to an
+// existing vault-map.json while NEVER overwriting user-set values — the
+// vault-map.json protection clause. This is what `make deploy` uses to bring
+// an older config up to date with new capability fields.
+func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	// 旧版 config：无 kb_vault / env_cleanup，且 obsidian_vault/kb_db/projects 为用户自定义值。
+	old := `{"obsidian_vault":"/my/vault","kb_db":"/my/custom.sqlite","projects":[{"name":"p","path":"/p"}]}`
+	if err := os.WriteFile(mapFile, []byte(old), 0o644); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
+
+	cmd := newRootCommand("test")
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs([]string{"config", "migrate", "--map-file", mapFile, "--write"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("config migrate --write: %v", err)
+	}
+
+	data, err := os.ReadFile(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("migrated config not valid JSON: %v", err)
+	}
+
+	// 新字段已补齐（空 kb_vault 也可见，便于用户填写）。
+	if _, ok := got["kb_vault"]; !ok {
+		t.Fatalf("kb_vault missing after migrate: %v", got)
+	}
+	ec, ok := got["env_cleanup"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("env_cleanup missing/not object after migrate: %v", got["env_cleanup"])
+	}
+	if on, _ := ec["on_block"].(bool); !on {
+		t.Fatalf("env_cleanup.on_block should default true, got %v", ec["on_block"])
+	}
+
+	// 用户已有值必须原样保留。
+	if got["obsidian_vault"] != "/my/vault" {
+		t.Fatalf("obsidian_vault overwritten: %v", got["obsidian_vault"])
+	}
+	if got["kb_db"] != "/my/custom.sqlite" {
+		t.Fatalf("kb_db overwritten: %v", got["kb_db"])
+	}
+	projs, ok := got["projects"].([]interface{})
+	if !ok || len(projs) != 1 {
+		t.Fatalf("projects mangled: %v", got["projects"])
+	}
+}
+
 func TestStatusJSON(t *testing.T) {
 	cmd := newRootCommand("test")
 	out := new(bytes.Buffer)

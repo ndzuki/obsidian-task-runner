@@ -435,7 +435,7 @@ daemon 按阶段注入 `--thinking`，flash 与 pro 模型均支持：
 
 Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（**已有项目**基线审查门禁：规范 + 架构约束）、priority、pm、split。子 Skill 同时写入 `skills/` 子目录供 daemon 直读。
 
-**`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。
+**`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。**运行期即时校验**：daemon 每轮 scan 对 vault-map.json 做语法/配置校验（`checkVaultMapHealth`）——日常改坏会在**下次 scan** 弹「⚠️ 配置文件语法错误」通知（按文件版本去重、只报告不改文件），而不是等重启才炸出 `CONFIG_INVALID`。`make deploy` 会用 `otg config migrate --write`（原子写）自动补齐新版本缺失字段。
 
 **知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
 

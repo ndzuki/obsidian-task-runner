@@ -487,9 +487,13 @@ journalctl --user -u otg-task-watcher.service -n 50
 
 **升级/重装 daemon**：`make deploy` —— 一条命令完成：构建（`-tags sqlite_fts5`，
 知识库必需）→ 全仓单测 → busy-safe 安装 → 同步 skill/插件到 `~/.dsh/skills/` 与
-`~/.dsh/plugins/` → 写 systemd drop-in override（daemon 从此始终加载仓库最新 otg，
-每次重启/崩溃恢复自动换新代码）→ daemon-reload → 重启 watcher → agent-server.mjs
-有变更时顺带重启 dsh-agent-server。`make install-force` 仍是 `deploy` 的别名（旧
+`~/.dsh/plugins/` → **自动补齐 `~/.dsh/skills/obsidian-task-runner/config/vault-map.json`
+缺失的默认字段**（`config migrate --write` 安全追加：只补新版本新增的
+`kb_vault`/`env_cleanup` 等键，**绝不覆盖你已有的 projects/models/obsidian_vault 等
+手工值**——升级后不必手动加字段）→ 写 systemd drop-in override（daemon 从此始终
+加载仓库最新 otg，每次重启/崩溃恢复自动换新代码）→ daemon-reload → 重启 watcher →
+agent-server.mjs/agent-monitor.html 有变更时顺带重启 dsh-agent-server。`make install-force`
+仍是 `deploy` 的别名（旧
 肌肉记忆兼容），但新部署一律用 `make deploy`。附带 `make deploy-status`（看仓库 vs
 运行时同步差异）与 `make rollback`（撤 drop-in 回固定安装路径）。
 

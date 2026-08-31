@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
@@ -815,6 +816,42 @@ func (r *Runner) diagNotified(key string) bool {
 	}
 	r.diagNotifyAt.Store(key, time.Now())
 	return false
+}
+
+// checkVaultMapHealth validates the daemon's vault-map.json every scan.
+// Config is loaded once at startup into memory, so a syntax error introduced
+// while the daemon is running is invisible until the next restart (which
+// would then fail to boot). This scan-time check surfaces it immediately:
+// it reports ONCE per (path, mtime+size) — not every scan — and only notifies,
+// never modifies the user's file. A missing file is fine (first install).
+func (r *Runner) checkVaultMapHealth() {
+	if r.cfg.ConfigPath == "" {
+		return
+	}
+	path := r.cfg.ConfigPath
+	st, err := os.Stat(path)
+	if err != nil {
+		// 文件不存在 = 首次安装/未生成，正常，不提醒；其它 stat 错误忽略。
+		if os.IsNotExist(err) {
+			return
+		}
+		return
+	}
+	key := "vaultmap|" + path + "|" + strconv.FormatInt(st.ModTime().UnixNano(), 10) + "|" + strconv.FormatInt(st.Size(), 10)
+	if _, ok := r.diagNotifyAt.Load(key); ok {
+		return // 这个文件版本已提醒过
+	}
+	cfg, loadErr := config.Load(path)
+	if loadErr == nil && cfg != nil {
+		// 解析 + 校验通过：记录已检查，避免重复 stat。
+		r.diagNotifyAt.Store(key, time.Now())
+		return
+	}
+	// 损坏：一次性提醒（key 含 mtime+size，修复后再坏会重新提醒）。
+	r.diagNotifyAt.Store(key, time.Now())
+	msg := fmt.Sprintf("vault-map.json 语法/配置错误（daemon 重启后将无法启动）：%v\n位置：%s\n请修复后保存（可用 `otg config migrate` 校验预览）。", loadErr, path)
+	r.logger.Printf("health: vault-map.json invalid: %v", loadErr)
+	notify.SendTaskAction("config", "vault-map.json", "⚠️", "配置文件语法错误", msg, r.cfg.Notifications.Desktop)
 }
 
 // notifyDiag sends a desktop toast (if enabled) for a diagnostic warning.

@@ -298,16 +298,39 @@ func generateVaultMap(opts Options) error {
 		"off_peak_timezone":                "Asia/Shanghai",
 		"off_peak_windows":                 []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
 		"starvation_warning_days":          map[string]int{"P3": 14, "P4": 30},
+		// 全局共享知识库根：交互会话 KB-first 预检索的语料来源；为空回退
+		// obsidian_vault（缺省行为），交互注入自动关闭。
+		"kb_vault": "",
+		// 环境收尾（daemon 兜底删除实现会话自建的 k3d 集群/registry/网络）：
+		// on_merge 在 merge 完成时清，on_block 在 blocked/needs-grilling/closed
+		// 时清（TASK-066）；exclude 永不触碰用户常驻服务。
+		"env_cleanup": map[string]interface{}{
+			"on_merge": true,
+			"on_block": true,
+			"exclude":  []string{"kb-reranker", "ollama-sycl"},
+			"dry_run":  false,
+		},
+		"auto_resume_aged_after_hours": 24,
+		"agent_server_managed":         true,
+		"phase_concurrency": map[string]interface{}{
+			"refining": 3, "planning": 2, "merge": 1, "priority": 1, "pm": 1, "audit": 1,
+		},
+		"memory_gate": map[string]interface{}{
+			"mem_available_mib": 0, "auto_recovery": true, "max_stops": 2,
+			"exclude": []string{"kb-reranker", "ollama-sycl"},
+		},
 	}
 	// Field order is deliberate: alphabetical (the natural sort users see in
 	// most editors) with "projects" pinned last — appending a new project is
 	// the most frequent manual edit, so the array stays at the bottom.
 	orderedKeys := []string{
-		"config_version", "max_concurrent_tasks",
-		"max_concurrent_tasks_per_project", "models",
+		"agent_server_managed", "auto_resume_aged_after_hours", "config_version",
+		"env_cleanup", "kb_vault", "max_concurrent_tasks",
+		"max_concurrent_tasks_per_project", "memory_gate", "models",
 		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
-		"off_peak_windows", "phase_timeouts_minutes", "poll_interval_minutes",
-		"shutdown_grace_seconds", "starvation_warning_days", "projects",
+		"off_peak_windows", "phase_concurrency", "phase_timeouts_minutes",
+		"poll_interval_minutes", "shutdown_grace_seconds", "starvation_warning_days",
+		"projects",
 	}
 
 	// Merge new defaults into existing config — never overwrite user values,
