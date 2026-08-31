@@ -55,7 +55,10 @@ POST /agent/run
                                   // agent-server 经 /agents 回传，daemon 重启后
                                   // fresh Start 前据此 cancel 上一代残留的 working
                                   // 会话，保证同一任务同一时刻只有一个活跃写者
-    toolPolicy?: string           // 工具白名单（如 "read,grep,glob,bash"）：
+    toolPolicy?: string           // 工具白名单（如 auditToolPolicy /
+                                  // conventionsToolPolicy，2026-08-31 起含
+                                  // read,grep,glob,bash,skill,todo_write,
+                                  // job_*,read_image；conventions 额外 write）：
                                   // 只读审查会话（conventions/audit）注入硬约束
                                   // preamble；事后校验白名单外 tool/call →
                                   // outcome=tool_policy_violation（2026-08-25 接线）
