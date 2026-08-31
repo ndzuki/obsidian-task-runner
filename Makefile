@@ -107,14 +107,14 @@ sync-plugins:
 		cp $$f $(HOME)/.dsh/plugins/$$b; \
 		chmod 600 $(HOME)/.dsh/plugins/$$b; \
 	done
-	@echo "=== Pruning stale dsh plugins (repo 已删除的残留) ==="
-	@for f in $(HOME)/.dsh/plugins/*; do \
-		[ -f "$$f" ] || continue; \
-		b=$$(basename "$$f"); \
-		case "$$b" in *.old) continue;; esac; \
-		[ -f "deploy/dsh-plugins/$$b" ] || { echo "  prune stale plugin: $$b"; rm -f "$$f"; }; \
+	@echo "=== 清理 repo 自身旧版 .old（仅清 repo 会覆盖的那批） ==="
+	@for b in $$(ls deploy/dsh-plugins/ 2>/dev/null); do \
+		rm -f "$(HOME)/.dsh/plugins/$$b.old" 2>/dev/null || true; \
 	done
 	@echo "=== Done ==="
+	@echo "  ⚠ ~/.dsh/plugins/ 可能还有 dsh home patch（cordis.patch.yml）手工引用的插件"
+	@echo "    （fallback/dsh-commands/kb-distill/vault 等）——它们不属于 repo，deploy 绝不删除。"
+
 
 # sync-registry: 把 skill-registry.json（技能安装源清单）同步到 ~/.dsh/config/。
 # 只有 otg install 会写它，make deploy 此前漏了 —— 导致仓库 v2 清单与运行时
