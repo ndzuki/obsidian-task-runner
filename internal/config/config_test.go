@@ -88,6 +88,65 @@ func TestLoadReadsConfiguredDefaultModel(t *testing.T) {
 	}
 }
 
+func TestLoadReadsFallbackConfig(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	data := []byte(`{
+	  "models": {"default": "openai/gpt-5.6-luna"},
+	  "fallback": {
+	    "chains": [
+	      {
+	        "from": {"provider": "deepseek_magic", "model": "deepseek-v4-pro"},
+	        "to": [
+	          {"provider": "deepseek_magic", "model": "gpt-5.4-mini"},
+	          {"provider": "openai", "model": "gpt-5.6-sol"}
+	        ]
+	      }
+	    ],
+	    "default": [
+	      {"provider": "deepseek_magic", "model": "deepseek-v4-pro"},
+	      {"provider": "openai", "model": "gpt-5.6-terra"}
+	    ],
+	    "fallbackOnCodes": ["SERVER", "QUOTA", "RATE_LIMIT"]
+	  }
+	}`)
+	if err := os.WriteFile(mapFile, data, 0o644); err != nil {
+		t.Fatalf("write vault map: %v", err)
+	}
+
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Fallback == nil {
+		t.Fatal("fallback must be non-nil")
+	}
+	if len(cfg.Fallback.Chains) != 1 {
+		t.Fatalf("fallback chains = %d, want 1", len(cfg.Fallback.Chains))
+	}
+	chain := cfg.Fallback.Chains[0]
+	if chain.From.Provider != "deepseek_magic" || chain.From.Model != "deepseek-v4-pro" {
+		t.Errorf("chain from = %q/%q, want deepseek_magic/deepseek-v4-pro", chain.From.Provider, chain.From.Model)
+	}
+	if len(chain.To) != 2 || chain.To[1].Provider != "openai" || chain.To[1].Model != "gpt-5.6-sol" {
+		t.Errorf("chain to = %+v, want [deepseek_magic/gpt-5.4-mini openai/gpt-5.6-sol]", chain.To)
+	}
+	// default 链必须透传（fallback.mjs 的 default 键——from 无匹配时的兜底），
+	// 否则用户配了 default 会被 Go 静默丢弃（审查 P1 缺口）。
+	if len(cfg.Fallback.Default) != 2 || cfg.Fallback.Default[1].Provider != "openai" || cfg.Fallback.Default[1].Model != "gpt-5.6-terra" {
+		t.Errorf("fallback default = %+v, want [deepseek_magic/deepseek-v4-pro openai/gpt-5.6-terra]", cfg.Fallback.Default)
+	}
+	wantCodes := []string{"SERVER", "QUOTA", "RATE_LIMIT"}
+	if len(cfg.Fallback.FallbackOnCodes) != len(wantCodes) {
+		t.Fatalf("fallbackOnCodes = %v, want %v", cfg.Fallback.FallbackOnCodes, wantCodes)
+	}
+	for i, code := range wantCodes {
+		if cfg.Fallback.FallbackOnCodes[i] != code {
+			t.Errorf("fallbackOnCodes[%d] = %q, want %q", i, cfg.Fallback.FallbackOnCodes[i], code)
+		}
+	}
+}
+
 func TestDefaultsSetsWorkflowConfiguration(t *testing.T) {
 	cfg := Defaults()
 	if cfg.ConfigVersion != 1 || cfg.ShutdownGraceSeconds != 30 || cfg.OffPeakTimezone != "Asia/Shanghai" {

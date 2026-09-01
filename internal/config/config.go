@@ -31,6 +31,14 @@ type Config struct {
 	OffPeakWindows               []TimeWindow      `json:"off_peak_windows"`
 	StarvationWarningDays        map[string]int    `json:"starvation_warning_days"`
 	Models                       map[string]string `json:"models"`
+	// Fallback controls the DSH cross-model fallback chains from vault-map.
+	// When set, the daemon forwards it to the agent-server with every
+	// dsh-embed /agent/run session; the agent-server attaches it to the run
+	// agent (agent.fallbackConfig) and the fallback.mjs plugin uses it as the
+	// per-session override. It applies only to automated daemon phases —
+	// interactive dsh web / dsh-tui sessions never receive it, so the user
+	// keeps full control of model selection and failures never auto-switch.
+	Fallback *FallbackConfig `json:"fallback,omitempty"`
 	// DSHCmd / DSHProfile drive DSH-native phases (global design first;
 	// remaining phases migrate behind PhaseExecutor incrementally). The
 	// headless app has no per-invocation --model flag, so the selected profile
@@ -301,6 +309,38 @@ type Project struct {
 // NotifConfig holds notification settings.
 type NotifConfig struct {
 	Desktop bool `json:"desktop"`
+}
+
+// FallbackConfig mirrors the DSH fallback.mjs plugin config (chains +
+// default + fallbackOnCodes). It is the vault-map-driven source of truth for
+// cross-model fallback: vault-map.json is the daemon's own config file, so
+// the fallback routing lives next to the model table instead of buried in
+// a home-level cordis.patch.yml.
+type FallbackConfig struct {
+	// Chains are ordered fallback lists keyed by a primary model. When the
+	// primary (from) fails with a fallbackable code, the plugin advances down
+	// its to-list in order.
+	Chains []FallbackChain `json:"chains"`
+	// Default is the fallback list used when no chain's from matches the
+	// session's primary model. Mirrors the plugin's `default` key — omit
+	// when chains already cover every routable model.
+	Default []ModelRef `json:"default,omitempty"`
+	// FallbackOnCodes is the failure-code whitelist that triggers fallback.
+	// Empty means the plugin default (server/rate-limit/timeout/transport/
+	// empty-response/stream-closed/malformed/unknown + HTTP_5xx).
+	FallbackOnCodes []string `json:"fallbackOnCodes,omitempty"`
+}
+
+// FallbackChain maps a primary model to its ordered fallback candidates.
+type FallbackChain struct {
+	From ModelRef   `json:"from"`
+	To   []ModelRef `json:"to"`
+}
+
+// ModelRef names one DSH provider/model route.
+type ModelRef struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // DefaultModels returns the built-in model mappings.

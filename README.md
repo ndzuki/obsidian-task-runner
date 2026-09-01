@@ -464,7 +464,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | merge | `high` | 冲突解决需推理 |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
-模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `deepseek_magic`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `openai`（免费）的 gpt-5.6 系列——`deepseek-v4-pro → gpt-5.6-sol`、`gpt-5.4-mini(flash) → gpt-5.6-luna`，再失败继续在免费渠道间重试（如 `gpt-5.6-terra`）；**daemon 侧无 fallback 层**。该 fallback 只配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，供 obsidian-task-runner 自动化任务使用；**dsh web / dsh-tui 不加载 fallback**，模型调用失败会直接返回，避免长会话被免费模型失败重试一直占用。`ds-official`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `ds-official` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=ds-official`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
+模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `deepseek_magic`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `openai`（免费）的 gpt-5.6 系列——`deepseek-v4-pro → gpt-5.6-sol`、`gpt-5.4-mini(flash) → gpt-5.6-luna`，再失败继续在免费渠道间重试（如 `gpt-5.6-terra`）。**fallback 链由 daemon 通过 vault-map.json 的 `fallback` 字段全局控制**（operator 改配置文件即可，无需改插件代码）：daemon 在每次 dsh-embed `/agent/run` 时把链随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型——避免长会话被免费模型失败重试一直占用。`ds-official`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `ds-official` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=ds-official`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
 
 ### 阻塞依赖自动恢复
 

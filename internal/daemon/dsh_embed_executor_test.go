@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
 func TestMapDSHModel(t *testing.T) {
@@ -167,6 +169,60 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	}
 	if rtok.TaskID != "TASK-001" {
 		t.Errorf("resume token taskId = %q, want TASK-001 (Resume re-labels the session)", rtok.TaskID)
+	}
+}
+
+// TestDSHEmbedExecutorRunFallback 断言 vault-map fallback 配置随 /agent/run
+// 请求下发（daemon 控制模型 fallback 的通道）。
+func TestDSHEmbedExecutorRunFallback(t *testing.T) {
+	var gotReq agentRunRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(agentRunResponse{Text: "ok", Outcome: "completed", SessionID: "s"})
+	}))
+	defer srv.Close()
+
+	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
+	e.fallback = &config.FallbackConfig{
+		Chains: []config.FallbackChain{{
+			From: config.ModelRef{Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
+			To: []config.ModelRef{
+				{Provider: "deepseek_magic", Model: "gpt-5.4-mini"},
+				{Provider: "openai", Model: "gpt-5.6-sol"},
+			},
+		}},
+		FallbackOnCodes: []string{"SERVER", "QUOTA"},
+	}
+	handle, err := e.Start(context.Background(), PhaseSpec{
+		Phase:       "planning",
+		Model:       "gateway/deepseek-v4-pro",
+		SkillPrompt: "/obsidian-task-runner-round1 /vault/TASK.md",
+		Timeout:     30 * time.Second,
+	}, TaskSnapshot{TaskID: "TASK-001"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := handle.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if gotReq.Fallback == nil {
+		t.Fatal("request fallback must be non-nil (vault-map fallback forwarded)")
+	}
+	if len(gotReq.Fallback.Chains) != 1 {
+		t.Fatalf("fallback chains = %d, want 1", len(gotReq.Fallback.Chains))
+	}
+	chain := gotReq.Fallback.Chains[0]
+	if chain.From.Provider != "deepseek_magic" || chain.From.Model != "deepseek-v4-pro" {
+		t.Errorf("chain from = %q/%q, want deepseek_magic/deepseek-v4-pro", chain.From.Provider, chain.From.Model)
+	}
+	if len(chain.To) != 2 || chain.To[1].Provider != "openai" || chain.To[1].Model != "gpt-5.6-sol" {
+		t.Errorf("chain to = %+v, want [deepseek_magic/gpt-5.4-mini openai/gpt-5.6-sol]", chain.To)
+	}
+	if len(gotReq.Fallback.FallbackOnCodes) != 2 {
+		t.Errorf("fallbackOnCodes = %v, want [SERVER QUOTA]", gotReq.Fallback.FallbackOnCodes)
 	}
 }
 

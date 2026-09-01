@@ -22,7 +22,9 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 	if cfg.Executor == "dsh" {
 		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
 	}
-	return newDSHEmbedExecutor(cfg.AgentServerAddr, "")
+	e := newDSHEmbedExecutor(cfg.AgentServerAddr, "")
+	e.fallback = cfg.Fallback
+	return e
 }
 
 // staleSessionReconciler is implemented by executors with server-side durable

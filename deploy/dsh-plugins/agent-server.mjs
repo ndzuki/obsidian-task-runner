@@ -38,7 +38,7 @@
  *        累计 + 当前小时窗口的 hits/misses/empty/errs/skipped/searches/avgMs +
  *        耗时直方图 {boundaries,counts}——Agent Town 面板「📊 KB 预检索」小图
  *        每 30s 轮询此端点，F1 落地）
- *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId?, status?, taskId?, toolPolicy? }
+ *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId?, status?, taskId?, toolPolicy?, fallback? }
  *     → 200 { text, outcome, sessionId, errorCode?, error? }
  *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted | tool_policy_violation
  *     （error 字段承载失败详情消息；errorCode 为分类码，两者可都缺省。
@@ -1273,6 +1273,14 @@ export function apply(ctx, config = {}) {
       task = toolPolicyPreamble(payload.toolPolicy) + task
     }
     const agent = await acquireAgent(payload, true)
+    // vault-map fallback 动态下发：daemon 在 /agent/run 携带 fallback 链，挂到
+    // agent 上供 fallback.mjs 以 agent.fallbackConfig 覆盖静态配置（headless-
+    // agent-server profile 的 cordis.patch.yml 只加载动态配置、无静态链）。只对
+    // run（自动化阶段）生效；/agent/chat 交互会话不设置 → 永不自动切模型，
+    // 由用户在会话里自己选模型（dsh web / dsh-tui 交互不受 vault-map 影响）。
+    if (payload.fallback !== undefined && payload.fallback !== null) {
+      agent.fallbackConfig = payload.fallback
+    }
     const sessionKey = String(agent.session.id)
     finishedRuns.delete(sessionKey) // re-attach：会话复活，重新计入活跃
     // 监控面板按任务真实状态播放 NPC 动画（phase 只有 skill 名，区分不了

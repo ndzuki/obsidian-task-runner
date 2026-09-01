@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 )
 
 // dshEmbedExecutor is the DSH-native embed adapter: it drives a long-lived
@@ -25,8 +27,9 @@ import (
 // the spawn fields (dsh, defaultProfile) are unused by the embed path.
 type dshEmbedExecutor struct {
 	dshExecutor
-	addr   string
-	client *http.Client
+	addr     string
+	client   *http.Client
+	fallback *config.FallbackConfig
 }
 
 // newDSHEmbedExecutor builds the embed adapter for a given agent-server address
@@ -245,6 +248,11 @@ type agentRunRequest struct {
 	// agent-server injects it as a hard session constraint and fails the run
 	// when a disallowed tool call is observed.
 	ToolPolicy string `json:"toolPolicy,omitempty"`
+	// Fallback, when set, carries the vault-map fallback chains and
+	// fallbackOnCodes for this session. The agent-server attaches it to the
+	// agent so the fallback.mjs plugin uses daemon-controlled fallback
+	// routing instead of the static cordis.patch.yml config.
+	Fallback *config.FallbackConfig `json:"fallback,omitempty"`
 }
 
 type agentRunResponse struct {
@@ -287,6 +295,7 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, task
 			Status:          status,
 			TaskID:          taskID,
 			ToolPolicy:      toolPolicy,
+			Fallback:        e.fallback,
 		},
 		// Fields recorded to build the resume token once the session id is
 		// known (after the /agent/run response).
