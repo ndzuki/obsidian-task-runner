@@ -26,12 +26,14 @@
         │ 阶段执行（cfg.executor）                              │ 模型路由（免费优先）
         ▼                                                       ▼
 ┌───────────────────────────────────┐        ┌──────────────────────────────────────────────────┐
-│ dsh-agent-server.service（默认后端） │        │ default   → deepseek_magic/gpt-5.4-mini（轻量） │
+│ agent-server（daemon 自管，默认）    │        │ default   → deepseek_magic/gpt-5.4-mini（轻量） │
 │   dsh --profile headless-agent-    │        │ deepseek  → deepseek_magic/deepseek-v4-pro（重度）│
 │   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/openai→ openai/gpt-5.6-sol（fallback/手动） │
 │   dsh-embed executor：会话持久化，   │  RPC   │ ds-official→ 自费官方，仅 assignee 手动指定      │
 │   支持 executor_session_id 断点续跑 │        │ gemini/claude/minimax → 显式 assignee 可选      │
-└───────────────┬───────────────────┘        └──────────────────────────────────────────────────┘
+│ （agent_server_managed=false 时     │        │ 失败降级链 = vault-map `fallback` 字段动态下发    │
+│   改为外部 dsh-agent-server.service）│        └──────────────────────────────────────────────────┘
+└───────────────┬───────────────────┘
                 │ 或 cfg.executor="dsh"：每个阶段 spawn `dsh --profile headless`（无持久会话）
                 ▼
 ┌────────────────────────────────────┐      ┌───────────────────────────────┐
@@ -46,12 +48,18 @@
 | 单元 | 命令 | 职责 | 生命周期 |
 |------|------|------|---------|
 | `otg-task-watcher.service` | `otg daemon` | 扫描/状态机/派发/git 交付/知识库 | 常驻；`Restart=on-failure` |
-| `dsh-agent-server.service` | `dsh --profile headless-agent-server` | 长连接阶段会话 RPC（dsh-embed 后端） | 常驻；otg 单元 `Requires+After` 它 |
+| agent-server | `dsh --profile headless-agent-server` | 长连接阶段会话 RPC（dsh-embed 后端） | **daemon 自管子进程**（`agent_server_managed: true` 默认，daemon 日志可见 `agent-server starting/healthy`）；`false` 时改由外部 `dsh-agent-server.service` 管理（此时 `make deploy` 不干预其生命周期） |
 | `dsh-web.service` | `dsh --profile web` | DSH Web UI | 常驻（可选） |
 
-关键不变量：**`make deploy` 重启 watcher 时 agent-server 保持运行**——
-在飞的实现/审计会话因此可持久恢复，daemon 重启不再打断阶段执行
-（对应知识库 `core/daemon-stuck-task-patterns.md` 模式 7 的根修）。
+> ⚠️ `agent_server_managed: true`（默认）时 `dsh-agent-server.service` 被
+> `make deploy` 刻意停用——**systemd 显示 `inactive (dead)` 是预期**，端口
+> 8799 由 daemon 自管子进程服务；健康检查以 `curl http://127.0.0.1:8799/health`
+> 为准（2026-08-31 起根治 8799 双实例死锁）。
+
+关键不变量：**`make deploy` 重启 watcher 时，在飞会话不丢**——daemon 自管
+agent-server 随之重启，但阶段会话经 `executor_session_id` durable resume 从
+持久层恢复继续执行（daemon 重启不再打断阶段执行；对应知识库
+`core/daemon-stuck-task-patterns.md` 模式 7 的根修）。
 
 ## 3. 阶段执行后端（cfg.executor）
 
@@ -113,8 +121,9 @@
 
 ```bash
 make build            # go build -tags sqlite_fts5（知识库必需）
-make deploy           # 重建二进制 + 单测 + 同步 skill/插件 + 写 drop-in override + 重启 watcher（agent-server 存活）+ 条件重启 agent-server；install-force 为其别名
-systemctl --user status otg-task-watcher dsh-agent-server dsh-web
+make deploy           # 重建二进制 + 单测 + 同步 skill/插件 + 写 drop-in override + 重启 watcher（在飞会话 durable resume）+ 条件重启 agent-server / dsh-web；install-force 为其别名
+systemctl --user status otg-task-watcher dsh-web      # managed=true 时 dsh-agent-server 单元应为 inactive（预期）
+curl -s http://127.0.0.1:8799/health                  # agent-server 健康（自管模式下权威）
 tail -f ~/.dsh/logs/otg-daemon.log              # daemon 主日志
 ls ~/.dsh/logs/tasks/                           # 每任务阶段日志/审计日志
 ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jsonl，按 workdir）

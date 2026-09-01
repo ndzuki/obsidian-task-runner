@@ -322,7 +322,7 @@ flowchart LR
   - 门禁：问候语/单 token 等无效查询跳过预检索（项目上下文块仍注入）。
   - **可观测**：小时日志 `kb-precompute stats(hourly) hits=… avgMs=…`（命中率/平均耗时）；KB 命中注入后首轮结束落 `kb-injected injected=N consumed=M`（注入→消费率：注入的 top-3 路径被 read 族工具实际读到的条数）。
   - **常驻检索端点（B2）**：agent-server 预检索与 kb-preflight 后台预热**优先走 daemon 内嵌 vaultweb 的 `GET /api/kb/search?q=…&limit=…`**（进程内 FTS5 BM25 + embedding 混合 + rerank，语义与 `otg kb search` 一致，含 VecStatus 健康降级）——免去每次 spawn otg 重开 SQLite 的固定开销；端点不可用（daemon 未起/未配置 vault_web_addr）自动回退 spawn，两条路径共用同一缓存。
-- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `deepseek_magic/deepseek-v4-pro`）。改 `agent-monitor.html` 后 `make deploy` 会重启 dsh-agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
+- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `deepseek_magic/deepseek-v4-pro`）。改 `agent-monitor.html` 后 `make deploy` 由重启后的 daemon 拉起新 agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
 - **dsh web / dsh-tui 原生聊天**（2026-09-02 起，`kb-preflight` 插件）：原生交互会话不经过 agent-server，由 `deploy/dsh-plugins/kb-preflight.mjs` 在 DSH 原生 seam（`agent/pre-step`）对新会话首个用户消息注入同款两块内容——**非阻塞设计，首问只快不慢**：项目上下文为毫秒级文件读（CONTEXT 别名容错/ADR 按 mtime 倒序附 status/决策/规范）；KB 块优先命中缓存（归一化查询词，10min TTL，失败短缓存 30s），未命中时**只注入毫秒级的 INDEX 摘要（按查询词相关性排序）并在后台异步 spawn `otg kb search` 预热缓存**，绝不让首问等检索子进程/embedding。项目识别：会话 cwd 匹配 vault-map `projects[].path`（或其子目录）或 `<vault>/Projects/<dir>`——**仅已注册项目**（map 缺失/不可解析时放行）。防双注入：会话已含 `<knowledge_base>`/`<project_context>` 块则跳过，同 agent 每会话仅一次。挂载方式（仅交互 profile，headless 自动化不加载）：
   ```yaml
   # ~/.dsh/profiles/web/cordis.patch.yml（dsh-tui 同理）
@@ -403,7 +403,12 @@ docker run -d --name kb-reranker --restart unless-stopped \
 
 ### 会话结束知识提炼（自动）
 
-交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库：`.dsh/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作时注入提炼指令，agent 委派 subagent 分析会话转录并按 `knowledge-base` Step 0.7 流程入库（`otg kb absorb` / 新建 References 文档）。安装：复制到 `~/.dsh/agent/extensions/`（已随本仓库提供，用户级全项目生效）；禁用：`config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。手动触发：直接说"提炼本次会话"。
+交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库，两条路径覆盖两个运行时：
+
+- **dsh 侧（web / tui / headless）**：`kb-distill.mjs`（home patch 插件）监听 `session/disposed` 与 idle 超时——确定性踩坑抽取**零 LLM token** 直接 `otg kb absorb`，语义提炼用门控小模型（`minToolResults`/`minEvents`/`maxInputBytes` 上限）。
+- **omp 侧（主交互会话）**：仓库自带 `.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作（含工具调用证据门禁）时注入提炼指令，agent 委派 subagent 分析转录并按 `knowledge-base` Step 0.7 流程入库。安装：`make sync-omp-extension`（busy-safe 同步到 `~/.omp/agent/extensions/`，用户级全项目生效；deploy 只做一致性检查不覆盖用户 ~/.omp）；禁用：omp `config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。
+
+手动触发：直接说"提炼本次会话"。
 
 ### 并发任务
 
@@ -510,19 +515,27 @@ flowchart LR
 - **经验热度与 core 升级（自排序知识库）**：frontmatter `hits` = 成功应用热度——merge 命中 `knowledge_refs`、`kb absorb` 重复遇到、交互会话 `otg kb hit` 都会 +1；检索排序给每个 hit 约 0.02 BM25 加成，高频复用经验优先命中。`hits ≥ 3` 的 `extended/` 文档自动移入 `core/`（`otg kb promote` 或 daemon merge 后自动），配合 core → extended → archived 逐级检索，让复用热度最高的经验最先被找到。任何提问/需求先按关键字检索知识库，命中实践经验直接作为解决方案输入。
 - **主动检索**：Round 1/2 的 skill 强制加载 `skill://knowledge-base`：Round 1 执行 Step -1 项目知识图谱（CONTEXT + ADR + References 三源交叉）并把技术栈约束纳入计划，命中的知识文档写入 TASK `knowledge_refs` 形成跨会话引用链；Round 2 按 `knowledge_refs` 清单逐项应用，实现中发现的坑写回知识库；merge 时 daemon 度量 `knowledge_applied`（hit/total）；refining 对 REQ 细化做增量重关联（新术语 → CONTEXT 回写 + 检索注入）。
 - **KB v2 格式**：每个文件 H1 后强制摘要（INDEX 自动提取为检索摘要列）、>300 行强制目录、要点化/表格化、零 AI 聊天链接与项目文件清单（`RebuildINDEX` 自动标记噪音）。
-- **索引重建与标签检索**：frontmatter 的 `topics`/`aliases`/`tags` 全部纳入 BM25 与向量检索（`otg kb search "kulala"` 可按 tag 命中）；手动或 agent 写入 References/ 后执行 `otg kb rebuild-index` 重建 INDEX.md（watcher 只监听 Projects/，不自动触发 References 重建）。
+- **索引重建与标签检索**：frontmatter 的 `topics`/`aliases`/`tags` 全部纳入 BM25 与向量检索（`otg kb search "kulala"` 可按 tag 命中）；**References/ 任意写入（agent/用户直接编辑、absorb、merge 提取）由 daemon watcher 10s debounce 自动重建 INDEX.md 并增量同步检索库**（content_hash 跳过未变文档）——写入即检索；`otg kb rebuild-index` 仅在需要立即生效时手动执行。
 - **检索性能（万篇级）**：SQLite 单库（`~/.local/share/otg/kb.sqlite`）——FTS5 提供 BM25 排名（倒排索引，增量 INSERT/UPDATE，无全量重建、无指纹扫描）；sqlite-vec `vec0` 提供余弦 KNN（float32 紧凑存储，gob float64 体积的 ~1/4）；同步按文档 content_hash 增量，单篇变更毫秒级；`archived/` 层默认不参与检索（`otg kb search --archived` 显式包含），匹配 core → extended → archived 逐级检索语义。旧 gob 索引文件（`.kb-bm25.gob`/`.kb-vectors.gob`/`.kb-vectors.json`）首次同步时自动清理。
 
 ### 5. 确认服务状态
 
 ```bash
-systemctl --user status otg-task-watcher.service dsh-agent-server.service
+systemctl --user status otg-task-watcher.service
 journalctl --user -u otg-task-watcher.service -n 50
+curl -s http://127.0.0.1:8799/health        # agent-server 健康（自管模式下最权威）
 ```
 
-三个 user 单元（`otg install` / `otg install-systemd` 生成）：
-`otg-task-watcher.service`（daemon）、`dsh-agent-server.service`
-（常驻 headless agent-server，阶段会话 RPC 后端）、`dsh-web.service`（可选 Web UI）。
+两个常驻 user 单元（`otg install` / `otg install-systemd` 生成）：
+`otg-task-watcher.service`（daemon）、`dsh-web.service`（可选 Web UI）。
+**agent-server 的生命周期由 vault-map 的 `agent_server_managed` 决定**：
+- `true`（默认）：daemon **自管** agent-server 子进程（daemon 日志可见
+  `agent-server starting (pid=…)` / `agent-server healthy`）。此时
+  `dsh-agent-server.service` 被 `make deploy` 刻意停用——**systemd 显示
+  `inactive (dead)` 是预期状态，不是故障**（2026-08-31 起根治 8799 端口
+  双实例死锁）；健康检查以 `curl /health` 与 daemon 日志为准。
+- `false`：agent-server 由外部 systemd 单元管理，`systemctl --user status
+  dsh-agent-server.service` 才是权威。
 
 **升级/重装 daemon**：`make deploy` —— 一条命令完成：构建（`-tags sqlite_fts5`，
 知识库必需）→ 全仓单测 → busy-safe 安装 → 同步 skill/插件到 `~/.dsh/skills/` 与
@@ -531,7 +544,8 @@ journalctl --user -u otg-task-watcher.service -n 50
 `kb_vault`/`env_cleanup` 等键，**绝不覆盖你已有的 projects/models/obsidian_vault 等
 手工值**——升级后不必手动加字段）→ 写 systemd drop-in override（daemon 从此始终
 加载仓库最新 otg，每次重启/崩溃恢复自动换新代码）→ daemon-reload → 重启 watcher →
-agent-server.mjs/agent-monitor.html 有变更时顺带重启 dsh-agent-server。`make install-force`
+`agent-server.mjs`/`agent-monitor.html` 有变更时由重启后的 daemon 拉起新 agent-server；
+`kb-preflight.mjs` 变更且 `dsh-web` 在跑时自动重启 dsh-web 使插件生效。`make install-force`
 仍是 `deploy` 的别名（旧
 肌肉记忆兼容），但新部署一律用 `make deploy`。附带 `make deploy-status`（看仓库 vs
 运行时同步差异）与 `make rollback`（撤 drop-in 回固定安装路径）。

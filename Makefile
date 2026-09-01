@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry sync-omp-extension
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -130,13 +130,15 @@ sync-docs:
 
 # sync-plugins: 把 deploy/dsh-plugins/ 下的 DSH 插件同步到 ~/.dsh/plugins/
 #（dsh profile 按绝对路径加载）。busy-safe 替换；agent-server.mjs 变更需
-# 重启 dsh-agent-server 才生效（install-force 末尾有提示）。同步后清理
-# repo 已删除的残留插件（~/.dsh/plugins 是受管目录）。
+# 重启 agent-server 才生效（managed=true 由重启后的 daemon 拉起）。*.test.mjs
+# 是 repo 单测（make test-node），不复制到运行时目录。同步后清理 repo 已删除
+# 的残留插件（~/.dsh/plugins 是受管目录）。
 sync-plugins:
 	@echo "=== Syncing dsh plugins to ~/.dsh/plugins/ ==="
 	mkdir -p $(HOME)/.dsh/plugins
 	@for f in deploy/dsh-plugins/*; do \
 		b=$$(basename $$f); \
+		case "$$b" in *.test.mjs) echo "  skip test file: $$b"; continue;; esac; \
 		-rm -f $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
 		-mv $(HOME)/.dsh/plugins/$$b $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
 		cp $$f $(HOME)/.dsh/plugins/$$b; \
@@ -168,13 +170,35 @@ sync-registry:
 	@cp config/skill-registry.json $(HOME)/.dsh/config/skill-registry.json
 	@echo "=== Done ==="
 
+# sync-omp-extension: 把会话知识提炼扩展装到 ~/.omp/agent/extensions/（用户级，
+# 全项目生效）。deploy 默认不自动覆盖用户 ~/.omp（omp 配置属用户自治域），
+# 只提示；确认要装时显式跑本目标（busy-safe：备份旧版为 .old）。
+sync-omp-extension:
+	@echo "=== Syncing kb-session-distill.ts to ~/.omp/agent/extensions/ ==="
+	@mkdir -p $(HOME)/.omp/agent/extensions
+	@if [ -f $(HOME)/.omp/agent/extensions/kb-session-distill.ts ]; then \
+		cmp -s .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts && \
+			echo "  已与仓库一致，跳过" || { \
+			-rm -f $(HOME)/.omp/agent/extensions/kb-session-distill.ts.old; \
+			mv $(HOME)/.omp/agent/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts.old; \
+			cp .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts; \
+			echo "  已更新（旧版备份为 .old）"; }; \
+	else \
+		cp .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts; \
+		echo "  已安装"; \
+	fi
+	@echo "  · 禁用方式: omp config.yml disabledExtensions: [extension-module:kb-session-distill]"
+	@echo "  · 卸载: rm $(HOME)/.omp/agent/extensions/kb-session-distill.ts"
+
 # ===========================================================================
 # deploy — 唯一部署入口（替代 install-force）。
 #   构建 → 单测 → busy-safe 安装 → 同步 skill/插件/技能清单
 #   → vault-map 补默认字段 → 写 drop-in override
 #   → agent-server 所有权收敛（managed=true 停 systemd/清孤儿，防 8799 冲突）
 #   → daemon-reload → 重启 watcher
-#   → managed=false 时按 checksum 判断是否重启 dsh-agent-server。
+#   → managed=false 时按 checksum 判断是否重启 dsh-agent-server
+#   → kb-preflight 变更且 dsh-web 在跑时重启 dsh-web（[5c/6]）
+#   → omp 会话提炼扩展安装状态检查（[5d/6]，安装用 make sync-omp-extension）。
 # 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
 # ===========================================================================
 deploy: build test
@@ -209,11 +233,11 @@ deploy: build test
 		if [ "$$managed" = "true" ]; then \
 			echo "  agent_server_managed=true → daemon 自管 agent-server；移除 watcher 对 dsh-agent-server 的 Requires/After 依赖 + 停 systemd 实例，根治 8799 冲突"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server（bus 或服务状态异常），8799 可能仍被占用，请检查 systemctl --user status dsh-agent-server"; fi; \
-			# 关键：systemd 的 drop-in 用空 After=/Requires= 不会清除依赖（追加语义），
-			# 必须改基础 unit。旧 install 生成的 otg-task-watcher.service 无条件
-			# Requires=dsh-agent-server（为 managed=false 设计），导致每次 restart watcher
-			# 都强制拉起 dsh-agent-server 抢占 8799（2026-08-31 死锁）。用 sed 移除
-			# 这两行（保留 PATH/env/其余配置），再 daemon-reload。
+			# 关键：systemd 的 drop-in 用空 After=/Requires= 不会清除依赖（追加语义）， \
+			# 必须改基础 unit。旧 install 生成的 otg-task-watcher.service 无条件 \
+			# Requires=dsh-agent-server（为 managed=false 设计），导致每次 restart watcher \
+			# 都强制拉起 dsh-agent-server 抢占 8799（2026-08-31 死锁）。用 sed 移除 \
+			# 这两行（保留 PATH/env/其余配置），再 daemon-reload。 \
 			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
 			sed -i -e '/^After=dsh-agent-server.service$$/d' -e '/^Requires=dsh-agent-server.service$$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
 			$(SCTL) daemon-reload; \
@@ -254,6 +278,31 @@ deploy: build test
 		else \
 			echo "  (agent_server_managed=true — daemon 已拉起新 agent-server，无需 systemd 重启)"; \
 		fi
+	@echo "=== [5c/6] dsh-web: restart if kb-preflight changed ==="
+	@if [ -f "$(HOME)/.dsh/plugins/kb-preflight.mjs" ] && [ -f "$(HOME)/.dsh/plugins/kb-preflight.mjs.old" ]; then \
+		cmp -s "$(HOME)/.dsh/plugins/kb-preflight.mjs" "$(HOME)/.dsh/plugins/kb-preflight.mjs.old" 2>/dev/null && changed="" || changed="yes"; \
+	else \
+		changed="yes"; \
+	fi; \
+	if [ -n "$$changed" ]; then \
+		if $(SCTL) -q is-active dsh-web.service 2>/dev/null; then \
+			echo "  kb-preflight changed — restarting dsh-web"; \
+			$(SCTL) restart dsh-web 2>/dev/null || echo "  (dsh-web restart failed — run: systemctl --user restart dsh-web)"; \
+		else \
+			echo "  (dsh-web not active — kb-preflight 将在下次启动时加载)"; \
+		fi; \
+	else \
+		echo "  kb-preflight unchanged — dsh-web 无需重启"; \
+	fi
+	@echo "=== [5d/6] omp 会话提炼扩展（kb-session-distill.ts）==="
+	@echo "  仓库: .omp/extensions/kb-session-distill.ts"
+	@echo "  · 用户级安装（全项目生效）: make sync-omp-extension"
+	@echo "  · 或手动: cp .omp/extensions/kb-session-distill.ts ~/.omp/agent/extensions/"
+	@if [ -f "$(HOME)/.omp/agent/extensions/kb-session-distill.ts" ]; then \
+		cmp -s ".omp/extensions/kb-session-distill.ts" "$(HOME)/.omp/agent/extensions/kb-session-distill.ts" && echo "  ✓ 已安装且与仓库一致" || echo "  ⚠ 已安装但与仓库不一致 — make sync-omp-extension"; \
+	else \
+		echo "  ⚠ 未安装（交互会话知识提炼不会自动触发）"; \
+	fi
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"
 	@echo "  rollback: make rollback"

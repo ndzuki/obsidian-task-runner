@@ -5,7 +5,7 @@
   "sources": {
     "obsidian-task-runner (bundled)": {
       "type": "bundled",
-      "description": "随 otg install 自动部署的阶段 Skill",
+      "description": "随 otg install / make deploy（sync-docs）自动部署的 Skill",
       "skills": [
         "obsidian-task-runner",
         "obsidian-task-runner-refining",
@@ -16,7 +16,9 @@
         "obsidian-task-runner-priority",
         "obsidian-task-runner-pm",
         "obsidian-task-runner-split",
-        "obsidian-task-runner-design"
+        "obsidian-task-runner-design",
+        "knowledge-base",
+        "kulala-http"
       ]
     },
     "obsidian-task-runner (external required)": {
@@ -27,14 +29,19 @@
         "grilling",
         "domain-modeling",
         "diagnosing-bugs",
-        "test-quality"
+        "test-quality",
+        "tdd",
+        "prototype",
+        "code-review"
       ]
     },
     "samber/cc-skills-golang": {
       "type": "github",
       "url": "https://github.com/samber/cc-skills-golang.git",
       "skillBasePath": "skills",
-      "patterns": ["golang-*"],
+      "patterns": [
+        "golang-*"
+      ],
       "skills": [
         "golang-benchmark",
         "golang-cli",
@@ -69,13 +76,17 @@
       "type": "github",
       "url": "https://github.com/vercel-labs/skills.git",
       "skillBasePath": "skills",
-      "skills": ["find-skills"]
+      "skills": [
+        "find-skills"
+      ]
     },
     "akin-ozer/cc-devops-skills": {
       "type": "github",
       "url": "https://github.com/akin-ozer/cc-devops-skills.git",
       "skillBasePath": "devops-skills-plugin/skills",
-      "skills": ["helm-generator"]
+      "skills": [
+        "helm-generator"
+      ]
     },
     "mattpocock/skills": {
       "type": "github",
