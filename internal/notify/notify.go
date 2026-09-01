@@ -505,7 +505,33 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 		log.Printf("decision tab: kitty @ ls failed for %s: %v", project, lsErr)
 	}
 
-	prompt := fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点（「决策:」为空或占位符的 D-n）。
+	prompt := decisionTabPrompt(listPath)
+	// 决策 tab 的 prompt 必须在被启动的 bash 脚本内导出，不能依赖
+	// `kitty @ launch` 客户端进程的环境变量：kitty 远程启动的子进程继承
+	// 的是 kitty 服务端的环境，而不是 `kitty @` 客户端进程的 env
+	// （2026-09-01 事故：KITTY_GRILL_PROMPT 丢失 → kitty-grill 回退到
+	// 无目标泛化问卷 → 模型自行选中已 done 的 REQ-025 写回，误触发
+	// done 任务重开）。heredoc 带引号定界符（'PROMPT_EOF'）保证 prompt
+	// 中的反引号/引号原样传入，不做任何 shell 展开。
+	script := decisionTabScript(project, listPath, prompt, addr, provider, model)
+	cmd := exec.Command("kitty", "@", "launch",
+		"--type=tab",
+		"--title", tabTitle,
+		"bash", "-c", script,
+	)
+	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath)
+	if err := cmd.Run(); err != nil {
+		log.Printf("decision tab: kitty @ launch failed for %s: %v", project, err)
+		return false
+	}
+	return true
+}
+
+// decisionTabPrompt builds the questionnaire prompt for the project-level
+// decision list tab. Kept as a function so the launch script can embed it
+// and tests can assert its shape.
+func decisionTabPrompt(listPath string) string {
+	return fmt.Sprintf(`请审阅项目级决策清单：%s 的待答决策点（「决策:」为空或占位符的 D-n）。
 
 输出一个 JSON 问卷（放在一个 `+"```json"+` 代码块里，代码块外不要任何文字），结构：
 {"decisions":[
@@ -518,7 +544,13 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 1. 把每个决策写回清单对应「- 决策: {答案}」行（直接编辑文件正文，保持格式与顺序）；
 2. 全部填完设 frontmatter grill_continue: true（daemon 据此自动分发）；
 3. 输出「决策总结」逐项列出已填项。`, listPath)
-	script := fmt.Sprintf(`cat <<'GRILLING_EOF'
+}
+
+// decisionTabScript renders the bash script the decision tab executes. The
+// prompt is exported INSIDE the script via a quoted heredoc so it survives
+// `kitty @ launch` regardless of the client process environment.
+func decisionTabScript(project, listPath, prompt, addr, provider, model string) string {
+	return fmt.Sprintf(`cat <<'GRILLING_EOF'
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  📋 项目级决策清单 — %s
@@ -529,19 +561,12 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF
-exec %s --prompt-env KITTY_GRILL_PROMPT --addr %s --provider %s --model %s`, project, listPath, grillExecPath(),
+export KITTY_GRILL_PROMPT=$(cat <<'PROMPT_EOF'
+%s
+PROMPT_EOF
+)
+exec %s --prompt-env KITTY_GRILL_PROMPT --addr %s --provider %s --model %s`, project, listPath, prompt, grillExecPath(),
 		fmt.Sprintf("%q", addr), fmt.Sprintf("%q", provider), fmt.Sprintf("%q", model))
-	cmd := exec.Command("kitty", "@", "launch",
-		"--type=tab",
-		"--title", tabTitle,
-		"bash", "-c", script,
-	)
-	cmd.Env = append(kittyEnv, "OBSIDIAN_VAULT="+vaultPath, "KITTY_GRILL_PROMPT="+prompt)
-	if err := cmd.Run(); err != nil {
-		log.Printf("decision tab: kitty @ launch failed for %s: %v", project, err)
-		return false
-	}
-	return true
 }
 
 type kittyOSWindow struct {

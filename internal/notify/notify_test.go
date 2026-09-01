@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -203,4 +204,28 @@ func kittyLSOutput(t *testing.T, osWindows []kittyOSWindow) []byte {
 		t.Fatalf("marshal kitty output: %v", err)
 	}
 	return output
+}
+
+// TestDecisionTabScriptEmbedsPrompt guards the 2026-09-01 regression where
+// KITTY_GRILL_PROMPT was passed via the `kitty @ launch` client env, got
+// dropped, and kitty-grill fell back to a targetless generic questionnaire.
+func TestDecisionTabScriptEmbedsPrompt(t *testing.T) {
+	listPath := "/home/user/myNote/Projects/001-release-manager/Notes/Grilling-Decisions.md"
+	prompt := decisionTabPrompt(listPath)
+	if !strings.Contains(prompt, "请审阅项目级决策清单") {
+		t.Fatalf("decision tab prompt lost its core instruction:\n%s", prompt)
+	}
+	script := decisionTabScript("release-manager", listPath, prompt, "127.0.0.1:8799", "openai", "gpt-5.6-luna")
+	for _, want := range []string{
+		"export KITTY_GRILL_PROMPT=$(cat <<'PROMPT_EOF'",
+		"PROMPT_EOF\n)",
+		"请审阅项目级决策清单",
+		"--prompt-env KITTY_GRILL_PROMPT",
+		"```json", // quoted heredoc keeps backticks literal
+		prompt,    // the full prompt is embedded inside the launched script
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("decision tab script missing %q:\n%s", want, script)
+		}
+	}
 }

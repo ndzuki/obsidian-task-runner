@@ -95,9 +95,20 @@ func main() {
 
 	prompt := *custom
 	if *promptEnv != "" {
-		if v := os.Getenv(*promptEnv); v != "" {
-			prompt = v
+		v := os.Getenv(*promptEnv)
+		if v == "" {
+			// decision tab 的 prompt 依赖该环境变量；一旦未送达（kitty
+			// 远程启动不继承客户端 env），绝不能回退到无目标泛化问卷——
+			// 2026-09-01 事故：泛化问卷自选已 done 的 REQ-025 写回，
+			// 误触发 TASK-025/072/073 重开 refining。
+			fmt.Fprintf(os.Stderr, "kitty-grill: 环境变量 %s 未设置，拒绝生成无目标问卷\n", *promptEnv)
+			os.Exit(2)
 		}
+		prompt = v
+	}
+	if prompt == "" && *taskID == "" && *reqDoc == "" {
+		fmt.Fprintln(os.Stderr, "kitty-grill: 缺少目标——请提供 --task/--req，或 --prompt/--prompt-env（拒绝启动无目标问卷，避免模型自选已交付需求写回）")
+		os.Exit(2)
 	}
 	if prompt == "" {
 		prompt = buildGrillingPrompt(*taskID, *taskTitle, *reqDoc, *vaultPath)
@@ -209,7 +220,15 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 用户会一轮回复所有决策（格式 D1=A D2=B …，可附简短补充）。你收到后：
 - 把每个决策写回需求文档（更新/补充 REQ 的技术规格、状态与数据、验收标准等章节）
 - 输出「决策总结」：逐项列出用户选择 + 已写回位置
-- 如有剩余歧义，总结末尾列「待澄清」，但不要阻塞本轮写回`, target, '`', '`', '`')
+- 如有剩余歧义，总结末尾列「待澄清」，但不要阻塞本轮写回
+
+写回需求文档的硬性规则：
+- 只写回本次命令指定的目标文档；若你没有明确目标（命令未指定 REQ/TASK），必须先向用户确认目标后再写，禁止自行从 vault 挑选需求文档写回。
+- 每次修改 REQ 必须在改动处附近追加一行 `+"`> 变更类型: breaking|additive|cosmetic`"+`（daemon 依据最新一行路由已交付任务）：
+  - 修改/删除已交付 AC、破坏 API/状态机/数据模型 → breaking（已交付任务将自动重开）
+  - 纯新增 AC/字段、向后兼容 → additive
+  - 仅确认既有规格、措辞/格式/历史回填，无任何契约变化 → cosmetic
+  - 本次批量问卷若所有答案都是「维持现状/与既有规格一致」，必须标 cosmetic，否则已 done 任务会被误重开`, target, '`', '`', '`')
 	// 真实任务 ID 前置：agent-server 监控面板按 prompt 里第一个 TASK-xxx
 	// 打标签，前置可避免启发式抓到 REQ 正文/预取上下文里提到的其他任务
 	// （观测：TASK-005 的 grilling 会话被误标为 TASK-058）。
@@ -653,6 +672,13 @@ func sessionGoneEvidence(errText string) bool {
 func runWriteback(addr, provider, model, effort, sessionID, answers string, ctx *writebackContext) error {
 	if answers == "" {
 		return fmt.Errorf("writeback mode requires --answers")
+	}
+	// 写回前再次复查任务状态（异步写回与问卷生成之间可能已跨数分钟：
+	// 任务可能已推进/关闭，写回会落到已离开 grilling 的需求上）。
+	// taskLeftGrilling 对空 taskID 直接放行——该兜底只保护有任务上下文的
+	// 写回；decision-tab 场景的防护靠「prompt 必须送达 + 只写清单」。
+	if ctx != nil && ctx.TaskID != "" && taskLeftGrilling(ctx.TaskID, ctx.VaultPath, ctx.ReqDoc) {
+		return fmt.Errorf("task TASK-%s 已离开 grilling 状态，写回已取消", ctx.TaskID)
 	}
 	// 失败提醒的归属对象：任务 ID 优先，其次写回目标文档名。
 	what := ""

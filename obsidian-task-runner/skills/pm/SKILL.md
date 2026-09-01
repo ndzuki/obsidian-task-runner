@@ -162,6 +162,17 @@ otg update-status {task} \
 ```
 若决策推翻了先前 `[采纳建议 auto]` 内容 → 在新标注中显式声明「推翻 auto 采纳」。
 
+> **变更类型标注（强制）**：每次写回 REQ 都必须在改动处附近追加一行
+> `> 变更类型: breaking|additive|cosmetic`（daemon 依据最新一行路由已交付的 done 任务）：
+> - 修改/删除已交付 AC、破坏 API/状态机/数据模型 → `breaking`；
+> - 纯新增 AC/字段、向后兼容 → `additive`；
+> - 仅确认既有规格、措辞/格式/历史回填，无任何契约变化 → `cosmetic`。
+> 决策点答案若只是**确认既有契约**（如「维持现状/与已交付一致」），必须标
+> `cosmetic`——否则 done 任务会被 daemon 按未标注=breaking 重开 refining
+> （2026-09-01 事故：REQ-025 批量问卷确认 D1–D6 全部维持现状，因未标注
+> cosmetic 导致 TASK-025/072/073 三个 done 任务被误重开）。无法判断时宁可
+> 不写该行，由 daemon 保守处理，但确认型答案不得省略 cosmetic 标注。
+
 > **写回幂等（强制，防重复标注）**：同一清单可能被多次分发（用户填完自动分发一次、后续手动 `grill_continue=true` 再分发、或推翻答案重发）。写回前 grep 目标 REQ 是否已存在 `[决策: {D-n}]` 标注：
 > - 已存在且答案一致 → **跳过**（不重复追加）；
 > - 已存在但答案变化（用户推翻）→ 追加新标注并显式声明「推翻前次决策」；
@@ -381,7 +392,7 @@ updated: {ISO8601}
 > **daemon 只消费「评审决策:」行**（`stage_flip` 按 continue/supplement/end 翻转 Stage-Plan 状态机）；上方四维评分表是**PM 自评估指南**（帮助用户判断决策），daemon 不解析评分/总分——评分仅供参考，用户决策仍以「评审决策:」为准。
 
 ### Step 4: 更新阶段状态
-Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon 重复触发评审；实际状态机翻转由 daemon `flipStageReviewDecision` 在分发前确定性完成，本步为语义记录）。
+Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon 重复触发评审；实际状态机翻转由 daemon `flipStageReviewDecision` 在分发前确定性完成，本步为语义记录）。daemon 在用户回答后按本文件 frontmatter `stage:` 字段定位 review-pending 阶段完成翻转（in-progress 与 review-pending 两种形态均兼容）。
 
 ### 完成标准
 - [ ] Stage-Review.md 已创建（评分四维 + 建议 + 决策区）

@@ -653,3 +653,35 @@ func TestWritebackContextFreshPrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildGrillingPromptRequiresChangeType guards the 2026-09-01 regression:
+// the questionnaire model wrote confirmation-only decisions back into REQ-025
+// without a `> 变更类型:` annotation, so the daemon treated the change as
+// breaking and reopened three done tasks.
+func TestBuildGrillingPromptRequiresChangeType(t *testing.T) {
+	prompt := buildGrillingPrompt("001", "标题", "Projects/001-demo/Requirements/REQ-001-demo.md", "/vault")
+	for _, want := range []string{"> 变更类型: breaking|additive|cosmetic", "cosmetic"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("buildGrillingPrompt 缺少 %q：%.400q", want, prompt)
+		}
+	}
+}
+
+// TestRunWritebackCancelsWhenTaskLeftGrilling guards the async-writeback gap:
+// the task may have moved on between questionnaire generation and submission.
+func TestRunWritebackCancelsWhenTaskLeftGrilling(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "Projects", "001-demo", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(tasksDir, "TASK-001-demo.md")
+	if err := os.WriteFile(taskPath, []byte("---\nid: \"001\"\nstatus: done\nproject: demo\nreq_doc: R.md\n---\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &writebackContext{TaskID: "001", VaultPath: dir, ReqDoc: "R.md"}
+	err := runWriteback("127.0.0.1:9", "openai", "gpt-5.6-luna", "low", "session-1", "D1=A", ctx)
+	if err == nil || !strings.Contains(err.Error(), "已离开 grilling") {
+		t.Fatalf("runWriteback = %v, want task-left-grilling cancellation", err)
+	}
+}
