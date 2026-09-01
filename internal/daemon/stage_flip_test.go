@@ -38,7 +38,7 @@ func flipRunner(t *testing.T, vault string) *Runner {
 // phase delivered, next phase in-progress.
 func TestApplyStageDecisionContinue(t *testing.T) {
 	runner := flipRunner(t, t.TempDir())
-	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "continue", "", "test")
+	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "continue", "", "", "test")
 	if !flipped {
 		t.Fatal("continue must flip the plan")
 	}
@@ -58,10 +58,10 @@ func TestApplyStageDecisionContinue(t *testing.T) {
 func TestApplyStageDecisionContinueCompletesProject(t *testing.T) {
 	runner := flipRunner(t, t.TempDir())
 	// First call: full plan continues into phase 2 (results discarded).
-	runner.applyStageDecision(flipPlanTemplate, "continue", "", "test")
+	runner.applyStageDecision(flipPlanTemplate, "continue", "", "", "test")
 	// Remove phase 2: phase 1 is the last.
 	onePhase := flipPlanTemplate[:strings.Index(flipPlanTemplate, "### Phase 2")]
-	out, flipped, summary := runner.applyStageDecision(onePhase, "continue", "", "test")
+	out, flipped, summary := runner.applyStageDecision(onePhase, "continue", "", "", "test")
 	if !flipped {
 		t.Fatal("last-phase continue must flip")
 	}
@@ -77,7 +77,7 @@ func TestApplyStageDecisionContinueCompletesProject(t *testing.T) {
 // "- 补充:" line appended to the next phase block.
 func TestApplyStageDecisionSupplement(t *testing.T) {
 	runner := flipRunner(t, t.TempDir())
-	out, flipped, _ := runner.applyStageDecision(flipPlanTemplate, "supplement:增加只读场景", "", "test")
+	out, flipped, _ := runner.applyStageDecision(flipPlanTemplate, "supplement:增加只读场景", "", "", "test")
 	if !flipped {
 		t.Fatal("supplement must flip")
 	}
@@ -112,7 +112,7 @@ func TestApplyStageDecisionEnd(t *testing.T) {
 	ph2 := writeTask("002", "P2", "ready")
 
 	runner := flipRunner(t, vault)
-	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", projDir, "test")
+	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", "", projDir, "test")
 	if !flipped {
 		t.Fatal("end must flip")
 	}
@@ -146,7 +146,7 @@ func TestApplyStageDecisionEndRejectsActiveLaterTask(t *testing.T) {
 	}
 
 	runner := flipRunner(t, vault)
-	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", projDir, "test")
+	out, flipped, summary := runner.applyStageDecision(flipPlanTemplate, "end", "", projDir, "test")
 	if flipped || out != flipPlanTemplate {
 		t.Fatalf("end with active later task must not flip: flipped=%v summary=%q", flipped, summary)
 	}
@@ -165,9 +165,131 @@ func TestApplyStageDecisionEndRejectsActiveLaterTask(t *testing.T) {
 // TestApplyStageDecisionUnknownNoOp guards invalid decisions: nothing flips.
 func TestApplyStageDecisionUnknownNoOp(t *testing.T) {
 	runner := flipRunner(t, t.TempDir())
-	out, flipped, _ := runner.applyStageDecision(flipPlanTemplate, "maybe", "", "test")
+	out, flipped, _ := runner.applyStageDecision(flipPlanTemplate, "maybe", "", "", "test")
 	if flipped || out != flipPlanTemplate {
 		t.Fatal("unknown decision must not flip")
+	}
+}
+
+// reviewPendingPlanTemplate mirrors the post-review shape: the PM stage-review
+// session (Mode 3 Step 4) flips the reviewed phase to review-pending, so the
+// daemon must locate it there when the user answers (2026-09-01 regression:
+// Phase 1 sat review-pending for 18 days and an answered review no-op'ed).
+const reviewPendingPlanTemplate = `---
+id: "stage-plan"
+project: test
+status: active
+---
+
+### Phase 1: 核心链路
+- tasks: 001
+- status: review-pending
+
+### Phase 2: Web 控制台
+- tasks: 002
+- status: planned
+`
+
+// TestApplyStageDecisionFromReviewPending guards the review-pending current
+// phase: continue delivers it and promotes the next phase, exactly like the
+// in-progress shape.
+func TestApplyStageDecisionFromReviewPending(t *testing.T) {
+	runner := flipRunner(t, t.TempDir())
+	out, flipped, summary := runner.applyStageDecision(reviewPendingPlanTemplate, "continue", "Phase 1", "", "test")
+	if !flipped {
+		t.Fatal("continue on a review-pending phase must flip")
+	}
+	if !strings.Contains(out, "### Phase 1: 核心链路\n- tasks: 001\n- status: delivered") {
+		t.Fatalf("phase 1 not delivered:\n%s", out)
+	}
+	if !strings.Contains(out, "### Phase 2: Web 控制台\n- tasks: 002\n- status: in-progress") {
+		t.Fatalf("phase 2 not in-progress:\n%s", out)
+	}
+	if !strings.Contains(summary, "Phase 2") {
+		t.Fatalf("summary = %q, want next-phase mention", summary)
+	}
+}
+
+// TestApplyStageDecisionFromReviewPendingSupplement guards supplement on the
+// review-pending shape: continue + "- 补充:" appended to the next phase.
+func TestApplyStageDecisionFromReviewPendingSupplement(t *testing.T) {
+	runner := flipRunner(t, t.TempDir())
+	out, flipped, _ := runner.applyStageDecision(reviewPendingPlanTemplate, "supplement:补 SwitchOrganization 缺口", "Phase 1", "", "test")
+	if !flipped {
+		t.Fatal("supplement on a review-pending phase must flip")
+	}
+	if !strings.Contains(out, "### Phase 2: Web 控制台\n- tasks: 002\n- status: in-progress\n- 补充: 补 SwitchOrganization 缺口") {
+		t.Fatalf("supplement placement wrong:\n%s", out)
+	}
+}
+
+// TestApplyStageDecisionReviewPendingFallbackWithoutStage guards the
+// reviewStage-unknown fallback: the first review-pending phase is used.
+func TestApplyStageDecisionReviewPendingFallbackWithoutStage(t *testing.T) {
+	runner := flipRunner(t, t.TempDir())
+	out, flipped, _ := runner.applyStageDecision(reviewPendingPlanTemplate, "continue", "", "", "test")
+	if !flipped {
+		t.Fatal("fallback to first review-pending phase must flip")
+	}
+	if !strings.Contains(out, "### Phase 1: 核心链路\n- tasks: 001\n- status: delivered") {
+		t.Fatalf("phase 1 not delivered:\n%s", out)
+	}
+}
+
+// TestApplyStageDecisionReviewStageMismatchNoOp guards that a wrong
+// reviewStage never delivers an unrelated phase.
+func TestApplyStageDecisionReviewStageMismatchNoOp(t *testing.T) {
+	runner := flipRunner(t, t.TempDir())
+	out, flipped, _ := runner.applyStageDecision(reviewPendingPlanTemplate, "continue", "Phase 99", "", "test")
+	if flipped || out != reviewPendingPlanTemplate {
+		t.Fatal("mismatched reviewStage must not flip")
+	}
+}
+
+// TestFlipStageReviewDecisionFromReviewPending is the Runner-level guard for
+// the 2026-09-01 regression: a Stage-Plan whose reviewed phase is
+// review-pending must still flip when the user answers the Stage-Review.
+func TestFlipStageReviewDecisionFromReviewPending(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	notesDir := filepath.Join(projDir, "Notes")
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notesDir, "Stage-Plan.md"), []byte(reviewPendingPlanTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review := `---
+id: "stage-review"
+project: test
+stage: Phase 1
+status: open
+grill_continue: true
+---
+# Stage Review
+
+## 评审决策
+- 评审决策: continue
+`
+	if err := os.WriteFile(filepath.Join(notesDir, "Stage-Review.md"), []byte(review), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := flipRunner(t, vault)
+	if !runner.flipStageReviewDecision(context.Background()) {
+		t.Fatal("answered review on a review-pending phase must flip")
+	}
+	data, err := os.ReadFile(filepath.Join(notesDir, "Stage-Plan.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := string(data)
+	if !strings.Contains(plan, "### Phase 1: 核心链路\n- tasks: 001\n- status: delivered") {
+		t.Fatalf("phase 1 not delivered:\n%s", plan)
+	}
+	if !strings.Contains(plan, "### Phase 2: Web 控制台\n- tasks: 002\n- status: in-progress") {
+		t.Fatalf("phase 2 not in-progress:\n%s", plan)
 	}
 }
 
@@ -233,7 +355,8 @@ func TestFlipStageReviewDecisionIdempotent(t *testing.T) {
 		t.Fatal("re-run must not modify the plan")
 	}
 
-	// Revised decision after terminal shape: no in-progress phase → no-op.
+	// Revised decision after terminal shape: no in-progress and no
+	// review-pending phase → no-op.
 	writeReview("continue")
 	if runner.flipStageReviewDecision(ctx) {
 		t.Fatal("revised decision with no in-progress phase must no-op")

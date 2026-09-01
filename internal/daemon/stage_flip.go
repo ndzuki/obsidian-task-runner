@@ -26,6 +26,13 @@ var stageSupplementRE = regexp.MustCompile(`(?i)^supplement:\s*(.+)$`)
 //	end             → current phase delivered; later phases ended; their
 //	                 tasks closed (cancelled)
 //
+// The "current phase" is the in-progress phase when one exists, otherwise
+// the review-pending phase named by the Stage-Review frontmatter `stage`
+// field (the PM stage-review session flips the phase to review-pending in
+// Mode 3 Step 4, so an answered review must locate it there — 2026-09-01:
+// Phase 1 sat review-pending for 18 days and every answered review would
+// have no-op'ed under the old in-progress-only lookup).
+//
 // The Stage-Review is then marked answered (grill_continue=false,
 // status=answered) so neither the daemon nor the PM session re-processes it.
 // The PM distribute session still runs afterwards for REQ annotations and
@@ -59,6 +66,14 @@ func (r *Runner) flipStageReviewDecision(ctx context.Context) bool {
 		}
 		decision := strings.TrimSpace(string(m[1]))
 
+		// The review's own stage (e.g. "Phase 1") locates the phase when the
+		// plan no longer has an in-progress phase (PM flipped it to
+		// review-pending when the review was produced).
+		reviewStage := ""
+		if rfm, err := yamlfrontmatter.Parse(revData); err == nil && rfm != nil {
+			reviewStage = rfm.Stage
+		}
+
 		// Idempotency: the flip must not re-apply the same decision — a
 		// re-run after a failed PM session would otherwise advance the
 		// state machine to the NEXT phase (Phase 2 becomes in-progress on
@@ -75,7 +90,7 @@ func (r *Runner) flipStageReviewDecision(ctx context.Context) bool {
 			r.logger.Printf("project %s: stage-review flip: read stage plan: %v", projectEntry.Name(), err)
 			continue
 		}
-		content, flipped, summary := r.applyStageDecision(string(planData), decision, projDir, projectEntry.Name())
+		content, flipped, summary := r.applyStageDecision(string(planData), decision, reviewStage, projDir, projectEntry.Name())
 		if !flipped {
 			continue
 		}
@@ -86,8 +101,8 @@ func (r *Runner) flipStageReviewDecision(ctx context.Context) bool {
 		// The Stage-Review status=answered marker is left to the PM
 		// distribute session (Mode 2.5 Step 5) so a failed PM session
 		// retries the annotations instead of losing them. The daemon flip
-		// itself is idempotent: a re-run finds no in-progress phase and
-		// no-ops.
+		// itself is idempotent: a re-run finds no in-progress or
+		// review-pending phase and no-ops.
 		r.logger.Printf("project %s: stage-review decision %q applied: %s", projectEntry.Name(), decision, summary)
 		r.updateRoadmap(projectEntry.Name(), "阶段决策", summary)
 		return true
@@ -98,7 +113,14 @@ func (r *Runner) flipStageReviewDecision(ctx context.Context) bool {
 // applyStageDecision rewrites the Stage-Plan content per the review decision
 // and closes later-phase tasks for "end". Returns the new content, whether
 // anything changed, and a one-line summary.
-func (r *Runner) applyStageDecision(content, decision string, projDir, project string) (string, bool, string) {
+//
+// The current phase is located in priority order:
+//  1. the in-progress phase (pre-review shape);
+//  2. the review-pending phase named by reviewStage (post-review shape —
+//     PM Mode 3 Step 4 flips the phase to review-pending, so the answer
+//     must be able to locate it there);
+//  3. the first review-pending phase (reviewStage unknown).
+func (r *Runner) applyStageDecision(content, decision, reviewStage, projDir, project string) (string, bool, string) {
 	phases := parseStagePlanContent(content)
 	if len(phases) == 0 {
 		return content, false, ""
@@ -110,8 +132,30 @@ func (r *Runner) applyStageDecision(content, decision string, projDir, project s
 			break
 		}
 	}
+	if currentIdx == -1 && reviewStage != "" {
+		want := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(reviewStage), "###"))
+		for i, p := range phases {
+			name := strings.TrimSpace(p.Name)
+			if (strings.EqualFold(name, want) || strings.HasPrefix(name, want+":")) && p.Status == "review-pending" {
+				currentIdx = i
+				break
+			}
+		}
+	}
+	if currentIdx == -1 && reviewStage == "" {
+		// reviewStage unknown: fall back to the first review-pending phase.
+		// A non-empty reviewStage that matches nothing must NOT fall back —
+		// the answer belongs to a different phase and flipping the wrong
+		// one would deliver it silently.
+		for i, p := range phases {
+			if p.Status == "review-pending" {
+				currentIdx = i
+				break
+			}
+		}
+	}
 	if currentIdx == -1 {
-		return content, false, "no in-progress phase"
+		return content, false, "no in-progress or review-pending phase"
 	}
 	current := phases[currentIdx]
 	nextIdx := currentIdx + 1
