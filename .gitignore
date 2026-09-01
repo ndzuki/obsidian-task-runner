@@ -8,9 +8,9 @@ __pycache__/
 # Logs
 *.log
 
-# Go build output
-otg
-kitty-grill
+# Go build output（根目录二进制；锚定 / 避免误伤 cmd/kitty-grill/ 目录）
+/otg
+/kitty-grill
 coverage.out
 coverage.html
 
