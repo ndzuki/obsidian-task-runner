@@ -4,13 +4,39 @@
 
 Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求入口，把项目代码目录当作执行目标。你只需要写需求、在两处确认、最后验收产品，其他步骤（计划、实现、测试、PR、合并）由 DSH Agent 和守护进程自动完成。
 
+## DSH 2.0 时代：长驻 Agent 运行时 + 插件生态
+
+本项目运行在 **DSH 2.0（DeepSeek Harness 插件时代）** 之上：daemon 管理一个长驻 `agent-server`（`headless-agent-server` profile），自动化阶段经 `/agent/run` 复用同一运行时，交互问答经 `/agent/chat` 同源接入——不再每阶段冷启动短命进程。相比 spawn 一代，关键优势：
+
+| 维度 | spawn 一代 | DSH 2.0（embed + 插件） |
+| --- | --- | --- |
+| 会话生命周期 | 每阶段新进程，中断即丢 | **durable resume**：daemon 重启/会话中断后按 sessionId 重挂继续执行，不重跑（TASK-058 教训固化进实现） |
+| 推理强度 | 无法 per-阶段传递 | 每阶段自动传 `reasoningEffort`（`low/medium/high/xhigh`），grilling 单独分级（见「推理强度」节） |
+| 交互会话 | 与自动化割裂 | grilling / dsh web / Agent Town 问答统一走 `/agent/chat`：**KB-first 服务端预检索 + 项目上下文注入**（CONTEXT.md / ADR / 规范摘要），本地优先零豁免（见「交互会话本地优先」节） |
+| 知识沉淀 | 依赖模型自觉 | `kb-distill` 会话结束自动提炼（确定性踩坑抽取零 LLM token + 门控小模型语义提炼）、daemon merge 自动提取、watcher 自动建索引——"写入即检索" |
+| 监控 | 翻日志 | **Agent Town** 像素小镇实时看并发会话 + 问答弹窗 + 「📊 KB 预检索」小图（命中率 / 耗时直方图） |
+
+**插件矩阵**（cordis patch 挂载，dsh 升级不丢；📦 = 随 `make deploy` 从本仓库同步）：
+
+| 插件 | 位置 | 职责 |
+| --- | --- | --- |
+| `agent-server` 📦 | repo → `~/.dsh/plugins/` | 长驻 RPC：`/agent/run` 自动化阶段、`/agent/chat` 交互问答、`/agents` `/kb-stats` 监控 |
+| `kb-preflight` 📦 | repo → `~/.dsh/plugins/` | dsh web / dsh-tui 原生聊天 KB-first 注入（项目上下文 + 预检索，非阻塞首问） |
+| `fallback` | home patch | 跨模型自动降级（免费渠道优先，仅自动化阶段生效） |
+| `kb-distill` | home patch | 会话结束 / 空闲知识提炼 → `otg kb absorb` |
+| `dsh-commands` | home patch | `/review` `/handoff` `/scaffold` `/grill` `/model-catalog` 斜杠命令 |
+| `vault-dashboard` | home patch | `/vault` 打开项目看板（`otg web serve` 提供） |
+| `mcp-context7` | home patch | 第三方库/框架文档 MCP（本地库未命中时兜底外查） |
+
+**dsh web 多工作区 = 项目会话**：工作区对应 vault-map 注册项目的 checkout——在该会话提问项目相关问题，首问自动注入该项目上下文（CONTEXT/ADR/规范）与全局知识库预检索命中，**先查本地知识再推理**；模型由你在会话里自选（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败不自动切换（防长会话被免费重试占住）。
+
 ## 适合谁
 
 - 用 Obsidian 管理需求，同时希望 AI 在真实 Git 仓库中实现代码。
 - 需要保留计划、实现记录、验收结果和决策记忆，方便追溯。
 - 希望全程自动化：从需求到计划、实现、PR 创建与合并都由系统完成，只保留「需求方向」和「最终产品验收」两个人工节点。
 
-> 当前版本面向 Linux + systemd + DSH。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
+> 当前版本面向 Linux + systemd + DSH（默认 `executor: dsh-embed`，长驻 agent-server 运行时）。其他操作系统可以使用单次命令，但没有内置的 systemd 常驻服务。
 
 ## 工作方式：你只需确认方向并验收产品
 
