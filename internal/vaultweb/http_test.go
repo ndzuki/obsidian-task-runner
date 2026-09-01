@@ -2,10 +2,13 @@ package vaultweb
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 )
 
 func TestHTTPReadOnlyEndpoints(t *testing.T) {
@@ -128,4 +131,49 @@ func TestHTTPAgentsProxy(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("agents without server status=%d, want 503", rec.Code)
 	}
+}
+
+func TestHTTPKBSearch(t *testing.T) {
+fake := func(query string, limit int) ([]knowledge.SearchResult, error) {
+if query == "boom" {
+return nil, errors.New("kb store broken")
+}
+return []knowledge.SearchResult{
+{Path: "core/go/connect-rpc.md", Title: "Go Connect RPC", Summary: "连接复用", Score: 0.91},
+}, nil
+}
+h := NewWithAgentServer(newTestVault(t), "").WithKBSearch(fake).Handler()
+
+// 正常命中：JSON 形状与 `otg kb search --json` 一致。
+rec := httptest.NewRecorder()
+h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/kb/search?q=connect+rpc&limit=3", nil))
+if rec.Code != http.StatusOK {
+t.Fatalf("kb search status=%d, want 200 (body=%s)", rec.Code, rec.Body.String())
+}
+if !strings.Contains(rec.Body.String(), `"path":"core/go/connect-rpc.md"`) {
+t.Fatalf("kb search body missing hit: %s", rec.Body.String())
+}
+
+// 缺 q → 400；非法 limit → 400；limit 上限 20 截断。
+for _, path := range []string{"/api/kb/search", "/api/kb/search?q=x&limit=abc", "/api/kb/search?q=x&limit=0"} {
+rec := httptest.NewRecorder()
+h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+if rec.Code != http.StatusBadRequest {
+t.Fatalf("%s status=%d, want 400", path, rec.Code)
+}
+}
+
+// 后端错误 → 500（客户端据此回退 spawn）。
+rec = httptest.NewRecorder()
+h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/kb/search?q=boom", nil))
+if rec.Code != http.StatusInternalServerError {
+t.Fatalf("boom status=%d, want 500", rec.Code)
+}
+
+// 未接线（kbSearch nil）→ 501（客户端据此回退 spawn）。
+rec = httptest.NewRecorder()
+NewWithAgentServer(newTestVault(t), "").Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/kb/search?q=x", nil))
+if rec.Code != http.StatusNotImplemented {
+t.Fatalf("unwired status=%d, want 501", rec.Code)
+}
 }

@@ -83,6 +83,18 @@
   .kv { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; font-size: 12px; }
   .kv dt { color: var(--dim); }
   .kv dd { margin: 0; color: var(--text); word-break: break-word; }
+
+  /* KB 预检索小图（/kb-stats） */
+  .kb-summary { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+  .kb-summary b { color: var(--text); }
+  .kb-bars { display: flex; gap: 2px; align-items: flex-end; height: 36px; }
+  .kb-bar { flex: 1; min-width: 0; background: #2e6b4f; border-radius: 2px 2px 0 0; position: relative; }
+  .kb-bar.dim { background: #1d2733; }
+  .kb-bar .v { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--dim); white-space: nowrap; }
+  .kb-bar:hover { background: var(--accent); }
+  .kb-x { display: flex; gap: 2px; font-size: 8px; color: #5b6b85; margin-top: 2px; }
+  .kb-x span { flex: 1; text-align: center; overflow: hidden; }
+  .kb-note { font-size: 10px; color: #5b6b85; margin-top: 4px; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(16px); background: #12151d; border: 1px solid var(--accent); color: var(--text); padding: 6px 16px; border-radius: 999px; font-size: 12px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 90; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
@@ -136,6 +148,7 @@
   </section>
   <aside class="side">
     <div class="panel"><h3>🧑‍🤝‍🧑 在镇居民</h3><div class="roster" id="roster"><div class="empty">暂无 agent</div></div></div>
+    <div class="panel"><h3>📊 KB 预检索</h3><div id="kbStats"><div class="empty">等待数据…</div></div></div>
     <div class="panel"><h3>📡 小镇动态</h3><div class="log" id="log"><div class="empty">等待第一条动态…</div></div></div>
   </aside>
 </main>
@@ -1329,6 +1342,38 @@ async function poll() {
   }
 }
 
+/* ---------- KB 预检索小图（/kb-stats） ---------- */
+function renderKBStats(s) {
+  const el = $('#kbStats');
+  if (!s || !s.totals) { el.innerHTML = '<div class="empty">暂无统计</div>'; return; }
+  const t = s.totals;
+  const total = t.hits + t.misses;
+  const ratio = total > 0 ? Math.round(t.hits / total * 100) : 0;
+  const counts = t.hist.counts;
+  const max = Math.max.apply(null, counts);
+  const bars = counts.map((c, i) => {
+    const h = c > 0 ? Math.max(3, Math.round(c / max * 30)) : 2;
+    return '<div class="kb-bar' + (c > 0 ? '' : ' dim') + '" style="height:' + h + 'px" title="' + t.hist.boundaries[i] + 'ms: ' + c + '">' +
+      (c > 0 ? '<span class="v">' + c + '</span>' : '') + '</div>';
+  }).join('');
+  const labels = t.hist.boundaries.map((b, i) => '<span title="' + b + 'ms">' + (i === 0 ? '&lt;' + t.hist.boundaries[1] : i === t.hist.boundaries.length - 1 ? '&gt;=' + b : b) + '</span>').join('');
+  el.innerHTML =
+    '<div class="kb-summary"><span>命中 <b>' + t.hits + '</b>/' + total + '</span><span>命中率 <b>' + ratio + '%</b></span><span>均耗 <b>' + t.avgMs + 'ms</b></span><span>检索 <b>' + t.searches + '</b>次</span></div>' +
+    '<div class="kb-bars">' + bars + '</div>' +
+    '<div class="kb-x">' + labels + '</div>' +
+    '<div class="kb-note">累计 · 单位 ms · 命中=缓存命中 · 空/失败不计入命中</div>';
+}
+async function pollKBStats() {
+  try {
+    const resp = await fetch('/kb-stats');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    renderKBStats(await resp.json());
+  } catch (e) {
+    const el = $('#kbStats');
+    if (el && el.querySelector('.empty')) el.innerHTML = '<div class="empty">agent-server 无 /kb-stats</div>';
+  }
+}
+
 /* ---------- 名单 / 详情 / 交互 ---------- */
 function renderRoster() {
   const items = Array.from(agents.values()).sort((a, b) => a.key.localeCompare(b.key));
@@ -1490,6 +1535,8 @@ clock();
 setInterval(clock, 1000);
 poll();
 setInterval(poll, POLL_MS);
+pollKBStats();
+setInterval(pollKBStats, 30000);
 requestAnimationFrame(tick);
 
 $('#nightBtn').addEventListener('click', toggleNight);

@@ -28,11 +28,21 @@ test:
 	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -cover -p 4 -timeout 5m ./...
 	@$(MAKE) test-node
 
-# test-node: agent-server.mjs 的纯函数单测（KB-first 摘要/查询词推导/项目上下文）。
-# node 不可用时静默跳过——agent-server 本身由 dsh 的 node 运行时驱动，测试只是辅助。
+# test-node: agent-server / kb-preflight 纯函数单测 + D2 提炼预过滤。
+# node 不可用时静默跳过——插件由 dsh 的 node 运行时驱动，测试只是辅助；
+# node <23.6 无 TS type-stripping → 只跑 mjs 单测（.ts 由 dsh 运行时
+# 负责加载，不阻塞 deploy 的 test 阶段）；node ≥23.6 直载 .ts 全量跑。
+# 老 node 上切到"兼容套件"而非整段跳过——mjs 测试是 A 批/CI 的核心护栏。
 test-node:
 	@if command -v node >/dev/null 2>&1; then \
-		node deploy/dsh-plugins/agent-server.kb.test.mjs; \
+		node deploy/dsh-plugins/agent-server.kb.test.mjs && \
+		node deploy/dsh-plugins/kb-preflight.test.mjs && \
+		NODE_VER=$$(node -p 'process.versions.node'); \
+		if [ "$$(printf '%s\n23.6.0' "$$NODE_VER" | sort -V | head -1)" = "23.6.0" ]; then \
+			node deploy/dsh-plugins/kb-session-distill.test.mjs; \
+		else \
+			echo "  (node $$NODE_VER <23.6 — skipping .ts distill tests; .mjs tests still enforced)"; \
+		fi; \
 	else \
 		echo "  (node not found — skipping agent-server JS unit tests)"; \
 	fi

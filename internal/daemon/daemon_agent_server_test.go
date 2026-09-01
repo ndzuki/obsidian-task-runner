@@ -85,6 +85,18 @@ func TestAgentServerEnvCarriesKbVault(t *testing.T) {
 	if got := get("OTR_OTG_PATH"); got == "" {
 		t.Fatal("OTR_OTG_PATH must pin the daemon's own otg binary for the precompute subprocess")
 	}
+	if got := get("OTR_KB_HTTP"); got != "http://"+cfg.VaultWebAddr {
+		t.Fatalf("OTR_KB_HTTP = %q, want %q (B2 in-process search endpoint)", got, "http://"+cfg.VaultWebAddr)
+	}
+}
+
+func TestKBHTTPBaseEmptyWhenVaultWebDisabled(t *testing.T) {
+	if got := kbHTTPBase(""); got != "" {
+		t.Fatalf("kbHTTPBase(\"\") = %q, want \"\" (spawn-only fallback)", got)
+	}
+	if got := kbHTTPBase("127.0.0.1:8787"); got != "http://127.0.0.1:8787" {
+		t.Fatalf("kbHTTPBase = %q, want http://127.0.0.1:8787", got)
+	}
 }
 
 func TestAgentServerEnvFallsBackToObsidianVault(t *testing.T) {

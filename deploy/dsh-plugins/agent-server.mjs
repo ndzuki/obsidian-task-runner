@@ -34,6 +34,10 @@
  *        任务同一时刻只有一个活跃写者（task 是从 prompt 正则推导的展示标签，
  *        只作 taskId 缺失时的回退匹配））
  *   GET  /monitor（或 /）             → agent-monitor.html 监控面板
+ *   GET  /kb-stats                    → 200 kbStatsSnapshot()（KB 预检索统计：
+ *        累计 + 当前小时窗口的 hits/misses/empty/errs/skipped/searches/avgMs +
+ *        耗时直方图 {boundaries,counts}——Agent Town 面板「📊 KB 预检索」小图
+ *        每 30s 轮询此端点，F1 落地）
  *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId?, status?, taskId?, toolPolicy? }
  *     → 200 { text, outcome, sessionId, errorCode?, error? }
  *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted | tool_policy_violation
@@ -173,26 +177,278 @@ const KB_QUERY_MAX = 200
 /** 预检索命中缓存 TTL：同 vault+db+query 在窗口内不重复 spawn otg。 */
 const KB_HITS_TTL_MS = 10 * 60 * 1000
 
-/** 预检索命中缓存条数上限：超过后先清过期条目，仍超则整表清空，
- * 防长跑 daemon 的查询缓存无限增长（每个不同 query 是一个 key）。 */
+/** 预检索失败（otg 不可用 / 检索出错）的短 TTL：瞬时故障不再毒化缓存
+ * 满 10 分钟——真无命中（empty）仍按满 TTL 缓存（A2）。 */
+const KB_ERR_TTL_MS = 30 * 1000
+
+/** 预检索命中缓存条数上限：带 TTL 的 LRU（超限逐最旧，不清空热数据，A3）。 */
 const KB_HITS_CACHE_MAX = 128
 
 /** 预检索子进程超时：embedding 后端不可用等场景不得卡住聊天会话。 */
 const KB_SEARCH_TIMEOUT_MS = 15 * 1000
 
-let kbDigestCache = { key: "", digest: "" }
+/** 预检索超时预算（B1）：
+ *  - 全预算 15s：首次 / 空闲超过 keep_alive（ollama 默认 5min 卸载模型）/
+ *    上次慢或超时 → 冷启动需要耐心；
+ *  - 快预算 4s：上次检索 ≤3s 完成 → 嵌入后端在热路径，收紧到 4s。
+ * 超时自动回退 INDEX 摘要（现有逻辑），不牺牲正确性。 */
+const KB_SEARCH_FAST_TIMEOUT_MS = 4 * 1000
+const KB_SEARCH_FAST_OK_MS = 3 * 1000
+const KB_SEARCH_COLD_IDLE_MS = 5 * 60 * 1000
+
+/** 预检索统计日志周期：每小时一条 hit/miss 计数（A0，daemon logWriter 收集）。 */
+const KB_STATS_LOG_INTERVAL_MS = 60 * 60 * 1000
+
+/** 耗时直方图桶边界（F1）：与 B1 阈值对齐——100/500/1000 分辨 HTTP 快慢路径，
+ * 2000/4000 对应 slow 标记与快预算边界，16000 即全预算+1s 兜底。 */
+const KB_DURATION_BOUNDARIES = [0, 100, 500, 1000, 2000, 4000, 16000]
+
+/** 耗时 → 桶下标（纯函数，F1）：桶 i = [B[i], B[i+1])，末桶 = [B[last], ∞)。
+ * B[0] 是 0 哨兵——保证 0ms 落入首桶。 */
+function durationBucket(ms, boundaries) {
+  const B = boundaries || KB_DURATION_BOUNDARIES
+  for (let i = 0; i < B.length - 1; i++) {
+    if (ms >= B[i] && ms < B[i + 1]) return i
+  }
+  return B.length - 1
+}
+
+/** 直方图累加（纯函数，F1）。 */
+function durationHistNote(hist, ms) {
+  const idx = durationBucket(ms, KB_DURATION_BOUNDARIES)
+  hist[idx] = (hist[idx] || 0) + 1
+}
+
+/** 直方图渲染（F1）：`<100=2,100-500=5,500-1000=0,1000-2000=1,2000-4000=0,4000-16000=0,>=16000=0`。 */
+function renderDurationHist(hist, boundaries) {
+  const B = boundaries || KB_DURATION_BOUNDARIES
+  const labels = []
+  for (let i = 0; i < B.length; i++) {
+    if (i === 0) labels.push(`<${B[1]}`)
+    else if (i === B.length - 1) labels.push(`>=${B[i]}`)
+    else labels.push(`${B[i]}-${B[i + 1]}`)
+  }
+  return labels.map((l, i) => `${l}=${hist[i] || 0}`).join(",")
+}
+
+let kbDigestCache = { key: "", rows: [] }
 let kbHitsCache = new Map()
 
-/** 写命中缓存时做容量治理：先删过期条目；仍超上限则清空。 */
-function kbHitsCacheSet(key, hits) {
-  if (kbHitsCache.size >= KB_HITS_CACHE_MAX) {
-    const now = Date.now()
-    for (const [k, v] of kbHitsCache) {
-      if (now - v.at >= KB_HITS_TTL_MS) kbHitsCache.delete(k)
-    }
-    if (kbHitsCache.size >= KB_HITS_CACHE_MAX) kbHitsCache.clear()
+/** 带 TTL 的 LRU 写入（kbHitsCache / projectCtxCache 共用，A3）：
+ *  - 重复 key 先删再插（刷新 recency）；
+ *  - 每次写入顺手清扫过期条目（ttlOf：数字或按条目取值——kbHitsCache 的
+ *    err 条目 30s、hits/empty 10min，不能统一用一个 TTL 清扫），
+ *    仍超上限则按 at 升序逐出最旧——
+ *    替代旧实现"满上限整表清空"，多项目高频提问不再成批丢热数据。 */
+function lruCacheSet(map, key, value, ttlOf, max) {
+  map.delete(key)
+  const now = Date.now()
+  for (const [k, v] of map) {
+    const ttl = typeof ttlOf === "function" ? ttlOf(v.value) : ttlOf
+    if (now - v.at >= ttl) map.delete(k)
   }
-  kbHitsCache.set(key, { at: Date.now(), hits })
+  map.set(key, { at: now, value })
+  while (map.size > max) {
+    let oldestKey = null
+    let oldestAt = Infinity
+    for (const [k, v] of map) {
+      if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k }
+    }
+    if (oldestKey === null) break
+    map.delete(oldestKey)
+  }
+}
+
+/** 缓存条目 TTL：失败短缓存（30s），命中/空命中满 TTL（A2）。 */
+function kbHitsEntryTTL(entry) {
+  return entry?.kind === "err" ? KB_ERR_TTL_MS : KB_HITS_TTL_MS
+}
+
+/** 写命中缓存：条目 = {kind:"hits"|"empty"|"err", hits?}。 */
+function kbHitsCacheSet(key, entry) {
+  lruCacheSet(kbHitsCache, key, entry, kbHitsEntryTTL, KB_HITS_CACHE_MAX)
+}
+
+/** 预检索命中率计量（A0）：hit/miss/empty/err/skipped 分类计数，每小时一条
+ * 日志——没有它，后续缓存调优与阈值校准无从量化收益。F1：附带耗时直方图
+ * （桶边界 KB_DURATION_BOUNDARIES，校准 B1 快/全预算阈值的分布证据）。 */
+const kbPrecomputeStats = { hits: 0, misses: 0, empty: 0, errs: 0, skipped: 0, searchMs: 0, searchN: 0, slow: 0, hist: new Array(KB_DURATION_BOUNDARIES.length).fill(0), lastLogAt: Date.now() }
+
+/** 进程生命周期累计（Agent Town 小图数据源，F1）：永不重置，与小时窗口并行。 */
+const kbPrecomputeTotals = { hits: 0, misses: 0, empty: 0, errs: 0, skipped: 0, searchMs: 0, searchN: 0, hist: new Array(KB_DURATION_BOUNDARIES.length).fill(0) }
+
+/** 快照供 /kb-stats（Agent Town 小图）与测试使用：累计 + 当前小时窗口。 */
+function kbStatsSnapshot() {
+  const t = kbPrecomputeTotals
+  const w = kbPrecomputeStats
+  const histOf = (hist) => ({ boundaries: KB_DURATION_BOUNDARIES, counts: [...hist] })
+  const sum = (s) => ({
+    hits: s.hits, misses: s.misses, empty: s.empty, errs: s.errs, skipped: s.skipped,
+    searches: s.searchN, avgMs: s.searchN > 0 ? Math.round(s.searchMs / s.searchN) : 0,
+    hist: histOf(s.hist),
+  })
+  return { totals: sum(t), window: sum(w), lastLogAt: w.lastLogAt }
+}
+
+function kbStatsNote(kind) {
+  kbPrecomputeStats[kind] = (kbPrecomputeStats[kind] || 0) + 1
+  kbPrecomputeTotals[kind] = (kbPrecomputeTotals[kind] || 0) + 1
+  const now = Date.now()
+  if (now - kbPrecomputeStats.lastLogAt >= KB_STATS_LOG_INTERVAL_MS) {
+    const avgMs = kbPrecomputeStats.searchN > 0 ? Math.round(kbPrecomputeStats.searchMs / kbPrecomputeStats.searchN) : 0
+    console.log(`agent-server: kb-precompute stats(hourly) hits=${kbPrecomputeStats.hits} misses=${kbPrecomputeStats.misses} empty=${kbPrecomputeStats.empty} errs=${kbPrecomputeStats.errs} skipped=${kbPrecomputeStats.skipped} avgMs=${avgMs} slow(>=2s)=${kbPrecomputeStats.slow} hist=${renderDurationHist(kbPrecomputeStats.hist, KB_DURATION_BOUNDARIES)}`)
+    kbPrecomputeStats.hits = 0
+    kbPrecomputeStats.misses = 0
+    kbPrecomputeStats.empty = 0
+    kbPrecomputeStats.errs = 0
+    kbPrecomputeStats.skipped = 0
+    kbPrecomputeStats.searchMs = 0
+    kbPrecomputeStats.searchN = 0
+    kbPrecomputeStats.slow = 0
+    kbPrecomputeStats.hist = new Array(KB_DURATION_BOUNDARIES.length).fill(0)
+    kbPrecomputeStats.lastLogAt = now
+  }
+}
+
+/** 预检索耗时状态（B1）：驱动下一次检索的超时预算选择。 */
+const kbSearchTiming = { measured: false, lastAt: 0, lastDurationMs: 0, lastTimedOut: false }
+
+/** 超时预算选择（纯函数，B1）：全预算 15s / 快预算 4s。 */
+function pickSearchTimeout(t, now) {
+  if (!t.measured) return KB_SEARCH_TIMEOUT_MS
+  if (now - t.lastAt > KB_SEARCH_COLD_IDLE_MS) return KB_SEARCH_TIMEOUT_MS
+  if (t.lastTimedOut || t.lastDurationMs > KB_SEARCH_FAST_OK_MS) return KB_SEARCH_TIMEOUT_MS
+  return KB_SEARCH_FAST_TIMEOUT_MS
+}
+
+/** 记录一次检索完成（成功或失败）：更新预算状态与耗时统计（B1+F1）。 */
+function noteSearchFinished(durationMs, timedOut) {
+  kbSearchTiming.measured = true
+  kbSearchTiming.lastAt = Date.now()
+  kbSearchTiming.lastDurationMs = durationMs
+  kbSearchTiming.lastTimedOut = timedOut
+  kbPrecomputeStats.searchMs += durationMs
+  kbPrecomputeStats.searchN += 1
+  if (durationMs >= 2000) kbPrecomputeStats.slow += 1
+  durationHistNote(kbPrecomputeStats.hist, durationMs)
+  kbPrecomputeTotals.searchMs += durationMs
+  kbPrecomputeTotals.searchN += 1
+  kbPrecomputeTotals.hist[durationBucket(durationMs, KB_DURATION_BOUNDARIES)] += 1
+}
+
+/** 查询词归一化（A1，仅用于缓存键，检索仍传原文）：
+ * 全角→半角、lowercase、提取 [a-z0-9]+ 与 CJK/假名/韩文 token——与索引的
+ * token 空间语义一致，"如何部署 OTG？" 与 "如何部署otg" 共享同一条缓存。 */
+function normalizeQueryForCache(q) {
+  let t = String(q || "")
+  t = t.replace(/\u3000/g, " ")
+  t = t.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+  t = t.toLowerCase()
+  return (t.match(/[a-z0-9]+|[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g) || []).join(" ")
+}
+
+/** 配置指纹（A5）：embedding/rerank 配置变化 → 缓存键变化，避免旧向量命中
+ * 被新配置复用。按 OTR_MAP_FILE 的 mtime/size 指纹缓存解析结果。 */
+let kbCfgFingerprintCache = { key: "", fp: "" }
+function kbCfgFingerprint() {
+  const mapFile = (process.env.OTR_MAP_FILE || "").trim()
+  if (!mapFile) return ""
+  let st
+  try { st = statSync(mapFile) } catch { return "" }
+  const key = `${mapFile}:${st.mtimeMs}:${st.size}`
+  if (kbCfgFingerprintCache.key === key) return kbCfgFingerprintCache.fp
+  let fp = ""
+  try {
+    const cfg = JSON.parse(readFileSync(mapFile, "utf8"))
+    fp = JSON.stringify({ embedding: cfg?.kb_embedding ?? null, rerank: cfg?.kb_rerank ?? null })
+    if (fp.length > 160) fp = fp.slice(0, 160)
+  } catch { fp = "" }
+  kbCfgFingerprintCache = { key, fp }
+  return fp
+}
+
+/** 命中缓存键：vault|db|配置指纹|归一化查询词（A1+A5）。 */
+function kbHitsCacheKey(vault, db, q) {
+  return `${vault}|${db}|${kbCfgFingerprint()}|${normalizeQueryForCache(q)}`
+}
+
+/* ────────────────────────── B2：常驻检索端点 ────────────────────────────── */
+
+/** 常驻 KB 检索端点基址（daemon vaultweb /api/kb/search）；空 → 只走 spawn。 */
+const KB_HTTP_TIMEOUT_MS = 1200
+
+function kbHttpBase() {
+  return (process.env.OTR_KB_HTTP || "").trim()
+}
+
+/** 组装检索 URL（纯函数，可单测）：base 去尾斜杠 + 编码查询词。 */
+function kbHttpUrl(base, q, limit) {
+  return `${String(base || "").replace(/\/+$/, "")}/api/kb/search?q=${encodeURIComponent(q)}&limit=${limit}`
+}
+
+/** HTTP 检索：成功 → 命中数组（含空数组 = 真无命中）；失败/超时/非数组 → null
+ * （调用方回退 spawn）。1.2s 超时——比 spawn+embedding 冷启动快一个量级，
+ * 且 daemon 不可用时立即 ECONNREFUSED 落到 spawn，不增加首问延迟。 */
+async function kbHttpSearch(base, q, limit) {
+  try {
+    const res = await fetch(kbHttpUrl(base, q, limit), { signal: AbortSignal.timeout(KB_HTTP_TIMEOUT_MS) })
+    if (!res.ok) return null
+    const hits = await res.json()
+    return Array.isArray(hits) ? hits : null
+  } catch {
+    return null
+  }
+}
+
+/** 注册项目名集合（C3）：读 OTR_MAP_FILE 的 projects[].name。
+ *  - 返回 Set：map 可读 → 门禁生效（未注册目录不再注入项目上下文）；
+ *  - 返回 null：map 缺失/不可解析 → 未知，保持旧行为（目录匹配即放行）。
+ * 按 map 路径+mtime+size 指纹缓存解析结果。 */
+let registeredNamesCache = { key: "", names: null }
+function registeredProjectNames() {
+  const mapFile = (process.env.OTR_MAP_FILE || "").trim()
+  if (!mapFile) return null
+  let st
+  try { st = statSync(mapFile) } catch { return null }
+  const key = `${mapFile}:${st.mtimeMs}:${st.size}`
+  if (registeredNamesCache.key === key) return registeredNamesCache.names
+  let names = null
+  try {
+    const cfg = JSON.parse(readFileSync(mapFile, "utf8"))
+    if (Array.isArray(cfg?.projects)) {
+      names = new Set(cfg.projects.filter((p) => p && typeof p.name === "string" && p.name !== "").map((p) => p.name))
+    }
+  } catch { names = null }
+  registeredNamesCache = { key, names }
+  return names
+}
+
+/** C3 注册门禁：map 已知且 name（或其去数字前缀形式）不在注册集 → false。 */
+function projectIsRegistered(name) {
+  const names = registeredProjectNames()
+  if (names === null) return true // 未知 → 旧行为放行
+  const idx = name.indexOf("-")
+  const stripped = idx > 0 ? name.slice(idx + 1) : ""
+  return names.has(name) || (stripped !== "" && names.has(stripped))
+}
+
+/** 查询词 token 数：latin token 计 1，CJK/假名/韩文逐字计。 */
+function queryTokenCount(t) {
+  let n = 0
+  for (const tok of t.match(/[a-z0-9]+|[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g) || []) {
+    n += /^[a-z0-9]+$/.test(tok) && tok.length > 1 ? 1 : tok.length
+  }
+  return n
+}
+
+/** 无效查询门禁（A4）：token 数 < 2 或纯问候语 → 跳过 spawn 预检索，
+ * 避免无谓子进程与缓存污染（项目上下文块仍照常注入）。 */
+function isTrivialQuery(q) {
+  const t = normalizeQueryForCache(q)
+  if (!t) return true
+  if (queryTokenCount(t) < 2) return true
+  const joined = t.replace(/\s+/g, "")
+  return /^(你好|您好|hi|hello|hey|谢谢|thanks|thankyou|ok|好的|收到|在吗)+$/.test(joined)
 }
 
 function kbVaultRoot() {
@@ -214,8 +470,8 @@ function truncateStr(s, n) {
 }
 
 /** 解析 References/INDEX.md 的目录表（文件 | 标题 | 摘要 | topics | …），
- * 产出紧凑的行摘要；按字符上限截断到完整行边界。 */
-function summarizeKBIndex(text) {
+ * 产出原始行数组（供渲染/排序复用）。 */
+function parseKBIndexRows(text) {
   const lines = String(text).split("\n")
   const rows = []
   let inTable = false
@@ -230,11 +486,50 @@ function summarizeKBIndex(text) {
     const path = body[0] || ""
     const title = body[1] || ""
     if (!path || !title) continue
-    const summary = body[2] && body[2] !== "⚠️" ? ` — ${truncateStr(body[2], 90)}` : ""
-    const topics = body[3] && body[3] !== "⚠️" ? ` [${truncateStr(body[3], 60)}]` : ""
-    rows.push(`- ${path} · ${truncateStr(title, 70)}${summary}${topics}`)
+    const summary = body[2] || ""
+    const topics = body[3] || ""
+    rows.push({ path, title, summary, topics })
   }
-  let digest = rows.join("\n")
+  return rows
+}
+
+/** 查询词 → 排序 token：latin 单词 + CJK 连续段切 bigram（与索引 token 空间一致）。 */
+function rankQueryTokens(q) {
+  const t = normalizeQueryForCache(q)
+  const toks = []
+  for (const w of t.match(/[a-z0-9]+/g) || []) toks.push(w)
+  for (const cjk of t.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g) || []) {
+    if (cjk.length === 1) toks.push(cjk)
+    else for (let i = 0; i + 1 < cjk.length; i++) toks.push(cjk.slice(i, i + 2))
+  }
+  return toks
+}
+
+/** E1：按查询词与每行 path/title/summary/topics 的 token 重叠打分重排。
+ * 稳定排序（Node ≥12）保证零分行保持原序殿后；无查询词返回原序。 */
+function rankKBIndexRows(rows, query) {
+  const toks = rankQueryTokens(query)
+  if (!Array.isArray(rows) || toks.length === 0) return rows || []
+  return rows
+    .map((r) => {
+      const hay = `${r.path} ${r.title} ${r.summary} ${r.topics}`.toLowerCase()
+      let score = 0
+      for (const t of toks) if (hay.includes(t)) score++
+      return { r, score }
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.r)
+}
+
+/** 行数组 → 紧凑摘要字符串；按字符上限截断到完整行边界。 */
+function renderKBIndexDigest(rows) {
+  const lines = []
+  for (const r of rows || []) {
+    const summary = r.summary && r.summary !== "⚠️" ? ` — ${truncateStr(r.summary, 90)}` : ""
+    const topics = r.topics && r.topics !== "⚠️" ? ` [${truncateStr(r.topics, 60)}]` : ""
+    lines.push(`- ${r.path} · ${truncateStr(r.title, 70)}${summary}${topics}`)
+  }
+  let digest = lines.join("\n")
   if (digest.length > KB_INDEX_DIGEST_MAX) {
     digest = digest.slice(0, KB_INDEX_DIGEST_MAX)
     const nl = digest.lastIndexOf("\n")
@@ -244,18 +539,27 @@ function summarizeKBIndex(text) {
   return digest
 }
 
-/** 返回 References/INDEX.md 的摘要；KB 未配置或索引不可读时返回 ""。 */
-function kbIndexDigest() {
+/** 解析 + 按查询词相关性排序 + 渲染（E1）。无 query 时保持文件原序。 */
+function summarizeKBIndex(text, query) {
+  return renderKBIndexDigest(rankKBIndexRows(parseKBIndexRows(text), query))
+}
+
+/** 返回 References/INDEX.md 的相关性摘要；KB 未配置或索引不可读时返回 ""。
+ * 缓存按索引路径+mtime+size 指纹存解析后的行（排序/渲染按每次查询词现做，
+ * 毫秒级）。 */
+function kbIndexDigest(query) {
   const index = kbIndexPath()
   if (!index || !existsSync(index)) return ""
   let st
   try { st = statSync(index) } catch { return "" }
   const key = `${index}:${st.mtimeMs}:${st.size}`
-  if (kbDigestCache.key === key) return kbDigestCache.digest
-  let text
-  try { text = readFileSync(index, "utf8") } catch { return "" }
-  const digest = summarizeKBIndex(text)
-  kbDigestCache = { key, digest }
+  if (kbDigestCache.key !== key) {
+    let text
+    try { text = readFileSync(index, "utf8") } catch { return "" }
+    kbDigestCache = { key, rows: parseKBIndexRows(text) }
+  }
+  const digest = renderKBIndexDigest(rankKBIndexRows(kbDigestCache.rows, query))
+  if (!digest) return ""
   return digest
 }
 
@@ -271,46 +575,89 @@ function deriveQuery(message) {
 
 /** 服务端预检索：spawn `otg kb search --json` 复用 Go 检索栈。返回命中数组
  * （[{path,title,summary,score,chunk}]）或 null（KB 未配置 / otg 不可用 /
- * 检索失败——调用方回退索引摘要）。带 TTL 缓存 + 子进程超时。 */
+ * 检索失败——调用方回退索引摘要）。带 TTL 缓存 + 子进程超时。
+ * 缓存键含配置指纹 + 归一化查询词（A1/A5）；失败短缓存 30s（A2）；命中率计量（A0）。 */
 function kbPrecompute(query) {
   const vault = kbVaultRoot()
   const q = String(query || "").trim()
   if (!vault || !q) return null
 
-  const cacheKey = `${vault}|${kbDbPath()}|${q}`
+  const cacheKey = kbHitsCacheKey(vault, kbDbPath(), q)
   const cached = kbHitsCache.get(cacheKey)
-  if (cached !== undefined && Date.now() - cached.at < KB_HITS_TTL_MS) {
-    return cached.hits
+  if (cached !== undefined && Date.now() - cached.at < kbHitsEntryTTL(cached.value)) {
+    kbStatsNote("hits")
+    return cached.value.kind === "hits" ? cached.value.hits : null
   }
 
+  kbStatsNote("misses")
+  const startedAt = Date.now()
+  const budget = pickSearchTimeout(kbSearchTiming, startedAt)
+  let settled = false
+  const finish = (durationMs, timedOut) => {
+    if (settled) return
+    settled = true
+    noteSearchFinished(durationMs, timedOut)
+  }
   return new Promise((resolve) => {
-    const otg = (process.env.OTR_OTG_PATH || "").trim() || "otg"
-    const args = ["kb", "search", "--json", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
-    if (kbDbPath()) args.push("--db", kbDbPath())
-    // 带上 daemon 的 map 路径：让 otg 读到 kb_embedding/kb_rerank 配置，
-    // 否则 spawn 的 otg 会读默认 vault-map.json（用户配置在别处时丢失 embedding）。
-    const mapFile = (process.env.OTR_MAP_FILE || "").trim()
-    if (mapFile) args.push("--map-file", mapFile)
-    args.push(q)
-    const child = execFile(otg, args, {
-      timeout: KB_SEARCH_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-      encoding: "utf8",
-    }, (err, stdout) => {
-      if (err) {
-        console.error(`agent-server: KB precompute failed for ${q.slice(0, 40)}: ${err?.message ?? err}`)
-        kbHitsCacheSet(cacheKey, null)
+    /** 检索结果落缓存并结束：数组（含空）= 正常结果。 */
+    const storeHits = (hits, durationMs) => {
+      finish(durationMs, false)
+      if (!Array.isArray(hits) || hits.length === 0) {
+        kbStatsNote("empty")
+        kbHitsCacheSet(cacheKey, { kind: "empty" })
         resolve(null)
         return
       }
-      let hits
-      try { hits = JSON.parse(stdout) } catch { hits = null }
-      if (!Array.isArray(hits) || hits.length === 0) hits = null
-      kbHitsCacheSet(cacheKey, hits)
+      kbHitsCacheSet(cacheKey, { kind: "hits", hits })
       resolve(hits)
-    })
-    // 进程级兜底：execFile 的 timeout 只杀子进程，这里再防万一卡住不 resolve。
-    setTimeout(() => { resolve(null); try { child.kill("SIGKILL") } catch { /* noop */ } }, KB_SEARCH_TIMEOUT_MS + 1000)
+    }
+    /** spawn 兜底（B2）：常驻端点不可用/未配置时的既有路径。 */
+    const spawnSearch = () => {
+      const otg = (process.env.OTR_OTG_PATH || "").trim() || "otg"
+      const args = ["kb", "search", "--json", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
+      if (kbDbPath()) args.push("--db", kbDbPath())
+      // 带上 daemon 的 map 路径：让 otg 读到 kb_embedding/kb_rerank 配置，
+      // 否则 spawn 的 otg 会读默认 vault-map.json（用户配置在别处时丢失 embedding）。
+      const mapFile = (process.env.OTR_MAP_FILE || "").trim()
+      if (mapFile) args.push("--map-file", mapFile)
+      args.push(q)
+      const child = execFile(otg, args, {
+        timeout: budget,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: "utf8",
+      }, (err, stdout) => {
+        if (err) {
+          console.error(`agent-server: KB precompute failed for ${q.slice(0, 40)}: ${err?.message ?? err}`)
+          // execFile 超时 kill（killed/signal）才算 timedOut；ENOENT 等立即失败不算。
+          const timedOut = Boolean(err && (err.killed || err.code === "ETIMEDOUT"))
+          finish(Date.now() - startedAt, timedOut)
+          kbStatsNote("errs")
+          kbHitsCacheSet(cacheKey, { kind: "err" })
+          resolve(null)
+          return
+        }
+        let hits
+        try { hits = JSON.parse(stdout) } catch { hits = null }
+        storeHits(hits, Date.now() - startedAt)
+      })
+      // 进程级兜底：execFile 的 timeout 只杀子进程，这里再防万一卡住不 resolve。
+      // 兜底触发 = 预算耗尽，记为 timedOut（下次回全预算）。
+      setTimeout(() => {
+        finish(Date.now() - startedAt, true)
+        resolve(null)
+        try { child.kill("SIGKILL") } catch { /* noop */ }
+      }, budget + 1000)
+    }
+    // B2：优先走 daemon 常驻端点（免 spawn/重开 SQLite），失败回退 spawn。
+    const httpBase = kbHttpBase()
+    if (httpBase) {
+      kbHttpSearch(httpBase, q, KB_PRECOMPUTE_LIMIT).then((hits) => {
+        if (hits === null) { spawnSearch(); return }
+        storeHits(hits, Date.now() - startedAt)
+      })
+    } else {
+      spawnSearch()
+    }
   })
 }
 
@@ -330,6 +677,31 @@ function kbPrecomputePreamble(query, hits) {
     `④ verified 状态以文档 frontmatter 为准，未 verified 的经验按「待验证」处理。\n</knowledge_base>\n\n`
 }
 
+/** 注入→消费率判定（D1，纯函数）：统计 firstSeq 之后、read 族工具
+ * （read/view/grep/glob/cat）调用输入里出现过的注入路径——会话首轮对
+ * KB-first 命中"真的读了没有"的客观证据（模型记得调用工具才算消费）。
+ * 事件形态宽容：input 缺失时用整个 data 序列化匹配。 */
+function consumedPathsFromEvents(events, firstSeq, injectedPaths) {
+  const paths = (injectedPaths || []).filter((p) => typeof p === "string" && p !== "")
+  if (!Array.isArray(events) || events.length === 0 || paths.length === 0) return []
+  const remaining = new Set(paths)
+  const consumed = []
+  for (const ev of events) {
+    if (!ev || typeof ev.seq !== "number" || ev.seq < firstSeq) continue
+    if (ev.type !== "tool/call") continue
+    const name = String(ev.data?.name || "").toLowerCase()
+    if (!/^(read|view|grep|glob|cat)$/.test(name)) continue
+    const payload = JSON.stringify(ev.data?.input ?? ev.data?.args ?? ev.data ?? {})
+    for (const p of [...remaining]) {
+      if (payload.includes(p)) {
+        consumed.push(p)
+        remaining.delete(p)
+      }
+    }
+  }
+  return consumed
+}
+
 /** 组装 KB-first 前置块：优先服务端预检索命中；失败回退索引摘要。 */
 function kbFirstPreamble(query, hits) {
   const vault = kbVaultRoot()
@@ -337,7 +709,7 @@ function kbFirstPreamble(query, hits) {
   if (Array.isArray(hits) && hits.length > 0) {
     return kbPrecomputePreamble(query, hits)
   }
-  const digest = kbIndexDigest()
+  const digest = kbIndexDigest(query)
   if (!digest) return ""
   return `<knowledge_base>\n## 本地优先（KB-first）：先查已有经验再动手\n` +
     `知识库根：${vault}\n\n索引摘要（命中候选再读正文，勿全文读取）：\n${digest}\n\n规则：\n` +
@@ -373,21 +745,14 @@ const PROJECT_SECTION_LINES_MAX = 6
  * 而不只依赖 mtime 指纹——mtime 对"内容改但 mtime 未变"不敏感）。 */
 const PROJECT_CTX_TTL_MS = 10 * 60 * 1000
 
-/** 项目上下文缓存条数上限：超过先清过期、仍超则整表清空（防长跑泄漏）。 */
+/** 项目上下文缓存条数上限：带 TTL 的 LRU（超限逐最旧，防长跑泄漏，A3）。 */
 const PROJECT_CTX_CACHE_MAX = 64
 
 let projectCtxCache = new Map()
 
-/** 写项目上下文缓存时做容量治理（同 kbHitsCache 策略）。 */
+/** 写项目上下文缓存时做容量治理（lruCacheSet，同 kbHitsCache 策略）。 */
 function projectCtxCacheSet(key, digest) {
-  if (projectCtxCache.size >= PROJECT_CTX_CACHE_MAX) {
-    const now = Date.now()
-    for (const [k, v] of projectCtxCache) {
-      if (now - v.at >= PROJECT_CTX_TTL_MS) projectCtxCache.delete(k)
-    }
-    if (projectCtxCache.size >= PROJECT_CTX_CACHE_MAX) projectCtxCache.clear()
-  }
-  projectCtxCache.set(key, { at: Date.now(), digest })
+  lruCacheSet(projectCtxCache, key, digest, PROJECT_CTX_TTL_MS, PROJECT_CTX_CACHE_MAX)
 }
 
 function projectVaultRoot() {
@@ -395,11 +760,14 @@ function projectVaultRoot() {
 }
 
 /** 在 <vault>/Projects/ 下按项目名定位目录：精确匹配优先，其次去数字前缀
- * （"magic-models-manager" 匹配 "002-magic-models-manager"）。返回 "" 未找到。 */
+ * （"magic-models-manager" 匹配 "002-magic-models-manager"）。
+ * C3：vault-map 可读时仅已注册项目放行（README「命中已注册项目」语义）；
+ * map 缺失/不可解析 → 旧行为（目录匹配即放行）。返回 "" 未找到/未注册。 */
 function resolveProjectDir(project) {
   const vault = projectVaultRoot()
   const name = String(project || "").trim()
   if (!vault || !name) return ""
+  if (!projectIsRegistered(name)) return ""
   const projectsDir = join(vault, "Projects")
   let entries
   try { entries = readdirSync(projectsDir, { withFileTypes: true }) } catch { return "" }
@@ -412,19 +780,58 @@ function resolveProjectDir(project) {
   return ""
 }
 
-/** 提取 markdown 文件中指定 ## 小节的正文前 N 行（找不到返回 ""）。 */
-function markdownSection(text, heading) {
+/** 小节标题别名（C1）：CONTEXT.md 标题带变体（大小写/中文/无 Development
+ * 前缀）也能命中——旧实现 `## ${heading}` 逐字匹配，标题差一字就整块漏注。
+ * 匹配规则：`## ` 前缀后去空白 lowercase 后与任一别名精确相等。 */
+const CONTEXT_SECTION_ALIASES = {
+  constraints: ["development constraints", "constraints", "开发约束", "约束"],
+  antipatterns: ["anti-patterns", "anti-pattern", "antipatterns", "antipattern", "反模式"],
+  language: ["language", "语言", "领域术语", "terminology"],
+}
+
+/** 提取标题名（`##`/`###` 任意层级 → 去掉 # 与首尾空白，lowercase）。 */
+function headingName(line) {
+  const m = String(line).match(/^#+\s+(.+?)\s*$/)
+  return m ? m[1].trim().toLowerCase() : ""
+}
+
+/** 提取 markdown 文件中与任一别名匹配的小节正文前 N 行（找不到返回 ""）。
+ * headingAliases 传小写别名数组；遇到下一级标题即停。 */
+function markdownSection(text, headingAliases) {
   const lines = String(text).split("\n")
+  const want = new Set(headingAliases.map((a) => a.toLowerCase()))
   let inSection = false
   const out = []
   for (const line of lines) {
-    if (line.startsWith(`## ${heading}`)) { inSection = true; continue }
+    if (/^#+\s/.test(line)) {
+      if (inSection) break
+      if (want.has(headingName(line))) inSection = true
+      continue
+    }
     if (inSection) {
-      if (line.startsWith("## ")) break
       const t = line.trim()
       if (t !== "") out.push(line)
       if (out.length >= PROJECT_SECTION_LINES_MAX) break
     }
+  }
+  return out.join("\n")
+}
+
+/** CONTEXT.md 无已知小节时回退（C1）：H1 之后的前 N 行非空、非标题正文，
+ * 保证 CONTEXT 内容永不整块丢失。 */
+function contextOverview(text) {
+  const lines = String(text).split("\n")
+  const out = []
+  let pastH1 = false
+  for (const line of lines) {
+    if (!pastH1) {
+      if (/^#\s+/.test(line)) { pastH1 = true }
+      continue
+    }
+    if (/^#/.test(line)) break // 遇到任意小节标题即停
+    const t = line.trim()
+    if (t !== "") out.push(line)
+    if (out.length >= PROJECT_SECTION_LINES_MAX) break
   }
   return out.join("\n")
 }
@@ -435,18 +842,72 @@ function h1Title(text) {
   return m ? m[1].trim() : ""
 }
 
-/** 读取项目 Notes/adr/ 下 ADR 标题清单（取前 PROJECT_ADR_LIST_MAX 个）。 */
+/** 解析 markdown frontmatter 的单值字段（如 status）：返回字符串或 ""。
+ * 兼容带引号与裸值（`status: "accepted"` / `status: superseded`）。 */
+function frontmatterField(text, field) {
+  const lines = String(text).split("\n")
+  if (lines[0]?.trim() !== "---") return ""
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return ""
+    const m = lines[i].match(/^([a-zA-Z_]+):\s*(.*)$/)
+    if (!m) continue
+    if (m[1].toLowerCase() !== field.toLowerCase()) continue
+    let v = m[2].trim()
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+    return v
+  }
+  return ""
+}
+
+/** 提取 ADR 决策一行（C2）：`## Decision` / `## 决策` 小节的首个非空、
+ * 非引用行（去列表符，截断 80 字符）；无 Decision 小节返回 ""。 */
+function adrDecisionOneLiner(text) {
+  const lines = String(text).split("\n")
+  let inSection = false
+  for (const line of lines) {
+    if (/^#+\s/.test(line)) {
+      const name = headingName(line)
+      if (name === "decision" || name === "决策") { inSection = true; continue }
+      if (inSection) return "" // 下一小节开始仍未取到 → 无
+      continue
+    }
+    if (inSection) {
+      const t = line.trim()
+      if (t === "" || t.startsWith(">")) continue
+      return truncateStr(t.replace(/^[-*]\s+/, ""), 80)
+    }
+  }
+  return ""
+}
+
+/** 读取项目 Notes/adr/ 下 ADR 摘要清单（C2，取前 PROJECT_ADR_LIST_MAX 条）：
+ *  - 按 mtime 倒序（新决策优先，替代旧字典序——ADR-010 不再排在 ADR-008 前、
+ *    旧决策不再挤掉新决策）；
+ *  - 每条 = `ID: 标题（status，缺失省略） — 决策一行`。 */
 function adrTitles(projectDir) {
   const adrDir = join(projectDir, "Notes", "adr")
   let entries
   try { entries = readdirSync(adrDir) } catch { return [] }
-  const titles = []
-  for (const name of entries.sort()) {
+  const files = []
+  for (const name of entries) {
     if (!name.endsWith(".md") || name === "ADR-INDEX.md" || name === "ADR-COVERAGE.md") continue
-    try {
-      const t = h1Title(readFileSync(join(adrDir, name), "utf8"))
-      if (t) titles.push(`${name.replace(/\.md$/, "")}: ${t}`)
-    } catch { /* skip unreadable */ }
+    let st
+    try { st = statSync(join(adrDir, name)) } catch { continue }
+    files.push({ name, mtimeMs: st.mtimeMs })
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+  const titles = []
+  for (const f of files) {
+    let text
+    try { text = readFileSync(join(adrDir, f.name), "utf8") } catch { continue }
+    const t = h1Title(text)
+    if (!t) continue
+    const status = frontmatterField(text, "status")
+    const decision = adrDecisionOneLiner(text)
+    let line = `${f.name.replace(/\.md$/, "")}: ${t}`
+    if (status) line += `（${status}）`
+    if (decision) line += ` — ${decision}`
+    titles.push(line)
     if (titles.length >= PROJECT_ADR_LIST_MAX) break
   }
   return titles
@@ -464,17 +925,23 @@ function projectContextDigest(projectDir) {
   }
   const cached = projectCtxCache.get(key)
   if (cached !== undefined && Date.now() - cached.at < PROJECT_CTX_TTL_MS) {
-    return cached.digest
+    return cached.value
   }
 
   const parts = []
   let ctx = ""
   try { ctx = readFileSync(ctxPath, "utf8") } catch { /* no CONTEXT.md */ }
   if (ctx.trim() !== "") {
-    const constraints = markdownSection(ctx, "Development Constraints")
-    const anti = markdownSection(ctx, "Anti-patterns")
+    const constraints = markdownSection(ctx, CONTEXT_SECTION_ALIASES.constraints)
+    const anti = markdownSection(ctx, CONTEXT_SECTION_ALIASES.antipatterns)
+    const lang = markdownSection(ctx, CONTEXT_SECTION_ALIASES.language)
     if (constraints) parts.push(`## Constraints\n${constraints}`)
     if (anti) parts.push(`## Anti-patterns\n${anti}`)
+    if (lang) parts.push(`## Language / 术语\n${lang}`)
+    if (!constraints && !anti && !lang) {
+      const overview = contextOverview(ctx)
+      if (overview) parts.push(`## Context 概览\n${overview}`)
+    }
   }
   const adrs = adrTitles(projectDir)
   if (adrs.length > 0) parts.push(`## ADRs（${adrs.length} 篇，需要时 read 全文）\n- ${adrs.join("\n- ")}`)
@@ -502,7 +969,7 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)
@@ -889,17 +1356,29 @@ export function apply(ctx, config = {}) {
     //     涉及项目本身的问题不用从零推理。
     //  2. KB-first：服务端预检索全局知识库命中（kbQuery/消息派生查询词）。
     let kbBlock = ""
+    let hits = null
     if (freshSession) {
       const project = (typeof payload.project === "string" ? payload.project : "").trim()
       const projectBlock = project ? projectContextPreamble(project) : ""
       const query = (typeof payload.kbQuery === "string" && payload.kbQuery.trim() !== "")
         ? payload.kbQuery.trim()
         : deriveQuery(message)
-      const hits = await kbPrecompute(query)
-      kbBlock = projectBlock + kbFirstPreamble(query, hits)
+      // 无效/问候类查询跳过预检索（A4）：不 spawn otg、不注入 INDEX 摘要，
+      // 避免无谓子进程与 token 开销；项目上下文块不受影响。
+      const trivial = isTrivialQuery(query)
+      hits = trivial ? null : await kbPrecompute(query)
+      if (trivial) kbStatsNote("skipped")
+      kbBlock = projectBlock + (trivial ? "" : kbFirstPreamble(query, hits))
     }
     agent.followup(userMessage(kbBlock + message))
     await agent.whenIdle()
+    // 注入→消费率（D1）：本会话首轮注入的 top-3 命中，被 read 族工具
+    // 实际读到的条数——KB-first 对交互问答真实增益的可观测证据。
+    const injectedPaths = Array.isArray(hits) ? hits.map((h) => (typeof h?.path === "string" ? h.path : "")).filter((p) => p !== "") : []
+    if (injectedPaths.length > 0) {
+      const consumed = consumedPathsFromEvents(agent.session.events, firstSeq, injectedPaths)
+      console.log(`agent-server: kb-injected injected=${injectedPaths.length} consumed=${consumed.length}${consumed.length > 0 ? " [" + consumed.map((p) => p.split("/").pop()).join(",") + "]" : ""}`)
+    }
     chatLastAt.set(sessionKey, Date.now())
     const outcome = summarize(agent.session.events, firstSeq)
     const detail = errorDetail(outcome.reason)
@@ -1054,6 +1533,11 @@ export function apply(ctx, config = {}) {
         "x-agents-finished": String(countRecentFinished()),
       })
       res.end(JSON.stringify(listAgents()))
+      return
+    }
+    if (req.method === "GET" && req.url === "/kb-stats") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify(kbStatsSnapshot()))
       return
     }
     if (req.method === "GET" && (req.url === "/monitor" || req.url === "/")) {

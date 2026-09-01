@@ -8,8 +8,11 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
@@ -34,6 +37,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/vault/projects/{project}/tasks/{taskID}", s.handleTaskUpdate)
 	mux.HandleFunc("GET /api/vault/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
+	mux.HandleFunc("GET /api/kb/search", s.handleKBSearch)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	mux.HandleFunc("GET /vault", func(w http.ResponseWriter, _ *http.Request) { serveDashboard(w, dashboard) })
 	return cors(mux)
@@ -114,6 +118,46 @@ func (s *Service) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// handleKBSearch answers in-process KB retrieval (B2) with the same JSON
+// shape as `otg kb search --json` ([]knowledge.SearchResult). Consumers
+// (agent-server / kb-preflight) call it instead of spawning the otg binary;
+// when kbSearch is nil the endpoint returns 501 so clients fall back to
+// spawn. q is required; limit defaults to 3 and is capped at 20.
+func (s *Service) handleKBSearch(w http.ResponseWriter, r *http.Request) {
+	if s.kbSearch == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("kb search backend not wired"))
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeError(w, http.StatusBadRequest, errors.New("q is required"))
+		return
+	}
+	limit := 3
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
+			return
+		}
+		if n > 20 {
+			n = 20
+		}
+		limit = n
+	}
+	hits, err := s.kbSearch(q, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if hits == nil {
+		hits = []knowledge.SearchResult{}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(hits)
 }
 
 func (s *Service) handleViews(w http.ResponseWriter, _ *http.Request) {

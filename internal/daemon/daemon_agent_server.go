@@ -38,7 +38,18 @@ func (r *Runner) agentServerEnv() []string {
 		"OTR_PROJECT_VAULT="+r.cfg.ObsidianVault,
 		"OTR_MAP_FILE="+r.cfg.ConfigPath,
 		"OTR_OTG_PATH="+otgPath,
+		"OTR_KB_HTTP="+kbHTTPBase(r.cfg.VaultWebAddr),
 	)
+}
+
+// kbHTTPBase returns the in-process KB search endpoint base URL (B2): the
+// daemon's own vaultweb API when configured, "" otherwise (agent-server then
+// falls back to spawning `otg kb search`).
+func kbHTTPBase(vaultWebAddr string) string {
+	if vaultWebAddr == "" {
+		return ""
+	}
+	return "http://" + vaultWebAddr
 }
 
 // startAgentServer 拉起长驻 agent-server（`dsh --profile headless-agent-server`）

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/internal/vaultweb"
 )
 
@@ -17,8 +18,9 @@ func (r *Runner) startVaultWeb() error {
 		return nil
 	}
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           vaultweb.NewWithAgentServer(r.cfg.ObsidianVault, r.cfg.AgentServerAddr).Handler(),
+		Addr: addr,
+		Handler: vaultweb.NewWithAgentServer(r.cfg.ObsidianVault, r.cfg.AgentServerAddr).
+			WithKBSearch(r.kbSearchForHTTP).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	r.vaultWebServer = srv
@@ -29,6 +31,42 @@ func (r *Runner) startVaultWeb() error {
 		}
 	}()
 	return nil
+}
+
+// kbSearchForHTTP answers the vaultweb /api/kb/search endpoint in-process
+// (B2), mirroring `otg kb search` semantics: FTS5 BM25 + optional embedding
+// blend (with the same VecStatus health gate — vector layer missing/model
+// mismatch falls back to BM25) + optional cross-encoder rerank. Consumers
+// (agent-server / kb-preflight) hit this instead of spawning the otg binary;
+// when the daemon or endpoint is unavailable they fall back to spawn.
+func (r *Runner) kbSearchForHTTP(query string, limit int) ([]knowledge.SearchResult, error) {
+	dbPath := knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb)
+	var client *knowledge.EmbeddingClient
+	weight := 0.0
+	if r.cfg.KBEmbedding != nil {
+		weight = r.cfg.KBEmbedding.Weight
+		client = knowledge.NewEmbeddingClient(r.cfg.KBEmbedding)
+		ready, stored := knowledge.VecStatus(dbPath)
+		if !ready {
+			r.logger.Printf("kb http search: vector index missing, falling back to BM25")
+			client = nil
+		} else if stored != "" && stored != r.cfg.KBEmbedding.Model {
+			r.logger.Printf("kb http search: vector store built with %s, configured %s — falling back to BM25", stored, r.cfg.KBEmbedding.Model)
+			client = nil
+		}
+	}
+	hits, err := knowledge.SearchKnowledgeDB(dbPath, query, limit, true, client, weight)
+	if err != nil {
+		return nil, err
+	}
+	if r.cfg.KBRerank != nil && len(hits) > 0 {
+		rc := knowledge.NewRerankClient(r.cfg.KBRerank)
+		if len(hits) > r.cfg.KBRerank.TopN {
+			hits = hits[:r.cfg.KBRerank.TopN]
+		}
+		hits = knowledge.RerankResults(hits, query, rc, limit)
+	}
+	return hits, nil
 }
 
 // stopVaultWeb 优雅关闭内嵌 vault 看板服务。

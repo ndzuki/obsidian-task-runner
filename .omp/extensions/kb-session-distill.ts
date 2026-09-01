@@ -17,39 +17,94 @@
  *   的修复经验全部丢失）；重复内容由 `otg kb absorb` 内置归一化去重兜底，
  *   INDEX 不会膨胀。
  * - 兜底：session_stop 的 continue 有 8 次上限且仅主会话触发
+ *
+ * D2 预过滤（省「无可提炼」判空成本）：触发前提增加「有工作证据」——
+ * 会话出现工具调用（tool/call 事件 / tool_use content 块 / 结构化字段探针）
+ * 才值得提炼；纯聊天的 ≥3 条消息会话不再白跑一轮 subagent 判空。
+ * 误判方向保守：探针只会把结构化字段里恰好以 `"bash"` 等独立字符串出现
+ * 的内容误判为「有工作」→ 多跑一轮判空，成本可控，不漏真实经验。
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-const DISTILL_MARK = "com.otg.kb-distilled";
+export const DISTILL_MARK = "com.otg.kb-distilled";
+
+/** 统计 branch 中的用户侧消息数（entry 结构因版本而异，宽松匹配多种形态）。 */
+export function countUserMessages(branch: unknown[]): number {
+  let userMsgs = 0;
+  for (const entry of branch) {
+    const e = entry as {
+      type?: string;
+      role?: string;
+      message?: { role?: string };
+    };
+    if (
+      e?.role === "user" ||
+      e?.type === "user" ||
+      (e?.type === "message" && e?.message?.role === "user")
+    ) {
+      userMsgs++;
+      if (userMsgs >= 3) break;
+    }
+  }
+  return userMsgs;
+}
+
+/** 工作证据探测：会话里出现过工具调用才算有实质工作。
+ *  - 结构直测：tool/call 事件、assistant 消息里的 tool_use/tool_call/tool_result 块；
+ *  - 兜底探针：整个 entry 序列化后匹配工具名——工具名在结构化字段里以
+ *    独立字符串出现才命中（闲聊文本里的普通单词不会以 `"bash"` 形式出现）。 */
+export function hasWorkEvidence(branch: unknown[]): boolean {
+  for (const entry of branch) {
+    const e = entry as { type?: string; message?: { content?: unknown[] } };
+    if (e?.type === "tool/call" || e?.type === "tool_call" || e?.type === "tool_use") return true;
+    if (Array.isArray(e?.message?.content)) {
+      for (const b of e.message.content) {
+        const bt = (b as { type?: string })?.type;
+        if (bt === "tool_use" || bt === "tool_call" || bt === "tool_result") return true;
+      }
+    }
+  }
+  for (const entry of branch) {
+    const s = JSON.stringify(entry ?? {});
+    if (
+      s.includes("tool/call") ||
+      s.includes("tool_use") ||
+      s.includes('"bash"') ||
+      s.includes('"edit"') ||
+      s.includes('"write"') ||
+      s.includes("str_replace_editor") ||
+      s.includes("kb absorb")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 提炼触发判定（纯函数，可单测）：
+ *  branch 长度 ≥ minBranchLen → 无已提炼标记 → 用户消息 ≥ minUserMsgs
+ *  → 有工作证据（D2）。任何一项不满足即跳过。 */
+export function shouldDistill(
+  branch: unknown[],
+  opts?: { minBranchLen?: number; minUserMsgs?: number; mark?: string }
+): boolean {
+  const entries = Array.isArray(branch) ? branch : [];
+  const mark = opts?.mark ?? DISTILL_MARK;
+  if (entries.length < (opts?.minBranchLen ?? 12)) return false;
+  for (const entry of entries) {
+    const custom = entry as { customType?: string };
+    if (custom?.customType === mark) return false;
+  }
+  if (countUserMessages(entries) < (opts?.minUserMsgs ?? 3)) return false;
+  return hasWorkEvidence(entries);
+}
 
 export default function (pi: ExtensionAPI) {
   pi.setLabel("KB Session Distill");
 
   pi.on("session_stop", async (_event, ctx) => {
     const branch = ctx.sessionManager.getBranch();
-    if (!branch || branch.length < 12) return; // 太短，无提炼价值
-
-    // 同会话已触发过提炼（含上一轮 continue 后再 stop）→ 跳过。
-    for (const entry of branch) {
-      const custom = entry as { customType?: string };
-      if (custom?.customType === DISTILL_MARK) return;
-    }
-
-    // 有实质工作：统计用户侧消息（entry 结构因版本而异，宽松匹配多种形态；
-    // 误判最坏情况 = 多跑一轮判空提炼，成本可控）。
-    let userMsgs = 0;
-    for (const entry of branch) {
-      const e = entry as {
-        type?: string;
-        role?: string;
-        message?: { role?: string };
-      };
-      if (e?.role === "user" || e?.type === "user" || e?.type === "message" && e?.message?.role === "user") {
-        userMsgs++;
-        if (userMsgs >= 3) break;
-      }
-    }
-    if (userMsgs < 3) return;
+    if (!shouldDistill(branch)) return;
 
     // 会话内标记（不写跨会话状态文件——每个会话独立沉淀）。
     pi.appendEntry(DISTILL_MARK, { at: new Date().toISOString() });

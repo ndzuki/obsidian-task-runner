@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/designlib"
+	"github.com/ndzuki/obsidian-task-runner/internal/knowledge"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
@@ -26,6 +27,10 @@ type Service struct {
 	// agentServerAddr is the optional dsh agent-server host:port used to proxy
 	// live agent-monitor data (/agents) into the same-origin dashboard API.
 	agentServerAddr string
+	// kbSearch answers in-process KB retrieval for /api/kb/search (B2):
+	// consumers (agent-server / kb-preflight) call it instead of spawning
+	// `otg kb search`, falling back to spawn when nil / endpoint absent.
+	kbSearch func(query string, limit int) ([]knowledge.SearchResult, error)
 }
 
 // New builds a Service rooted at the vault path. The agent-server proxy is
@@ -36,6 +41,13 @@ func New(vault string) *Service { return &Service{vault: vault} }
 // a dsh agent-server (e.g. "127.0.0.1:8799").
 func NewWithAgentServer(vault, agentServerAddr string) *Service {
 	return &Service{vault: vault, agentServerAddr: agentServerAddr}
+}
+
+// WithKBSearch wires the in-process KB retrieval backend (B2); nil disables
+// the /api/kb/search endpoint (clients fall back to spawning otg).
+func (s *Service) WithKBSearch(fn func(query string, limit int) ([]knowledge.SearchResult, error)) *Service {
+	s.kbSearch = fn
+	return s
 }
 
 // projectDirEntry is a directory directly under Projects/. id is the numeric
