@@ -29,7 +29,40 @@ func TestAuditToolPolicy(t *testing.T) {
 	if !strings.Contains(auditPromptTemplate, "edit/write/str_replace_editor") {
 		t.Errorf("audit prompt must explicitly prohibit edit/write/str_replace_editor (excluded by auditToolPolicy)")
 	}
+	// TASK-080 hardening: the read-only rule must be a top-position iron rule
+	// that survives even when the model sees the tools in its visible list.
+	if !strings.Contains(auditPromptTemplate, "即使工具列表里可见") {
+		t.Errorf("audit prompt must state that visible-but-disallowed tools must not be called")
+	}
 }
+
+// TestAuditRetryNotBefore: TOOL_POLICY_VIOLATION（会话调用白名单外工具）是
+// 模型行为问题，普通 2min 冷却会让它每 ~10min 烧一轮会话（TASK-080 观测）。
+// 违规失败用加长冷却，其他进程级失败保持原冷却。
+func TestAuditRetryNotBefore(t *testing.T) {
+	now := time.Now()
+	violationErr := urlError("agent-server: tool policy violation: disallowed tool calls [edit]")
+	plainErr := urlError("agent-server: PI_AI_ERROR")
+	tests := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"tool policy violation extended cooldown", violationErr, auditRetryCooldownViolation},
+		{"ordinary session failure default cooldown", plainErr, auditRetryCooldown},
+		{"nil error default cooldown", nil, auditRetryCooldown},
+	}
+	for _, tt := range tests {
+		got := auditRetryNotBefore(tt.err, now)
+		if d := got.Sub(now); d != tt.want {
+			t.Fatalf("%s: cooldown = %s, want %s", tt.name, d, tt.want)
+		}
+	}
+}
+
+type urlError string
+
+func (e urlError) Error() string { return string(e) }
 
 // writeAuditOMP writes a fake OMP that records argv and emits a verdict JSON
 // selected by the AUDIT_VERDICT env var: pass / fail / invalid, anything else

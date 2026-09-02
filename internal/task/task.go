@@ -57,6 +57,7 @@ type ReadyTask struct {
 	RefineReqHash            string   `json:"refine_req_hash,omitempty"`
 	PlanReqHash              string   `json:"plan_req_hash,omitempty"`
 	MergeRetryCount          int      `json:"merge_retry_count,omitempty"`
+	MergePreconditionFails   int      `json:"merge_precondition_fails,omitempty"`
 	MergeStatus              string   `json:"merge_status,omitempty"`
 	AuditStatus              string   `json:"audit_status,omitempty"`
 	AuditFailCount           int      `json:"audit_fail_count,omitempty"`
@@ -519,6 +520,7 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 		RefineReqHash:            fm.RefineReqHash,
 		PlanReqHash:              fm.PlanReqHash,
 		MergeRetryCount:          fm.MergeRetryCount,
+		MergePreconditionFails:   fm.MergePreconditionFails,
 		Maturity:                 fm.Maturity,
 		AuditStatus:              fm.AuditStatus,
 		AuditFailCount:           fm.AuditFailCount,

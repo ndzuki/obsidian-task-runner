@@ -271,6 +271,7 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 		RefineReqHash:            fm.RefineReqHash,
 		PlanReqHash:              fm.PlanReqHash,
 		MergeRetryCount:          fm.MergeRetryCount,
+		MergePreconditionFails:   fm.MergePreconditionFails,
 		MergeStatus:              fm.MergeStatus,
 		Maturity:                 fm.Maturity,
 		ReviewFeedback:           fm.ReviewFeedback, ReworkResolution: fm.ReworkResolution,

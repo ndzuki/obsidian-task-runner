@@ -1361,7 +1361,7 @@ function renderKBStats(s) {
     '<div class="kb-summary"><span>命中 <b>' + t.hits + '</b>/' + total + '</span><span>命中率 <b>' + ratio + '%</b></span><span>均耗 <b>' + t.avgMs + 'ms</b></span><span>检索 <b>' + t.searches + '</b>次</span></div>' +
     '<div class="kb-bars">' + bars + '</div>' +
     '<div class="kb-x">' + labels + '</div>' +
-    '<div class="kb-note">累计 · 单位 ms · 命中=缓存命中 · 空/失败不计入命中</div>';
+    '<div class="kb-note">累计' + (s.restored ? '（已恢复上次数据）' : '') + ' · 跨重启持久化 · 单位 ms · 命中=缓存命中 · 空/失败不计入命中</div>';
 }
 async function pollKBStats() {
   try {

@@ -57,9 +57,10 @@
  */
 import { createServer } from "node:http"
 import { randomUUID } from "node:crypto"
-import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from "node:fs"
 import { execFile } from "node:child_process"
 import { dirname, join } from "node:path"
+import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 
 export const name = "agent-server"
@@ -274,8 +275,104 @@ function kbHitsCacheSet(key, entry) {
  * （桶边界 KB_DURATION_BOUNDARIES，校准 B1 快/全预算阈值的分布证据）。 */
 const kbPrecomputeStats = { hits: 0, misses: 0, empty: 0, errs: 0, skipped: 0, searchMs: 0, searchN: 0, slow: 0, hist: new Array(KB_DURATION_BOUNDARIES.length).fill(0), lastLogAt: Date.now() }
 
-/** 进程生命周期累计（Agent Town 小图数据源，F1）：永不重置，与小时窗口并行。 */
+/** 进程生命周期累计（Agent Town 小图数据源，F1）：永不重置，与小时窗口并行。
+ *  跨重启持久化（TASK-080 观测：小图「累计」在 daemon 每次重启后归零，
+ *  面板长期挂零看起来像没更新）：totals 每 ≥30s 落盘一次 + 退出时兜底，
+ *  启动时从文件恢复。文件在 ~/.local/state/dsh/（可用 OTR_KB_STATS_FILE 覆盖，
+ *  测试用临时路径）。 */
 const kbPrecomputeTotals = { hits: 0, misses: 0, empty: 0, errs: 0, skipped: 0, searchMs: 0, searchN: 0, hist: new Array(KB_DURATION_BOUNDARIES.length).fill(0) }
+
+/** 持久化落盘最小间隔：统计更新频率低（每次预检索一次），30s 足够防止
+ * 高频写盘，又保证崩溃最多丢 30s 数据。 */
+const KB_STATS_SAVE_MIN_MS = 30 * 1000
+
+/** 累计计数字段名（序列化/恢复共用）。 */
+const KB_STATS_COUNTER_KEYS = ["hits", "misses", "empty", "errs", "skipped", "searchMs", "searchN"]
+
+/** 默认持久化文件路径：~/.local/state/dsh/agent-server-kb-stats.json。
+ *  OTR_KB_STATS_FILE 环境变量覆盖（单测/多实例隔离用）。 */
+function kbStatsFileDefault() {
+  const env = (process.env.OTR_KB_STATS_FILE || "").trim()
+  if (env !== "") return env
+  return join(homedir(), ".local", "state", "dsh", "agent-server-kb-stats.json")
+}
+
+/** totals 快照（持久化用）：只序列化累计对象，不含窗口/派生值。 */
+function kbStatsTotalsSerialize(totals) {
+  return JSON.stringify({
+    hits: totals.hits, misses: totals.misses, empty: totals.empty, errs: totals.errs,
+    skipped: totals.skipped, searchMs: totals.searchMs, searchN: totals.searchN,
+    hist: Array.isArray(totals.hist) ? [...totals.hist] : [],
+  })
+}
+
+/** 反序列化并校验：字段齐全且为数字、hist 为数字数组才接受；
+ *  任何异常返回 null（调用方保持内存累计不变）。 */
+function kbStatsTotalsDeserialize(text) {
+  let t
+  try { t = JSON.parse(text) } catch { return null }
+  if (typeof t !== "object" || t === null) return null
+  for (const k of KB_STATS_COUNTER_KEYS) {
+    if (typeof t[k] !== "number" || !Number.isFinite(t[k])) return null
+  }
+  if (!Array.isArray(t.hist) || t.hist.some((v) => typeof v !== "number")) return null
+  return {
+    hits: t.hits, misses: t.misses, empty: t.empty, errs: t.errs,
+    skipped: t.skipped, searchMs: t.searchMs, searchN: t.searchN, hist: [...t.hist],
+  }
+}
+
+/** 读持久化文件（不存在/损坏 → null）。纯文件操作，单测传临时路径。 */
+function loadPersistedTotals(file) {
+  try {
+    if (!existsSync(file)) return null
+    return kbStatsTotalsDeserialize(readFileSync(file, "utf8"))
+  } catch {
+    return null
+  }
+}
+
+/** 写持久化文件（自动建父目录）；返回是否成功。纯文件操作，单测传临时路径。 */
+function savePersistedTotals(file, totals) {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, kbStatsTotalsSerialize(totals), "utf8")
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 持久化状态：文件路径 + 上次落盘时间 + 启动恢复时间（快照暴露给面板）。 */
+const kbStatsPersist = { file: kbStatsFileDefault(), lastSaveAt: 0, restoredAt: null }
+
+// 启动恢复：把上次进程的累计并入本进程 totals（加性语义，重复恢复幂等——
+// 文件只在本次落盘时整体重写，不会双计）。
+{
+  const st = loadPersistedTotals(kbStatsPersist.file)
+  if (st !== null) {
+    for (const k of KB_STATS_COUNTER_KEYS) kbPrecomputeTotals[k] += st[k]
+    for (let i = 0; i < kbPrecomputeTotals.hist.length && i < st.hist.length; i++) kbPrecomputeTotals.hist[i] += st.hist[i]
+    try { kbStatsPersist.restoredAt = statSync(kbStatsPersist.file).mtimeMs } catch { kbStatsPersist.restoredAt = Date.now() }
+    console.log(`agent-server: kb-precompute totals restored from ${kbStatsPersist.file} (searches=${st.searchN})`)
+  }
+}
+
+/** 立即落盘累计（searchN=0 不写：避免单测/空进程污染用户状态目录）。 */
+function persistStatsNow() {
+  if (kbPrecomputeTotals.searchN <= 0) return
+  if (savePersistedTotals(kbStatsPersist.file, kbPrecomputeTotals)) {
+    kbStatsPersist.lastSaveAt = Date.now()
+  }
+}
+
+/** 节流落盘：距上次 ≥30s 才写。kbStatsNote/noteSearchFinished 都会调用。 */
+function maybePersistStats() {
+  if (Date.now() - kbStatsPersist.lastSaveAt >= KB_STATS_SAVE_MIN_MS) persistStatsNow()
+}
+
+// 进程退出兜底：正常退出/信号退出都尽量落盘（同步写，量小无风险）。
+process.on("exit", () => { persistStatsNow() })
 
 /** 快照供 /kb-stats（Agent Town 小图）与测试使用：累计 + 当前小时窗口。 */
 function kbStatsSnapshot() {
@@ -287,12 +384,13 @@ function kbStatsSnapshot() {
     searches: s.searchN, avgMs: s.searchN > 0 ? Math.round(s.searchMs / s.searchN) : 0,
     hist: histOf(s.hist),
   })
-  return { totals: sum(t), window: sum(w), lastLogAt: w.lastLogAt }
+  return { totals: sum(t), window: sum(w), lastLogAt: w.lastLogAt, restored: kbStatsPersist.restoredAt }
 }
 
 function kbStatsNote(kind) {
   kbPrecomputeStats[kind] = (kbPrecomputeStats[kind] || 0) + 1
   kbPrecomputeTotals[kind] = (kbPrecomputeTotals[kind] || 0) + 1
+  maybePersistStats()
   const now = Date.now()
   if (now - kbPrecomputeStats.lastLogAt >= KB_STATS_LOG_INTERVAL_MS) {
     const avgMs = kbPrecomputeStats.searchN > 0 ? Math.round(kbPrecomputeStats.searchMs / kbPrecomputeStats.searchN) : 0
@@ -334,6 +432,7 @@ function noteSearchFinished(durationMs, timedOut) {
   kbPrecomputeTotals.searchMs += durationMs
   kbPrecomputeTotals.searchN += 1
   kbPrecomputeTotals.hist[durationBucket(durationMs, KB_DURATION_BOUNDARIES)] += 1
+  maybePersistStats()
 }
 
 /** 查询词归一化（A1，仅用于缓存键，检索仍传原文）：
@@ -969,7 +1068,7 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)

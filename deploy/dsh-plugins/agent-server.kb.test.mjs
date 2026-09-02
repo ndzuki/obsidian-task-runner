@@ -636,4 +636,24 @@ status: proposed
   console.log("PASS kbStatsSnapshot shape")
 }
 
+// --- KB 统计持久化（红：尚未实现——重启归零修复） ---
+{
+  const { kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, kbStatsFileDefault } = _kbTest
+  const totals = { hits: 3, misses: 9, empty: 2, errs: 1, skipped: 4, searchMs: 12345, searchN: 12, hist: [1, 2, 3, 4, 5, 6, 7] }
+  assert.deepStrictEqual(kbStatsTotalsDeserialize(kbStatsTotalsSerialize(totals)), totals, "serialize/deserialize round-trip")
+  assert.strictEqual(kbStatsTotalsDeserialize("not json at all"), null, "corrupt text → null")
+  assert.strictEqual(kbStatsTotalsDeserialize('{"hits":1}'), null, "missing fields → null")
+  assert.strictEqual(kbStatsTotalsDeserialize('{"hits":"x","misses":1,"empty":1,"errs":1,"skipped":1,"searchMs":1,"searchN":1,"hist":[1]}'), null, "non-numeric field → null")
+  assert.strictEqual(loadPersistedTotals(join(tmpdir(), "no-such-kb-stats.json")), null, "missing file → null")
+  const dir = mkdtempSync(join(tmpdir(), "kbstats-"))
+  const file = join(dir, "agent-server-kb-stats.json")
+  assert.strictEqual(savePersistedTotals(file, totals), true, "save succeeds (creates parent dir)")
+  assert.deepStrictEqual(loadPersistedTotals(file), totals, "file round-trip")
+  writeFileSync(file, "garbage")
+  assert.strictEqual(loadPersistedTotals(file), null, "corrupt file → null")
+  assert.strictEqual(typeof kbStatsFileDefault(), "string", "default stats file path is a string")
+  rmSync(dir, { recursive: true, force: true })
+  console.log("PASS kb stats persistence")
+}
+
 console.log("agent-server KB-first tests: all passed")

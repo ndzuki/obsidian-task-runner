@@ -33,6 +33,35 @@ const auditSessionTimeoutFallback = 15 * time.Minute
 // session every scan.
 const auditRetryCooldown = 2 * time.Minute
 
+// auditRetryCooldownViolation is the longer cooldown for TOOL_POLICY_VIOLATION
+// session failures (TASK-080): the model called a whitelist-excluded tool.
+// The short cooldown let a misbehaving model re-burn a full session every
+// ~10 minutes indefinitely; the longer one gives the policy signal room to
+// land without weakening the read-only gate itself.
+const auditRetryCooldownViolation = 6 * time.Minute
+
+// isToolPolicyViolation reports whether an agent-server session error is the
+// post-hoc read-only whitelist breach (disallowed tool call observed).
+func isToolPolicyViolation(err error) bool {
+	// 大小写/下划线不敏感：daemon 侧错误是 "TOOL_POLICY_VIOLATION: …" 前缀，
+	// agent-server 裸消息则是 "tool policy violation: …"（空格分隔）。
+	if err == nil {
+		return false
+	}
+	normalized := strings.ReplaceAll(strings.ToUpper(err.Error()), " ", "_")
+	return strings.Contains(normalized, "TOOL_POLICY_VIOLATION")
+}
+
+// auditRetryNotBefore returns the earliest time the next audit session may
+// start after a failed one: the standard cooldown, extended for tool-policy
+// violations. Pure so the classification is directly unit-testable.
+func auditRetryNotBefore(err error, now time.Time) time.Time {
+	if isToolPolicyViolation(err) {
+		return now.Add(auditRetryCooldownViolation)
+	}
+	return now.Add(auditRetryCooldown)
+}
+
 // auditPromptTemplate instructs the read-only verification session. It must
 // demand strict JSON and raw evidence per AC — the same contract the priority
 // assessment uses, so the daemon can decode the verdict deterministically.
@@ -44,6 +73,13 @@ const auditPromptTemplate = `你是独立完成审计员（independent completio
 背景：实现会话（round2）已声明完成并进入 review。你的职责是独立复核该完成声明——
 不信任实现会话内的自我检查；每条验收标准（AC）必须用你亲自运行的命令或亲自读取
 的代码收集原始证据。
+
+铁律（违反即会话失败、本轮产出作废）：
+- 你只有只读/查询工具：read / grep / glob / bash（仅用于运行测试与查询命令）/
+  skill（加载技能指令）/ todo_write（仅会话自身记录，非工作区文件）/
+  job_output·job_list·job_kill（查看与管理你自己启动的后台任务）/ read_image（查看截图）。
+- 严禁调用任何写工具（edit/write/str_replace_editor 等）——即使工具列表里可见也不得调用；
+  禁止修改任何任务/代码/配置文件、禁止任何 git 写操作、禁止提交。
 
 要求：
 1. 读取 TASK 文档 frontmatter 与正文：
@@ -184,7 +220,8 @@ func (r *Runner) processReviewAudit(t task.ReadyTask, repoDir string) (bool, err
 	// Process-level failure cooldown: a crashing model must not burn a
 	// session every scan.
 	if ts, ok := r.auditRetries.Load(t.FilePath); ok {
-		if time.Since(ts.(time.Time)) < auditRetryCooldown {
+		// ts 是 notBefore 截止时间（auditRetryNotBefore），而非开始时间。
+		if time.Now().Before(ts.(time.Time)) {
 			return true, nil
 		}
 		r.auditRetries.Delete(t.FilePath)
@@ -205,7 +242,10 @@ func (r *Runner) processReviewAudit(t task.ReadyTask, repoDir string) (bool, err
 		// Session failure or interruption: keep the task in review with
 		// audit_status=pending so the next scan retries the audit; never
 		// punish the implementation for an environment problem.
-		r.auditRetries.Store(t.FilePath, time.Now())
+		if isToolPolicyViolation(err) {
+			r.logger.Printf("task %s: audit session tool-policy violation (read-only whitelist breached) — extended cooldown %s", t.ID, auditRetryCooldownViolation)
+		}
+		r.auditRetries.Store(t.FilePath, auditRetryNotBefore(err, time.Now()))
 		_ = yamlfrontmatter.Update(t.FilePath, map[string]interface{}{
 			"audit_status": "pending",
 			"audit_log":    logPath,

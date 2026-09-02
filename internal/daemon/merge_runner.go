@@ -182,6 +182,11 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// 从这里恢复一次并持久化，merge 直接继续。
 	if healTargetBranch(r.cfg.WorktreeBase, repoDir, candidate, fm) {
 		r.logger.Printf("task %s: recovered target_branch=%s from task worktree (round2 interrupted before write-back)", candidate.ID, fm.TargetBranch)
+		// 自愈成功 = 前置缺陷已消除：清防循环计数，恢复自动重试额度。
+		if fm.MergePreconditionFails != 0 {
+			_ = yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{"merge_precondition_fails": 0})
+			fm.MergePreconditionFails = 0
+		}
 	}
 	if err := validateMergeAuthorization(mergeAuthorization{
 		Status: fm.Status, MergeApproved: fm.MergeApproved, PendingReq: fm.PendingReq,
@@ -206,6 +211,16 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		if fm.PendingReq || strings.Contains(err.Error(), string(ErrBaseCommitMismatch)) {
 			updates["status"] = "refining"
 			updates["pending_req"] = true
+		}
+		// Anti-loop（TASK-080）：机械前置失败计数，预算耗尽停止自动重试并通知。
+		// 修复方向明确（补 target_branch / 清 pending_req），人工恢复后计数清零。
+		if isMergePreconditionError(err.Error()) {
+			fails := fm.MergePreconditionFails + 1
+			updates["merge_precondition_fails"] = fails
+			if fails >= r.cfg.MaxAutoMergeFixes {
+				r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "🧩", "合并授权前置条件反复失败",
+					fmt.Sprintf("%s；已连续 %d 轮失败（上限 %d），停止自动重试。修复后运行 otg update-status %s merge_precondition_fails=0 或直接设置 merge_approved=true 恢复", err.Error(), fails, r.cfg.MaxAutoMergeFixes, candidate.ID), failNotifyReason)
+			}
 		}
 		_ = yamlfrontmatter.Update(candidate.FilePath, updates)
 		return err
@@ -658,7 +673,7 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
 	}); err != nil {
 		return err
 	}
@@ -690,7 +705,7 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	updates := map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
 	}
 
 	// Delivery-evidence refresh: re-point checkpoint_commit at the head that
@@ -1555,7 +1570,7 @@ func (r *Runner) checkRemoteMergedAndComplete(candidate task.ReadyTask, repoDir 
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
 	}); err != nil {
 		return false, err
 	}

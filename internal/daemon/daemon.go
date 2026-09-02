@@ -3563,6 +3563,12 @@ func canAutoApproveMerge(t task.ReadyTask, currentReqHash string, maxAutoMergeFi
 	if t.PlanReqHash == "" || currentReqHash != t.PlanReqHash {
 		return false
 	}
+	// Anti-loop（TASK-080）：机械前置条件失败（target_branch 缺失等）反复让
+	// validate 失败时，auto-approve 会让每轮 scan 白跑一遍 merge 授权。
+	// 失败计数到上限后停止自动重试，交人工修复（设 target_branch / 清计数）。
+	if t.MergePreconditionFails >= maxAutoMergeFixes {
+		return false
+	}
 	return t.MergeRetryCount < maxAutoMergeFixes
 }
 

@@ -88,6 +88,22 @@ func TestCanAutoApproveMerge(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "precondition fails within budget still re-authorizes",
+			task: task.ReadyTask{Status: "review", AutoMerge: true,
+				PhaseErrorCode: "BASE_COMMIT_MISMATCH", PlanReqHash: reqHash, MergeRetryCount: 0, MergePreconditionFails: 2},
+			hash: reqHash,
+			max:  3,
+			want: true,
+		},
+		{
+			name: "precondition budget exhausted stays manual (anti-loop)",
+			task: task.ReadyTask{Status: "review", AutoMerge: true,
+				PhaseErrorCode: "BASE_COMMIT_MISMATCH", PlanReqHash: reqHash, MergeRetryCount: 0, MergePreconditionFails: 3},
+			hash: reqHash,
+			max:  3,
+			want: false,
+		},
+		{
 			name: "exhausted budget stays manual",
 			task: task.ReadyTask{Status: "conflict", AutoMerge: true,
 				PhaseErrorCode: "GIT_CONFLICT", PlanReqHash: reqHash, MergeRetryCount: 3},
@@ -107,5 +123,26 @@ func TestCanAutoApproveMerge(t *testing.T) {
 				t.Fatalf("canAutoApproveMerge(%+v) = %v, want %v", tt.task, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestIsMergePreconditionError: 只有机械前置条件失败（precondition: 前缀）
+// 计入防循环预算；REQ hash 漂移等语义失败走既有的 refining 路由，不计数。
+func TestIsMergePreconditionError(t *testing.T) {
+	tests := []struct {
+		err  string
+		want bool
+	}{
+		{"precondition: target_branch is required", true},
+		{"precondition: pending_req revokes merge authorization", true},
+		{"precondition: status \"done\" is not mergeable", true},
+		{"BASE_COMMIT_MISMATCH: REQ hash changed", false},
+		{"GITHUB_UNAVAILABLE: gh CLI not found", false},
+		{"precondition-ish but not prefix", false},
+	}
+	for _, tt := range tests {
+		if got := isMergePreconditionError(tt.err); got != tt.want {
+			t.Fatalf("isMergePreconditionError(%q) = %v, want %v", tt.err, got, tt.want)
+		}
 	}
 }

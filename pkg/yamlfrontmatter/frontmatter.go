@@ -144,15 +144,16 @@ type Frontmatter struct {
 	Template string         `yaml:"template"`
 
 	// GitHub remote creation and merge authorization.
-	RemoteCreate          bool   `yaml:"remote_create"`
-	GitHubOwner           string `yaml:"github_owner"`
-	RepositoryName        string `yaml:"repository_name"`
-	RepositoryVisibility  string `yaml:"repository_visibility"`
-	RepositoryDescription string `yaml:"repository_description"`
-	RepositoryURL         string `yaml:"repository_url"`
-	MergeStatus           string `yaml:"merge_status"`
-	ApprovedHead          string `yaml:"approved_head"`
-	MergeRetryCount       int    `yaml:"merge_retry_count"`
+	RemoteCreate           bool   `yaml:"remote_create"`
+	GitHubOwner            string `yaml:"github_owner"`
+	RepositoryName         string `yaml:"repository_name"`
+	RepositoryVisibility   string `yaml:"repository_visibility"`
+	RepositoryDescription  string `yaml:"repository_description"`
+	RepositoryURL          string `yaml:"repository_url"`
+	MergeStatus            string `yaml:"merge_status"`
+	ApprovedHead           string `yaml:"approved_head"`
+	MergeRetryCount        int    `yaml:"merge_retry_count"`
+	MergePreconditionFails int    `yaml:"merge_precondition_fails"`
 
 	// General task metadata retained by templates and dashboards.
 	Created        string   `yaml:"created"`
@@ -338,7 +339,7 @@ var taskFieldOrder = []string{
 	"refine_error", "plan_req_hash", "plan_version", "design_replan_version", "planning_retry_count",
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
-	"merge_status", "approved_head", "merge_retry_count", "task_schema_version", "req_refine_count",
+	"merge_status", "approved_head", "merge_retry_count", "merge_precondition_fails", "task_schema_version", "req_refine_count",
 	"round2_stall_until", "round2_stall_level",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
@@ -431,9 +432,10 @@ var taskFieldDefaults = map[string]interface{}{
 	"auto_resume_count":     0,
 
 	// Merge loop fields.
-	"merge_status":      "",
-	"approved_head":     "",
-	"merge_retry_count": 0,
+	"merge_status":             "",
+	"approved_head":            "",
+	"merge_retry_count":        0,
+	"merge_precondition_fails": 0,
 
 	// Grilling lease fields.
 	"grill_owner":           "",
