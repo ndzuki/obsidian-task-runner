@@ -2722,6 +2722,28 @@ func RemoveProjectWorktrees(base, repoDir string) error {
 // into the wrong branch (TASK-051/059). A task whose target branch is checked
 // out by the primary checkout or another worktree therefore fails loudly
 // instead of silently reusing the main checkout.
+// reuseBranchWorktree returns occupied when that worktree already sits on the
+// exact target branch (round2 created it in a sibling directory outside the
+// managed root, e.g. release-manager-t080): operating there is git-correct
+// and non-destructive — the user worktree is never removed. The primary
+// checkout is never reused (TASK-067: merge polluted the user's working
+// directory when the old fallback ran there). Any other state (different
+// branch, not a worktree) returns "" and the caller surfaces the original
+// error for a human decision (TASK-081 lesson: 绝不删除用户目录).
+func reuseBranchWorktree(repoDir, occupied, targetBranch string) string {
+	if occupied == "" || targetBranch == "" {
+		return ""
+	}
+	if filepath.Clean(occupied) == filepath.Clean(repoDir) {
+		return "" // 主 checkout 即使在该分支上也不复用（隔离契约）
+	}
+	branch, err := gitCurrentBranch(occupied)
+	if err != nil || branch != targetBranch {
+		return ""
+	}
+	return occupied
+}
+
 func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, error) {
 	path := taskWorktreePath(base, repoDir, taskID)
 	if _, err := os.Stat(path); err == nil {
@@ -2751,13 +2773,22 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 					// 重试 checkout；若是用户手动 checkout/克隆（不在受管根下），
 					// 绝不自动删除——保留错误交由 merge notify 提示人工处理
 					// （release-manager-t081 持有 task/081 的场景）。
-					if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path && isManagedWorktreePath(occupied, base, repoDir) {
-						log.Printf("task worktree: detached %s blocked by stale managed worktree %s, removing and retrying checkout", path, occupied)
-						exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
-						if output2, err2 := cmd.CombinedOutput(); err2 == nil {
-							return path, nil
-						} else {
-							return "", fmt.Errorf("checkout existing worktree %s to %q (after stale removal): %w: %s", path, targetBranch, err2, strings.TrimSpace(string(output2)))
+					if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
+						if isManagedWorktreePath(occupied, base, repoDir) {
+							log.Printf("task worktree: detached %s blocked by stale managed worktree %s, removing and retrying checkout", path, occupied)
+							exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+							if output2, err2 := cmd.CombinedOutput(); err2 == nil {
+								return path, nil
+							} else {
+								return "", fmt.Errorf("checkout existing worktree %s to %q (after stale removal): %w: %s", path, targetBranch, err2, strings.TrimSpace(string(output2)))
+							}
+						}
+						// 占用者不在受管根下（用户/round2 同级 worktree）：若它就在
+						// 目标分支上（TASK-080 release-manager-t080），直接复用——
+						// 不删除用户目录。
+						if reused := reuseBranchWorktree(repoDir, occupied, targetBranch); reused != "" {
+							log.Printf("task worktree: reusing %s (target branch %s already checked out there)", reused, targetBranch)
+							return reused, nil
 						}
 					}
 					return "", fmt.Errorf("checkout existing worktree %s to %q: %w: %s", path, targetBranch, err, strings.TrimSpace(string(output)))
@@ -2808,11 +2839,18 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 	// remove --force——那是用户的目录，删除会造成数据丢失（2026-08-31
 	// TASK-081 分支被 release-manager-t081 占用时 merge 必须人工处理）。
 	if targetBranch != "" {
-		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path && isManagedWorktreePath(occupied, base, repoDir) {
-			log.Printf("task worktree: branch %s occupied by stale managed worktree %s, removing", targetBranch, occupied)
-			exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
-			if _, err3 := add(); err3 == nil {
-				return path, nil
+		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
+			if isManagedWorktreePath(occupied, base, repoDir) {
+				log.Printf("task worktree: branch %s occupied by stale managed worktree %s, removing", targetBranch, occupied)
+				exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+				if _, err3 := add(); err3 == nil {
+					return path, nil
+				}
+			}
+			// 占用者不在受管根下：若它就在目标分支上，直接复用（不删除用户目录）。
+			if reused := reuseBranchWorktree(repoDir, occupied, targetBranch); reused != "" {
+				log.Printf("task worktree: reusing %s (target branch %s already checked out there)", reused, targetBranch)
+				return reused, nil
 			}
 		}
 	}

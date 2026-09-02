@@ -406,7 +406,7 @@ docker run -d --name kb-reranker --restart unless-stopped \
 交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库，两条路径覆盖两个运行时：
 
 - **dsh 侧（web / tui / headless）**：`kb-distill.mjs`（home patch 插件）监听 `session/disposed` 与 idle 超时——确定性踩坑抽取**零 LLM token** 直接 `otg kb absorb`，语义提炼用门控小模型（`minToolResults`/`minEvents`/`maxInputBytes` 上限）。
-- **omp 侧（主交互会话）**：仓库自带 `.omp/extensions/kb-session-distill.ts` 扩展监听 `session_stop`，会话有实质工作（含工具调用证据门禁）时注入提炼指令，agent 委派 subagent 分析转录并按 `knowledge-base` Step 0.7 流程入库。安装：`make sync-omp-extension`（busy-safe 同步到 `~/.omp/agent/extensions/`，用户级全项目生效；deploy 只做一致性检查不覆盖用户 ~/.omp）；禁用：omp `config.yml` 加 `disabledExtensions: [extension-module:kb-session-distill]`。
+- **dsh 侧（主交互会话）**：`~/.dsh/plugins/kb-distill.mjs`（独立工作区维护、非本仓库部署）监听会话停止/空闲钩子，会话有实质工作（含工具调用证据门禁）时注入提炼指令，agent 委派 subagent 分析转录并按 `knowledge-base` Step 0.7 流程入库。仓库自带的 omp 扩展 `.omp/extensions/kb-session-distill.ts` 已随 omp 时代结束退役（2026-09-02 移除，deploy 不再安装/检查）。
 
 手动触发：直接说"提炼本次会话"。
 

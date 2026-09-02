@@ -1053,6 +1053,46 @@ func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
 	}
 }
 
+// TestEnsureTaskWorktreeReusesSiblingBranchWorktree pins the TASK-080 fix:
+// when the managed key worktree is detached and the target branch is already
+// checked out in a SIBLING worktree outside the managed root (round2 created
+// it there, e.g. release-manager-t080), the call must REUSE that worktree —
+// non-destructively — instead of failing every scan ("merge worktree
+// unavailable" loop). The user directory is never removed.
+func TestEnsureTaskWorktreeReusesSiblingBranchWorktree(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	repo := createRepository(t, dir)
+	git(t, "-C", repo, "checkout", "-b", "task/080-operator-inventory-sync-tls")
+	git(t, "-C", repo, "commit", "--allow-empty", "-m", "feature")
+	git(t, "-C", repo, "checkout", "--detach")
+
+	// 托管 key 目录：detached（模拟 audit 早期创建）。
+	wt, err := ensureTaskWorktree(repo, "080", "", "")
+	if err != nil {
+		t.Fatalf("create detached worktree: %v", err)
+	}
+	// 同级 worktree 持有目标分支（round2 实际工作区）。
+	sibling := filepath.Join(dir, "release-manager-t080")
+	git(t, "-C", repo, "worktree", "add", sibling, "task/080-operator-inventory-sync-tls")
+
+	reused, err := ensureTaskWorktree(repo, "080", "task/080-operator-inventory-sync-tls", "")
+	if err != nil {
+		t.Fatalf("ensureTaskWorktree should reuse sibling worktree: %v", err)
+	}
+	if reused != sibling {
+		t.Fatalf("reused worktree = %q, want sibling %q (managed detached %q untouched)", reused, sibling, wt)
+	}
+	// 用户目录必须原样保留。
+	if _, statErr := os.Stat(sibling); statErr != nil {
+		t.Fatalf("sibling worktree missing after reuse: %v", statErr)
+	}
+	branch, branchErr := gitCurrentBranch(sibling)
+	if branchErr != nil || branch != "task/080-operator-inventory-sync-tls" {
+		t.Fatalf("sibling branch = %q (err=%v), want unchanged task/080-operator-inventory-sync-tls", branch, branchErr)
+	}
+}
+
 // TestIsManagedWorktreePath guards the worktree self-heal safety boundary: the
 // daemon may only auto-remove worktrees it created (under the managed
 // worktree root). A user's manual clone/checkout on the task branch (e.g.

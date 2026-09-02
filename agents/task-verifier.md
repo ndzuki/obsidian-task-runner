@@ -25,7 +25,7 @@ tools: Read, Bash, Grep, Glob
 
 ### Step 2: 进入项目目录并切换分支
 
-1. Accept the worktree path from the calling daemon. If not provided, fall back to vault-map.json resolution from `~/.omp/skills/obsidian-task-runner/config/vault-map.json`
+1. Accept the worktree path from the calling daemon. If not provided, fall back to vault-map.json resolution from `~/.dsh/skills/obsidian-task-runner/config/vault-map.json`
 2. cd 进入项目目录
 3. 切换到 target_branch：
    ```bash

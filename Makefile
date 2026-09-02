@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry sync-omp-extension
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -28,21 +28,11 @@ test:
 	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -cover -p 4 -timeout 5m ./...
 	@$(MAKE) test-node
 
-# test-node: agent-server / kb-preflight 纯函数单测 + D2 提炼预过滤。
-# node 不可用时静默跳过——插件由 dsh 的 node 运行时驱动，测试只是辅助；
-# node <23.6 无 TS type-stripping → 只跑 mjs 单测（.ts 由 dsh 运行时
-# 负责加载，不阻塞 deploy 的 test 阶段）；node ≥23.6 直载 .ts 全量跑。
-# 老 node 上切到"兼容套件"而非整段跳过——mjs 测试是 A 批/CI 的核心护栏。
+# test-node: agent-server / kb-preflight 纯函数单测。
 test-node:
 	@if command -v node >/dev/null 2>&1; then \
 		node deploy/dsh-plugins/agent-server.kb.test.mjs && \
-		node deploy/dsh-plugins/kb-preflight.test.mjs && \
-		NODE_VER=$$(node -p 'process.versions.node'); \
-		if [ "$$(printf '%s\n23.6.0' "$$NODE_VER" | sort -V | head -1)" = "23.6.0" ]; then \
-			node deploy/dsh-plugins/kb-session-distill.test.mjs; \
-		else \
-			echo "  (node $$NODE_VER <23.6 — skipping .ts distill tests; .mjs tests still enforced)"; \
-		fi; \
+		node deploy/dsh-plugins/kb-preflight.test.mjs; \
 	else \
 		echo "  (node not found — skipping agent-server JS unit tests)"; \
 	fi
@@ -62,14 +52,20 @@ clean:
 
 # busy-safe install: 运行中的二进制（otg daemon / grilling tab 的
 # kitty-grill）不允许原地覆盖（Text file busy），先 mv 到 .old 再 cp。
+# 强制覆盖兜底：历史容器以 nobody 属主写入的二进制会让 cp 直接 EACCES
+#（非属主无写权限），部署静默留下旧版本（2026-09-02 ~/.local/bin/otg 停在
+# v0.44.0）。mv 备份后 rm -f 兜底再 cp，确保 install/deploy 不会静默失败。
 install: build sync-docs
 	@echo "=== Installing $(BINARY) + $(GRILL) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	@for b in $(BINARY) $(GRILL); do \
 		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
 		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
+		-rm -f $(HOME)/.local/bin/$$b $(GOBIN)/$$b 2>/dev/null || true; \
 		cp $$b $(HOME)/.local/bin/$$b; \
+		chmod 755 $(HOME)/.local/bin/$$b; \
 		cp $$b $(GOBIN)/$$b; \
+		chmod 755 $(GOBIN)/$$b; \
 	done
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"
 
@@ -170,26 +166,6 @@ sync-registry:
 	@cp config/skill-registry.json $(HOME)/.dsh/config/skill-registry.json
 	@echo "=== Done ==="
 
-# sync-omp-extension: 把会话知识提炼扩展装到 ~/.omp/agent/extensions/（用户级，
-# 全项目生效）。deploy 默认不自动覆盖用户 ~/.omp（omp 配置属用户自治域），
-# 只提示；确认要装时显式跑本目标（busy-safe：备份旧版为 .old）。
-sync-omp-extension:
-	@echo "=== Syncing kb-session-distill.ts to ~/.omp/agent/extensions/ ==="
-	@mkdir -p $(HOME)/.omp/agent/extensions
-	@if [ -f $(HOME)/.omp/agent/extensions/kb-session-distill.ts ]; then \
-		cmp -s .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts && \
-			echo "  已与仓库一致，跳过" || { \
-			-rm -f $(HOME)/.omp/agent/extensions/kb-session-distill.ts.old; \
-			mv $(HOME)/.omp/agent/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts.old; \
-			cp .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts; \
-			echo "  已更新（旧版备份为 .old）"; }; \
-	else \
-		cp .omp/extensions/kb-session-distill.ts $(HOME)/.omp/agent/extensions/kb-session-distill.ts; \
-		echo "  已安装"; \
-	fi
-	@echo "  · 禁用方式: omp config.yml disabledExtensions: [extension-module:kb-session-distill]"
-	@echo "  · 卸载: rm $(HOME)/.omp/agent/extensions/kb-session-distill.ts"
-
 # ===========================================================================
 # deploy — 唯一部署入口（替代 install-force）。
 #   构建 → 单测 → busy-safe 安装 → 同步 skill/插件/技能清单
@@ -198,7 +174,6 @@ sync-omp-extension:
 #   → daemon-reload → 重启 watcher
 #   → managed=false 时按 checksum 判断是否重启 dsh-agent-server
 #   → kb-preflight 变更且 dsh-web 在跑时重启 dsh-web（[5c/6]）
-#   → omp 会话提炼扩展安装状态检查（[5d/6]，安装用 make sync-omp-extension）。
 # 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
 # ===========================================================================
 deploy: build test
@@ -207,8 +182,11 @@ deploy: build test
 	@for b in $(BINARY) $(GRILL); do \
 		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
 		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
+		-rm -f $(HOME)/.local/bin/$$b $(GOBIN)/$$b 2>/dev/null || true; \
 		cp $$b $(HOME)/.local/bin/$$b; \
+		chmod 755 $(HOME)/.local/bin/$$b; \
 		cp $$b $(GOBIN)/$$b; \
+		chmod 755 $(GOBIN)/$$b; \
 	done
 	@echo "=== [2/6] sync skill docs + plugins + skill-registry ==="
 	@$(MAKE) sync-docs
@@ -294,15 +272,9 @@ deploy: build test
 	else \
 		echo "  kb-preflight unchanged — dsh-web 无需重启"; \
 	fi
-	@echo "=== [5d/6] omp 会话提炼扩展（kb-session-distill.ts）==="
-	@echo "  仓库: .omp/extensions/kb-session-distill.ts"
-	@echo "  · 用户级安装（全项目生效）: make sync-omp-extension"
-	@echo "  · 或手动: cp .omp/extensions/kb-session-distill.ts ~/.omp/agent/extensions/"
-	@if [ -f "$(HOME)/.omp/agent/extensions/kb-session-distill.ts" ]; then \
-		cmp -s ".omp/extensions/kb-session-distill.ts" "$(HOME)/.omp/agent/extensions/kb-session-distill.ts" && echo "  ✓ 已安装且与仓库一致" || echo "  ⚠ 已安装但与仓库不一致 — make sync-omp-extension"; \
-	else \
-		echo "  ⚠ 未安装（交互会话知识提炼不会自动触发）"; \
-	fi
+	@echo "=== [5d/6] omp 会话提炼扩展：已退役（omp 时代结束，~/.omp 不再存在） ==="
+	@echo "  会话蒸馏现由独立工作区维护的 dsh 插件 kb-distill.mjs 承载"
+	@echo "  （~/.dsh/plugins/，非本仓库部署——deploy 只同步仓库自有插件，不触碰它）"
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"
 	@echo "  rollback: make rollback"

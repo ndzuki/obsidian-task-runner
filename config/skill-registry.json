@@ -23,7 +23,7 @@
     },
     "obsidian-task-runner (external required)": {
       "type": "local-required",
-      "description": "核心依赖 Skill，缺失时任务无法执行。请通过 ~/.omp/skills/ 手动安装或从对应仓库获取。",
+      "description": "核心依赖 Skill，缺失时任务无法执行。请通过 ~/.dsh/skills/ 手动安装或从对应仓库获取。",
       "skills": [
         "requirement-elaborator",
         "grilling",
