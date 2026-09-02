@@ -232,7 +232,7 @@ func TestValidate(t *testing.T) {
 
 	t.Run("corrupted file", func(t *testing.T) {
 		path := filepath.Join(dir, "corrupt.md")
-		// Simulates OMP agent writing orphaned text after grill_context: ""
+		// Simulates an agent session writing orphaned text after grill_context: ""
 		if err := os.WriteFile(path, []byte("---\nid: \"001\"\ngrill_context: \"\"\n  orphaned text\n---\n# Body\n"), 0644); err != nil {
 			t.Fatalf("write corrupt file: %v", err)
 		}

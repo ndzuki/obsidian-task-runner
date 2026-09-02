@@ -33,32 +33,51 @@
   "_comment_agent_server": "agent_server_managed=false 表示由独立 systemd 服务 dsh-agent-server.service 管理 headless-agent-server，daemon 不再自己拉起/关闭子进程；默认 true 保持 daemon 内嵌管理。",
   "agent_server_managed": false,
   "models": {
-    "_comment": "assignee → DSH 模型标识。免费渠道优先：default/deepseek 走 deepseek_magic，gpt/openai 走 openai gpt-5.6；ds-official 是自费官方渠道，仅在任务 assignee 显式指定时使用。通过 dev/null 禁用模型。",
+    "_comment": "assignee → DSH 模型标识。免费渠道优先：default/deepseek 走 deepseek_magic，gp/gpt/openai 走 openai gpt-5.6；ds-official 是自费官方渠道，仅在任务 assignee 显式指定时使用。模型家族缩写：gp=OpenAI GPT、ge=谷歌 Gemini、cl=网宿 CL(ClaudeCode)、qw=阿里千问(Qwen)、db=字节豆包(Seedance)——对应 provider 需在 ~/.dsh/settings.yaml 配置。通过 dev/null 禁用模型。",
     "default": "deepseek_magic/gpt-5.4-mini",
     "deepseek": "deepseek_magic/deepseek-v4-pro",
     "gpt": "openai/gpt-5.6-sol",
     "openai": "openai/gpt-5.6-sol",
     "deepseek_magic": "deepseek_magic/deepseek-v4-pro",
     "ds-official": "ds-official/deepseek-v4-pro",
-    "gemini": "google/gemini-2.5-pro",
-    "claude": "anthropic/claude-sonnet-4-20250514",
-    "minimax": "minimax/minimax-m1"
+    "gp": "openai/gpt-5.6-sol",
+    "ge": "google/gemini-2.5-pro",
+    "cl": "anthropic/claude-sonnet-4-20250514",
+    "qw": "qwen/qwen3-max",
+    "db": "doubao/doubao-seedance-1-0"
   },
   "fallback": {
     "_comment": "DSH 跨模型兜底链（可选）：仅 daemon 自动化阶段（dsh-embed /agent/run）生效——daemon 每次会话随请求下发给 headless-agent-server，fallback.mjs 按 agent.fallbackConfig 动态兜底（该 profile 只加载动态配置、无静态链）。dsh web / dsh-tui 交互会话不受影响：用户自选模型（或 settings.yaml 的 agent-default-model），失败不自动切换。chains 按 from 主模型精确匹配；default（可省略）是 from 无匹配时的兜底链。fallbackOnCodes 留空则用插件默认（SERVER/RATE_LIMIT/TIMEOUT/TRANSPORT/EMPTY_RESPONSE/STREAM_CLOSED/MALFORMED_RESPONSE/UNKNOWN + HTTP_5xx）；本示例显式加 QUOTA 是特例——免费网关间切换可绕过单渠道配额（插件默认不含 QUOTA，因其对官方直连无效）。⚠ ds-official（自费官方）绝不出现在任何链里——2026-08-25 教训：magic 偶发故障时自动兜底官方付费直连会在长会话静默烧钱直到 402 Insufficient Balance；官方直连仅任务 assignee=ds-official 显式启用。",
     "chains": [
       {
-        "from": { "provider": "deepseek_magic", "model": "deepseek-v4-pro" },
+        "from": {
+          "provider": "deepseek_magic",
+          "model": "deepseek-v4-pro"
+        },
         "to": [
-          { "provider": "deepseek_magic", "model": "gpt-5.4-mini" },
-          { "provider": "openai", "model": "gpt-5.6-sol" }
+          {
+            "provider": "deepseek_magic",
+            "model": "gpt-5.4-mini"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5.6-sol"
+          }
         ]
       }
     ],
     "default": [
-      { "provider": "deepseek_magic", "model": "deepseek-v4-pro" }
+      {
+        "provider": "deepseek_magic",
+        "model": "deepseek-v4-pro"
+      }
     ],
-    "fallbackOnCodes": ["SERVER", "RATE_LIMIT", "TIMEOUT", "QUOTA"]
+    "fallbackOnCodes": [
+      "SERVER",
+      "RATE_LIMIT",
+      "TIMEOUT",
+      "QUOTA"
+    ]
   },
   "new_project_root": "/home/you/src",
   "notifications": {
@@ -88,7 +107,10 @@
     "_comment": "环境收尾（默认开）：实现会话自建的 k3d 集群/registry/网络在任务 merge 完成（on_merge）或阻塞/暂停终态（on_block：blocked / needs-grilling / closed，TASK-066）时由 daemon 自动删除。exclude 是名称子串白名单，永不删除用户常驻服务（kb-reranker、ollama-sycl 等）；dry_run=true 只审计不删除。",
     "on_merge": true,
     "on_block": true,
-    "exclude": ["kb-reranker", "ollama-sycl"],
+    "exclude": [
+      "kb-reranker",
+      "ollama-sycl"
+    ],
     "dry_run": false
   },
   "poll_interval_minutes": 30,

@@ -193,7 +193,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 ## 阶段模型与推理强度路由（daemon 权威）
 
-`selectModel(assignee, phase)`（`internal/daemon/daemon.go`）与 `ompPhaseThinking(phase)`（`executor.go`）：
+`selectModel(assignee, phase)`（`internal/daemon/daemon.go`）与 `phaseThinking(phase)`（`executor.go`）：
 
 | 阶段 | 模型（assignee=default 时） | reasoningEffort |
 |------|------------------------------|-----------------|
@@ -202,7 +202,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 | refining / priority（规格作者） | `models.default`（gpt-5.4-mini） | refining=medium / priority=medium |
 | pm / audit / conventions（确定性为主） | `models.default` | low |
 
-- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。
+- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。assignee 是 `vault-map.json` `models` 键，DSH 2.0 模型家族缩写：`ds`/`deepseek`/`ds-official`（DeepSeek）、`gp`（OpenAI GPT，`gpt`/`openai` 为历史别名）、`ge`（谷歌 Gemini）、`cl`（网宿 CL/ClaudeCode）、`qw`（阿里千问 Qwen）、`db`（字节豆包 Seedance）——对应 provider 需在 `~/.dsh/settings.yaml` 配置。
 - 教训（2026-08-22 复盘）：旧实现按 assignee 全阶段统一路由，default assignee 让 planning/round2 跑在 V4 Flash 级 mini 上——spec/计划/代码质量与 high/max effort 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。refining 的 effort 从 low 提到 medium 同理（spec 命名推断失误）。
 
 ## Fallback Model（兜底模型）
@@ -211,14 +211,14 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 - **进程内跨模型降级**：magic 免费 deepseek 失败 / 配额耗尽 → 自动切 magic 免费 openai gpt-5.6（`deepseek-v4-pro → gpt-5.6-terra` / `gpt-5.4-mini → gpt-5.6-luna`）。
 - **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
-- daemon 侧无 fallback 层——OMP 时代的 `fallback_models` / `watchEmptyStops` 已随 OMP 移除。
+- daemon 侧无 fallback 层——OMP 时代的 `fallback_models` / `watchEmptyStops` 已随 OMP 退役移除。
 - **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在免费渠道间循环切换。
 
 ## Frontmatter 字段规范
 
 TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` 的 `taskFieldOrder`）：用户关注的字段（身份、priority、Gate、推荐 metadata）在前，daemon 维护字段在后。daemon 每轮 scan 自动 Normalize（补齐缺失字段 + 按规范序重排，不覆盖已有值）；模板与 snippet 必须与规范序一致，避免新任务文档被反复改写。**REQ frontmatter 同样每轮 Normalize**（`reqFieldOrder`，`syncReqSchemaDefaults`）：旧 REQ 自动补齐演进新增的稳定字段（created/updated/tags），必填身份字段（id/title/project_id）与可选决策字段（priority/stage/depends_on/project/...）**不伪造**——缺失时走系统兜底（auto-staging / priority 评估 / resolveProjectField），避免字段缺失静默导致依赖继承断裂或任务停止自动化（迭代快 + 旧文档重拾场景）。**REQ Normalize 写回仅补 frontmatter 元数据（tags/created/updated/字段序），不改需求实质——写回后同步刷新关联任务的 `refine_req_hash`/`plan_req_hash`**（仅 hash 匹配写回前字节的任务；更旧的 hash 是真实未吸收变更，保留），否则 `OnReqChanged` 把 daemon 自己的 Normalize 误判为需求变更而批量重开任务（2026-08-12：一次 backfill 重开 19 个任务，含 15 个已 done 的代际重置）。**性能**：mtime+size 短路（`normCache`）跳过未变文档（万级时后续轮仅 stat），写回去 fsync（幂等修复可重放，`Update` 事务写保持 fsync）。
 
-- **弃用字段**：`switch_settings`（迁移专用，新代码/新文档必须用 `assignee`）、REQ 的 `domain`/`parent_req`/`task_size`（不再被解析）。模板与文档不得再写入；存量文档由 `otg migrate-tasks <path> --write` 或手工清理。
+- **已移除字段**：`switch_settings`（迁移专用字段已从 schema 删除，解析保留在 Extra 不做数据丢失；模型选择一律用 `assignee`）、REQ 的 `domain`/`parent_req`/`task_size`（不再被解析）。模板与文档不得再写入。
 - `stage` 字段是阶段归属的**权威判定**（TASK 从 REQ 继承，PM 拆分落地时写入），与 `Notes/Stage-Plan.md` 的 `### Phase N:` 块对应。
 - `stage_source`：阶段来源标记——`req`（REQ 继承，跟随 REQ stage 变更）、空（daemon 自动分组 / PM 手动分配，不跟随）。PM 手动改 TASK stage 时必须清空 `stage_source`（`otg update-status stage=... stage_source=`）。
 - `plan_files`：Round 1 计划产出的将修改文件清单（repo 相对路径），daemon 用于同 repo 并行实现的文件重叠自动串行（`max_overlap_wait_minutes` 上限）。

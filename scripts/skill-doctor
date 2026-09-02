@@ -3,11 +3,10 @@
 set -euo pipefail
 
 SKILL_SEARCH_DIRS=(
-  "$HOME/.omp/skills"
-  "$HOME/.omp/agent/skills"
+  "$HOME/.dsh/skills"
   "$HOME/.agents/skills"
 )
-REGISTRY="$HOME/.omp/config/skill-registry.json"
+REGISTRY="${OTG_SKILL_REGISTRY:-$HOME/.dsh/config/skill-registry.json}"
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -250,20 +249,15 @@ cmd_install() {
   local skill_src
   skill_src=$(clone_skill_source "$name" "$tmpdir") || return 1
 
-  local dest="$HOME/.agents/skills/$name"
+  # DSH 时代：技能安装到 ~/.dsh/skills/<name>（DSH 的 skill 搜索根）。
+  # 旧 OMP 路径（~/.agents/skills + agent skills 符号链接）已随 OMP 退役。
+  local dest="$HOME/.dsh/skills/$name"
   echo "   Copying to $dest..."
   mkdir -p "$(dirname "$dest")"
   cp -r "$skill_src" "$dest"
 
   echo "   Tracking with chezmoi..."
   chezmoi add "$dest" 2>&1 | tail -1 || echo "   ⚠️  chezmoi add failed, but files are in place"
-
-  # Create symlink in OMP agent skills
-  if [ ! -e "$symlink" ]; then
-    echo "   Creating symlink $symlink → $dest"
-    mkdir -p "$(dirname "$symlink")" && ln -s "$dest" "$symlink"
-    chezmoi add "$symlink" 2>&1 | tail -1 || echo "   ⚠️  chezmoi add symlink failed, but symlink is in place"
-  fi
 
   rm -rf "$tmpdir"
   echo ""
@@ -287,7 +281,7 @@ cmd_update() {
   src_info=$(lookup_source "$name" 2>/dev/null || true)
   if [ -z "$src_info" ]; then
     echo "❌ $name: no known upstream source — cannot update."
-    echo "   If this is a self-created skill, edit it directly in ~/.omp/skills/$name/"
+    echo "   If this is a self-created skill, edit it directly in ~/.dsh/skills/$name/"
     return 1
   fi
 

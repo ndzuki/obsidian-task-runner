@@ -77,7 +77,7 @@ closed -- [终态，不可恢复]
 | `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
 | `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
 
-顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `gateway/gpt-5.4-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
+顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `deepseek_magic/gpt-5.4-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
 
 ### 4.2 Maturity Gate
 

@@ -48,8 +48,23 @@ func TestDefaultModelsUsesFreeChannelsFirst(t *testing.T) {
 	if got := models["gpt"]; got != "openai/gpt-5.6-sol" {
 		t.Fatalf("gpt model = %q, want %q", got, "openai/gpt-5.6-sol")
 	}
-	if _, ok := models["flash"]; ok {
-		t.Fatal("legacy flash assignee must not be present")
+	// DSH 2.0 模型家族缩写（gp/ge/cl/qw/db）。
+	for key, want := range map[string]string{
+		"gp": "openai/gpt-5.6-sol",
+		"ge": "google/gemini-2.5-pro",
+		"cl": "anthropic/claude-sonnet-4-20250514",
+		"qw": "qwen/qwen3-max",
+		"db": "doubao/doubao-seedance-1-0",
+	} {
+		if got := models[key]; got != want {
+			t.Errorf("models[%q] = %q, want %q", key, got, want)
+		}
+	}
+	// OMP 时代遗留键全部移除：flash / gemini / claude / minimax。
+	for _, legacy := range []string{"flash", "gemini", "claude", "minimax"} {
+		if _, ok := models[legacy]; ok {
+			t.Errorf("legacy %s assignee key must not be present", legacy)
+		}
 	}
 }
 

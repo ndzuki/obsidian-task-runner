@@ -6,8 +6,8 @@ import (
 )
 
 // PhaseExecutor is the execution seam between the daemon's deterministic
-// control plane and an external agent process (OMP today, DSH after
-// migration). Every phase dispatch (refining/planning/round2/merge/priority/
+// control plane and the DSH agent runtime (spawn-headless and dsh-embed
+// adapters). Every phase dispatch (refining/planning/round2/merge/priority/
 // pm/audit/conventions) flows through one of these adapters; the daemon
 // consumes only the stable ExecutionResult — never a raw process protocol.
 //
@@ -31,13 +31,13 @@ type PhaseExecutor interface {
 	// session gone and fall back to a fresh start. Adapters without server-side
 	// sessions are no-ops.
 	Cancel(ctx context.Context, resumeToken string) error
-	// Name returns the adapter identity (e.g. "omp", "dsh").
+	// Name returns the adapter identity (e.g. "dsh", "dsh-embed").
 	Name() string
 }
 
 // ErrResumeUnsupported is returned by adapters that cannot re-attach to an
-// in-flight execution (the OMP adapter historically used PID files; the DSH
-// adapter will use durable session ids).
+// in-flight execution (the spawn-headless adapter has no durable session id
+// to resume; the dsh-embed adapter does).
 var ErrResumeUnsupported = errResumeUnsupported{}
 
 type errResumeUnsupported struct{}
@@ -53,15 +53,15 @@ type PhaseSpec struct {
 	// "merge", "priority", "pm", "audit", "conventions").
 	Phase string
 	// Model is the provider/model identity resolved for this task's
-	// assignee (OMP form: "gateway/gpt-5.4-mini"). The DSH adapter will
-	// translate this into its own route form.
+	// assignee ("provider/model"). The DSH adapters translate it into
+	// their own route form.
 	Model string
-	// ReasoningEffort mirrors the OMP --thinking flag ("off"/"low"/"high"/
-	// "max"). The DSH adapter maps it to its own effort enum.
+	// ReasoningEffort is the phase's reasoning budget ("off"/"low"/"high"/
+	// "max"); adapters map it to their native effort field.
 	ReasoningEffort string
-	// SkillPrompt is the slash-skill prompt OMP executes ("/obsidian-task-
-	// runner-round2 <task> ..."). The DSH adapter translates this into a
-	// task prompt that loads the same skill.
+	// SkillPrompt is the slash-skill prompt the session executes
+	// ("/obsidian-task-runner-round2 <task> ..."). The DSH adapter
+	// translates this into a task prompt that loads the same skill.
 	SkillPrompt string
 	// TaskStatus is the task's frontmatter status at dispatch time
 	// ("refining", "planning", "plan-review", "implementing", "review",
@@ -119,7 +119,7 @@ type TaskSnapshot struct {
 }
 
 // ExecutionResult is the single, protocol-neutral outcome the daemon consumes.
-// It replaces the current practice of inferring success/failure from OMP exit
+// It replaces the practice of inferring success/failure from process exit
 // codes plus log-text scanning (empty-stop, quota, key-unavailable).
 type ExecutionResult struct {
 	// Phase is the spec phase, echoed back for correlation.
@@ -169,25 +169,26 @@ type ExecutionHandle interface {
 	PID() int
 }
 
-// ompPhaseThinking mirrors the daemon's current phase→reasoning-effort mapping.
+// phaseThinking maps a phase to its reasoning-effort budget.
 // Reasoning effort by phase nature:
 //   - priority / refining / design：评估/规格作者类，medium（spec 命名推断
 //     类失误证明 low 不够，但每轮 high 太贵）
 //   - audit / pm / merge / conventions：确定性为主，low
-//   - planning：跨需求规划，high（需要理解多需求关系）
+//   - planning：跨需求规划，max（plan 是全任务最高杠杆产物，被每个 AC
+//     迭代消费；2026-09-02 从 high 上调——plan-review 人审拦方向性错误，
+//     拦不住字段契约类细节（TASK-079 D5），而 plan 缺陷在 round2 逐 AC
+//     引爆；2-3× token 只付一次，planning 是稀有阶段，性价比最高）
 //   - round2：实现阶段，max（最复杂，需 deep reasoning 写代码）
 //   - grilling 交互在 kitty-grill 单独分级（需求详细化 high、决策清单 low）
-func ompPhaseThinking(phase string) string {
+func phaseThinking(phase string) string {
 	switch phase {
 	case "priority", "refining", "design":
 		// 规格作者与设计库修订：medium——低强度下的 spec 命名推断类失误
 		// （TASK-079 D5 字段名 vs gate fixture）证明 low 不够，但 high 对
 		// 每轮 refining 太贵。
 		return "medium"
-	case "round2":
+	case "round2", "planning":
 		return "max"
-	case "planning":
-		return "high"
 	default:
 		return "low"
 	}

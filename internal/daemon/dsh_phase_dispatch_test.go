@@ -157,7 +157,8 @@ func TestRunDSHPhaseDispatchTimeoutMaps(t *testing.T) {
 }
 
 // Ensure the seam is wired: a dsh-configured runner routes through the stub
-// (never spawns OMP), while an omp-configured runner ignores it.
+// (never spawns a session), while a runner that resolves to
+// dsh-embed ignores it.
 func TestExecutorSelectionIsRespected(t *testing.T) {
 	dir := t.TempDir()
 	taskPath := filepath.Join(dir, "TASK-001.md")
@@ -210,21 +211,23 @@ func TestSelectModelPhaseRouting(t *testing.T) {
 }
 
 // TestOmpPhaseThinkingRefiningMedium 守护 spec 作者阶段的强度提升：
-// refining/design 从 low 提到 medium（TASK-079 D5 字段名推断类失误复盘）。
+// refining/design 从 low 提到 medium（TASK-079 D5 字段名推断类失误复盘），
+// planning 从 high 提到 max（2026-09-02：plan 是全任务最高杠杆产物，被
+// 每个 AC 迭代消费，plan-review 人审拦不住字段契约类细节）。
 func TestOmpPhaseThinkingRefiningMedium(t *testing.T) {
 	cases := map[string]string{
 		"refining": "medium",
 		"design":   "medium",
 		"priority": "medium",
-		"planning": "high",
+		"planning": "max",
 		"round2":   "max",
 		"pm":       "low",
 		"merge":    "low",
 		"audit":    "low",
 	}
 	for phase, want := range cases {
-		if got := ompPhaseThinking(phase); got != want {
-			t.Errorf("ompPhaseThinking(%s) = %q, want %q", phase, got, want)
+		if got := phaseThinking(phase); got != want {
+			t.Errorf("phaseThinking(%s) = %q, want %q", phase, got, want)
 		}
 	}
 }

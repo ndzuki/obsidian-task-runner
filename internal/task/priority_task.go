@@ -58,7 +58,7 @@ func FindPriorityTasks(vaultPath string, now time.Time) ([]PriorityTask, error) 
 			// needs-grilling. A task already in planning or later has passed
 			// the point where priority drives scheduling — assessing it here
 			// would spawn a wasted execution session per scan (observed: planning
-			// fixture tasks launching a second OMP in scan tests).
+			// fixture tasks launching a second session in scan tests).
 			switch fm.Status {
 			case "blocked", "ready", "refining", "needs-grilling":
 			default:

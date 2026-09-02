@@ -1447,7 +1447,7 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 
 // runMergeAISessionDSH executes a merge/CI-fix AI session through the DSH
 // phase executor. The session writes files and git state itself (no stdout
-// contract to parse); interruption semantics mirror the OMP path — an
+// contract to parse); interruption semantics mirror the phase path — an
 // OutcomeInterrupted or cancelled ctx keeps the merge authorized for resume.
 func (r *Runner) runMergeAISessionDSH(ctx context.Context, candidate task.ReadyTask, repoDir string, mode mergeFixMode, model, skillPrompt string, timeout time.Duration) error {
 	spec := PhaseSpec{

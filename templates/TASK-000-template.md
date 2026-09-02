@@ -4,7 +4,14 @@ id: ""
 title: ""
 project: ""
 project_id: ""  # 项目内唯一数字 ID，如 "001"
-assignee: ""  # deepseek / gpt / gemini / claude / minimax / flash
+# 模型选择：assignee = vault-map.json `models` 键；default/留空 = daemon 按阶段自动路由
+#   ds / deepseek / deepseek_magic / ds-official — DeepSeek 系列
+#   gp  — OpenAI GPT 系列（gpt/openai 为历史别名）
+#   ge  — 谷歌 Gemini 系列
+#   cl  — 网宿 CL（ClaudeCode 系列）
+#   qw  — 阿里千问（Qwen 系列）
+#   db  — 字节豆包（Seedance 系列）
+assignee: ""
 req_doc: ""
 status: blocked
 
@@ -39,6 +46,8 @@ blocked_by: []  # 同项目 TASK-010；跨项目 project-key:TASK-010
 blocks: []
 target_env: staging
 stage: ""  # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；由 REQ 继承或 PM 拆分时写入
+stage_source: ""  # req=继承 REQ（跟随 REQ 变更）/ 空=auto-staging 或 PM 手动（不跟随）
+plan_files: []  # 当前计划要修改的仓库内文件（daemon 按重叠串行化调度）
 new_project: false
 
 # 🟢 高级（按需取消注释）
@@ -65,19 +74,32 @@ refine_retry_count: 0
 refine_error: ""
 plan_req_hash: ""
 plan_version: 0
+design_replan_version: 0  # 设计库全局修订号门槛（replan gate 用）
 planning_retry_count: 0
 checkpoint_commit: ""
 target_branch: ""
 pr_url: ""
 completed: ""
 reopen_count: 0  # 交付轮次：breaking 需求变更重开 done 任务时 +1；0 = 首次交付
+generation: 0
+attempt_id: ""
+executor_session_id: ""  # dsh-embed 持久会话 token（daemon 重启后 resume 用）
 merge_status: ""
 approved_head: ""
 merge_retry_count: 0  # AI 合并修复预算（冲突/CI 失败共享；merge 成功或新一轮 planning 完成时清零）
+merge_precondition_fails: 0
 merge_retry_not_before: ""  # Merge 工作区人工修复冷却截止（daemon 维护；修复后可清空立即重试）
 task_schema_version: 1
 req_refine_count: 0  # 需求缺口循环计数：≥3 时 Agent 主动交互，全部 AC 通过后清零
+round2_stall_until: ""  # Round 2 无进展冷却截止（持久化，daemon 重启不清零）
+round2_stall_level: 0  # 无进展熔断计数（连续 3 轮无进展转 blocked）
+audit_status: ""  # pending / passed / failed
+audit_fail_count: 0
+audit_log: ""
+quota_backoff_level: 0
+quota_backoff_until: ""
 blocked_phase: ""
+blocked_at: ""
 phase_error: ""
 phase_error_code: ""  # MODEL_FAILED / PHASE_TIMEOUT / PHASE_INTERRUPTED / API_KEY_UNAVAILABLE 等
 phase_log: ""
@@ -117,6 +139,9 @@ replacement_task: ""  # closure_reason=duplicate
 adr_proposed: []
 adr_written: []
 knowledge_extracted: false  # merge 后 ADR + 踩坑记录已提取到知识库（幂等）
+knowledge_extract_error: ""  # 提取/同步失败摘要（daemon 维护，重试退避依据）
+knowledge_extract_retry_count: 0
+knowledge_extract_retry_until: ""
 knowledge_refs: []  # Round 1 计划引用的知识文档（References/ 相对路径）
 knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---

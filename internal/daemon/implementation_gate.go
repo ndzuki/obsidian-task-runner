@@ -7,7 +7,7 @@ import "sync"
 // (global, 0 = unlimited) across all projects, so N projects run up to
 // N*perLimit sessions in parallel — each project's work cannot starve the
 // others' (previously a single daemon-wide limit let one project occupy every
-// slot). It tracks both OMP processes started by this daemon and surviving
+// slot). It tracks both executor processes started by this daemon and surviving
 // implementation processes adopted after a daemon restart.
 type implementationGate struct {
 	mu       sync.Mutex

@@ -237,7 +237,7 @@ sources. Requires kb_embedding (retrieval) and kb_chat (generation).`,
 	},
 }
 
-// kbAbsorbCmd sinks interactive-session knowledge (daily OMP conversations
+// kbAbsorbCmd sinks interactive-session knowledge (daily DSH conversations
 // outside the task pipeline) into the knowledge base. Reads the lesson from
 // stdin: a "## 踩坑记录"-style block by default, or free-text project
 // experience with --summary. Deduplicated against existing notes.

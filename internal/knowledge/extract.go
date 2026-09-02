@@ -887,7 +887,7 @@ aliases: []
 
 // ── Interactive absorb (`otg kb absorb`) ─────────────────────────────
 //
-// Daily OMP conversations (outside the obsidian-task-runner pipeline) also
+// Daily DSH interactive conversations (outside the task pipeline) also
 // produce failed-then-succeeded lessons. AbsorbKnowledge gives those sessions
 // the same sink as task merges: classify → append to the matching References
 // document (deduped) or archive under uncategorized/. Summary mode absorbs
@@ -1423,12 +1423,12 @@ type failureRootCause struct {
 
 var failureRootCauses = map[string]failureRootCause{
 	"API_KEY_UNAVAILABLE": {
-		RootCause: "OMP 无法获取模型 API Key（KeePassXC 未解锁或 secret service 不可达；systemd 单元需 XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS）",
+		RootCause: "会话无法获取模型 API Key（KeePassXC 未解锁或 secret service 不可达；systemd 单元需 XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS）",
 		Fix:       "解锁 KeePassXC（或配置 DEEPSEEK_API_KEY/CODEX_API_KEY 环境变量）；daemon 探测到 key 后自动恢复",
 		Lesson:    "外部依赖不可用是可恢复条件，不应与真失败混为一谈；key 失败不重试不 fallback",
 	},
 	"PHASE_INTERRUPTED": {
-		RootCause: "daemon 停机/重启中断了执行中的 OMP（SIGTERM → 保存 session 退出）",
+		RootCause: "daemon 停机/重启中断了执行中的实现会话（SIGTERM → 保存 session 退出）",
 		Fix:       "无需处理：重启后下一轮 scan 自动重新调度，阶段成功后标记自动清除",
 		Lesson:    "部署重启是运维常态，任务状态保持 + PHASE_INTERRUPTED 标记使重启无损",
 	},

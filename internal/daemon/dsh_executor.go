@@ -13,7 +13,7 @@ import (
 
 // dshExecutor is the DeepSeek Harness adapter for PhaseExecutor. It spawns
 // `dsh --profile headless` per phase — the minimal, drop-in migration path
-// that keeps the Go control plane untouched while replacing the OMP engine.
+// that keeps the Go control plane untouched while executing on DSH.
 //
 // Migration notes (target architecture docs/refactor-architecture.md §4):
 //   - The skill prompt is translated into a DSH task text that loads the same
@@ -25,7 +25,8 @@ import (
 //   - Reasoning effort maps to DSH's effort enum (off/low/high/max → the
 //     DSH adapter default set). DSH's own cross-model fallback plugin
 //     (fallback.mjs) covers provider failure; there is no daemon-side fallback
-//     layer — that OMP-era mechanism was removed with OMP itself.
+//     layer — that OMP-era mechanism was removed with OMP itself
+//     (DSH 2.0 era; no OMP code path remains).
 //   - Future: replace spawn-per-phase with ctx.agents.create/resume for
 //     durable, resumable sessions (Phase 3+). Until then, resume is
 //     unsupported and daemon restart re-dispatches from frontmatter state,
@@ -39,7 +40,7 @@ type dshExecutor struct {
 	// adapter injects the skill body directly — phase skills are marked
 	// `disable-model-invocation: true` (they are daemon-invoked, not model-
 	// loaded), so the DSH session cannot load them itself; this mirrors the
-	// OMP daemon's behavior of injecting the skill body into the prompt.
+	// legacy daemon's behavior of injecting the skill body into the prompt.
 	skillDir string
 }
 
@@ -83,14 +84,15 @@ func (e *dshExecutor) Cancel(context.Context, string) error { return nil }
 func (e *dshExecutor) Resume(context.Context, PhaseSpec, string, time.Duration) (ExecutionHandle, error) {
 	// DSH durable session resume lands in Phase 3 (ctx.agents.resume). For
 	// now the daemon re-dispatches from frontmatter state after restart,
-	// identical to today's OMP PID-adoption fallback.
+	// identical to the spawn-executor PID-adoption fallback.
 	return nil, ErrResumeUnsupported
 }
 
-// dshTaskText translates the OMP slash-skill prompt into a DSH headless task.
+// dshTaskText translates the slash-skill prompt into a DSH headless task.
 // Phase skills carry `disable-model-invocation: true` (daemon-invoked), so the
 // DSH session cannot load them from its catalog; the adapter therefore reads
-// the SKILL.md body and injects it directly — the same contract the OMP daemon
+// the SKILL.md body and injects it directly — the same contract the
+// daemon's legacy spawn path
 // used (skill body in the prompt, target file as the argument).
 func (e *dshExecutor) dshTaskText(skillPrompt string) string {
 	trimmed := strings.TrimSpace(skillPrompt)
@@ -183,7 +185,7 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 	cmd.Stderr = stderrFile
 	cmd.Stdout = stdoutFile
 	// Graceful shutdown: SIGTERM first, hard-kill after WaitDelay (mirrors
-	// the OMP adapter's contract).
+	// the spawn adapter's contract).
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 30 * time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

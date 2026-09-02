@@ -192,7 +192,7 @@ var repairDocCmd = &cobra.Command{
 	Use:   "repair-doc <task_path>",
 	Short: "Repair corrupted frontmatter in a task document",
 	Long: `Attempts to salvage a corrupted frontmatter by keeping only valid
-key: value lines and discarding malformed text (e.g. OMP agent
+key: value lines and discarding malformed text (e.g. agent-session
 output that leaked into the YAML block). If the file is already
 valid, repair-doc is a no-op.`,
 	Args: cobra.ExactArgs(1),

@@ -206,13 +206,14 @@ dsh-embed 具备生产可用性。
 
 | 阶段 | omp --thinking | mapDSHEffort | 审查结论 |
 |---|---|---|---|
-| priority | off | `""`（不传） | ⚠️ DSH 无 off 选择（实测 reasoningEffort:"off" → UNSUPPORTED），不传=用 provider 默认 |
+| priority | medium | `medium` | ✅（DSH 无 off 选择；low 不够，TASK-079 后上调） |
 | round2 | max | `xhigh` | ✅ xhigh wire=max，对齐 omp |
-| planning | high | `high` | ✅ |
-| 默认（refining/merge/pm/conventions） | low | `low` | ✅ |
-| audit | off | `""`（不传） | ⚠️ 同上 |
-| design（全局设计） | max | `xhigh` | ✅ |
-| merge（冲突解决） | high | `high` | ✅ |
+| planning | max | `xhigh` | ✅ 2026-09-02 high→max（plan 高杠杆，见 ADR-008 Updates） |
+| refining | medium | `medium` | ✅（同上 TASK-079 上调） |
+| merge（冲突解决） | high（PhaseSpec 显式） | `high` | ✅ |
+| pm / conventions | low（PhaseSpec 显式） | `low` | ✅ |
+| audit | low（PhaseSpec 显式） | `low` | ✅（原先不传已被显式 low 取代） |
+| design（全局设计） | max（PhaseSpec 显式） | `xhigh` | ✅ |
 
 **官方要点**（对照后确认）：
 - DSH headless 无 `--thinking` flag——embed 用 `agentOptions.reasoningEffort`
@@ -272,9 +273,9 @@ low/medium/high/xhigh 四档）：
 
 | 阶段 | effort | 性质 |
 | --- | --- | --- |
-| priority | medium | 评估判断 |
-| refining/conventions/audit/pm | low | 对话/整理 |
-| planning | high | 深度规划 |
+| priority / refining | medium | 评估判断 / 规格作者（TASK-079 后上调） |
+| conventions/audit/pm | low | 对话/整理 |
+| planning | max（xhigh） | 深度规划（2026-09-02 从 high 上调） |
 | round2 | max（xhigh） | 最深实现 |
 | merge | high | 冲突解决 |
 | design | max | 全局设计 |

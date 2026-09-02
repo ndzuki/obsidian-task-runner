@@ -68,7 +68,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
   持久化到任务 frontmatter，恢复时先 resume，失败再 fresh start
   （`internal/daemon/phase_executor.go`）。
 - `dsh`：每阶段临时 spawn `dsh --profile headless`（无持久会话，一次性进程）。
-- `omp`：冻结的旧执行器，仅历史兼容，默认不走。
+- ~~`omp`~~：已随 OMP 时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
 
 ## 4. 模型路由（免费优先）
 

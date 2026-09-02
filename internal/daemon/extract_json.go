@@ -6,7 +6,7 @@ import (
 )
 
 // extractJSON recovers a JSON object from DSH headless free-text stdout. DSH
-// has no strict-JSON output mode (unlike OMP), so a skill's "output one JSON
+// has no strict-JSON output mode, so a skill's "output one JSON
 // object" contract typically arrives as a ```json fenced block or prose-
 // wrapped object. It tries, in order: (1) a ```json fenced block, (2) the
 // first balanced {...} span, (3) the whole trimmed text when it already starts

@@ -31,7 +31,7 @@ var contextCache sync.Map // projectVaultDir → string
 
 // BuildProjectContext reads CONTEXT.md and relevant ADR files, extracts the
 // most relevant domain terms and architecture decisions for the given REQ,
-// and returns a formatted string suitable for injecting into the OMP prompt.
+// and returns a formatted string suitable for injecting into the phase prompt.
 //
 // Returns an empty string if no CONTEXT.md exists for the project.
 func BuildProjectContext(projectVaultDir, reqPath string) string {

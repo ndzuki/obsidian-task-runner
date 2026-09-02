@@ -96,7 +96,7 @@ func (r *Runner) runPriorityAssessmentDSH(ctx context.Context, candidate task.Pr
 	spec := PhaseSpec{
 		Phase:           "priority",
 		Model:           r.cfg.Model("default"),
-		ReasoningEffort: ompPhaseThinking("priority"),
+		ReasoningEffort: phaseThinking("priority"),
 		SkillPrompt:     "/obsidian-task-runner-priority " + reqPath,
 		Timeout:         5 * time.Minute,
 		WorkingDir:      filepath.Dir(reqPath),

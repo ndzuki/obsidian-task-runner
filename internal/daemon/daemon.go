@@ -75,14 +75,13 @@ type Runner struct {
 	conflictPRProbed   sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
 	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
 	// designExecutor is injectable for deterministic Phase 3 tests. Production
-	// uses DSH headless; legacy task phases remain on their frozen OMP path until
-	// each adapter migration is individually verified.
+	// uses DSH headless (global design session).
 	designExecutor PhaseExecutor
 	// phaseExecutor is the processBatchSequential phase-dispatch backend,
-	// selected by cfg.Executor ("omp" default / "dsh" / "dsh-embed"). It is
-	// injectable in tests; New() builds it from config. Distinct from
-	// designExecutor, which is always DSH (the global design session never
-	// runs on OMP).
+	// selected by cfg.Executor ("dsh" spawn-headless / "dsh-embed" default;
+	// any other value resolves to dsh-embed). It is injectable in tests;
+	// New() builds it from config. Distinct from designExecutor, which is
+	// always the DSH headless adapter.
 	phaseExecutor PhaseExecutor
 	// agentServerCmd is the long-lived `dsh --profile headless-agent-server`
 	// child process the dsh-embed executor talks to. Non-nil only when
@@ -491,13 +490,13 @@ func (r *Runner) runScanCycle() {
 }
 
 // scanDrainTimeout bounds how long shutdown waits for in-flight task
-// goroutines after their OMP children were SIGTERMed. Typical graceful
+// goroutines after their executor children were SIGTERMed. Typical graceful
 // persist is ~1-2s; the cap covers slower children without delaying
 // systemd TimeoutStopSec.
 const scanDrainTimeout = 10 * time.Second
 
 // waitForScanExit blocks until the in-flight scan cycle and dispatched task
-// goroutines unwind after shutdown. runTask's OMP children receive SIGTERM
+// goroutines unwind after shutdown. runTask's executor children receive SIGTERM
 // via daemonCtx (graceful persist; WaitDelay hard-kill only if the child
 // ignores it), so the typical case is a quick child exit followed by the
 // PHASE_INTERRUPTED write-back — this wait lets those write-backs land
@@ -518,7 +517,7 @@ func (r *Runner) waitForScanExit() {
 }
 
 // RunOnce performs a single scan-and-process cycle, used by the systemd timer.
-// It respects the same flock as Run() to avoid concurrent OMP spawns.
+// It respects the same flock as Run() to avoid concurrent phase spawns.
 func (r *Runner) RunOnce() error {
 	if err := r.initLogging(); err != nil {
 		return fmt.Errorf("init logging: %w", err)
@@ -530,7 +529,7 @@ func (r *Runner) RunOnce() error {
 	}()
 	// Bind SIGTERM/SIGINT so a stopped --once instance cancels its batch
 	// promptly instead of dying without signal handlers, which would orphan
-	// the OMP children (they keep running unattached until systemd reaps the
+	// the executor children (they keep running unattached until systemd reaps the
 	// cgroup). Cancellation also routes interrupted phases through the
 	// PHASE_INTERRUPTED/merge-resume paths instead of failure handling.
 	r.daemonCtx = SignalContext()
@@ -555,7 +554,7 @@ func (r *Runner) RunOnce() error {
 	_ = r.scanAndProcess()
 	// A --once run has no resident scan loop to pick up completed tasks, so
 	// wait for the dispatched execution sessions here (same synchronous semantics
-	// as the pre-async processBatch). On SIGTERM the OMP children get a
+	// as the pre-async processBatch). On SIGTERM the executor children get a
 	// graceful SIGTERM via daemonCtx; give their PHASE_INTERRUPTED
 	// write-backs a bounded window before exiting.
 	for r.activeTasks.Load() > 0 {
@@ -948,7 +947,7 @@ func (r *Runner) scanAndProcess() error {
 	// the batch-synchronous wait.
 	r.processBatch(tasks)
 	if r.daemonCtx.Err() == nil {
-		// Skip on shutdown: a cancelled OMP would overwrite the
+		// Skip on shutdown: a cancelled phase session would overwrite the
 		// PHASE_INTERRUPTED write-back of an interrupted task phase.
 		// Deterministic staging runs before PM consolidation so unstaged
 		// tasks are phased in milliseconds instead of an LLM session, and
@@ -1304,7 +1303,7 @@ func (r *Runner) runTask(p preparedTask) {
 }
 
 // prepareBatch resolves repositories and creates Round 2 worktrees before
-// dispatching OMP.  Worktree setup is serialized per repository but does not
+// dispatching phase sessions. Worktree setup is serialized per repository but does not
 // consume an phase concurrency slot.
 //
 // Grilling tasks (ready / needs-grilling) are handled inline — they do not
@@ -1529,7 +1528,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 		if isRound2(t) {
 			lock := r.repoLock(repoDir)
 			// Non-blocking: a runTask holding the repo read lock (refining/
-			// planning OMP, up to 30-60min) must not freeze the whole scan
+			// planning session, up to 30-60min) must not freeze the whole scan
 			// behind this write lock — skip and retry on the next scan,
 			// matching the tryRepoLock semantics of the dispatch loop.
 			if !lock.TryLock() {
@@ -1806,7 +1805,7 @@ type normStamp struct {
 // documents that are already complete are left untouched (no writes, so no
 // scan feedback loop). Documents whose mtime+size did not change since the
 // last pass are skipped entirely (normCache). Runs under scanMu: the writes
-// are flock-protected against concurrent OMP frontmatter updates.
+// are flock-protected against concurrent session frontmatter updates.
 func (r *Runner) syncTaskSchemaDefaults() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -3204,7 +3203,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						// key source each scan and auto-resume once it becomes
 						// available. No manual resume_approved needed.
 						if !apiKeyAvailable() {
-							// Key still unavailable: stay blocked, do not launch OMP.
+							// Key still unavailable: stay blocked, do not launch a session.
 							continue
 						}
 						r.logger.Printf("task %s: API key available, restoring %s", t.ID, fm.BlockedPhase)
@@ -3432,8 +3431,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				}
 				// Notify only on the plan-review → implementing transition.
 				// Resumed sessions (daemon restarts) must not re-spam the
-				// "OMP 正在执行" notification on every scan.
-				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "OMP 正在执行", r.cfg.Notifications.Desktop)
+				// "实现会话执行中" notification on every scan.
+				notify.SendTaskAction(t.ID, t.Title, "🚀", "开始实现", "实现会话执行中", r.cfg.Notifications.Desktop)
 			} else if stallDeadline, stalled := r.round2StallActive(taskPath); stalled {
 				// No-progress cooldown: a Round 2 session that finished
 				// without advancing the task (entry-gate re-verification
@@ -4383,7 +4382,7 @@ func resolveVaultProjectDir(vaultPath, projectName string) string {
 }
 
 // needsContextInjection returns true for task phases that benefit from
-// project context (constraints, domain terms, ADRs) in the OMP prompt.
+// project context (constraints, domain terms, ADRs) in the phase prompt.
 func needsContextInjection(status string) bool {
 	switch status {
 	case "refining", "planning", "implementing", "plan-review":

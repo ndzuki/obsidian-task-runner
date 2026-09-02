@@ -13,13 +13,12 @@ import (
 // runDSHPhaseDispatch executes one phase on the DSH backend and routes the
 // stable outcome into the shared success/failure paths. It returns handled=true
 // when the phase was fully processed (success, failure, or interruption), so
-// the caller records the processed task and continues — the inline OMP path is
-// untouched while cfg.Executor stays "omp".
+// the caller records the processed task and continues.
 //
-// Phase 5 seam (docs/phase5-executor-migration.md §5.3): the dsh branch is a
-// deliberate mirror of the OMP success tail (validate→compact→round2 notify→
-// clear) without executor-specific logging, PID files, empty-stop watch, or the
-// daemon-side fallback loop — those live in the DSH fallback plugin.
+// The dsh branch mirrors the shared success tail (validate→compact→round2
+// notify→clear) without executor-specific logging, PID files, empty-stop
+// watch, or a daemon-side fallback loop — those live in the DSH fallback
+// plugin.
 func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase, model, skillPrompt, logPath string) bool {
 	timeout := r.cfg.PhaseTimeout(phase)
 	if timeout <= 0 {
@@ -28,7 +27,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 	spec := PhaseSpec{
 		Phase:           phase,
 		Model:           model,
-		ReasoningEffort: ompPhaseThinking(phase),
+		ReasoningEffort: phaseThinking(phase),
 		SkillPrompt:     skillPrompt,
 		TaskStatus:      t.Status,
 		Timeout:         timeout,

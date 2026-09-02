@@ -275,7 +275,7 @@ func (e *dshEmbedExecutor) dispatch(ctx context.Context, spec PhaseSpec, taskID,
 }
 
 // startRequest builds and launches the /agent/run request. dispatch maps the
-// OMP model/effort and injects the skill body; Resume re-uses it with the
+// model/effort and injects the skill body; Resume re-uses it with the
 // already-mapped provider/model and re-injected task text.
 func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, taskID, provider, model, taskText, effort, sessionID, skillPrompt, toolPolicy string, timeout time.Duration) (ExecutionHandle, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)

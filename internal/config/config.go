@@ -61,11 +61,10 @@ type Config struct {
 	VaultWebAddr        string `json:"vault_web_addr"`
 	ReplanGateThreshold int    `json:"replan_gate_threshold"`
 	// Executor selects the phase-execution backend: "dsh-embed" (default,
-	// long-lived agent-server RPC with per-phase reasoningEffort), "dsh"
-	// (spawn `dsh --profile headless`), or "omp" (frozen behavior, retained as
-	// a rollback path). The switch is the Phase 5/embed migration seam
-	// (docs/phase5-executor-migration.md, docs/embed-migration-plan.md). The
-	// default flipped to dsh-embed after planning verified on it (E5).
+	// long-lived agent-server RPC with per-phase reasoningEffort) or "dsh"
+	// (spawn `dsh --profile headless`). Any other value resolves to
+	// dsh-embed (newPhaseExecutor). The OMP executor is retired with the
+	// OMP era — no "omp" value is honored anymore.
 	Executor        string `json:"executor"`
 	DefaultAssignee string `json:"default_assignee"`
 	LogDir          string `json:"log_dir,omitempty"`
@@ -369,12 +368,20 @@ func DefaultModels() map[string]string {
 		// Paid official DeepSeek. Never used automatically; opt in per task
 		// via assignee=ds-official.
 		"ds-official": "ds-official/deepseek-v4-pro",
-		// Optional channels, retained for compatibility. They are only used
-		// when a task assignee explicitly selects them and the corresponding
-		// provider is configured in ~/.dsh/settings.yaml.
-		"gemini":  "google/gemini-2.5-pro",
-		"claude":  "anthropic/claude-sonnet-4-20250514",
-		"minimax": "minimax/minimax-m1",
+		// DSH 2.0 模型家族缩写（assignee 词汇表）：
+		//   gp = OpenAI GPT 系列（gpt/openai 为同渠道历史别名，保留兼容）
+		//   ge = 谷歌 Gemini 系列
+		//   cl = 网宿 CL（ClaudeCode 系列）
+		//   qw = 阿里千问（Qwen 系列）
+		//   db = 字节豆包（Seedance 系列）
+		// Optional channels: only used when a task assignee explicitly selects
+		// them and the corresponding provider is configured in
+		// ~/.dsh/settings.yaml.
+		"gp": "openai/gpt-5.6-sol",
+		"ge": "google/gemini-2.5-pro",
+		"cl": "anthropic/claude-sonnet-4-20250514",
+		"qw": "qwen/qwen3-max",
+		"db": "doubao/doubao-seedance-1-0",
 	}
 }
 
@@ -412,14 +419,15 @@ func ModelReference() string {
 |----------|---------|------|
 | default  | %s | refining/priority/pm/conventions/audit 轻量任务（magic 免费 flash） |
 | deepseek | %s | planning/round2/merge/design 重度任务（magic 免费 v4-pro） |
-| gpt      | %s | OpenAI 免费旗舰，gpt-5.6 系列 fallback 主目标 |
+| gp       | %s | OpenAI GPT 系列（gpt/openai 为历史别名） |
 | openai   | %s | 同上（assignee 直接指定 openai 渠道） |
 | deepseek_magic | %s | 同上（assignee 直接指定 magic 渠道） |
 | ds-official | %s | 自费官方渠道，仅 assignee 显式指定时使用 |
-| gemini   | %s | 可选（需 settings.yaml 配置对应 provider） |
-| claude   | %s | 可选（需 settings.yaml 配置对应 provider） |
-| minimax  | %s | 可选（需 settings.yaml 配置对应 provider） |
-`, d["default"], d["deepseek"], d["gpt"], d["openai"], d["deepseek_magic"], d["ds-official"], d["gemini"], d["claude"], d["minimax"])
+| ge       | %s | 谷歌 Gemini 系列（需 settings.yaml 配置对应 provider） |
+| cl       | %s | 网宿 CL（ClaudeCode 系列，需 settings.yaml 配置对应 provider） |
+| qw       | %s | 阿里千问（Qwen 系列，需 settings.yaml 配置对应 provider） |
+| db       | %s | 字节豆包（Seedance 系列，需 settings.yaml 配置对应 provider） |
+`, d["default"], d["deepseek"], d["gp"], d["openai"], d["deepseek_magic"], d["ds-official"], d["ge"], d["cl"], d["qw"], d["db"])
 }
 
 // DefaultKBEmbedding returns the shipped embedding defaults (ollama, bge-m3,
@@ -476,7 +484,9 @@ func Defaults() *Config {
 		// round2 默认 120m：实现阶段带真实环境冒烟（k3d/镜像构建/回归），
 		// 单窗口 60m 会把活跃会话误判为 wedged 而 cancel（TASK-065 教训）；
 		// 配合 timeout_active 活动度续期，活跃会话不会被误杀。
-		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 30, "round2": 120, "merge": 15, "design": 90},
+		// planning 45m：2026-09-02 planning→max 后思维链会话更长，大 REQ 的
+		// plan 生成需要余量（30m 会在活跃会话下误判 wedged 的风险升高）。
+		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 45, "round2": 120, "merge": 15, "design": 90},
 		ShutdownGraceSeconds:   30,
 		OffPeakTimezone:        "Asia/Shanghai",
 		OffPeakWindows:         []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},

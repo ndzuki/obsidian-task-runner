@@ -180,9 +180,6 @@ type Frontmatter struct {
 	// scheduling time (a bounded wait, then the merge flow is the fallback).
 	PlanFiles []string `yaml:"plan_files"`
 
-	// Deprecated migration-only field. New code must use Assignee.
-	SwitchSettings bool `yaml:"switch_settings"`
-
 	// Extra holds YAML keys not explicitly mapped above.
 	Extra map[string]any `yaml:",inline"`
 }
@@ -341,6 +338,7 @@ var taskFieldOrder = []string{
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
 	"merge_status", "approved_head", "merge_retry_count", "merge_precondition_fails", "merge_retry_not_before", "task_schema_version", "req_refine_count",
+	"quota_backoff_level", "quota_backoff_until",
 	"round2_stall_until", "round2_stall_level",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
@@ -359,8 +357,6 @@ var taskFieldOrder = []string{
 	"repository_visibility", "repository_description", "repository_url",
 	// ADR bookkeeping.
 	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_extract_error", "knowledge_extract_retry_count", "knowledge_extract_retry_until", "knowledge_refs", "knowledge_applied",
-	// Deprecated migration-only field.
-	"switch_settings",
 }
 
 // reqFieldOrder is the canonical REQ frontmatter key order, mirroring
@@ -646,8 +642,8 @@ func NormalizeReqFrontmatter(path string) (bool, error) {
 //
 // The whole read-modify-write runs under the same task-path flock that
 // Update/AtomicReadModifyWrite use: without it a normalizer pass that reads
-// just before an OMP/daemon Update lands and writes just after would clobber
-// the concurrent state change (observed 2026-08-21: the schema-defaults pass
+// just before a concurrent daemon/DSH session Update lands and writes just
+// after would clobber the concurrent state change (observed 2026-08-21: the schema-defaults pass
 // rewrote a TASK and the knowledge_extracted=true write raced through it,
 // flipping the marker back to false and forcing a spurious re-extraction).
 func normalizeFrontmatter(path string, order []string, defaults map[string]interface{}) (bool, error) {
@@ -741,7 +737,8 @@ func normalizeFrontmatter(path string, order []string, defaults map[string]inter
 	// Normalization is an idempotent repair: a lost write (power failure
 	// before rename durability) is simply re-applied on the next scan, so
 	// the per-file fsync cost (1-10ms; seconds for thousands of documents)
-	// is not worth paying. Update() keeps its fsync — OMP state changes are
+	// is not worth paying. Update() keeps its fsync — daemon/DSH session state
+	// changes are
 	// transactional and must not be lost.
 	if err := atomicWriteNoSync(cleanPath, []byte(newDoc)); err != nil {
 		return false, err
@@ -991,7 +988,7 @@ func AtomicWrite(path string, data []byte) error {
 }
 
 // atomicWrite is the unexported implementation shared within the package.
-// It fsyncs the temp file before rename: OMP state changes via Update are
+// It fsyncs the temp file before rename: daemon state changes via Update are
 // transactional and must survive a crash.
 func atomicWrite(path string, data []byte) error {
 	return atomicWriteImpl(path, data, true)
@@ -1172,7 +1169,8 @@ func Repair(path string) error {
 	// If discarded lines look like markdown body, prepend them to the body.
 	// Body content starts with markdown structural elements: headings, blockquotes,
 	// or table rows.  Orphaned free-text (no structural markers) is intentionally
-	// dropped — it's likely OMP output that leaked into the frontmatter block.
+	// dropped — it's likely agent-session output that leaked into the
+	// frontmatter block.
 	repairedBody := escapeBodyTags(body)
 	if len(discarded) > 0 && looksLikeMarkdownBody(discarded) {
 		// Trim leading blank lines from discarded block.

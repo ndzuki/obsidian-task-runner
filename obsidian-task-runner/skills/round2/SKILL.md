@@ -21,7 +21,7 @@ disable-model-invocation: true
 1. TASK `status: implementing`，`plan_approved=true`。
 2. `pending_req=false` 才能开始新的 AC。
 3. blocked_by 全部满足。
-4. 当前 worktree/branch 与 `target_branch` 一致；首次进入时创建 `task/\{id\}-\{slug\}`。
+4. **Worktree 由 daemon 统一托管，会话禁止自建**：daemon 已在 `<仓库父目录>/.otg-worktrees/<repoHash>/TASK-<taskKey>`（或 `worktree_base` 覆盖根）为任务建好 worktree 并 checkout `target_branch`；会话只核对「当前 worktree/branch == `target_branch`」，**禁止 `git worktree add`（尤其禁止在仓库同级建 `release-manager-tNNN` 式目录）**——分支只由首次 planning 写回 `target_branch: task/{id}-{slug}` 时创建，会话自己 checkout 分支即可。发现 worktree 缺失/分支不符 → 写回错误交给 daemon 重建，不要手工建树（TASK-082/083 教训：会话自建同级 worktree 后 daemon 只能按安全边界复用，托管根外目录永不自动回收）。
 5. 读取已批准计划和 checkpoint 复用策略。
 6. **加载 `skill://knowledge-base`**：按计划中的技术栈检索知识库 core/ 文档，引用已验证的最佳实践和版本约束。实现过程中发现的踩坑经验，在 Commit 或 ADR 写回后追加到对应的 References 文件。
 
