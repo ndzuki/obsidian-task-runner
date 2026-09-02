@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry verify-install
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -53,8 +53,11 @@ clean:
 # busy-safe install: 运行中的二进制（otg daemon / grilling tab 的
 # kitty-grill）不允许原地覆盖（Text file busy），先 mv 到 .old 再 cp。
 # 强制覆盖兜底：历史容器以 nobody 属主写入的二进制会让 cp 直接 EACCES
-#（非属主无写权限），部署静默留下旧版本（2026-09-02 ~/.local/bin/otg 停在
-# v0.44.0）。mv 备份后 rm -f 兜底再 cp，确保 install/deploy 不会静默失败。
+#（非属主无写权限）——2026-09-02 实测 ~/.local/bin/otg 因此停在 v0.44.0
+# 而 ~/go/bin 已更新：mv/rm 的失败被 `-` 前缀吞掉、cp 的失败又被 for 循环
+# 的 `done` 掩掉，deploy 全程"成功"却留下旧二进制。mv 备份 + rm 兜底 + cp
+# 之后必须跑 verify-install（cmp 逐字节比对两处安装目标），不一致立即失败
+# 并打印修复提示——安装绝不静默降级。
 install: build sync-docs
 	@echo "=== Installing $(BINARY) + $(GRILL) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
@@ -67,7 +70,30 @@ install: build sync-docs
 		cp $$b $(GOBIN)/$$b; \
 		chmod 755 $(GOBIN)/$$b; \
 	done
+	@$(MAKE) verify-install
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"
+
+# verify-install: 逐字节比对 repo 二进制与两处安装目标（~/.local/bin、
+# $(GOBIN)）。任一处是旧版本/缺失 → 打印原因与修复命令并 exit 1，
+# 让 deploy/install 在静默降级前叫停。
+verify-install:
+	@fail=""; \
+	for b in $(BINARY) $(GRILL); do \
+		cmp -s "$$b" "$(HOME)/.local/bin/$$b" || fail="$$fail $(HOME)/.local/bin/$$b"; \
+		cmp -s "$$b" "$(GOBIN)/$$b" || fail="$$fail $(GOBIN)/$$b"; \
+	done; \
+	if [ -n "$$fail" ]; then \
+		echo "ERROR: 二进制安装不一致（旧版本残留或缺失）：$$fail"; \
+		ls -l $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL) $(GOBIN)/$(BINARY) $(GOBIN)/$(GRILL) 2>/dev/null || true; \
+		echo "修复："; \
+		echo "  1) 目标文件属主异常（历史容器以 nobody 写入）→"; \
+		echo "     sudo chown $$(id -un):$$(id -gn) $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"; \
+		echo "     然后重跑 make deploy"; \
+		echo "  2) ~/.local 或 ~/go/bin 只读挂载 → mount | grep -i '\.local\|go/bin' 检查并恢复可写"; \
+		echo "  3) 目录不可写 → chmod u+w $(HOME)/.local/bin"; \
+		exit 1; \
+	fi; \
+	echo "verified: $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL) $(GOBIN)/$(BINARY) $(GOBIN)/$(GRILL)"
 
 sync-docs:
 	@echo "=== Syncing skill docs to ~/.dsh/skills/obsidian-task-runner/ ==="
@@ -188,6 +214,7 @@ deploy: build test
 		cp $$b $(GOBIN)/$$b; \
 		chmod 755 $(GOBIN)/$$b; \
 	done
+	@$(MAKE) verify-install
 	@echo "=== [2/6] sync skill docs + plugins + skill-registry ==="
 	@$(MAKE) sync-docs
 	@$(MAKE) sync-plugins
