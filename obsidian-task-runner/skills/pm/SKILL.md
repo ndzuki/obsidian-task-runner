@@ -77,6 +77,18 @@ Daemon 在 consolidate 模式的 prompt 中注入 `<dependency_context>` 块：�
 
 > fact/auto 处置必须同步到**该 REQ 的所有来源任务**：每个任务的 `auto_accepted` 都追加相同记录，保证任一任务后续 refine 都能看到结论。
 
+### Step 2.1: 实现缺陷路由与先例沿用（TASK-066 教训，强制）
+
+consolidate 的 `<dependency_context>` 注入「PM 强制规则」与本条语义一致，必须遵守：
+
+1. **实现缺陷 ≠ 需求歧义**：已合入上游代码/seed 的功能缺陷（非 REQ 规格问题）**禁止触发下游 TASK replan/refining**。处置 = 归类上游兑现缺口，归属上游修复任务（新建 TASK 承接，下游挂 `blocked_by`），E2E-only/测试类 TASK 保持 park。AC-066-17 式门禁失败不是需求争议，replan 不改变任何上游事实（17 轮零收敛教训）。
+2. **先例沿用（防重复三选一）**：新争议与**主清单历史条目或 `Grilling-Decisions-archive.md` 中已答决策同构**（同一任务、同一缺口类别、用户已有答案）时，**不重复提出 A/B/C**。处置 = 沿用先例答案直接落地：
+   - 在清单追加一条**已答**条目：`决策: {先例答案}（沿用 D-{先例编号}，{ISO8601}；如不同意请修改本行后手动 grill_continue=true）`，`来源任务` 标注当前 TASK；
+   - 落地动作与 distribute 相同（如先例 A → 新建上游修复任务 + 下游 `blocked_by` + 保持 park）；
+   - 仅当先例答案明确声明「每次同类问题需单独裁决」、或缺口类别/安全边界与先例不同，才提出新决策点（编号 D-{max+1}）。
+3. **无新增决策点不重新提问**：跨 REQ 一致性三查全部通过、无实质新争议时，不追加决策点；只更新既有条目的来源任务列表并保持任务 park，等待用户对既有决策作答。
+4. **收敛上限**：同一任务因上游缺口连续 park ≥3 次时，「建议」以「A 新建上游修复任务（沿用 D-{先例}）」为默认项并说明先例，不再并列 B/C 低价值选项。
+
 ### Step 3: 写入/更新决策清单
 清单路径：`{vault}/Projects/{project}/Notes/Grilling-Decisions.md`（不存在则创建 Notes/ 与文件）。
 
@@ -401,7 +413,9 @@ Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon
 
 ## Prohibited
 - 不生成实现计划、不修改项目代码。
-- 不替用户填写 dispute 的「决策:」或「评审决策:」。
+- 不替用户填写 dispute 的「决策:」或「评审决策:」（先例沿用的已答条目除外——条目必须注明「沿用 D-{先例}」且默认答案可被用户一行修改）。
+- 不对「已合入上游代码/seed 的功能缺陷」向 E2E-only/测试类 TASK 发 replan 或重新 grilling——只允许上游修复任务承接 + 下游挂 blocked_by。
+- 先例答案存在时不重复提出同类 A/B/C 三选一。
 - 不覆盖 REQ 用户原文（只追加标注）。
 - 不直接编辑 TASK frontmatter（必须 `otg update-status`）。
 - Mode 3 不重跑测试、不修改实现——只审计既有证据。

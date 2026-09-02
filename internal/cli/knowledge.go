@@ -265,7 +265,8 @@ Duplicate lessons (same normalized title or failed approach) are skipped.`,
 		if err != nil {
 			return fmt.Errorf("read stdin: %w", err)
 		}
-		res, err := knowledge.AbsorbKnowledge(cfg.ObsidianVault, kbAbsorbProject, string(data), kbAbsorbSummary)
+		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
+		res, err := knowledge.AbsorbKnowledgeDB(cfg.ObsidianVault, kbAbsorbProject, string(data), kbAbsorbSummary, dbPath)
 		if err != nil {
 			return err
 		}
@@ -290,7 +291,6 @@ Duplicate lessons (same normalized title or failed approach) are skipped.`,
 		if _, rerr := knowledge.RebuildINDEX(cfg.ObsidianVault); rerr != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: INDEX rebuild failed: %v\n", rerr)
 		}
-		dbPath := knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb)
 		var client *knowledge.EmbeddingClient
 		if cfg.KBEmbedding != nil {
 			client = knowledge.NewEmbeddingClient(cfg.KBEmbedding)
@@ -328,7 +328,7 @@ var kbHitCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		n, err := knowledge.IncrementHits(cfg.ObsidianVault, []string{args[0]})
+		n, err := knowledge.IncrementHits(cfg.ObsidianVault, knowledge.KBPath(cfg.ObsidianVault, cfg.KBDb), []string{args[0]})
 		if err != nil {
 			return err
 		}

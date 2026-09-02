@@ -1775,8 +1775,12 @@ func clearKnowledgeExtractBackoff(taskPath string) {
 
 func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	vaultDir := r.cfg.ObsidianVault
+	// Heat bumps must mirror into the CONFIGURED store (kb_db), never the
+	// XDG default — mirroring the default path alongside the real store
+	// produced two divergent KBs (stale hits + kb_docs drift).
+	dbPath := knowledge.KBPath(vaultDir, r.cfg.KBDb)
 
-	result, err := knowledge.ExtractTaskKnowledge(vaultDir, projectName, taskPath)
+	result, err := knowledge.ExtractTaskKnowledgeDB(vaultDir, projectName, taskPath, dbPath)
 	if err != nil {
 		// 硬失败（任务不可读/不可解析）：记录到任务上让丢失可见，
 		// 通知用户，保持 knowledge_extracted=false——补救扫描按退避
@@ -1838,7 +1842,7 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	// task is applied-and-verified by definition, so append the application
 	// line automatically (idempotent per project+date).
 	if refs, readErr := taskKnowledgeRefs(taskPath); readErr == nil {
-		if added, recErr := knowledge.AppendApplicationRecord(vaultDir, projectName, refs); recErr != nil {
+		if added, recErr := knowledge.AppendApplicationRecord(vaultDir, projectName, dbPath, refs); recErr != nil {
 			r.logger.Printf("knowledge-base application record failed: %v", recErr)
 		} else if added > 0 {
 			r.logger.Printf("knowledge-base application recorded: %d docs for %s", added, projectName)

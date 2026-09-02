@@ -19,7 +19,10 @@ import (
 // Idempotent: a line for the same (date, project) is never duplicated, so
 // repeat merges, re-runs, and legacy re-extraction are no-ops. Missing
 // documents are skipped silently. Returns the number of documents updated.
-func AppendApplicationRecord(vaultDir, projectName string, refPaths []string) (int, error) {
+//
+// dbPath selects the retrieval store for the heat-bump mirror (daemon passes
+// KBPath(vault, override); "" skips the mirror).
+func AppendApplicationRecord(vaultDir, projectName, dbPath string, refPaths []string) (int, error) {
 	if len(refPaths) == 0 {
 		return 0, nil
 	}
@@ -42,7 +45,7 @@ func AppendApplicationRecord(vaultDir, projectName string, refPaths []string) (i
 		}
 		// A delivered task applied this document — bump its heat so reused
 		// experience ranks higher in later retrieval.
-		if _, herr := IncrementHits(vaultDir, []string{ref}); herr != nil {
+		if _, herr := IncrementHits(vaultDir, dbPath, []string{ref}); herr != nil {
 			return added, fmt.Errorf("bump heat on %s: %w", ref, herr)
 		}
 		added++

@@ -955,3 +955,29 @@ func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
 	}
 	t.Fatal("pm gate never released after session settled")
 }
+
+// TestPMDependencyContextInjectsPrecedentRules 钉住 PM 职责缺口修复：
+// consolidate 注入的上下文必须携带先例沿用 + 实现缺陷路由规则（TASK-066
+// 教训：上游实现缺陷被反复当需求争议重问 A/B/C、E2E 任务反复 replan）。
+func TestPMDependencyContextInjectsPrecedentRules(t *testing.T) {
+	vault := t.TempDir()
+	taskPath := filepath.Join(vault, "Projects", "001-test", "Tasks", "TASK-066.md")
+	writeGrillingTask(t, taskPath, "066", "Projects/001-test/Requirements/REQ-066.md", "test", true, 0)
+	runner := &Runner{
+		cfg:    &config.Config{ObsidianVault: vault},
+		logger: log.New(io.Discard, "", 0),
+	}
+	ctx := runner.pmDependencyContext([]string{taskPath})
+	for _, want := range []string{
+		"实现缺陷≠需求歧义",
+		"先例沿用",
+		"决策先例范围: 主清单=",
+		"Grilling-Decisions-archive.md",
+		"收敛上限",
+		"E2E-only TASK 保持 park",
+	} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("pmDependencyContext missing %q:\n%s", want, ctx)
+		}
+	}
+}

@@ -168,17 +168,19 @@ Do NOT dump every failed item on the user. Classify each failed check first:
 
 Dispute 已重复 ≥2 轮且 REQ hash 未变时：
 
-1. 将 dispute 写入项目级决策清单 `Projects/{project}/Notes/Grilling-Decisions.md`（不存在则创建，格式见 `skill://obsidian-task-runner-pm`）。同 REQ 的重复问题只写一条，来源任务列表标注所有相关 TASK。
-2. 更新 TASK：
+1. **进入 grilling 前递增 `req_refine_count`**（anti-pattern 强制：递增必须在进入 grilling 前，确保 grilling 过程中即使 Agent 崩溃计数也不丢失）：读 TASK frontmatter 当前值 N；`N < 3` → 写入 `N+1`；`N >= 3` → **不递增**，requirement-elaborator 主动与用户交互（不再自动重进循环）。
+2. 将 dispute 写入项目级决策清单 `Projects/{project}/Notes/Grilling-Decisions.md`（不存在则创建，格式见 `skill://obsidian-task-runner-pm`）。同 REQ 的重复问题只写一条，来源任务列表标注所有相关 TASK。
+3. 更新 TASK：
    ```bash
    otg update-status {task} \
      status=needs-grilling \
      grill_done=false \
      grill_parked=true \
+     req_refine_count={N+1} \
      grill_context="maturity=parked; refine_version={N}; 争议已并入 Notes/Grilling-Decisions.md，等待项目级一次性回答（见 skill://obsidian-task-runner-pm）"
    ```
-3. 替换 TASK body `## Grilling 待回答` 为简短指引：指向项目级清单，说明用户回答清单后 daemon 自动分发。
-4. 不发送**逐任务** Kitty tab/提醒（daemon 对 `grill_parked=true` 的任务静默等待）。注意：若项目级决策清单 `Notes/Grilling-Decisions.md` 有待答决策点且清单未 paused/closed，daemon 仍会为项目创建**项目级**「决策清单」Kitty tab（每项目一个）——park 只停逐任务提醒，不停项目级清单 tab。
+4. 替换 TASK body `## Grilling 待回答` 为简短指引：指向项目级清单，说明用户回答清单后 daemon 自动分发。
+5. 不发送**逐任务** Kitty tab/提醒（daemon 对 `grill_parked=true` 的任务静默等待）。注意：若项目级决策清单 `Notes/Grilling-Decisions.md` 有待答决策点且清单未 paused/closed，daemon 仍会为项目创建**项目级**「决策清单」Kitty tab（每项目一个）——park 只停逐任务提醒，不停项目级清单 tab。
 
 > **MUST use `otg update-status` — NEVER edit YAML frontmatter directly.** The daemon creates a per-task Kitty tab on the next scan (unless `grill_parked=true`; a project-level decision-list tab may still open).
 
@@ -190,12 +192,15 @@ Dispute 已重复 ≥2 轮且 REQ hash 未变时：
 **For CONTEXT.md contradictions**: quote the conflicting domain term or pattern definition.
 **For all failures**: extract the relevant CONTEXT.md terminology the elaborator should reference.
 
+**进入 grilling 前递增 `req_refine_count`**（同 4c 规则）：读当前值 N；`N < 3` → 写入 `N+1`；`N >= 3` → 不递增，requirement-elaborator 主动与用户交互。
+
 ```bash
 otg update-status {task} \
   status=needs-grilling \
   grill_done=false \
   grill_repeat=0 \
   grill_parked=false \
+  req_refine_count={N+1} \
   grill_context="{structured context}"
 ```
 

@@ -899,8 +899,25 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 			} else {
 				b.WriteString("设计库: 空/不可读（replan gate 未通过——规划阶段会被 gate 拦截，必须作为决策点提出）\n")
 			}
+			// Precedent scope: the PM must check both the live list and the
+			// archive before asking the user to decide anything again.
+			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" {
+				archivePath := filepath.Join(filepath.Dir(listPath), "Grilling-Decisions-archive.md")
+				b.WriteString(fmt.Sprintf("决策先例范围: 主清单=%s 归档=%s\n", listPath, archivePath))
+			}
 		}
 	}
+	// Deterministic PM duty rules — injected on every consolidate so the
+	// coordinator cannot re-open closed loops (TASK-066: each prerequisite
+	// smoke surfaced new UPSTREAM implementation defects and the PM kept
+	// re-planning / re-asking A/B/C even though D-103 had already decided
+	// "new upstream repair tasks", burning 20 plan versions with zero REQ
+	// change and stalling the v1 gate).
+	b.WriteString("PM 强制规则（违背视为 consolidate 未完成）：\n")
+	b.WriteString("- 实现缺陷≠需求歧义：已合入上游代码/seed 的功能缺陷（非 REQ 规格问题）禁止触发下游 TASK replan/refining；归属上游修复任务（新建 TASK 承接，下游挂 blocked_by），E2E-only TASK 保持 park。\n")
+	b.WriteString("- 先例沿用：新争议与已答决策同构（同一任务、同一缺口类别、用户已有答案）时，不得重复 A/B/C 三选一——沿用先例答案（如 D-103=A 新建上游修复任务）直接落地，在清单追加已答条目并注明「沿用 D-{先例}」。仅当先例明确要求每次裁决、或缺口类别/安全边界不同，才提出新决策点。\n")
+	b.WriteString("- 无新增决策点：跨 REQ 一致性三查全部通过、无实质新争议时，不追加决策点、不重新提问；只更新来源任务列表并保持 park，等待既有决策作答。\n")
+	b.WriteString("- 收敛上限：同一任务因上游缺口连续 park ≥3 次时，在决策点「建议」中显式给出「A 新建上游修复任务」为默认项并说明此前先例，不再并列 B/C 低价值选项。\n")
 	return b.String()
 }
 

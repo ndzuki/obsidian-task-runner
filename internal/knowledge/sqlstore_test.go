@@ -476,10 +476,10 @@ func TestPromoteToCoreUsesHotCache(t *testing.T) {
 	if entries := loadRefIndex(refsDir); len(entries) != 1 {
 		t.Fatalf("warm cache: %d entries", len(entries))
 	}
-	if _, err := IncrementHits(vault, []string{"extended/tools/hot.md"}); err != nil {
+	if _, err := IncrementHits(vault, "", []string{"extended/tools/hot.md"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := IncrementHits(vault, []string{"extended/tools/hot.md"}); err != nil {
+	if _, err := IncrementHits(vault, "", []string{"extended/tools/hot.md"}); err != nil {
 		t.Fatal(err)
 	}
 	moved, err := PromoteToCore(vault, 2)

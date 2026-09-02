@@ -191,7 +191,15 @@ aliases: []
 // (the task's knowledge_extracted marker prevents re-extraction on repeated
 // merges). Unlike the project-level scan, repeated deliveries do not re-touch
 // knowledge files for unrelated ADRs.
+//
+// dbPath=="" skips the retrieval-store hits mirror (unconfigured embedders).
 func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResult, error) {
+	return ExtractTaskKnowledgeDB(vaultDir, projectName, taskPath, "")
+}
+
+// ExtractTaskKnowledgeDB is ExtractTaskKnowledge with an explicit retrieval
+// store path for heat-bump mirroring (daemon/CLI pass KBPath(vault, override)).
+func ExtractTaskKnowledgeDB(vaultDir, projectName, taskPath, dbPath string) (*ExtractResult, error) {
 	result := &ExtractResult{}
 	data, err := os.ReadFile(taskPath)
 	if err != nil {
@@ -263,7 +271,7 @@ func ExtractTaskKnowledge(vaultDir, projectName, taskPath string) (*ExtractResul
 			// The lesson was re-encountered and already recorded — the
 			// repeated encounter itself is a heat signal.
 			if target != "" {
-				if _, herr := IncrementHits(vaultDir, []string{target}); herr != nil {
+				if _, herr := IncrementHits(vaultDir, dbPath, []string{target}); herr != nil {
 					result.Errors = append(result.Errors, fmt.Sprintf("pitfall hit %q: %v", p.Title, herr))
 				}
 			}
@@ -890,7 +898,15 @@ aliases: []
 // "### {date}: {title}" heading and 现象/失败方案/根因/成功方案 keys);
 // with summary=true it is free-text project experience appended as a
 // 「实践经验」 note under the best-matching document.
+//
+// dbPath=="" skips the retrieval-store hits mirror (unconfigured embedders).
 func AbsorbKnowledge(vaultDir, projectName, text string, summary bool) (*AbsorbResult, error) {
+	return AbsorbKnowledgeDB(vaultDir, projectName, text, summary, "")
+}
+
+// AbsorbKnowledgeDB is AbsorbKnowledge with an explicit retrieval store path
+// for heat-bump mirroring (CLI passes KBPath(vault, override)).
+func AbsorbKnowledgeDB(vaultDir, projectName, text string, summary bool, dbPath string) (*AbsorbResult, error) {
 	res := &AbsorbResult{}
 	if vaultDir == "" || strings.TrimSpace(text) == "" {
 		return res, nil
@@ -947,7 +963,7 @@ func AbsorbKnowledge(vaultDir, projectName, text string, summary bool) (*AbsorbR
 			// the same failure keeps surfacing, so the experience deserves
 			// higher retrieval priority.
 			if target != "" {
-				if _, herr := IncrementHits(vaultDir, []string{target}); herr != nil {
+				if _, herr := IncrementHits(vaultDir, dbPath, []string{target}); herr != nil {
 					res.Errors = append(res.Errors, fmt.Sprintf("pitfall hit %q: %v", p.Title, herr))
 				}
 			}
@@ -1047,10 +1063,21 @@ aliases: []
 // knowledge document by one. Missing documents are skipped. Returns the
 // number of documents bumped.
 //
+// dbPath selects the retrieval store to mirror the bump into (configured
+// callers pass KBPath(vaultDir, override)). An empty dbPath skips the store
+// mirror: embedders without a configuration must never touch the XDG
+// default store — the hardcoded default here once made every merge/absorb
+// heat bump land in ~/.local/share/otg/kb.sqlite while the configured
+// kb_db (and everything that reads it: `otg kb search`, the reranker,
+// agent-server pre-retrieval) kept stale hits and drifted two docs behind
+// the corpus (observed 2026-09-02: 112 docs in the default store vs 114 in
+// the configured one — the direct root cause of "KB 只增量没消除、预检索
+// 数据不更新").
+//
 // The counter is updated with a field-preserving frontmatter rewrite: the KB
 // v2 schema pins `updated` to YYYY-MM-DD, which yamlfrontmatter.Update (task
 // semantics, timestamp refresh) would violate.
-func IncrementHits(vaultDir string, refPaths []string) (int, error) {
+func IncrementHits(vaultDir, dbPath string, refPaths []string) (int, error) {
 	if vaultDir == "" || len(refPaths) == 0 {
 		return 0, nil
 	}
@@ -1103,24 +1130,31 @@ func IncrementHits(vaultDir string, refPaths []string) (int, error) {
 		clean := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(ref), "References/"), "/")
 		syncHits = append(syncHits, syncHit{path: clean, hits: hits + 1})
 	}
-	// Mirror the bump into the retrieval store (frontmatter is the source of
-	// truth; a hits change does not alter content_hash, so no later sync
-	// would pick it up). Only when the store already exists — avoids
-	// creating the real XDG store from contexts without a config (tests,
-	// embedders); CLI/daemon hit paths run with the store present.
-	dbPath := KBPath(vaultDir, "")
-	if len(syncHits) > 0 {
-		if _, err := os.Stat(dbPath); err == nil {
-			if db, err := openKB(dbPath); err == nil {
-				for _, s := range syncHits {
-					if _, err := db.Exec(`UPDATE kb_docs SET hits=? WHERE path=?`, s.hits, s.path); err != nil {
-						_ = db.Close()
-						break
-					}
-				}
-				_ = db.Close()
-			}
+	// Mirror the bump into the retrieval store. The mirror keeps the store
+	// hot without waiting for the watcher-triggered sync (which would also
+	// pick the change up via content_hash, but only after its debounce), and
+	// covers paths where no watcher runs. dbPath=="" (unconfigured embedders)
+	// skips the mirror entirely instead of silently writing the XDG default
+	// store next to the real one. A store that does not exist yet is not
+	// created here — the first SyncKnowledgeDB builds it from the corpus.
+	if dbPath == "" || len(syncHits) == 0 {
+		return bumped, nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return bumped, nil
+	}
+	db, err := openKB(dbPath)
+	if err != nil {
+		return bumped, fmt.Errorf("open store %s for hits mirror: %w", dbPath, err)
+	}
+	for _, s := range syncHits {
+		if _, err := db.Exec(`UPDATE kb_docs SET hits=? WHERE path=?`, s.hits, s.path); err != nil {
+			_ = db.Close()
+			return bumped, fmt.Errorf("mirror hits for %s: %w", s.path, err)
 		}
+	}
+	if err := db.Close(); err != nil {
+		return bumped, fmt.Errorf("close store %s: %w", dbPath, err)
 	}
 	return bumped, nil
 }

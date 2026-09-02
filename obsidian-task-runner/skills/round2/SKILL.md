@@ -308,9 +308,10 @@ risk: {level} → auto_merge 默认自动合并，无需人工 review（可设 a
 全部 AC 完成、测试与检查通过后：
 
 ```bash
-otg update-status {task} status=review
+otg update-status {task} status=review req_refine_count=0
 ```
 
+- `req_refine_count` 清零规则（CONTEXT.md 强制）：全部 AC 通过后清零——新一轮交付的需求缺口计数从 0 开始。
 - `auto_merge: true`（默认）时 daemon 自动授权合并并执行 Merge Phase（push → PR → CI checks → merge），无需人工。
 - `auto_merge: false` 时保持 `merge_approved: false`，等待用户 review 后手动设 `merge_approved: true`。
 

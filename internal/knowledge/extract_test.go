@@ -566,14 +566,14 @@ func TestIncrementHitsAndRankBoost(t *testing.T) {
 	write("cold.md")
 	write("hot.md")
 
-	n, err := IncrementHits(vault, []string{"extended/tools/hot.md", "extended/tools/missing.md"})
+	n, err := IncrementHits(vault, "", []string{"extended/tools/hot.md", "extended/tools/missing.md"})
 	if err != nil {
 		t.Fatalf("IncrementHits: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("bumped = %d, want 1 (missing skipped)", n)
 	}
-	if _, err := IncrementHits(vault, []string{"extended/tools/hot.md"}); err != nil {
+	if _, err := IncrementHits(vault, "", []string{"extended/tools/hot.md"}); err != nil {
 		t.Fatal(err)
 	}
 	// The bump must preserve the KB v2 frontmatter contract: updated stays
@@ -784,5 +784,98 @@ func TestExtractTaskKnowledgePracticeNoteIdempotent(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(vault, "References", "core", "go", "connect-rpc.md"))
 	if n := strings.Count(string(data), "**来源**：[ADR-012-connect]"); n != 1 {
 		t.Fatalf("practice note duplicated: %d occurrences, want 1:\n%s", n, data)
+	}
+}
+
+// TestIncrementHitsMirrorsConfiguredStore 钉住 2026-09-02 发现的 KB 分裂
+// 根因：heat bump 曾硬编码默认 XDG 库路径，配置了 kb_db 的部署因此长出
+// 两个分叉的库（默认库 112 docs / 配置库 114 docs，配置库 hits 长期陈旧）。
+// 修复后 bump 必须只写传入的配置库，且绝不创建/触碰默认库。
+func TestIncrementHitsMirrorsConfiguredStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir()) // XDG default path must stay out of reach
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntopics: [probe, hot]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\nhits: 0\n---\n# Hot\n\n> summary\n"
+	if err := os.WriteFile(filepath.Join(refsDir, "hot.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(dir, "kb.sqlite")
+	if _, err := SyncKnowledgeDB(vault, dbPath, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := IncrementHits(vault, dbPath, []string{"extended/tools/hot.md"})
+	if err != nil {
+		t.Fatalf("IncrementHits: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("bumped = %d, want 1", n)
+	}
+
+	db, err := openKB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var hits int
+	if err := db.QueryRow(`SELECT hits FROM kb_docs WHERE path=?`, "extended/tools/hot.md").Scan(&hits); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("configured store hits = %d, want 1", hits)
+	}
+
+	// The XDG default store must not exist after a configured-store mirror.
+	defPath := KBPath(vault, "")
+	if _, err := os.Stat(defPath); err == nil {
+		t.Fatalf("default store %s must not be created by a configured-store mirror", defPath)
+	}
+}
+
+// TestIncrementHitsAbsentConfiguredStoreSkipsMirror: store 尚未创建（首次
+// 同步前）时 bump 只写文件，不得把默认库拉起来。
+func TestIncrementHitsAbsentConfiguredStoreSkipsMirror(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	vault := filepath.Join(dir, "vault")
+	refsDir := filepath.Join(vault, "References", "extended", "tools")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ntopics: [probe]\nlevel: reference\nupdated: \"2026-08-07\"\nsource: \"local\"\nverified: false\naliases: []\nhits: 0\n---\n# Hot\n\n> summary\n"
+	if err := os.WriteFile(filepath.Join(refsDir, "hot.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "kb.sqlite")
+	n, err := IncrementHits(vault, dbPath, []string{"extended/tools/hot.md"})
+	if err != nil {
+		t.Fatalf("IncrementHits: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("bumped = %d, want 1", n)
+	}
+	for _, p := range []string{dbPath, KBPath(vault, "")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("store %s must not be created by a bump before first sync", p)
+		}
+	}
+}
+
+// TestExtractTaskKnowledgeDefaultWrapperSkipsStoreMirror: 旧签名包装必须
+// 保持无配置上下文的语义——不创建/不触碰任何检索库。
+func TestExtractTaskKnowledgeDefaultWrapperSkipsStoreMirror(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	vault := t.TempDir()
+	taskPath := writeTaskFile(t, vault, "demo", "")
+	if _, err := ExtractTaskKnowledge(vault, "demo", taskPath); err != nil {
+		t.Fatalf("ExtractTaskKnowledge: %v", err)
+	}
+	if _, err := os.Stat(KBPath(vault, "")); err == nil {
+		t.Fatalf("wrapper with dbPath=\"\" must not create the default store")
 	}
 }
