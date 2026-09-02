@@ -2020,3 +2020,81 @@ assignee: default
 		t.Fatalf("status = %q, want implementing (untouched)", fm.Status)
 	}
 }
+
+// TestGatedTaskStillAutoResumesTransientUpstream guards the D-108=A flow
+// (TASK-066/082/083): a prerequisite-gated task is often the ONLY task
+// referencing its upstream repair tasks. An upstream transient failure
+// (MODEL_FAILED after a daemon restart kills the in-flight session) must
+// still be auto-resumed through the gated task's blocked_by loop — the gate
+// only controls the gated task's own resume. Without this, the repair tasks
+// sat blocked for the 24h aged fallback (observed 2026-09-02 16:43).
+func TestGatedTaskStillAutoResumesTransientUpstream(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two upstream repair tasks transient-blocked by a daemon restart.
+	for _, up := range []struct{ id, path string }{
+		{"082", "TASK-082-upgrade-execution-chain.md"},
+		{"083", "TASK-083-devseed-max-emergency-replicas.md"},
+	} {
+		content := "---\nid: \"" + up.id + "\"\ntitle: Upstream Repair\nproject: test\nstatus: blocked\nblocked_phase: implementing\nphase_error_code: MODEL_FAILED\nresume_approved: false\nassignee: default\n---\n# Up\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, up.path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Gated E2E task blocked on both — the only downstream.
+	gated := filepath.Join(tasksDir, "TASK-066-stage-e2e.md")
+	if err := os.WriteFile(gated, []byte(`---
+id: "066"
+title: Gated E2E
+project: test
+status: blocked
+blocked_phase: implementing
+blocked_by: ["TASK-082", "TASK-083"]
+phase_error_code: PREREQUISITE_SMOKE_FAILED
+resume_approved: false
+assignee: default
+---
+# Gated
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.resolveBlockedDependencies()
+
+	// Both upstreams transient-failed: auto-resume approved.
+	for _, up := range []string{
+		"TASK-082-upgrade-execution-chain.md",
+		"TASK-083-devseed-max-emergency-replicas.md",
+	} {
+		data, err := os.ReadFile(filepath.Join(tasksDir, up))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fm, err := yamlfrontmatter.Parse(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fm.ResumeApproved {
+			t.Fatalf("transient-blocked upstream %s must be auto-resumed by the gated downstream", up)
+		}
+	}
+	// The gate itself stays shut: upstreams are not done yet.
+	data, err := os.ReadFile(gated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm.ResumeApproved {
+		t.Fatal("gated task must not resume while its upstreams are still blocked")
+	}
+}

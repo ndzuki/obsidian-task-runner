@@ -2103,7 +2103,18 @@ func (r *Runner) resolveBlockedDependencies() {
 						r.logger.Printf("dependency: FAILED to resume gated TASK-%s: %v", fm.ID, err)
 					}
 				}
-				continue // gated tasks do not auto-resume upstreams
+				// Fall through: the gate only controls THIS task's own
+				// resume. Its upstreams still join the auto-resume loop
+				// below — a gated downstream is often the ONLY task
+				// referencing its upstream repair tasks, and without this
+				// fall-through an upstream transient failure (MODEL_FAILED
+				// after a daemon restart) sits blocked until the 24h aged
+				// fallback (TASK-066/082/083: D-108=A flow stalled a full
+				// day because the gated task skipped upstream auto-resume).
+				// The loop is safe by construction: it only approves
+				// upstreams with transient auto-resumable errors and a
+				// bounded budget; the gate itself stays shut until every
+				// upstream is done+clean.
 			}
 			if len(fm.BlockedBy) == 0 {
 				continue
