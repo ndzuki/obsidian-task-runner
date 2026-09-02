@@ -288,16 +288,21 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		// working directory. The task stays review + merge_approved=true,
 		// so the next scan resumes automatically once the environment is
 		// fixed.
-		// Debounced per task (notifyFailure, 5min window): the merge
-		// retries on every scan while the environment is broken, and a
-		// bare SendTaskAction would re-toast each round (TASK-067
-		// notification storm).
-		remedy := ""
-		if occupied := worktreePathFromError(wdErr.Error()); occupied != "" {
-			remedy = fmt.Sprintf("\n执行清理：git -C %s worktree remove --force %s", repoDir, occupied)
+		// The task document is the durable user-facing recovery surface: keep
+		// the task in review, write actionable instructions into phase_error,
+		// and cool the next dispatch for 30 minutes. This is deliberately
+		// non-destructive: the primary checkout is never removed, and an
+		// external worktree is only removable after the user confirms it is
+		// disposable. The same text is used for the desktop notification.
+		occupied := worktreePathFromError(wdErr.Error())
+		updates := mergeWorktreeFailureUpdates(candidate.FilePath, fm.TargetBranch, repoDir, occupied, wdErr, time.Now())
+		if updateErr := yamlfrontmatter.Update(candidate.FilePath, updates); updateErr != nil {
+			r.logger.Printf("task %s: record merge worktree remedy: %v", candidate.ID, updateErr)
 		}
-		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "🚫", "Merge 工作区不可用",
-			fmt.Sprintf("任务 worktree 无法绑定分支 %s（%v）。%s", fm.TargetBranch, wdErr, remedy), failNotifyReason)
+		remedy, _ := updates["phase_error"].(string)
+		notBefore, _ := updates["merge_retry_not_before"].(string)
+		r.logger.Printf("task %s: merge worktree requires human repair; retry after %s (instructions written to phase_error)", candidate.ID, notBefore)
+		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "🚫", "Merge 工作区需要人工修复", remedy, failNotifyReason)
 		return fmt.Errorf("merge worktree unavailable: %w", wdErr)
 	} else {
 		repoDir = wd
@@ -673,7 +678,7 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0, "merge_retry_not_before": "",
 	}); err != nil {
 		return err
 	}
@@ -705,7 +710,7 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	updates := map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0, "merge_retry_not_before": "",
 	}
 
 	// Delivery-evidence refresh: re-point checkpoint_commit at the head that
@@ -1570,7 +1575,7 @@ func (r *Runner) checkRemoteMergedAndComplete(candidate task.ReadyTask, repoDir 
 	if err := yamlfrontmatter.Update(candidate.FilePath, map[string]interface{}{
 		"status": "done", "merge_approved": false, "pending_req": false,
 		"merge_status": "merged", "completed": time.Now().Format(time.RFC3339),
-		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0,
+		"phase_error_code": "", "phase_error": "", "merge_retry_count": 0, "merge_precondition_fails": 0, "merge_retry_not_before": "",
 	}); err != nil {
 		return false, err
 	}

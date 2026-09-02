@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
@@ -89,11 +91,62 @@ func findTaskBranchWorktree(repoDir, taskID string) string {
 	return ""
 }
 
-// isMergePreconditionError 区分机械前置条件失败（precondition: 前缀，
-// 由任务字段缺失/状态不符造成，修复方向明确）与语义失败（REQ hash 漂移、
-// 远端不可用等）。只有前者计入 merge_precondition_fails 防循环预算。
+// isMergePreconditionError distinguishes mechanical authorization failures
+// (missing/invalid task fields) from semantic merge failures. Only the former
+// consume the bounded merge_precondition_fails budget.
 func isMergePreconditionError(errText string) bool {
 	return strings.HasPrefix(errText, "precondition:")
+}
+
+const mergeWorktreeRetryCooldown = 30 * time.Minute
+
+// mergeRetryCooling reports whether a merge task is waiting for a human
+// repair deadline. Invalid or empty values fail open so a legacy task cannot
+// be stranded by a malformed timestamp.
+func mergeRetryCooling(notBefore string, now time.Time) bool {
+	if notBefore == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, notBefore)
+	return err == nil && now.Before(until)
+}
+
+// shellArg formats a path for a POSIX shell command embedded in a human
+// repair instruction. Plain paths stay readable; paths containing shell
+// metacharacters are single-quoted so the copied command remains safe.
+func shellArg(path string) string {
+	if path != "" && strings.IndexFunc(path, func(r rune) bool {
+		return strings.ContainsRune(" \t\n'\"$`\\;&|<>()*?![]{}", r)
+	}) == -1 {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+}
+
+// mergeWorktreeRemedy returns the actionable text written to TASK phase_error.
+// The primary checkout is never offered as a deletion target.
+func mergeWorktreeRemedy(repoDir, occupied string) string {
+	prefix := "需要人工修复 Merge 工作区；修复后 daemon 会自动继续。"
+	quotedRepo := shellArg(repoDir)
+	if occupied != "" && filepath.Clean(occupied) == filepath.Clean(repoDir) {
+		return fmt.Sprintf("%s 当前任务分支被主 checkout %s 占用。请将主 checkout 切到其它分支（例如：git -C %s switch main）；不要删除主 checkout。",
+			prefix, repoDir, quotedRepo)
+	}
+	if occupied != "" {
+		return fmt.Sprintf("%s 任务分支被 worktree %s 占用。先用 git -C %s worktree list 检查；只有确认该目录不再需要时，才执行 git -C %s worktree remove --force %s。",
+			prefix, occupied, quotedRepo, quotedRepo, shellArg(occupied))
+	}
+	return fmt.Sprintf("%s 请运行 git -C %s worktree list 与 git -C %s status 检查 worktree/分支状态。",
+		prefix, quotedRepo, quotedRepo)
+}
+
+func mergeWorktreeFailureUpdates(taskPath, targetBranch, repoDir, occupied string, cause error, now time.Time) map[string]interface{} {
+	notBefore := now.Add(mergeWorktreeRetryCooldown).Format(time.RFC3339)
+	return map[string]interface{}{
+		"phase_error_code":       string(ErrBranchOwnershipConflict),
+		"phase_error":            fmt.Sprintf("Merge 工作区无法绑定任务分支 %s：%v\n%s\n冷却截止：%s。若已修复，可运行 otg update-status %s merge_retry_not_before= 立即触发下一轮。", targetBranch, cause, mergeWorktreeRemedy(repoDir, occupied), notBefore, shellArg(taskPath)),
+		"merge_retry_not_before": notBefore,
+	}
 }
 
 func validateMergeAuthorization(auth mergeAuthorization) error {

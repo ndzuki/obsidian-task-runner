@@ -663,6 +663,7 @@ reopen_count: 0
 merge_status: ""
 approved_head: ""
 merge_retry_count: 0
+merge_retry_not_before: ""
 target_env: staging
 stage: "%s"
 review_feedback: ""

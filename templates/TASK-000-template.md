@@ -74,6 +74,7 @@ reopen_count: 0  # 交付轮次：breaking 需求变更重开 done 任务时 +1�
 merge_status: ""
 approved_head: ""
 merge_retry_count: 0  # AI 合并修复预算（冲突/CI 失败共享；merge 成功或新一轮 planning 完成时清零）
+merge_retry_not_before: ""  # Merge 工作区人工修复冷却截止（daemon 维护；修复后可清空立即重试）
 task_schema_version: 1
 req_refine_count: 0  # 需求缺口循环计数：≥3 时 Agent 主动交互，全部 AC 通过后清零
 blocked_phase: ""

@@ -154,6 +154,7 @@ type Frontmatter struct {
 	ApprovedHead           string `yaml:"approved_head"`
 	MergeRetryCount        int    `yaml:"merge_retry_count"`
 	MergePreconditionFails int    `yaml:"merge_precondition_fails"`
+	MergeRetryNotBefore    string `yaml:"merge_retry_not_before"`
 
 	// General task metadata retained by templates and dashboards.
 	Created        string   `yaml:"created"`
@@ -339,7 +340,7 @@ var taskFieldOrder = []string{
 	"refine_error", "plan_req_hash", "plan_version", "design_replan_version", "planning_retry_count",
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
-	"merge_status", "approved_head", "merge_retry_count", "merge_precondition_fails", "task_schema_version", "req_refine_count",
+	"merge_status", "approved_head", "merge_retry_count", "merge_precondition_fails", "merge_retry_not_before", "task_schema_version", "req_refine_count",
 	"round2_stall_until", "round2_stall_level",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).
@@ -436,6 +437,7 @@ var taskFieldDefaults = map[string]interface{}{
 	"approved_head":            "",
 	"merge_retry_count":        0,
 	"merge_precondition_fails": 0,
+	"merge_retry_not_before":   "",
 
 	// Grilling lease fields.
 	"grill_owner":           "",

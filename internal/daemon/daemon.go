@@ -1322,6 +1322,13 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			r.logger.Printf("task %s: parse frontmatter before dispatch: %v", t.ID, err)
 			continue
 		}
+		// A merge worktree conflict that needs a human fix is persisted in the
+		// task document. Do not even dispatch the task while its cooldown is
+		// active: this keeps the scan quiet and leaves the task visible in
+		// Obsidian with the exact repair instructions in phase_error.
+		if (fm.Status == "review" || fm.Status == "conflict") && mergeRetryCooling(fm.MergeRetryNotBefore, time.Now()) {
+			continue
+		}
 		mapFile := filepath.Join(r.cfg.SkillInstallDir, "config", "vault-map.json")
 		// Conventions/architecture gate intercept BEFORE the ready→refining
 		// transition: an EXISTING project's first task stays ready and
@@ -3856,7 +3863,10 @@ func (r *Runner) clearMergeRepairBudget(taskPath, phase string) {
 	if phase != "planning" {
 		return
 	}
-	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"merge_retry_count": 0}); err != nil {
+	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		"merge_retry_count":      0,
+		"merge_retry_not_before": "",
+	}); err != nil {
 		r.logger.Printf("task %s: clear merge repair budget: %v", filepath.Base(taskPath), err)
 	}
 }
