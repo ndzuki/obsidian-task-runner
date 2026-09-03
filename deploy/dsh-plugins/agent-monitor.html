@@ -774,7 +774,8 @@ function initBuildingSigns() {
     el.className = 'building-sign';
     el.textContent = meta.emoji || meta.symbol || '🏠';
     el.style.left = ((bd.x + bd.w / 2) / W * 100) + '%';
-    el.style.top = ((bd.y + Math.max(16, Math.round(bd.h * 0.40))) / H * 100) + '%';
+    const signTop = (bd.key === 'blocked') ? bd.y + bd.h / 2 : bd.y + Math.max(16, Math.round(bd.h * 0.40));
+    el.style.top = (signTop / H * 100) + '%';
     el.title = (meta.building || meta.label || '') + ' — ' + (meta.occupation || '');
     agentsLayer.appendChild(el);
   }
@@ -1155,21 +1156,27 @@ function drawBuilding(b, bd, pal) {
       for (let i = 0; i < 4; i++) rect(b, Math.round(cx - 5), Y + 18 + i * 12, 10, 2, glass);
       break;
     }
-    case 'needs-grilling': { // 访谈茶馆：对话气泡屋顶
-      rect(b, X + 2, Y + 16, W - 4, H - 16, wall);
-      rect(b, X + 4, Y + 6, W - 8, 14, roof);
-      rect(b, X + 12, Y + 18, 18, 8, roof);
-      px(b, X + 12, Y + 12, 0xffff5050); px(b, X + 20, Y + 12, 0xffffd858); px(b, X + 28, Y + 12, 0xff58a0e8);
-      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+    case 'needs-grilling': { // 聊天会话室：圆顶 + 大对话屏 + 讨论桌
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 8, roof);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 5), 4, roofDark);
+      rect(b, X + 6, Y + 18, W - 12, 10, glass);
+      px(b, X + 12, Y + 22, 0xff58a0e8); px(b, X + 20, Y + 22, 0xffffd858); px(b, X + 28, Y + 22, 0xffff5050);
+      rect(b, X + 14, Y + H - 14, W - 28, 4, wood); // 讨论桌
+      rect(b, X + 10, Y + H - 12, 5, 4, wood); rect(b, X + W - 15, Y + H - 12, 5, 4, wood); // 椅子
       break;
     }
-    case 'idle': { // 休息草坪：叶片小屋
-      rect(b, X + 3, Y + 14, W - 6, H - 14, wall);
-      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 9, pal.G);
-      fillEllipse(b, cx - 5, Y + 5, 7, 5, pal.L);
-      fillEllipse(b, cx + 5, Y + 5, 7, 5, pal.L);
-      rect(b, cx - 1, Y + 16, 2, H - 18, wood);
-      rect(b, X + 8, Y + 22, 8, 6, win);
+    case 'idle': { // 咖啡休息厅：条纹雨棚 + 咖啡吧台 + 户外桌椅
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      rect(b, X + 2, Y + 2, W - 4, 12, roof);
+      for (let i = 0; i < W - 4; i += 6) {
+        px(b, X + 2 + i, Y + 1, 0xffff5050); px(b, X + 2 + i + 3, Y + 1, 0xffffd858);
+        px(b, X + 2 + i, Y + 7, 0xffffd858); px(b, X + 2 + i + 3, Y + 7, 0xffff5050);
+      }
+      rect(b, X + 2, Y + 14, W - 4, 2, roofDark);
+      rect(b, X + 8, Y + 20, 8, 6, wood); px(b, X + 11, Y + 18, win); // 吧台咖啡杯
+      rect(b, X + 14, Y + H - 14, W - 28, 4, wood); // 户外桌
+      rect(b, X + 10, Y + H - 12, 4, 3, wood); rect(b, X + W - 14, Y + H - 12, 4, 3, wood); // 椅子
       break;
     }
     case 'implementing': { // 开发工厂：锯齿厂房 + 传送带齿轮
@@ -1235,11 +1242,18 @@ function drawBuilding(b, bd, pal) {
       px(b, cx - 7, Y + 25, pal.Y); px(b, cx + 7, Y + 25, pal.Y); px(b, cx, Y + 18, pal.Y); px(b, cx, Y + 32, pal.Y);
       break;
     }
-    case 'blocked': { // 阻塞亭：红黄路障檐
-      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
-      rect(b, X + 2, Y + 2, W - 4, 10, roof);
-      for (let i = 0; i < W - 4; i += 8) { px(b, X + 2 + i, Y + 1, 0xffff5050); px(b, X + 2 + i + 3, Y + 1, 0xffffd858); px(b, X + 2 + i, Y + 7, 0xffffd858); px(b, X + 2 + i + 3, Y + 7, 0xffff5050); }
-      rect(b, X + 6, Y + 22, 8, 6, win);
+    case 'blocked': { // 阻塞等待：不画建筑，只用警示围栏围住
+      const fx = X + 2, fy = Y + 2, fw = W - 4, fh = H - 4;
+      for (let i = 0; i < Math.ceil(fw / 10); i++) {
+        rect(b, fx + i * 10, fy, 3, fh, roofDark);
+        rect(b, fx + i * 10, fy, 3, 4, roof);
+      }
+      rect(b, fx, fy + 2, fw, 2, roofDark);
+      rect(b, fx, fy + fh - 4, fw, 2, roofDark);
+      for (let i = 0; i < fw; i += 6) {
+        px(b, fx + i, fy + 2, 0xffff5050); px(b, fx + i + 2, fy + 2, 0xffffd858);
+        px(b, fx + i, fy + fh - 4, 0xffffd858); px(b, fx + i + 2, fy + fh - 4, 0xffff5050);
+      }
       break;
     }
     default: { // 通用平顶
@@ -1250,15 +1264,17 @@ function drawBuilding(b, bd, pal) {
   }
 
   // 普通窗户兜底：没有单独点窗的建筑补两个
-  if (!['refining','conventions','knowledge','priority','pm','split','closed','working','blocked','ready','review','merge'].includes(key)) {
+  if (!['refining','planning','plan-review','design','conventions','knowledge','priority','pm','split','closed','ready','audit','needs-grilling','idle','implementing','review','merge','conflict','done','working','blocked'].includes(key)) {
     rect(b, X + 6, Y + 24, 8, 6, win); rect(b, X + W - 14, Y + 24, 8, 6, win);
   }
 
-  // 大门（保留 door 方向，功能不变）
-  if (bd.door === 'south') { rect(b, cx - 5, Y + H - 13, 10, 12, door); }
-  else if (bd.door === 'north') { rect(b, cx - 5, Y + 1, 10, 12, door); }
-  else if (bd.door === 'east') { rect(b, X + W - 12, Y + H / 2 - 5, 11, 10, door); }
-  else { rect(b, X + 1, Y + H / 2 - 5, 11, 10, door); }
+  // 大门（保留 door 方向，功能不变；围栏没有门）
+  if (key !== 'blocked') {
+    if (bd.door === 'south') { rect(b, cx - 5, Y + H - 13, 10, 12, door); }
+    else if (bd.door === 'north') { rect(b, cx - 5, Y + 1, 10, 12, door); }
+    else if (bd.door === 'east') { rect(b, X + W - 12, Y + H / 2 - 5, 11, 10, door); }
+    else { rect(b, X + 1, Y + H / 2 - 5, 11, 10, door); }
+  }
 }
 
 function drawFountain(b, pal, cx, cy) {
