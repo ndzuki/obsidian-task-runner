@@ -739,7 +739,13 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "/obsidian-task-runner-pm consolidate") {
+	// dshTaskText 有两种合法输出形态：
+	//   - 本地存在 ~/.dsh/skills/obsidian-task-runner-pm/SKILL.md 时注入正文，
+	//     arg 行是「任务参数：consolidate …」；
+	//   - CI/无 skill 目录时走 fallback，保留斜杠命令
+	//     「/obsidian-task-runner-pm consolidate …」。
+	// 两种形态都必须命中，任一命中即通过。
+	if !strings.Contains(args, "/obsidian-task-runner-pm consolidate") && !strings.Contains(args, "任务参数：consolidate") {
 		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 	if !strings.Contains(args, "TASK-012") || !strings.Contains(args, "TASK-074") {
@@ -787,7 +793,9 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "/obsidian-task-runner-pm distribute") {
+	// 同 consolidate：skill 正文注入形态（任务参数：distribute …）与
+	// fallback 斜杠命令形态（/obsidian-task-runner-pm distribute …）均合法。
+	if !strings.Contains(args, "/obsidian-task-runner-pm distribute") && !strings.Contains(args, "任务参数：distribute") {
 		t.Fatalf("pm args = %q, want distribute prompt", args)
 	}
 	if !strings.Contains(args, "Grilling-Decisions.md") {

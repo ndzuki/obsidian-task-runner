@@ -1068,7 +1068,7 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)
@@ -1158,6 +1158,22 @@ function firstUserText(session) {
     if (text !== "") return text
   }
   return ""
+}
+
+/** 提取子会话创建描述（subagent/descriptor 的 label/model 等）。 */
+function subagentDescriptor(session) {
+  const events = sessionEvents(session)
+  for (const event of events) {
+    if (event?.type !== "subagent/descriptor" || event?.data == null) continue
+    const d = event.data
+    return {
+      label: typeof d.label === "string" ? d.label : "",
+      mode: typeof d.mode === "string" ? d.mode : "",
+      provider: typeof d.agentProvider === "string" ? d.agentProvider : "",
+      model: typeof d.agentModel === "string" ? d.agentModel : "",
+    }
+  }
+  return null
 }
 
 /** 从首条用户文本推导监控面板的 phase/task 标签。 */
@@ -1604,6 +1620,8 @@ export function apply(ctx, config = {}) {
       if (finishedRuns.has(sid)) continue
       const text = firstUserText(agent.session)
       const { phase, task, project } = labelFromText(text)
+      const desc = subagentDescriptor(agent.session)
+      const header = agent.session?.header ?? {}
       // 最近事件时间：daemon 侧超时判定用——有近期活动 = turn 仍在推进
       // （timeout_active，继续等）；长时间无事件 = wedged（cancel）。
       // 事件携带 epoch-ms `time` 字段；回退到会话创建时间。
@@ -1628,6 +1646,12 @@ export function apply(ctx, config = {}) {
         elapsed: Math.max(0, Math.floor((now - sessionCreatedAtMs(agent.session)) / 1000)),
         lastEventAt,
         seq: Number(agent.session?.seq ?? 0),
+        label: desc?.label ?? "",
+        kind: header.origin === "subagent" ? "subagent" : (taskIdBySession.has(sid) ? "task" : "session"),
+        parentSessionId: typeof header.parentSession === "string" ? header.parentSession : "",
+        delegationDepth: typeof header.delegationDepth === "number" ? header.delegationDepth : 0,
+        provider: desc?.provider ?? "",
+        model: desc?.model ?? "",
       })
     }
     return out

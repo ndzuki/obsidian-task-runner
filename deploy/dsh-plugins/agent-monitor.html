@@ -44,7 +44,7 @@
 
   .agent-hit { position: absolute; transform: translate(-50%,-100%); pointer-events: auto; cursor: pointer; z-index: 5; width: 26px; height: 32px; }
   .agent-hit .ab { position: absolute; left: 50%; bottom: 42px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #e5e9f0; padding: 3px 7px; font-size: 11px; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,.4); opacity: 0; transition: opacity .3s; pointer-events: none; }
-  .agent-hit .at { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #9bbc0f; padding: 1px 6px; font-size: 10px; border-radius: 4px; pointer-events: none; font-family: ui-monospace, monospace; }
+  .agent-hit .at { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #9bbc0f; padding: 1px 6px; font-size: 10px; border-radius: 4px; pointer-events: none; font-family: ui-monospace, monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
   .agent-hit .heart { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); font-size: 16px; opacity: 0; pointer-events: none; }
   .agent-hit .heart.show { animation: heartUp 1s ease-out forwards; }
   @keyframes heartUp { 0% { opacity: 0; transform: translate(-50%,0) scale(.6); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-46px) scale(1.4); } }
@@ -59,7 +59,8 @@
   .roster-item:hover { border-color: var(--accent); }
   .roster-item .ava { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; font-size: 15px; }
   .roster-item .info { min-width: 0; flex: 1; }
-  .roster-item .name { font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  .roster-item .name { font-size: 12px; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
+  .roster-item .rel { background: #334155; color: #cbd5e1; border-radius: 4px; padding: 0 4px; font-size: 9px; line-height: 14px; font-family: ui-monospace, monospace; flex: none; }
   .roster-item .dot { width: 8px; height: 8px; border-radius: 50%; }
   .roster-item .task { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .roster-item .meta { color: var(--dim); font-size: 10px; margin-top: 2px; }
@@ -645,6 +646,34 @@ function stageKey(a) {
 function shortSession(sid) { if (!sid) return 'agent'; if (sid.startsWith('session-')) return sid.slice(8, 14); return sid.slice(0, 6); }
 function fmtElapsed(sec) { sec = Number(sec || 0); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; return h > 0 ? h + 'h' + m + 'm' : (m > 0 ? m + 'm' + s + 's' : s + 's'); }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function agentName(a) {
+  const d = a && a.data || {};
+  const label = String(d.label || '').trim();
+  if (label) return label;
+  const task = String(d.task || '').split('\n')[0].trim();
+  if (task) return task.length > 26 ? task.slice(0, 26) + '…' : task;
+  return shortSession(d.sessionId);
+}
+function agentRootInfo(a) {
+  const seen = new Set();
+  let cur = a;
+  while (cur && cur.data) {
+    const d = cur.data;
+    if (d.taskId) return { sessionId: d.sessionId, taskId: d.taskId, task: String(d.task || '').split('\n')[0], project: d.project || '' };
+    const pid = d.parentSessionId;
+    if (!pid || seen.has(pid)) break;
+    seen.add(pid);
+    cur = agents.get(pid);
+  }
+  return null;
+}
+function agentParentName(a) {
+  const pid = a && a.data && a.data.parentSessionId;
+  if (!pid) return '';
+  const p = agents.get(pid);
+  return p ? agentName(p) : shortSession(pid);
+}
 
 function palNow(now) {
   const t = now + TIME_OFFSET;
@@ -1932,8 +1961,8 @@ function syncOverlay() {
     const bubble = a.hit.querySelector('.ab');
     const tag = a.hit.querySelector('.at');
     if (bubble) bubble.textContent = meta.bubble + ' ' + meta.symbol;
-    if (tag) tag.textContent = (a.data.status === 'idle' ? '☕ ' : '') + meta.label;
-    a.hit.title = meta.label + ' · ' + String(a.data.task || '').split('\n')[0];
+    if (tag) tag.textContent = (a.data.status === 'idle' ? '☕ ' : '') + (agentName(a) || meta.label).slice(0, 22);
+    a.hit.title = (agentRootInfo(a) ? '[' + agentRootInfo(a).task + '] ' : '') + agentName(a) + ' · ' + meta.label;
   }
   for (const p of passers) {
     if (!p.hit) continue;
@@ -2027,12 +2056,15 @@ function renderRoster() {
   if (!items.length) { rosterEl.innerHTML = '<div class="empty">暂无 agent</div>'; return; }
   rosterEl.innerHTML = items.map((a) => {
     const meta = STAGE[a.key] || STAGE.working;
-    const task = String(a.data.task || '').split('\n')[0] || '未知任务';
+    const root = agentRootInfo(a);
+    const ownTask = String(a.data.task || '').split('\n')[0].trim();
+    const task = root ? root.task : (ownTask || '未知任务');
+    const proj = root && root.project ? root.project : (a.data.project || '');
     return '<div class="roster-item" onclick="showDetail(\'' + esc(a.sid) + '\')">' +
       '<div class="ava">' + meta.emoji + '</div>' +
-      '<div class="info"><div class="name"><span class="dot" style="background:' + meta.color + '"></span>' + esc(meta.label) + ' · ' + esc(shortSession(a.sid)) + '</div>' +
-      '<div class="task">' + esc(task) + '</div>' +
-      '<div class="meta">' + esc(a.data.status === 'idle' ? '休息中' : '工作中') + ' · ' + esc(fmtElapsed(a.data.elapsed)) + (a.data.project ? ' · ' + esc(a.data.project) : '') + '</div></div></div>';
+      '<div class="info"><div class="name"><span class="dot" style="background:' + meta.color + '"></span>' + esc(agentName(a)) + (a.data.delegationDepth ? '<span class="rel">#' + a.data.delegationDepth + '</span>' : '') + '</div>' +
+      '<div class="task">' + esc(task) + (proj ? ' · ' + esc(proj) : '') + '</div>' +
+      '<div class="meta">' + esc(meta.label) + ' · ' + esc(a.data.status === 'idle' ? '休息中' : '工作中') + ' · ' + esc(fmtElapsed(a.data.elapsed)) + '</div></div></div>';
   }).join('');
 }
 function logEvent(icon, data, text) {
@@ -2056,19 +2088,26 @@ function showDetail(sid) {
   selectedId = sid;
   const meta = STAGE[a.key] || STAGE.working;
   const task = String(a.data.task || '').split('\n')[0] || '未知任务';
+  const root = agentRootInfo(a);
+  const parentName = agentParentName(a);
   $('#dAva').textContent = meta.emoji;
-  $('#dTitle').textContent = meta.label + ' · ' + shortSession(sid);
+  $('#dTitle').textContent = (agentName(a) || meta.label) + ' · ' + meta.label;
   $('#dSub').textContent = a.data.sessionId || '';
   const bname = meta.building || '—';
   const occ = meta.occupation || meta.label;
   const zone = meta.zone || '—';
+  const ownerTask = root ? root.task + (root.project ? ' · ' + root.project : '') : '';
   $('#dKv').innerHTML =
+    '<dt>名称</dt><dd>' + esc(agentName(a)) + '</dd>' +
     '<dt>阶段</dt><dd>' + esc(meta.label) + ' ' + meta.emoji + ' ' + esc(a.data.phase || '') + '</dd>' +
+    '<dt>归属任务</dt><dd>' + esc(ownerTask || task) + '</dd>' +
+    (a.data.delegationDepth ? '<dt>层级</dt><dd>子会话 #' + a.data.delegationDepth + '</dd>' : '<dt>层级</dt><dd>主会话</dd>') +
+    (a.data.parentSessionId ? '<dt>上级</dt><dd>' + esc(parentName || a.data.parentSessionId) + '</dd>' : '') +
     '<dt>职业</dt><dd>' + esc(occ) + '</dd>' +
     '<dt>工位</dt><dd>' + esc(bname) + '</dd>' +
     '<dt>分区</dt><dd>' + esc(zone) + '</dd>' +
-    '<dt>任务</dt><dd>' + esc(task) + '</dd>' +
-    '<dt>项目</dt><dd>' + esc(a.data.project || '—') + '</dd>' +
+    '<dt>项目</dt><dd>' + esc(root && root.project ? root.project : (a.data.project || '—')) + '</dd>' +
+    (a.data.model ? '<dt>模型</dt><dd>' + esc(a.data.model) + '</dd>' : '') +
     '<dt>状态</dt><dd>' + esc(a.data.status === 'idle' ? '休息' : '工作中') + '</dd>' +
     '<dt>动作</dt><dd>' + esc(a.state === 'working' ? '正在工位' : (a.state === 'toWork' ? '前往工位' : (a.state === 'walk' ? '小镇游走' : '空闲'))) + '</dd>' +
     '<dt>时长</dt><dd>' + esc(fmtElapsed(a.data.elapsed)) + '</dd>';

@@ -658,7 +658,7 @@ status: proposed
 
 // --- Agent Town 会话标签：session.events 兼容 shim（alpha.4+ 移除 .events） ---
 {
-  const { sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs } = _kbTest
+  const { sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor } = _kbTest
 
   // 旧版：session.events 直接存在。
   const legacy = { events: [{ type: "user/message", seq: 1, time: 100, data: { content: [{ type: "text", text: "TASK-001 legacy" }] } }] }
@@ -686,7 +686,21 @@ status: proposed
   // sessionCreatedAtMs 缺 createdAt 时从 ownEvents 首事件取时间。
   const created = sessionCreatedAtMs({ ownEvents: () => [{ type: "user/message", time: 123456 }] })
   assert.strictEqual(created, 123456, "createdAt falls back to first own event time")
-  console.log("PASS sessionEvents/firstUserText/labelFromText/sessionCreatedAtMs")
+
+  // subagentDescriptor 从 subagent/descriptor 事件提取 label/model。
+  const desc = subagentDescriptor({
+    ownEvents: () => [
+      { type: "subagent/descriptor", data: { mode: "continuable", label: "Rust 代码审查", agentProvider: "deepseek_magic", agentModel: "deepseek-v4-pro" } },
+    ],
+  })
+  assert.deepStrictEqual(desc, {
+    label: "Rust 代码审查",
+    mode: "continuable",
+    provider: "deepseek_magic",
+    model: "deepseek-v4-pro",
+  }, "subagent descriptor extracted")
+  assert.strictEqual(subagentDescriptor({ ownEvents: () => [] }), null, "no descriptor -> null")
+  console.log("PASS sessionEvents/firstUserText/labelFromText/sessionCreatedAtMs/subagentDescriptor")
 }
 
 console.log("agent-server KB-first tests: all passed")
