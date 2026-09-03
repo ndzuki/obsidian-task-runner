@@ -46,7 +46,7 @@
   .agent-hit .ab { position: absolute; left: 50%; bottom: 42px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #e5e9f0; padding: 3px 7px; font-size: 11px; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,.4); opacity: 0; transition: opacity .3s; pointer-events: none; }
   .agent-hit .at { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #9bbc0f; padding: 1px 6px; font-size: 10px; border-radius: 4px; pointer-events: none; font-family: ui-monospace, monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
   .agent-hit .heart { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); font-size: 16px; opacity: 0; pointer-events: none; }
-  .building-sign { position: absolute; transform: translate(-50%,-50%); font-size: 17px; line-height: 1; pointer-events: none; z-index: 3; text-shadow: 0 1px 2px rgba(0,0,0,.5), 0 1px 1px rgba(0,0,0,.35); }
+  .building-sign { position: absolute; transform: translate(-50%,-50%); font-size: 18px; line-height: 1; pointer-events: none; z-index: 3; text-shadow: 0 1px 2px rgba(0,0,0,.5), 0 1px 1px rgba(0,0,0,.35); }
   .agent-hit .heart.show { animation: heartUp 1s ease-out forwards; }
   @keyframes heartUp { 0% { opacity: 0; transform: translate(-50%,0) scale(.6); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-46px) scale(1.4); } }
   .agent-hit.visible .ab { opacity: 1; }
@@ -135,12 +135,7 @@
     <span class="stat">完工 <b id="finished">0</b></span>
   </div>
 </header>
-<div class="legend">
-  <span>📖 需求精炼</span><span>🧭 规划</span><span>⚖️ 评审</span><span>🏭 开发工厂</span>
-  <span>🎯 验收</span><span>🛰️ 合并</span><span>🔍 审计</span><span>🏛️ 统筹</span>
-  <span>🎨 设计</span><span>🧩 拆分</span><span>🚧 阻塞</span><span>💬 访谈</span>
-  <span>🏆 完成</span><span>⏳ 待命</span><span>🌳 知识</span><span><b>💡 点击居民查看任务</b></span>
-</div>
+<div class="legend" id="legend"></div>
 <main class="layout">
   <section class="town-panel">
     <div class="town" id="town">
@@ -785,6 +780,16 @@ function initBuildingSigns() {
   }
 }
 
+/* 顶部图例：从 BUILDING_DEFS 动态生成，确保与小镇建筑图标一一对应、不缺项。 */
+function initLegend() {
+  const legendEl = $('#legend');
+  if (!legendEl) return;
+  legendEl.innerHTML = BUILDING_DEFS.map((bd) => {
+    const meta = STAGE[bd.key] || STAGE.working;
+    return '<span>' + (meta.emoji || meta.symbol || '🏠') + ' ' + esc(meta.label || '') + '</span>';
+  }).join('') + '<span><b>💡 点击居民查看任务</b></span>';
+}
+
 /* 静态自然障碍：初始化时一次性写入 walkGrid，避免每帧重复标记 */
 const TREE_SPOTS = [[20,40],[100,30],[200,30],[300,30],[520,30],[620,30],[720,30],[820,30],[20,160],[20,220],[20,380],[20,470],[900,220],[900,160],[920,340],[840,220],[900,470],[400,390],[300,350],[230,350]];
 const NATURE_RECTS = [
@@ -1261,6 +1266,7 @@ function drawStations(b, pal) {
 
 buildStationMap();
 buildNatureMap();
+initLegend();
 initBuildingSigns();
 /* ---------- NPC ---------- */
 const VILLAGER_PALETTES = ['#e85d3a', '#f4a7b9', '#58a858', '#5c8af0', '#f0c858', '#b06ad0', '#4ad0b0', '#e07050', '#70c8e0', '#d080c0'];
