@@ -977,122 +977,133 @@ function drawFarm(b, pal, x, y, w, h) {
   }
 }
 /* 职业特色建筑小徽记 */
-function drawBuildingSymbol(b, key, cx, cy, co) {
+function drawBuildingSymbol(b, key, cx, cy, co, scale) {
+  const s = scale || 1;
+  const R = (x, y, w, h, c) => {
+    const X = Math.round(cx + x * s), Y = Math.round(cy + y * s);
+    const W = Math.max(1, Math.round(w * s)), H = Math.max(1, Math.round(h * s));
+    rect(b, X, Y, W, H, c);
+  };
+  const P = (x, y, c) => {
+    const px = Math.max(1, Math.round(s));
+    rect(b, Math.round(cx + x * s), Math.round(cy + y * s), px, px, c);
+  };
+  const E = (x, y, rx, ry, c) => fillEllipse(b, Math.round(cx + x * s), Math.round(cy + y * s), Math.max(1, Math.round(rx * s)), Math.max(1, Math.round(ry * s)), c);
   const { ink, white, yellow, red, green, blue, brown } = co;
   switch (key) {
     case 'refining': // 翻开的书（两页 + 书脊）
-      rect(b, cx - 10, cy - 9, 9, 17, white);
-      rect(b, cx + 1, cy - 9, 9, 17, white);
-      rect(b, cx - 1, cy - 9, 2, 18, ink);
-      rect(b, cx - 10, cy - 2, 9, 1, ink); rect(b, cx + 1, cy - 2, 9, 1, ink);
-      rect(b, cx - 10, cy + 3, 9, 1, ink); rect(b, cx + 1, cy + 3, 9, 1, ink);
+      R(-10, -9, 9, 17, white);
+      R(1, -9, 9, 17, white);
+      R(-1, -9, 2, 18, ink);
+      R(-10, -2, 9, 1, ink); R(1, -2, 9, 1, ink);
+      R(-10, 3, 9, 1, ink); R(1, 3, 9, 1, ink);
       break;
     case 'planning': // 地图 + 定位针
-      rect(b, cx - 9, cy - 6, 18, 14, blue);
-      rect(b, cx - 9, cy - 2, 18, 2, white); rect(b, cx - 2, cy - 6, 2, 14, white);
-      px(b, cx + 4, cy - 10, red); rect(b, cx + 3, cy - 9, 2, 4, red);
+      R(-9, -6, 18, 14, blue);
+      R(-9, -2, 18, 2, white); R(-2, -6, 2, 14, white);
+      P(4, -10, red); R(3, -9, 2, 4, red);
       break;
     case 'plan-review': // 法槌
-      rect(b, cx - 8, cy - 10, 16, 6, brown);
-      rect(b, cx - 2, cy - 4, 4, 14, brown);
-      rect(b, cx - 9, cy + 8, 18, 3, ink);
+      R(-8, -10, 16, 6, brown);
+      R(-2, -4, 4, 14, brown);
+      R(-9, 8, 18, 3, ink);
       break;
     case 'design': // 调色盘
-      fillEllipse(b, cx, cy, 11, 9, white);
-      fillEllipse(b, cx + 7, cy + 5, 2, 2, ink);
-      px(b, cx - 6, cy - 2, red); px(b, cx, cy - 4, blue); px(b, cx + 5, cy - 2, green); px(b, cx + 4, cy + 4, yellow);
+      E(0, 0, 11, 9, white);
+      E(7, 5, 2, 2, ink);
+      P(-6, -2, red); P(0, -4, blue); P(5, -2, green); P(4, 4, yellow);
       break;
     case 'conventions': // 文件叠 + 文字线
-      rect(b, cx - 9, cy - 9, 18, 4, white);
-      rect(b, cx - 9, cy - 4, 18, 4, white);
-      rect(b, cx - 9, cy + 1, 18, 4, white);
-      rect(b, cx - 9, cy + 6, 18, 2, ink);
-      rect(b, cx - 6, cy - 8, 8, 1, ink); rect(b, cx - 6, cy - 3, 8, 1, ink); rect(b, cx - 6, cy + 2, 8, 1, ink);
+      R(-9, -9, 18, 4, white);
+      R(-9, -4, 18, 4, white);
+      R(-9, 1, 18, 4, white);
+      R(-9, 6, 18, 2, ink);
+      R(-6, -8, 8, 1, ink); R(-6, -3, 8, 1, ink); R(-6, 2, 8, 1, ink);
       break;
     case 'knowledge': // 知识树
-      rect(b, cx - 2, cy - 2, 4, 11, brown);
-      fillEllipse(b, cx, cy - 8, 9, 7, green);
-      px(b, cx - 6, cy - 10, green); px(b, cx + 6, cy - 10, green); px(b, cx, cy - 14, green);
-      px(b, cx, cy - 6, yellow);
+      R(-2, -2, 4, 11, brown);
+      E(0, -8, 9, 7, green);
+      P(-6, -10, green); P(6, -10, green); P(0, -14, green);
+      P(0, -6, yellow);
       break;
     case 'priority': // 红旗
-      rect(b, cx - 4, cy - 10, 3, 20, ink);
-      rect(b, cx - 1, cy - 10, 12, 8, red);
+      R(-4, -10, 3, 20, ink);
+      R(-1, -10, 12, 8, red);
       break;
     case 'pm': // 同心靶心
-      fillEllipse(b, cx, cy, 9, 9, white);
-      fillEllipse(b, cx, cy, 6, 6, red);
-      fillEllipse(b, cx, cy, 3, 3, white);
-      fillEllipse(b, cx, cy, 1, 1, red);
+      E(0, 0, 9, 9, white);
+      E(0, 0, 6, 6, red);
+      E(0, 0, 3, 3, white);
+      E(0, 0, 1, 1, red);
       break;
     case 'split': // 剪刀（两刃 + 两个环）
-      rect(b, cx - 8, cy - 8, 3, 16, ink); rect(b, cx + 5, cy - 8, 3, 16, ink);
-      fillEllipse(b, cx - 7, cy + 8, 3, 3, ink); fillEllipse(b, cx + 7, cy + 8, 3, 3, ink);
-      px(b, cx - 1, cy - 5, ink); px(b, cx, cy - 4, ink); px(b, cx + 1, cy - 3, ink);
+      R(-8, -8, 3, 16, ink); R(5, -8, 3, 16, ink);
+      E(-7, 8, 3, 3, ink); E(7, 8, 3, 3, ink);
+      P(-1, -5, ink); P(0, -4, ink); P(1, -3, ink);
       break;
     case 'audit': // 放大镜
-      fillEllipse(b, cx - 2, cy - 2, 8, 7, white);
-      fillEllipse(b, cx - 2, cy - 2, 6, 5, blue);
-      rect(b, cx + 4, cy + 3, 6, 4, ink);
-      rect(b, cx + 2, cy + 1, 3, 3, ink);
+      E(-2, -2, 8, 7, white);
+      E(-2, -2, 6, 5, blue);
+      R(4, 3, 6, 4, ink);
+      R(2, 1, 3, 3, ink);
       break;
     case 'closed': // 挂锁
-      rect(b, cx - 4, cy - 10, 8, 5, ink);
-      rect(b, cx - 6, cy - 5, 12, 12, yellow);
-      px(b, cx, cy - 2, ink);
+      R(-4, -10, 8, 5, ink);
+      R(-6, -5, 12, 12, yellow);
+      P(0, -2, ink);
       break;
     case 'needs-grilling': // 对话气泡（三点）
-      rect(b, cx - 10, cy - 6, 20, 12, white);
-      rect(b, cx - 4, cy + 6, 8, 4, white);
-      px(b, cx - 4, cy - 3, ink); px(b, cx, cy - 3, ink); px(b, cx + 4, cy - 3, ink);
+      R(-10, -6, 20, 12, white);
+      R(-4, 6, 8, 4, white);
+      P(-4, -3, ink); P(0, -3, ink); P(4, -3, ink);
       break;
     case 'idle': // 咖啡杯 + 热气
-      rect(b, cx - 7, cy - 2, 14, 11, white);
-      px(b, cx + 7, cy, ink); rect(b, cx + 7, cy + 2, 3, 3, ink);
-      px(b, cx - 3, cy - 8, ink); px(b, cx, cy - 11, ink); px(b, cx + 3, cy - 8, ink);
+      R(-7, -2, 14, 11, white);
+      P(7, 0, ink); R(7, 2, 3, 3, ink);
+      P(-3, -8, ink); P(0, -11, ink); P(3, -8, ink);
       break;
     case 'implementing': // 工厂 + 齿轮
-      rect(b, cx - 10, cy - 4, 20, 14, ink);
-      rect(b, cx - 4, cy - 12, 4, 10, ink);
-      fillEllipse(b, cx, cy + 2, 5, 5, yellow); px(b, cx, cy + 2, ink);
-      rect(b, cx - 10, cy - 4, 20, 2, red);
+      R(-10, -4, 20, 14, ink);
+      R(-4, -12, 4, 10, ink);
+      E(0, 2, 5, 5, yellow); P(0, 2, ink);
+      R(-10, -4, 20, 2, red);
       break;
     case 'review': // 大对勾
-      rect(b, cx - 9, cy + 2, 3, 3, green); px(b, cx - 7, cy + 4, green); px(b, cx - 5, cy + 6, green); px(b, cx - 4, cy + 7, green);
-      px(b, cx - 2, cy + 5, green); px(b, cx, cy + 2, green); px(b, cx + 3, cy - 2, green); px(b, cx + 6, cy - 6, green); px(b, cx + 9, cy - 9, green);
+      R(-9, 2, 3, 3, green); P(-7, 4, green); P(-5, 6, green); P(-4, 7, green);
+      P(-2, 5, green); P(0, 2, green); P(3, -2, green); P(6, -6, green); P(9, -9, green);
       break;
     case 'merge': // 双箭头汇流
-      rect(b, cx - 9, cy - 8, 3, 8, blue); rect(b, cx + 6, cy - 8, 3, 8, blue);
-      rect(b, cx - 3, cy - 4, 3, 8, blue); rect(b, cx + 0, cy - 4, 3, 8, blue);
-      rect(b, cx - 3, cy + 4, 9, 3, blue); px(b, cx + 4, cy + 2, blue); px(b, cx + 4, cy + 8, blue);
-      px(b, cx + 6, cy + 5, blue);
+      R(-9, -8, 3, 8, blue); R(6, -8, 3, 8, blue);
+      R(-3, -4, 3, 8, blue); R(0, -4, 3, 8, blue);
+      R(-3, 4, 9, 3, blue); P(4, 2, blue); P(4, 8, blue);
+      P(6, 5, blue);
       break;
     case 'conflict': // 警告三角 + !
-      rect(b, cx - 9, cy + 4, 18, 3, red);
-      rect(b, cx - 6, cy - 3, 12, 7, red);
-      rect(b, cx - 3, cy - 9, 6, 6, red);
-      px(b, cx, cy - 8, yellow); px(b, cx, cy - 6, yellow); px(b, cx, cy - 1, yellow); px(b, cx, cy + 2, yellow);
+      R(-9, 4, 18, 3, red);
+      R(-6, -3, 12, 7, red);
+      R(-3, -9, 6, 6, red);
+      P(0, -8, yellow); P(0, -6, yellow); P(0, -1, yellow); P(0, 2, yellow);
       break;
     case 'done': // 奖杯
-      rect(b, cx - 5, cy - 6, 10, 9, yellow);
-      px(b, cx - 7, cy - 6, yellow); px(b, cx + 7, cy - 6, yellow); rect(b, cx - 7, cy - 7, 2, 3, yellow); rect(b, cx + 5, cy - 7, 2, 3, yellow);
-      rect(b, cx - 3, cy + 3, 6, 3, yellow); rect(b, cx - 6, cy + 6, 12, 3, brown);
+      R(-5, -6, 10, 9, yellow);
+      P(-7, -6, yellow); P(7, -6, yellow); R(-7, -7, 2, 3, yellow); R(5, -7, 2, 3, yellow);
+      R(-3, 3, 6, 3, yellow); R(-6, 6, 12, 3, brown);
       break;
     case 'working': // 齿轮
-      fillEllipse(b, cx, cy, 9, 9, ink);
-      px(b, cx - 9, cy - 2, green); px(b, cx + 9, cy + 2, green); px(b, cx, cy + 9, green); px(b, cx - 7, cy + 7, green); px(b, cx + 7, cy - 7, green);
-      fillEllipse(b, cx, cy, 3, 3, white);
+      E(0, 0, 9, 9, ink);
+      P(-9, -2, green); P(9, 2, green); P(0, 9, green); P(-7, 7, green); P(7, -7, green);
+      E(0, 0, 3, 3, white);
       break;
     case 'ready': // 绿灯
-      fillEllipse(b, cx, cy, 9, 9, green);
-      fillEllipse(b, cx, cy, 6, 6, white);
-      fillEllipse(b, cx, cy, 4, 4, green);
+      E(0, 0, 9, 9, green);
+      E(0, 0, 6, 6, white);
+      E(0, 0, 4, 4, green);
       break;
     case 'blocked': // 红黄路障
-      rect(b, cx - 10, cy + 4, 20, 3, red);
-      rect(b, cx - 10, cy, 20, 3, yellow);
-      rect(b, cx - 10, cy - 4, 20, 3, red);
-      rect(b, cx - 3, cy - 8, 3, 12, ink);
+      R(-10, 4, 20, 3, red);
+      R(-10, 0, 20, 3, yellow);
+      R(-10, -4, 20, 3, red);
+      R(-3, -8, 3, 12, ink);
       break;
   }
 }
@@ -1100,20 +1111,30 @@ function drawBuildingSymbol(b, key, cx, cy, co) {
 function drawBuildingEmblem(b, bd, pal, cx, cy) {
   const key = bd.key;
   const darkBase = shade('#1a1c2c', pal.bright, pal.nightF, pal.duskF);
-  // 直接画在墙体上：右下 2px 暗色浮雕影，不产生脱离感
+  const border = shade('#3a4a6b', pal.bright, pal.nightF, pal.duskF);
+  const scale = 1.4;
+  // 深色标牌底板：与白色墙体形成强对比，避免浅色符号混进墙面
+  const pw = 38, ph = 46;
+  const px0 = Math.round(cx - pw / 2), py0 = Math.round(cy - ph / 2);
+  rect(b, px0, py0, pw, ph, darkBase);
+  rect(b, px0, py0, pw, 1, border);
+  rect(b, px0, py0, 1, ph, border);
+  rect(b, px0 + pw - 1, py0, 1, ph, border);
+  rect(b, px0, py0 + ph - 1, pw, 1, border);
+  // 右下 2px 暗色浮雕影，不产生脱离感
   const shadow = { ink: darkBase, white: darkBase, yellow: darkBase, red: darkBase, green: darkBase, blue: darkBase, brown: darkBase };
-  drawBuildingSymbol(b, key, cx + 2, cy + 2, shadow);
+  drawBuildingSymbol(b, key, cx + 2, cy + 2, shadow, scale);
   // 正面亮色大图标
   const colors = {
-    ink: shade('#1f2430', pal.bright, pal.nightF, pal.duskF),
+    ink: shade('#f8fafc', pal.bright, pal.nightF, pal.duskF),
     white: shade('#ffffff', pal.bright, pal.nightF, pal.duskF),
     yellow: shade('#ffd858', pal.bright, pal.nightF, pal.duskF),
     red: shade('#ff5050', pal.bright, pal.nightF, pal.duskF),
     green: shade('#58d858', pal.bright, pal.nightF, pal.duskF),
     blue: shade('#58a0e8', pal.bright, pal.nightF, pal.duskF),
-    brown: shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF)
+    brown: shade('#b07a46', pal.bright, pal.nightF, pal.duskF)
   };
-  drawBuildingSymbol(b, key, cx, cy, colors);
+  drawBuildingSymbol(b, key, cx, cy, colors, scale);
 }
 
 function drawBuilding(b, bd, pal) {
