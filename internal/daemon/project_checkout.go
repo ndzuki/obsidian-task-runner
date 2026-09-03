@@ -57,26 +57,17 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 		if err := project.RegisterProject(mapFile, t.Project, checkout, gitRemote, false); err != nil {
 			r.logger.Printf("task %s: register promoted checkout path: %v", t.ID, err)
 		}
+		if err := r.ensureCheckoutGitInitialized(t, checkout); err != nil {
+			return fallbackPath, fmt.Errorf("initialize checkout %s: %w", checkout, err)
+		}
 		r.ensureCheckoutRemoteRepo(t, checkout, gitRemote)
 		return checkout, nil
 	}
 	if err := os.MkdirAll(checkout, 0o755); err != nil {
 		return fallbackPath, fmt.Errorf("create checkout %s: %w", checkout, err)
 	}
-	if out, err := exec.Command("git", "-C", checkout, "init", "-b", "main").CombinedOutput(); err != nil {
-		return fallbackPath, fmt.Errorf("git init %s: %v: %s", checkout, err, strings.TrimSpace(string(out)))
-	}
-	// Initial commit so worktree creation (git worktree add -b <branch>
-	// <path> HEAD) has a HEAD to branch from.
-	readme := fmt.Sprintf("# %s\n\n%s\n\n---\n\n> 由 obsidian-task-runner 自动创建。\n", t.Project, r.projectDescription(t))
-	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte(readme), 0o644); err != nil {
-		return fallbackPath, fmt.Errorf("write checkout README: %w", err)
-	}
-	if out, err := exec.Command("git", "-C", checkout, "add", "README.md").CombinedOutput(); err != nil {
-		return fallbackPath, fmt.Errorf("git add README: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := exec.Command("git", "-C", checkout, "commit", "-m", "chore: initial README").CombinedOutput(); err != nil {
-		return fallbackPath, fmt.Errorf("git commit README: %v: %s", err, strings.TrimSpace(string(out)))
+	if err := r.ensureCheckoutGitInitialized(t, checkout); err != nil {
+		return fallbackPath, err
 	}
 	if err := project.RegisterProject(mapFile, t.Project, checkout, gitRemote, false); err != nil {
 		r.logger.Printf("task %s: register promoted checkout path: %v", t.ID, err)
@@ -84,6 +75,57 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 	r.ensureCheckoutRemoteRepo(t, checkout, gitRemote)
 	r.logger.Printf("task %s: project %q promoted from Vault fallback dir to standalone checkout %s (git_remote %s)", t.ID, t.Project, checkout, gitRemote)
 	return checkout, nil
+}
+
+// ensureCheckoutGitInitialized makes checkout a git repository with at least
+// one commit so git worktree add (Round 2/merge isolation) has a HEAD to
+// branch from.
+//
+// A registered checkout can exist as an empty directory before the daemon
+// promotes it (e.g. manually created /home/.../<project>). Previously the
+// daemon only ran `git init` when the directory did NOT exist; an existing
+// non-git checkout was returned as-is, making every subsequent
+// ensureTaskWorktree fail with "not a git repository" and leaving the task in
+// implementing with no Round 2 NPC/session started (observed:
+// Projects/005-dshtui/Tasks/TASK-001).
+func (r *Runner) ensureCheckoutGitInitialized(t task.ReadyTask, checkout string) error {
+	// Check whether checkout is already a standalone git root.
+	top, topErr := gitTopLevel(checkout)
+	if topErr == nil && filepath.Clean(top) == filepath.Clean(checkout) {
+		// Already a git root with a commit? Nothing to do.
+		if exec.Command("git", "-C", checkout, "rev-parse", "--verify", "HEAD").Run() == nil {
+			return nil
+		}
+		// Git root without HEAD (empty repository): fall through to create
+		// an initial commit.
+	} else {
+		// Not a git root (or gitTopLevel failed). If it is inside a parent
+		// repository we must still init so the checkout is an independent
+		// repository (worktree isolation), not a subdirectory of the parent.
+		// git init is safe inside an existing parent repo: it creates a
+		// nested repository via the standard module/submodule convention.
+		if out, err := exec.Command("git", "-C", checkout, "init", "-b", "main").CombinedOutput(); err != nil {
+			return fmt.Errorf("git init %s: %v: %s", checkout, err, strings.TrimSpace(string(out)))
+		}
+	}
+	// Initial commit so worktree creation (git worktree add -b <branch>
+	// <path> HEAD) has a HEAD to branch from. README is only written when it
+	// does not already exist; other pre-existing files are deliberately left
+	// for the user to commit so automation never stages unknown content.
+	readmePath := filepath.Join(checkout, "README.md")
+	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
+		readme := fmt.Sprintf("# %s\n\n%s\n\n---\n\n> 由 obsidian-task-runner 自动创建。\n", t.Project, r.projectDescription(t))
+		if err := os.WriteFile(readmePath, []byte(readme), 0o644); err != nil {
+			return fmt.Errorf("write checkout README: %w", err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", checkout, "add", "README.md").CombinedOutput(); err != nil {
+		return fmt.Errorf("git add README: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("git", "-C", checkout, "commit", "--allow-empty", "-m", "chore: initial README").CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit README: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote string) {

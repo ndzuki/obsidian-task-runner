@@ -1068,13 +1068,13 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)
   if (allowed === null) return []
   const violations = new Set()
-  for (const event of agent.session.events) {
+  for (const event of sessionEvents(agent.session)) {
     if (event.seq < firstSeq) continue
     if (event.type !== "tool/call") continue
     const name = event.data?.name
@@ -1119,9 +1119,26 @@ function userMessage(text) {
   }
 }
 
+/**
+ * 跨版本获取会话事件数组（兼容 shim）。
+ *
+ * rc.2 及更早：`session.events` 直接是只读数组；alpha.4+ 移除 `.events`，
+ * 改为 `snapshotEvents()` / `ownEvents()` 按需读取。双向兼容写法：
+ * 优先 `.events`，回退 `ownEvents()`（子会话只取自身事件，不继承父会话），
+ * 再回退 `snapshotEvents()`，都不存在给空数组。
+ * 参见 `~/.dsh/plugins/kb-distill.mjs` 的 `sessionEvents` 同名函数。
+ */
+function sessionEvents(session) {
+  if (session == null) return []
+  if (Array.isArray(session.events)) return session.events
+  if (typeof session.ownEvents === "function") return session.ownEvents()
+  if (typeof session.snapshotEvents === "function") return session.snapshotEvents()
+  return []
+}
+
 /** 提取会话首条用户文本（含 inbox/spliced 与 user/message 两种事件形态）。 */
 function firstUserText(session) {
-  const events = session?.events ?? []
+  const events = sessionEvents(session)
   for (const event of events) {
     let blocks = []
     if (event.type === "agent/inbox/spliced") {
@@ -1167,7 +1184,7 @@ function labelFromText(text) {
 /** 会话创建时间（ms）；缺省回退首事件时间。 */
 function sessionCreatedAtMs(session) {
   if (typeof session?.createdAt === "number") return session.createdAt
-  const first = session?.events?.[0]
+  const first = sessionEvents(session)[0]
   if (typeof first?.time === "number") return first.time
   return Date.now()
 }
@@ -1412,7 +1429,7 @@ export function apply(ctx, config = {}) {
           }
         }
       }
-      const outcome = summarize(agent.session.events, firstSeq)
+      const outcome = summarize(sessionEvents(agent.session), firstSeq)
       const detail = errorDetail(outcome.reason)
       return {
         text: outcome.text,
@@ -1483,11 +1500,11 @@ export function apply(ctx, config = {}) {
     // 实际读到的条数——KB-first 对交互问答真实增益的可观测证据。
     const injectedPaths = Array.isArray(hits) ? hits.map((h) => (typeof h?.path === "string" ? h.path : "")).filter((p) => p !== "") : []
     if (injectedPaths.length > 0) {
-      const consumed = consumedPathsFromEvents(agent.session.events, firstSeq, injectedPaths)
+      const consumed = consumedPathsFromEvents(sessionEvents(agent.session), firstSeq, injectedPaths)
       console.log(`agent-server: kb-injected injected=${injectedPaths.length} consumed=${consumed.length}${consumed.length > 0 ? " [" + consumed.map((p) => p.split("/").pop()).join(",") + "]" : ""}`)
     }
     chatLastAt.set(sessionKey, Date.now())
-    const outcome = summarize(agent.session.events, firstSeq)
+    const outcome = summarize(sessionEvents(agent.session), firstSeq)
     const detail = errorDetail(outcome.reason)
     return {
       text: outcome.text,
@@ -1590,7 +1607,7 @@ export function apply(ctx, config = {}) {
       // 最近事件时间：daemon 侧超时判定用——有近期活动 = turn 仍在推进
       // （timeout_active，继续等）；长时间无事件 = wedged（cancel）。
       // 事件携带 epoch-ms `time` 字段；回退到会话创建时间。
-      const events = Array.isArray(agent.session?.events) ? agent.session.events : []
+      const events = sessionEvents(agent.session)
       let lastEventAt = 0
       for (let i = events.length - 1; i >= 0; i--) {
         const t = events[i]?.time

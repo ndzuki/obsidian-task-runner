@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -39,6 +40,29 @@ func TestQModelViewMarksSelected(t *testing.T) {
 	m.answers[0] = "A"
 	if !strings.Contains(m.View(), "✓") {
 		t.Error("已确认选项应显示 ✓ 标记")
+	}
+}
+
+// 验证自由文本输入模式的 View 渲染（提示语 + 按键说明）。
+func TestQModelViewInputMode(t *testing.T) {
+	d := []decision{{
+		ID:          "D1",
+		Question:    "Q",
+		Options:     []option{{ID: "A", Label: "a"}},
+		Recommended: "A",
+	}}
+	m := newQModel(d)
+	m.cursor = 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(qModel)
+	if !m.inputMode {
+		t.Fatal("应先进入输入模式")
+	}
+	v := m.View()
+	for _, want := range []string{"✍️", "请填写你的答案", "Ctrl+D", "Esc"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("输入模式 View 缺少 %q:\n%s", want, v)
+		}
 	}
 }
 

@@ -123,25 +123,26 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo">🏘️</span>AGENT TOWN <span class="sub">像素居民小镇 · 实时工作流</span></div>
+  <div class="brand"><span class="logo">🏘️</span>AGENT TOWN <span class="sub">俯视 RPG 像素小镇 · 实时工作流</span></div>
   <div class="stats">
     <button class="iconbtn" id="nightBtn" title="昼夜开关">🌙 夜</button>
+    <button class="iconbtn" id="rainBtn" title="雨天开关">🌧️ 雨</button>
     <span class="stat">季 <b id="season">春</b></span>
-    <span class="stat">时 <b id="clock">--:--</b></span>
+    <span class="stat">时 <b id="clock">--:--</b></span><span class="stat">段 <b id="period">—</b></span><span class="stat"><b id="sun">☀</b></span>
     <span class="stat live">活跃 <b id="count">0</b></span>
     <span class="stat">完工 <b id="finished">0</b></span>
   </div>
 </header>
 <div class="legend">
-  <span>📖 需求精炼</span><span>🗺️ 规划</span><span>📋 评审</span><span>🛠️ 实现</span>
-  <span>🔍 验收</span><span>🚀 合并</span><span>🕵️ 审计</span><span>💬 问答</span>
-  <span>🎨 设计</span><span>✂️ 拆分</span><span>🚧 阻塞</span><span>🏆 完成</span>
-  <span><b>💡 点击居民查看任务</b></span>
+  <span>📖 需求精炼</span><span>🧭 规划</span><span>⚖️ 评审</span><span>🏭 开发工厂</span>
+  <span>🎯 验收</span><span>🛰️ 合并</span><span>🔍 审计</span><span>🏛️ 统筹</span>
+  <span>🎨 设计</span><span>🧩 拆分</span><span>🚧 阻塞</span><span>💬 访谈</span>
+  <span>🏆 完成</span><span>⏳ 待命</span><span>🌳 知识</span><span><b>💡 点击居民查看任务</b></span>
 </div>
 <main class="layout">
   <section class="town-panel">
     <div class="town" id="town">
-      <canvas id="townCanvas" width="480" height="270"></canvas>
+      <canvas id="townCanvas" width="960" height="540"></canvas>
       <button id="fullscreenBtn" title="全屏观看小镇">⛶</button>
       <div id="empty">🌆 小镇空闲 — 等待 agent 上工…</div>
     </div>
@@ -189,69 +190,43 @@
 <script>
 "use strict";
 /* ============================================================================
- * Agent Town —— 宝可梦金/银像素风居民小镇
- * 逻辑画布 480x270（SNES 系），image-rendering:pixelated 放大。
- * 四季 + 昼夜（默认明亮钳制，防黑屏，可手动切夜）+ 季节粒子。
+ * Agent Town —— 参考 demo_game_town_1920 的俯视 RPG 小镇画风
+ * 逻辑画布 960x540，image-rendering:pixelated 放大。
+ * 四季 + 昼夜（实时太阳角度/影子）+ 季节粒子 + A* 寻路 + 装饰居民互动。
  * 数据：agent-server /agents，每 2s 轮询。
  * ========================================================================== */
 
-const W = 480, H = 270;
+const W = 960, H = 540;
 const POLL_MS = 2000;
-const DAY_MS = 150000;
-const SEASON_DAYS = 4;
-const TIME_OFFSET = 0.40 * DAY_MS;
+const DAY_MS = 600000;
+const SEASON_DAYS = 8;
+const TIME_OFFSET = (7.5 / 24) * DAY_MS;
 
 const STAGE = {
-  refining:      { label: '需求精炼', color: '#a78bfa', emoji: '🤔', symbol: '📚', action: '研读需求', bubble: '先读需求…' },
-  planning:      { label: '方案规划', color: '#38bdf8', emoji: '🧠', symbol: '🗺️', action: '绘制路线', bubble: '推演方案…' },
-  'plan-review': { label: '计划评审', color: '#facc15', emoji: '🧐', symbol: '⚖️', action: '核对计划', bubble: '查漏洞…' },
-  implementing:  { label: '实现建造', color: '#3b82f6', emoji: '👷', symbol: '🔨', action: '敲码建造', bubble: '动手实现…' },
-  review:        { label: '验收检查', color: '#4ade80', emoji: '🔎', symbol: '🛡️', action: '逐条验收', bubble: '核对 AC…' },
-  merge:         { label: '合并交付', color: '#06b6d4', emoji: '🚀', symbol: '🔀', action: '合并发布', bubble: '打包发布…' },
-  audit:         { label: '独立审计', color: '#fb923c', emoji: '🕵️', symbol: '📜', action: '独立复核', bubble: '独立复核…' },
-  priority:      { label: '优先级', color: '#f87171', emoji: '⚖️', symbol: '🚩', action: '排定优先级', bubble: '该先做…' },
-  pm:            { label: '统筹问答', color: '#f472b6', emoji: '💬', symbol: '🗣️', action: '访谈统筹', bubble: '聊聊决策…' },
-  design:        { label: '设计蓝图', color: '#c084fc', emoji: '🎨', symbol: '📐', action: '绘制蓝图', bubble: '画架构…' },
-  split:         { label: '任务拆分', color: '#14b8a6', emoji: '✂️', symbol: '🧩', action: '拆分任务', bubble: '拆小块…' },
-  conflict:      { label: '冲突处理', color: '#f43f5e', emoji: '⚔️', symbol: '🛠️', action: '解决冲突', bubble: '要仲裁…' },
-  blocked:       { label: '阻塞等待', color: '#ef4444', emoji: '🥶', symbol: '⛔', action: '等待解除', bubble: '卡住了…' },
-  'needs-grilling': { label: '待访谈', color: '#facc15', emoji: '🤷', symbol: '❓', action: '等待访谈', bubble: '不清楚…' },
-  done:          { label: '已完成', color: '#84cc16', emoji: '🎉', symbol: '✅', action: '交付庆祝', bubble: '完成！' },
-  closed:        { label: '已关闭', color: '#64748b', emoji: '📦', symbol: '🔒', action: '归档封存', bubble: '已归档…' },
-  ready:         { label: '待命出发', color: '#94a3b8', emoji: '🧳', symbol: '🕐', action: '等待派发', bubble: '随时出发…' },
-  conventions:   { label: '规范审查', color: '#34d399', emoji: '📏', symbol: '📜', action: '检查规范', bubble: '对规范…' },
-  knowledge:     { label: '知识归档', color: '#60a5fa', emoji: '🧠', symbol: '📚', action: '提炼知识', bubble: '沉淀知识…' },
-  idle:          { label: '休息', color: '#64748b', emoji: '😴', symbol: '☕', action: '恢复体力', bubble: '休息中…' },
-  working:       { label: '工作中', color: '#94a3b8', emoji: '🔧', symbol: '⚙️', action: '执行中', bubble: '忙碌中…' }
+  refining:      { label: '需求精炼', occupation: '需求精炼师', building: '需求精炼坊', zone: '北文职区', color: '#a78bfa', emoji: '📖', icon: '📖', symbol: '📚', action: '研读需求', bubble: '提炼需求…' },
+  planning:      { label: '方案规划', occupation: '规划设计师', building: '规划院', zone: '北文职区', color: '#38bdf8', emoji: '🧭', icon: '🧭', symbol: '🗺️', action: '绘制路线', bubble: '推演方案…' },
+  'plan-review': { label: '计划评审', occupation: '评审官', building: '评审厅', zone: '北文职区', color: '#facc15', emoji: '⚖️', icon: '⚖️', symbol: '⚖️', action: '核对计划', bubble: '查漏洞…' },
+  implementing:  { label: '实现建造', occupation: '开发工程师', building: '开发工厂', zone: '东工业区', color: '#3b82f6', emoji: '🏭', icon: '🏭', symbol: '🔨', action: '敲码建造', bubble: '动手实现…' },
+  review:        { label: '验收检查', occupation: '验收工程师', building: '验收场', zone: '东工业区', color: '#4ade80', emoji: '🎯', icon: '🎯', symbol: '🛡️', action: '逐条验收', bubble: '核对 AC…' },
+  merge:         { label: '合并交付', occupation: '发布工程师', building: '合并发布站', zone: '东工业区', color: '#06b6d4', emoji: '🛰️', icon: '🛰️', symbol: '🔀', action: '合并发布', bubble: '打包发布…' },
+  audit:         { label: '独立审计', occupation: '审计师', building: '审计塔', zone: '西知识区', color: '#fb923c', emoji: '🔍', icon: '🔍', symbol: '📜', action: '独立复核', bubble: '独立复核…' },
+  priority:      { label: '优先级', occupation: '优先级评估师', building: '优先级塔', zone: '北文职区', color: '#f87171', emoji: '🚩', icon: '🚩', symbol: '🚩', action: '排定优先级', bubble: '该先做…' },
+  pm:            { label: '统筹问答', occupation: '统筹 PM', building: '统筹议事厅', zone: '中央广场', color: '#f472b6', emoji: '🏛️', icon: '🏛️', symbol: '🗣️', action: '访谈统筹', bubble: '聊聊决策…' },
+  design:        { label: '设计蓝图', occupation: '架构设计师', building: '设计工坊', zone: '北文职区', color: '#c084fc', emoji: '🎨', icon: '🎨', symbol: '📐', action: '绘制蓝图', bubble: '画架构…' },
+  split:         { label: '任务拆分', occupation: '任务拆分师', building: '拆分工作台', zone: '东北区', color: '#14b8a6', emoji: '🧩', icon: '🧩', symbol: '🧩', action: '拆分任务', bubble: '拆小块…' },
+  conflict:      { label: '冲突处理', occupation: '仲裁员', building: '仲裁庭', zone: '东工业区', color: '#f43f5e', emoji: '⚔️', icon: '⚔️', symbol: '🛠️', action: '解决冲突', bubble: '要仲裁…' },
+  blocked:       { label: '阻塞等待', occupation: '阻塞等待者', building: '阻塞等待亭', zone: '中央广场', color: '#ef4444', emoji: '🚧', icon: '🚧', symbol: '⛔', action: '等待解除', bubble: '卡住了…' },
+  'needs-grilling': { label: '待访谈', occupation: '待访谈者', building: '访谈茶馆', zone: '南自然区', color: '#facc15', emoji: '💬', icon: '💬', symbol: '❓', action: '等待访谈', bubble: '不清楚…' },
+  done:          { label: '已完成', occupation: '交付庆祝者', building: '凯旋广场', zone: '中央广场', color: '#84cc16', emoji: '🏆', icon: '🏆', symbol: '✅', action: '交付庆祝', bubble: '完成！' },
+  closed:        { label: '已关闭', occupation: '归档管理员', building: '归档小馆', zone: '西知识区', color: '#64748b', emoji: '🗄️', icon: '🗄️', symbol: '🔒', action: '归档封存', bubble: '已归档…' },
+  ready:         { label: '待命出发', occupation: '待命者', building: '待命驿站', zone: '中央广场', color: '#94a3b8', emoji: '⏳', icon: '⏳', symbol: '🕐', action: '等待派发', bubble: '随时出发…' },
+  conventions:   { label: '规范审查', occupation: '规范审查员', building: '规范文书房', zone: '北文职区', color: '#34d399', emoji: '📏', icon: '📏', symbol: '📏', action: '检查规范', bubble: '对规范…' },
+  knowledge:     { label: '知识归档', occupation: '知识管理员', building: '知识树馆', zone: '西知识区', color: '#60a5fa', emoji: '🌳', icon: '🌳', symbol: '📚', action: '提炼知识', bubble: '沉淀知识…' },
+  idle:          { label: '休息', occupation: '休息居民', building: '休息草坪', zone: '南自然区', color: '#64748b', emoji: '🍃', icon: '🍃', symbol: '☕', action: '恢复体力', bubble: '休息中…' },
+  working:       { label: '工作中', occupation: '综合工作者', building: '综合工位', zone: '中央广场', color: '#94a3b8', emoji: '⚙️', icon: '⚙️', symbol: '⚙️', action: '执行中', bubble: '忙碌中…' }
 };
 
-const STATION_POS = {
-  // 上排大建筑（主街北侧，房前朝下）—— 间距 45，每栋独立
-  refining:      { x: 50,  y: 120 },
-  planning:      { x: 140, y: 120 },
-  'plan-review': { x: 230, y: 120 },
-  implementing:  { x: 320, y: 120 },
-  review:        { x: 410, y: 120 },
-  // 下排大建筑（主街南侧，房前朝上）—— 间距 45
-  priority:      { x: 90,  y: 204 },
-  pm:            { x: 180, y: 204 },
-  split:         { x: 270, y: 204 },
-  audit:         { x: 360, y: 204 },
-  merge:         { x: 440, y: 204 },
-  // 广场 / 特殊工位（地面标点，不放大建筑）
-  done:          { x: 30,  y: 132 },
-  closed:        { x: 30,  y: 204 },
-  design:        { x: 230, y: 88 },
-  conventions:   { x: 90,  y: 240 },
-  knowledge:     { x: 180, y: 240 },
-  'needs-grilling': { x: 270, y: 240 },
-  ready:         { x: 230, y: 130 },
-  idle:          { x: 230, y: 240 },
-  working:       { x: 230, y: 134 },
-  conflict:      { x: 410, y: 136 },
-  blocked:       { x: 440, y: 240 }
-};
-
+const STATION_POS = {};
 /* ---------- 四季色板（宝可梦金银调） ---------- */
 const SEASONS = [
   { name: "春", emoji: "🌸", sky: "#78c8f0", sky2: "#b8ecff", M: "#48a848", L: "#7bc86a", H: "#e8c880", W: "#fff8ec", Y: "#ffd858", D: "#1a1c2c", B: "#5888e0", G: "#58b858", K: "#6b4423", R: "#e85040", P: "#f48fb0", particle: "petal" },
@@ -262,11 +237,12 @@ const SEASONS = [
 
 function hexRGB(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
 function mix(c, t, f) { return c + (t - c) * f; }
-function shade(hex, bright, nightF, duskF) {
+function shade(hex, bright, nightF, duskF, warmF) {
   let [r, g, b] = hexRGB(hex);
-  const nt = nightF * 0.5, ot = duskF * 0.25;
+  const nt = nightF * 0.5, ot = duskF * 0.25, wt = (warmF || 0) * 0.35;
   r = mix(r, 0x18, nt); g = mix(g, 0x22, nt); b = mix(b, 0x40, nt);
   r = mix(r, 0xe0, ot); g = mix(g, 0x84, ot); b = mix(b, 0x3c, ot);
+  r = mix(r, 0xe8, wt); g = mix(g, 0x90, wt); b = mix(b, 0x48, wt);
   r = Math.min(255, Math.round(r * bright));
   g = Math.min(255, Math.round(g * bright));
   b = Math.min(255, Math.round(b * bright));
@@ -278,6 +254,13 @@ function daylight(min) { if (min < 330 || min > 1050) return 0; return Math.sin(
 function makeBuf() { return new Uint32Array(W * H); }
 function px(b, x, y, c) { x |= 0; y |= 0; if (x >= 0 && x < W && y >= 0 && y < H) b[y * W + x] = c; }
 function rect(b, x, y, w, h, c) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) px(b, x + i, y + j, c); }
+function fillEllipse(b, cx, cy, rx, ry, c) {
+  for (let j = -Math.ceil(ry); j <= Math.ceil(ry); j++) {
+    const t = Math.max(0, 1 - (j * j) / (ry * ry));
+    const w = Math.round(rx * Math.sqrt(t));
+    for (let i = -w; i <= w; i++) px(b, Math.round(cx + i), Math.round(cy + j), c);
+  }
+}
 function spr(b, rows, x, y, colors, flip) {
   const h = rows.length, w = rows[0].length;
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
@@ -646,6 +629,7 @@ let selectedId = null;
 let agentsConnected = false;
 let toastTimer = null;
 let nightMode = false;
+let rainMode = false;
 let curPal = null;
 
 const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -667,164 +651,712 @@ function palNow(now) {
   const day = Math.floor(t / DAY_MS);
   const min = ((t % DAY_MS) / DAY_MS) * 1440;
   const season = SEASONS[Math.floor(day / SEASON_DAYS) % SEASONS.length];
-  const dl = nightMode ? daylight(min) : Math.max(0.62, daylight(min));
-  const bright = 0.62 + 0.38 * dl;
-  const duskF = dl < 0.28 ? (0.28 - dl) / 0.28 : 0;
-  const nightF = dl < 0.10 ? (0.10 - dl) / 0.10 : 0;
-  const sh = (h) => shade(h, bright, nightF, duskF);
-  return { season, day, min, dl, bright, nightF, duskF, skyTop: sh(season.sky), skyBot: sh(season.sky2), M: sh(season.M), L: sh(season.L), H: sh(season.H), W: sh(season.W), Y: sh(season.Y), D: sh(season.D), B: sh(season.B), G: sh(season.G), K: sh(season.K), R: sh(season.R), P: sh(season.P) };
+  const dayF = daylight(min);
+  const dl = nightMode ? dayF : Math.max(0.45, dayF);
+  let bright = 0.55 + 0.45 * Math.max(0, dayF);
+  const duskF = dayF < 0.30 ? (0.30 - dayF) / 0.30 : 0;
+  const nightF = dayF < 0.10 ? (0.10 - dayF) / 0.10 : 0;
+  const rainF = rainMode ? 0.25 : 0;
+  if (rainMode) bright = Math.max(0.45, bright * 0.85);
+  // Sunrise/sunset warm tint: high in 05:30-08:00 and 16:30-19:30.
+  const warmF = ((min >= 300 && min < 480) ? 0.5 - Math.abs((min - 390) / 180 - 0.5) * 0.4
+                : (min >= 960 && min < 1140) ? 0.5 - Math.abs((min - 1050) / 180 - 0.5) * 0.4 : 0);
+  // Sun geometry: azimuth east->south->west; elevation 0 at horizon, 1 at noon.
+  const dayProg = Math.max(0, Math.min(1, (min - 330) / 720));
+  const sunElev = Math.max(0, dayF);
+  const sunAz = dayProg * Math.PI; // 0 east, PI west
+  const shadowLen = (1.55 - sunElev * 0.9) * 24;
+  const shadowDx = -Math.cos(sunAz) * shadowLen;
+  const shadowDy = -Math.sin(sunAz) * shadowLen * 0.42;
+  const sh = (h) => shade(h, bright, nightF, duskF, warmF);
+  const shadowColor = shade('#1d2130', Math.max(0.45, bright - 0.35), nightF, duskF);
+  return { season, day, min, dayF, dl, bright, nightF, duskF, warmF, rainF,
+           sunElev, sunAz, shadowLen, shadowDx, shadowDy, shadowColor,
+           skyTop: sh(season.sky), skyBot: sh(season.sky2),
+           M: sh(season.M), L: sh(season.L), H: sh(season.H), W: sh(season.W), Y: sh(season.Y),
+           D: sh(season.D), B: sh(season.B), G: sh(season.G), K: sh(season.K), R: sh(season.R), P: sh(season.P) };
+}
+/* ---------- 场景 / A* / 建筑 ---------- */
+const TILE = 12;
+const GW = Math.ceil(W / TILE);
+const GH = Math.ceil(H / TILE);
+const walkGrid = new Uint8Array(GW * GH);
+for (let i = 0; i < GW * GH; i++) walkGrid[i] = 1;
+
+function gx(x) { return Math.max(0, Math.min(GW - 1, Math.floor(x / TILE))); }
+function gy(y) { return Math.max(0, Math.min(GH - 1, Math.floor(y / TILE))); }
+function markRect(grid, x, y, w, h, val) {
+  const x0 = gx(x), y0 = gy(y), x1 = gx(x + w - 1), y1 = gy(y + h - 1);
+  for (let j = y0; j <= y1; j++) for (let i = x0; i <= x1; i++) grid[j * GW + i] = val;
+}
+function isWalkPx(x, y) { return walkGrid[gy(y) * GW + gx(x)] === 1; }
+
+const BUILDING_DEFS = [
+  // 北文职区（左上，竖路左侧）
+  { key: 'refining',      x: 40,  y: 62, w: 86, h: 60, roof: '#a78bfa', wall: '#f2edf8', door: 'south' , style: 'library' },
+  { key: 'planning',      x: 142, y: 62, w: 84, h: 60, roof: '#38bdf8', wall: '#e8f4fb', door: 'south' , style: 'cottage' },
+  { key: 'plan-review',   x: 242, y: 62, w: 82, h: 60, roof: '#facc15', wall: '#fbf5e2', door: 'south' , style: 'hall' },
+  { key: 'design',        x: 342, y: 62, w: 80, h: 58, roof: '#c084fc', wall: '#f4ecf8', door: 'south' , style: 'studio' },
+  // 北文职区右上
+  { key: 'conventions',   x: 560, y: 62, w: 72, h: 58, roof: '#34d399', wall: '#eaf8f0', door: 'south' , style: 'school' },
+  { key: 'knowledge',     x: 650, y: 62, w: 82, h: 60, roof: '#60a5fa', wall: '#ecf3fb', door: 'south' , style: 'tower' },
+  { key: 'priority',      x: 760, y: 62, w: 72, h: 58, roof: '#f87171', wall: '#fcecec', door: 'south' , style: 'office' },
+  { key: 'pm',            x: 860, y: 62, w: 70, h: 58, roof: '#f472b6', wall: '#fcedf5', door: 'south' , style: 'tower' },
+  // 东侧上排（竖路右侧，横路之上）
+  { key: 'split',         x: 580, y: 140, w: 70, h: 56, roof: '#14b8a6', wall: '#e8faf8', door: 'west' , style: 'shed' },
+  { key: 'closed',        x: 680, y: 140, w: 70, h: 56, roof: '#64748b', wall: '#eef1f5', door: 'west' , style: 'gate' },
+  { key: 'ready',         x: 640, y: 200, w: 56, h: 36, roof: '#94a3b8', wall: '#f1f4f8', door: 'south' , style: 'greenhouse' },
+  // 西知识区（横路之下，竖路左侧）
+  { key: 'audit',         x: 40,  y: 300, w: 70, h: 78, roof: '#fb923c', wall: '#fdf1e7', door: 'east' , style: 'office' },
+  { key: 'needs-grilling',x: 130, y: 330, w: 82, h: 60, roof: '#facc15', wall: '#fdf6e0', door: 'north' , style: 'cafe' },
+  { key: 'idle',          x: 40,  y: 430, w: 90, h: 58, roof: '#84cc16', wall: '#f1faec', door: 'north' , style: 'cottage' },
+  // 东工业区（横路之下，竖路右侧）
+  { key: 'implementing',  x: 580, y: 310, w: 120, h: 88, roof: '#3b82f6', wall: '#e8eef7', door: 'west' , style: 'factory' },
+  { key: 'review',        x: 710, y: 310, w: 84,  h: 64, roof: '#4ade80', wall: '#ebfaeb', door: 'west' , style: 'lab' },
+  { key: 'merge',         x: 820, y: 310, w: 72,  h: 64, roof: '#06b6d4', wall: '#e8fafb', door: 'west' , style: 'gate' },
+  { key: 'conflict',      x: 580, y: 430, w: 92, h: 64, roof: '#f43f5e', wall: '#fdecef', door: 'north' , style: 'hazard' },
+  { key: 'done',          x: 700, y: 430, w: 70, h: 44, roof: '#84cc16', wall: '#f1faec', door: 'south' , style: 'hall' },
+  { key: 'working',       x: 810, y: 430, w: 56, h: 42, roof: '#94a3b8', wall: '#f1f4f8', door: 'south' , style: 'shed' },
+  { key: 'blocked',       x: 520, y: 430, w: 56, h: 38, roof: '#ef4444', wall: '#fce9e9', door: 'north' , style: 'hazard' }
+];
+
+function buildingDoor(bd) {
+  const cx = bd.x + bd.w / 2;
+  const cy = bd.y + bd.h / 2;
+  if (bd.door === 'south') return { x: Math.round(cx), y: Math.round(bd.y + bd.h - 2) };
+  if (bd.door === 'north') return { x: Math.round(cx), y: Math.round(bd.y + 2) };
+  if (bd.door === 'east')  return { x: Math.round(bd.x + bd.w - 2), y: Math.round(cy) };
+  return { x: Math.round(bd.x + 2), y: Math.round(cy) };
+}
+function buildStationMap() {
+  for (const bd of BUILDING_DEFS) {
+    markRect(walkGrid, bd.x - 3, bd.y - 3, bd.w + 6, bd.h + 6, 0);
+    const door = buildingDoor(bd);
+    // keep a small walkable apron in front of the door
+    if (bd.door === 'south') markRect(walkGrid, door.x - 7, door.y + 1, 14, 8, 1);
+    else if (bd.door === 'north') markRect(walkGrid, door.x - 7, door.y - 9, 14, 8, 1);
+    else if (bd.door === 'east') markRect(walkGrid, door.x + 1, door.y - 7, 8, 14, 1);
+    else markRect(walkGrid, door.x - 9, door.y - 7, 8, 14, 1);
+    STATION_POS[bd.key] = door;
+  }
 }
 
-/* ---------- 场景 ---------- */
-function drawScene(b, pal) {
-  // 天空：珍珠/钻石淡蓝
-  for (let y = 0; y < 46; y++) {
-    const f = y / 46;
-    const a = (pal.skyTop >> 16) & 255, ag = (pal.skyTop >> 8) & 255, ab = pal.skyTop & 255;
-    const br = (pal.skyBot >> 16) & 255, bg = (pal.skyBot >> 8) & 255, bb = pal.skyBot & 255;
-    px(b, 0, y, ((0xff000000) | (((a + (br - a) * f) << 16)) | (((ag + (bg - ag) * f) << 8)) | (ab + (bb - ab) * f)) >>> 0);
+/* 静态自然障碍：初始化时一次性写入 walkGrid，避免每帧重复标记 */
+const TREE_SPOTS = [[20,40],[100,30],[200,30],[300,30],[520,30],[620,30],[720,30],[820,30],[20,160],[20,220],[20,380],[20,470],[900,220],[900,160],[920,340],[840,220],[900,470],[400,390],[300,350],[230,350]];
+const NATURE_RECTS = [
+  { x: 160, y: 460, w: 130, h: 52 },  // 南侧池塘
+  { x: 850, y: 8,   w: 86,  h: 44 },  // 东北池塘
+  { x: 220, y: 390, w: 120, h: 44 },  // 南区花田
+  { x: 300, y: 300, w: 76,  h: 40 },  // 西侧花田
+  { x: 790, y: 150, w: 76,  h: 44 },  // 东侧花田
+  { x: 360, y: 420, w: 90,  h: 46 },  // 农田
+  { x: 460, y: 248, w: 40,  h: 40 }   // 中央喷泉
+];
+function buildNatureMap() {
+  for (const nr of NATURE_RECTS) markRect(walkGrid, nr.x - 2, nr.y - 2, nr.w + 4, nr.h + 4, 0);
+  for (const [tx, ty] of TREE_SPOTS) markRect(walkGrid, tx - 9, ty - 6, 18, 14, 0);
+}
+
+function nearestWalkable(x, y) {
+  const x0 = gx(x), y0 = gy(y);
+  let best = null, bestD = 1e9;
+  for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) {
+    if (!walkGrid[j * GW + i]) continue;
+    const d = (i - x0) * (i - x0) + (j - y0) * (j - y0);
+    if (d < bestD) { bestD = d; best = { x: i * TILE + TILE / 2, y: j * TILE + TILE / 2 }; }
   }
-  if (pal.nightF > 0.4) {
-    for (let i = 0; i < 26; i++) px(b, (i * 37) % W, (i * 11) % 30, 0xffeef6ff);
+  return best || { x: W / 2, y: H / 2 };
+}
+
+/* 二进制最小堆：让 A* open list 从 O(n) 线性扫描降为 O(log n) */
+class MinHeap {
+  constructor() { this.a = []; }
+  get size() { return this.a.length; }
+  push(node) {
+    const a = this.a; a.push(node);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p].f <= a[i].f) break;
+      [a[p], a[i]] = [a[i], a[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const a = this.a, top = a[0], last = a.pop();
+    if (a.length && last !== top) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1; let m = i;
+        if (l < a.length && a[l].f < a[m].f) m = l;
+        if (r < a.length && a[r].f < a[m].f) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+function findPath(sx, sy, tx, ty) {
+  sx = Math.max(0, Math.min(W - 1, sx)); sy = Math.max(0, Math.min(H - 1, sy));
+  tx = Math.max(0, Math.min(W - 1, tx)); ty = Math.max(0, Math.min(H - 1, ty));
+  let gsx = gx(sx), gsy = gy(sy);
+  let gtx = gx(tx), gty = gy(ty);
+  if (!walkGrid[gsy * GW + gsx]) { const n = nearestWalkable(sx, sy); gsx = gx(n.x); gsy = gy(n.y); }
+  if (!walkGrid[gty * GW + gtx]) { const n = nearestWalkable(tx, ty); gtx = gx(n.x); gty = gy(n.y); }
+  const key = (x, y) => y * GW + x;
+  const came = new Int32Array(GW * GH); came.fill(-1);
+  const g = new Float64Array(GW * GH); g.fill(Infinity);
+  const f = new Float64Array(GW * GH); f.fill(Infinity);
+  const closed = new Uint8Array(GW * GH);
+  const open = new MinHeap();
+  open.push({ x: gsx, y: gsy, key: key(gsx, gsy), f: Math.abs(gtx - gsx) + Math.abs(gty - gsy) });
+  g[key(gsx, gsy)] = 0;
+  f[key(gsx, gsy)] = open.a[0].f;
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  let iter = 0;
+  while (open.size && iter++ < 12000) {
+    const cur = open.pop();
+    if (closed[cur.key]) continue;
+    if (cur.x === gtx && cur.y === gty) break;
+    closed[cur.key] = 1;
+    for (const [dx, dy] of dirs) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      if (nx < 0 || nx >= GW || ny < 0 || ny >= GH) continue;
+      const nk = key(nx, ny);
+      if (closed[nk] || !walkGrid[nk]) continue;
+      if (dx !== 0 && dy !== 0 && (!walkGrid[key(cur.x + dx, cur.y)] || !walkGrid[key(cur.x, cur.y + dy)])) continue;
+      const ng = g[cur.key] + (dx !== 0 && dy !== 0 ? 1.414 : 1);
+      if (ng < g[nk]) {
+        came[nk] = cur.key;
+        g[nk] = ng;
+        f[nk] = ng + Math.abs(gtx - nx) + Math.abs(gty - ny);
+        open.push({ x: nx, y: ny, key: nk, f: f[nk] });
+      }
+    }
+  }
+  if (came[key(gtx, gty)] === -1 && !(gsx === gtx && gsy === gty)) return [];
+  const path = [];
+  let ck = key(gtx, gty);
+  const steps = [];
+  while (ck !== -1) {
+    const cx = ck % GW, cy = Math.floor(ck / GW);
+    steps.push({ x: cx * TILE + TILE / 2, y: cy * TILE + TILE / 2 });
+    if (cx === gsx && cy === gsy) break;
+    ck = came[ck];
+  }
+  steps.reverse();
+  path.push(...steps);
+  return path;
+}
+
+function drawShadow(b, x, y, w, h, pal, scale) {
+  const k = scale == null ? 1 : scale;
+  const sx = Math.round(x + pal.shadowDx * k), sy = Math.round(y + pal.shadowDy * k);
+  rect(b, sx, sy, w, h, pal.shadowColor);
+}
+
+function drawTree(b, pal, x, y) {
+  const v = ((x * 7 + y * 13) % 3);
+  rect(b, x - 2, y - 2, 4, 8, pal.K);
+  drawShadow(b, x - 8, y + 3, 18, 8, pal, 0.55);
+  if (v === 0) { // 圆冠树
+    rect(b, x - 9, y - 7, 18, 12, pal.G);
+    rect(b, x - 7, y - 12, 14, 9, pal.L);
+    rect(b, x - 4, y - 16, 8, 6, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 8, y - 4, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 8, y - 4, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    if (pal.season.emoji !== '❄️') px(b, x - 2, y - 11, pal.R);
+  } else if (v === 1) { // 大圆冠树
+    rect(b, x - 11, y - 9, 22, 13, pal.G);
+    rect(b, x - 9, y - 15, 18, 8, pal.L);
+    rect(b, x - 5, y - 19, 10, 5, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 10, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 10, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    if (pal.season.emoji !== '❄️') { px(b, x - 3, y - 13, pal.R); px(b, x + 3, y - 10, pal.R); }
+  } else { // 松针树
+    rect(b, x - 7, y - 4, 14, 7, pal.G);
+    rect(b, x - 6, y - 10, 12, 7, pal.L);
+    rect(b, x - 4, y - 16, 8, 7, pal.L);
+    rect(b, x - 2, y - 21, 4, 6, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 7, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 7, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+  }
+}
+function drawPond(b, pal, x, y, w, h) {
+  const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2;
+  const t = performance.now() / 1000;
+  const sand = shade('#d8b26a', pal.bright, pal.nightF, pal.duskF);
+  const deep = shade('#3f6d9c', pal.bright, pal.nightF, pal.duskF);
+  const water = shade('#6aa8f0', pal.bright, pal.nightF, pal.duskF);
+  const light = shade('#8cc8f8', pal.bright, pal.nightF, pal.duskF);
+  fillEllipse(b, cx, cy, rx + 3, ry + 3, sand);
+  fillEllipse(b, cx, cy, rx + 1, ry + 1, shade('#a5c9f0', pal.bright, pal.nightF, pal.duskF));
+  fillEllipse(b, cx, cy, rx - 1, ry - 1, deep);
+  fillEllipse(b, cx, cy - 1, rx - 4, ry - 4, water);
+  fillEllipse(b, cx - 2, cy - 3, Math.max(3, rx - 8), Math.max(2, ry - 7), light);
+  // 动态水光：缓慢移动的高光
+  const glow = Math.sin(t * 1.7) * rx * 0.35;
+  px(b, Math.round(cx + glow), Math.round(cy - ry / 4), 0xfffff0c0);
+  px(b, Math.round(cx - rx / 3 + glow * 0.5), Math.round(cy + ry / 3), 0xfffff0c0);
+  px(b, Math.round(cx + rx / 3 - glow * 0.7), Math.round(cy - ry / 5), 0xfffff0c0);
+  // 水波纹：横向波动线，更像水面而非烟花
+  const lineN = rainMode ? 5 : 3;
+  const lineColor = rainMode ? 0xeeffffff : 0xbbffffff;
+  for (let i = 0; i < lineN; i++) {
+    const baseY = cy + ((i - lineN / 2) / lineN) * ry * 1.3 + Math.sin(t * 0.9 + i * 1.7) * 2;
+    for (let xo = -rx + 5; xo < rx - 5; xo += 3) {
+      const wob = Math.sin(xo * 0.16 + t * 1.8 + i) * 1.6;
+      const py = Math.round(baseY + wob);
+      if (py > cy - ry && py < cy + ry) px(b, Math.round(cx + xo), py, lineColor);
+    }
+  }
+  // 两三颗小亮点
+  for (let i = 0; i < 3; i++) {
+    px(b, Math.round(cx + Math.sin(t * 1.3 + i * 2.1) * rx * 0.5), Math.round(cy + Math.cos(t * 1.1 + i) * ry * 0.5), 0xfffff0c0);
+  }
+  // 睡莲 / 荷叶
+  fillEllipse(b, Math.round(cx - rx * 0.45), Math.round(cy + ry * 0.25), 3, 2, shade('#2f8a3f', pal.bright, pal.nightF, pal.duskF));
+  fillEllipse(b, Math.round(cx + rx * 0.35), Math.round(cy - ry * 0.35), 2, 1.5, shade('#2f8a3f', pal.bright, pal.nightF, pal.duskF));
+}
+function drawFlowerField(b, pal, x, y, w, h) {
+  const bg = shade('#3c8c4c', pal.bright, pal.nightF, pal.duskF);
+  const dark = shade('#2c6c3c', pal.bright, pal.nightF, pal.duskF);
+  rect(b, x, y, w, h, bg);
+  const petals = [pal.P, pal.Y, shade('#ff9fb0', pal.bright, pal.nightF, pal.duskF), shade('#c8a0ff', pal.bright, pal.nightF, pal.duskF), shade('#a0e8ff', pal.bright, pal.nightF, pal.duskF)];
+  for (let i = 0; i < w * h / 24; i++) {
+    const fx = x + 3 + ((i * 53) % (w - 6)), fy = y + 3 + ((i * 31) % (h - 6));
+    const petal = petals[i % petals.length];
+    const center = shade((i % 2 ? '#fff0a0' : '#c05a2a'), pal.bright, pal.nightF, pal.duskF);
+    drawFlower(b, fx, fy, petal, center, pal.G);
+    if (i % 4 === 0) drawGrassTuft(b, fx + 4, fy + 8, pal.H, pal.G, dark);
+  }
+  for (let i = 0; i < w / 26; i++) {
+    drawGrassTuft(b, x + 4 + i * 26, y + h - 8, pal.G, pal.H, dark);
+  }
+}
+function drawFarm(b, pal, x, y, w, h) {
+  rect(b, x, y, w, h, shade('#a57a42', pal.bright, pal.nightF, pal.duskF));
+  for (let j = 4; j < h - 4; j += 7) {
+    rect(b, x + 3, y + j, w - 6, 2, shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF));
+    for (let i = 4; i < w - 6; i += 9) {
+      if ((i + j) % 3 === 0) px(b, x + i, y + j - 3, pal.L);
+    }
+  }
+}
+/* 职业特色建筑小徽记 */
+function drawBuildingSymbol(b, key, cx, cy, co) {
+  const { ink, white, yellow, red, green, blue, brown } = co;
+  switch (key) {
+    case 'refining': // 翻开的书（两页 + 书脊）
+      rect(b, cx - 10, cy - 9, 9, 17, white);
+      rect(b, cx + 1, cy - 9, 9, 17, white);
+      rect(b, cx - 1, cy - 9, 2, 18, ink);
+      rect(b, cx - 10, cy - 2, 9, 1, ink); rect(b, cx + 1, cy - 2, 9, 1, ink);
+      rect(b, cx - 10, cy + 3, 9, 1, ink); rect(b, cx + 1, cy + 3, 9, 1, ink);
+      break;
+    case 'planning': // 地图 + 定位针
+      rect(b, cx - 9, cy - 6, 18, 14, blue);
+      rect(b, cx - 9, cy - 2, 18, 2, white); rect(b, cx - 2, cy - 6, 2, 14, white);
+      px(b, cx + 4, cy - 10, red); rect(b, cx + 3, cy - 9, 2, 4, red);
+      break;
+    case 'plan-review': // 法槌
+      rect(b, cx - 8, cy - 10, 16, 6, brown);
+      rect(b, cx - 2, cy - 4, 4, 14, brown);
+      rect(b, cx - 9, cy + 8, 18, 3, ink);
+      break;
+    case 'design': // 调色盘
+      fillEllipse(b, cx, cy, 11, 9, white);
+      fillEllipse(b, cx + 7, cy + 5, 2, 2, ink);
+      px(b, cx - 6, cy - 2, red); px(b, cx, cy - 4, blue); px(b, cx + 5, cy - 2, green); px(b, cx + 4, cy + 4, yellow);
+      break;
+    case 'conventions': // 文件叠 + 文字线
+      rect(b, cx - 9, cy - 9, 18, 4, white);
+      rect(b, cx - 9, cy - 4, 18, 4, white);
+      rect(b, cx - 9, cy + 1, 18, 4, white);
+      rect(b, cx - 9, cy + 6, 18, 2, ink);
+      rect(b, cx - 6, cy - 8, 8, 1, ink); rect(b, cx - 6, cy - 3, 8, 1, ink); rect(b, cx - 6, cy + 2, 8, 1, ink);
+      break;
+    case 'knowledge': // 知识树
+      rect(b, cx - 2, cy - 2, 4, 11, brown);
+      fillEllipse(b, cx, cy - 8, 9, 7, green);
+      px(b, cx - 6, cy - 10, green); px(b, cx + 6, cy - 10, green); px(b, cx, cy - 14, green);
+      px(b, cx, cy - 6, yellow);
+      break;
+    case 'priority': // 红旗
+      rect(b, cx - 4, cy - 10, 3, 20, ink);
+      rect(b, cx - 1, cy - 10, 12, 8, red);
+      break;
+    case 'pm': // 同心靶心
+      fillEllipse(b, cx, cy, 9, 9, white);
+      fillEllipse(b, cx, cy, 6, 6, red);
+      fillEllipse(b, cx, cy, 3, 3, white);
+      fillEllipse(b, cx, cy, 1, 1, red);
+      break;
+    case 'split': // 剪刀（两刃 + 两个环）
+      rect(b, cx - 8, cy - 8, 3, 16, ink); rect(b, cx + 5, cy - 8, 3, 16, ink);
+      fillEllipse(b, cx - 7, cy + 8, 3, 3, ink); fillEllipse(b, cx + 7, cy + 8, 3, 3, ink);
+      px(b, cx - 1, cy - 5, ink); px(b, cx, cy - 4, ink); px(b, cx + 1, cy - 3, ink);
+      break;
+    case 'audit': // 放大镜
+      fillEllipse(b, cx - 2, cy - 2, 8, 7, white);
+      fillEllipse(b, cx - 2, cy - 2, 6, 5, blue);
+      rect(b, cx + 4, cy + 3, 6, 4, ink);
+      rect(b, cx + 2, cy + 1, 3, 3, ink);
+      break;
+    case 'closed': // 挂锁
+      rect(b, cx - 4, cy - 10, 8, 5, ink);
+      rect(b, cx - 6, cy - 5, 12, 12, yellow);
+      px(b, cx, cy - 2, ink);
+      break;
+    case 'needs-grilling': // 对话气泡（三点）
+      rect(b, cx - 10, cy - 6, 20, 12, white);
+      rect(b, cx - 4, cy + 6, 8, 4, white);
+      px(b, cx - 4, cy - 3, ink); px(b, cx, cy - 3, ink); px(b, cx + 4, cy - 3, ink);
+      break;
+    case 'idle': // 咖啡杯 + 热气
+      rect(b, cx - 7, cy - 2, 14, 11, white);
+      px(b, cx + 7, cy, ink); rect(b, cx + 7, cy + 2, 3, 3, ink);
+      px(b, cx - 3, cy - 8, ink); px(b, cx, cy - 11, ink); px(b, cx + 3, cy - 8, ink);
+      break;
+    case 'implementing': // 工厂 + 齿轮
+      rect(b, cx - 10, cy - 4, 20, 14, ink);
+      rect(b, cx - 4, cy - 12, 4, 10, ink);
+      fillEllipse(b, cx, cy + 2, 5, 5, yellow); px(b, cx, cy + 2, ink);
+      rect(b, cx - 10, cy - 4, 20, 2, red);
+      break;
+    case 'review': // 大对勾
+      rect(b, cx - 9, cy + 2, 3, 3, green); px(b, cx - 7, cy + 4, green); px(b, cx - 5, cy + 6, green); px(b, cx - 4, cy + 7, green);
+      px(b, cx - 2, cy + 5, green); px(b, cx, cy + 2, green); px(b, cx + 3, cy - 2, green); px(b, cx + 6, cy - 6, green); px(b, cx + 9, cy - 9, green);
+      break;
+    case 'merge': // 双箭头汇流
+      rect(b, cx - 9, cy - 8, 3, 8, blue); rect(b, cx + 6, cy - 8, 3, 8, blue);
+      rect(b, cx - 3, cy - 4, 3, 8, blue); rect(b, cx + 0, cy - 4, 3, 8, blue);
+      rect(b, cx - 3, cy + 4, 9, 3, blue); px(b, cx + 4, cy + 2, blue); px(b, cx + 4, cy + 8, blue);
+      px(b, cx + 6, cy + 5, blue);
+      break;
+    case 'conflict': // 警告三角 + !
+      rect(b, cx - 9, cy + 4, 18, 3, red);
+      rect(b, cx - 6, cy - 3, 12, 7, red);
+      rect(b, cx - 3, cy - 9, 6, 6, red);
+      px(b, cx, cy - 8, yellow); px(b, cx, cy - 6, yellow); px(b, cx, cy - 1, yellow); px(b, cx, cy + 2, yellow);
+      break;
+    case 'done': // 奖杯
+      rect(b, cx - 5, cy - 6, 10, 9, yellow);
+      px(b, cx - 7, cy - 6, yellow); px(b, cx + 7, cy - 6, yellow); rect(b, cx - 7, cy - 7, 2, 3, yellow); rect(b, cx + 5, cy - 7, 2, 3, yellow);
+      rect(b, cx - 3, cy + 3, 6, 3, yellow); rect(b, cx - 6, cy + 6, 12, 3, brown);
+      break;
+    case 'working': // 齿轮
+      fillEllipse(b, cx, cy, 9, 9, ink);
+      px(b, cx - 9, cy - 2, green); px(b, cx + 9, cy + 2, green); px(b, cx, cy + 9, green); px(b, cx - 7, cy + 7, green); px(b, cx + 7, cy - 7, green);
+      fillEllipse(b, cx, cy, 3, 3, white);
+      break;
+    case 'ready': // 绿灯
+      fillEllipse(b, cx, cy, 9, 9, green);
+      fillEllipse(b, cx, cy, 6, 6, white);
+      fillEllipse(b, cx, cy, 4, 4, green);
+      break;
+    case 'blocked': // 红黄路障
+      rect(b, cx - 10, cy + 4, 20, 3, red);
+      rect(b, cx - 10, cy, 20, 3, yellow);
+      rect(b, cx - 10, cy - 4, 20, 3, red);
+      rect(b, cx - 3, cy - 8, 3, 12, ink);
+      break;
+  }
+}
+
+function drawBuildingEmblem(b, bd, pal, cx, cy) {
+  const key = bd.key;
+  const darkBase = shade('#1a1c2c', pal.bright, pal.nightF, pal.duskF);
+  // 直接画在墙体上：右下 2px 暗色浮雕影，不产生脱离感
+  const shadow = { ink: darkBase, white: darkBase, yellow: darkBase, red: darkBase, green: darkBase, blue: darkBase, brown: darkBase };
+  drawBuildingSymbol(b, key, cx + 2, cy + 2, shadow);
+  // 正面亮色大图标
+  const colors = {
+    ink: shade('#1f2430', pal.bright, pal.nightF, pal.duskF),
+    white: shade('#ffffff', pal.bright, pal.nightF, pal.duskF),
+    yellow: shade('#ffd858', pal.bright, pal.nightF, pal.duskF),
+    red: shade('#ff5050', pal.bright, pal.nightF, pal.duskF),
+    green: shade('#58d858', pal.bright, pal.nightF, pal.duskF),
+    blue: shade('#58a0e8', pal.bright, pal.nightF, pal.duskF),
+    brown: shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF)
+  };
+  drawBuildingSymbol(b, key, cx, cy, colors);
+}
+
+function drawBuilding(b, bd, pal) {
+  const roof = shade(bd.roof, pal.bright, pal.nightF, pal.duskF);
+  const wall = shade(bd.wall, pal.bright, pal.nightF, pal.duskF);
+  const dark = shade('#1a1c2c', pal.bright, pal.nightF, pal.duskF);
+  const roofDark = shade('#1d2430', pal.bright, pal.nightF, pal.duskF);
+  const win = shade('#ffd858', pal.bright, pal.nightF, pal.duskF);
+  const door = shade('#6b4423', pal.bright, pal.nightF, pal.duskF);
+  const wood = shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF);
+  const glass = shade('#b8e0f0', pal.bright, pal.nightF, pal.duskF);
+  const style = bd.style || 'cottage';
+
+  drawShadow(b, bd.x + 3, bd.y + bd.h - 7, bd.w - 6, 12, pal, 0.3);
+
+  // 主体墙（不同类型可微调外轮廓）
+  rect(b, bd.x, bd.y, bd.w, bd.h, wall);
+  rect(b, bd.x - 1, bd.y - 1, bd.w + 2, 2, dark);
+  rect(b, bd.x - 1, bd.y + bd.h - 1, bd.w + 2, 2, dark);
+  rect(b, bd.x - 1, bd.y - 1, 2, bd.h + 2, dark);
+  rect(b, bd.x + bd.w - 1, bd.y - 1, 2, bd.h + 2, dark);
+
+  const cx = bd.x + bd.w / 2;
+  // 屋顶画法按职业风格区分
+  if (style === 'cottage' || style === 'hall' || style === 'cafe') {
+    const rw = bd.w - 4, rh = Math.min(20, Math.max(12, bd.h * 0.28));
+    for (let yy = 0; yy < rh; yy++) {
+      const half = Math.max(2, Math.round((yy + 1) / rh * (rw / 2)));
+      rect(b, Math.round(bd.x + 2 + rw / 2 - half), bd.y + yy, half * 2, 1, yy % 2 ? roof : roofDark);
+      rect(b, Math.round(bd.x + 2 + rw / 2 - half), bd.y + rh, 1, 2, roofDark);
+    }
+    rect(b, bd.x + 2, bd.y + rh, rw, 3, roofDark);
+    rect(b, bd.x + 2, bd.y + rh + 3, rw, 2, roof);
+    if (style === 'cafe') { // 咖啡馆条纹雨棚
+      rect(b, cx - 13, bd.y + rh + 5, 26, 4, roof);
+      px(b, cx - 9, bd.y + rh + 5, 0xffff5050); px(b, cx - 3, bd.y + rh + 5, 0xffff5050); px(b, cx + 3, bd.y + rh + 5, 0xffff5050); px(b, cx + 9, bd.y + rh + 5, 0xffff5050);
+    }
+  } else if (style === 'tower') {
+    const rw = bd.w - 8, rh = Math.min(20, Math.max(14, bd.h * 0.3));
+    for (let yy = 0; yy < rh; yy++) {
+      const half = Math.max(2, Math.round(rw / 2 * (1 - yy / rh)));
+      rect(b, Math.round(bd.x + 4 + rw / 2 - half), bd.y + yy, half * 2, 1, yy < rh / 2 ? roof : roofDark);
+    }
+    rect(b, bd.x + 4, bd.y + rh, rw, 3, roofDark);
+    rect(b, bd.x + 4, bd.y + rh + 3, rw, 2, roof);
+    px(b, cx, bd.y - 2, 0xffffe0a0);
+  } else if (style === 'factory') {
+    // 锯齿厂房顶
+    for (let i = 0; i < Math.ceil(bd.w / 12); i++) {
+      const sx = bd.x + 2 + i * 12;
+      rect(b, sx, bd.y + 2, 10, 3, roof);
+      rect(b, sx + 5, bd.y + 2, 5, 1, roofDark);
+      rect(b, sx + 10, bd.y + 5, 1, 4, roofDark);
+      rect(b, sx, bd.y + 5, 10, 2, roofDark);
+    }
+    rect(b, bd.x + 2, bd.y + 8, bd.w - 4, 3, roofDark);
+    // 烟囱
+    rect(b, bd.x + 12, bd.y - 8, 8, 12, roofDark);
+    rect(b, bd.x + 13, bd.y - 10, 6, 3, roof);
+    px(b, bd.x + 14, bd.y - 9, 0xffdddddd);
+  } else if (style === 'greenhouse') {
+    const rw = bd.w - 8, rh = Math.min(20, Math.max(10, bd.h * 0.25));
+    for (let yy = 0; yy < rh; yy++) {
+      const half = Math.max(2, Math.round((yy + 1) / rh * (rw / 2)));
+      rect(b, Math.round(bd.x + 4 + rw / 2 - half), bd.y + yy, half * 2, 1, yy % 2 ? glass : shade('#ffffff', pal.bright, pal.nightF, pal.duskF));
+    }
+    rect(b, bd.x + 4, bd.y + rh, rw, 2, dark);
+    rect(b, cx, bd.y, 1, rh, dark);
+  } else if (style === 'gate') {
+    // 平顶大门式
+    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 12, roof);
+    rect(b, bd.x + 2, bd.y + 14, bd.w - 4, 3, roofDark);
+    rect(b, bd.x + 2, bd.y + 17, bd.w - 4, 2, roof);
+    if (bd.w >= 62) { // 拱门
+      rect(b, cx - 11, bd.y + bd.h - 16, 22, 14, dark);
+      fillEllipse(b, cx, bd.y + bd.h - 14, 10, 5, wall);
+      rect(b, cx - 9, bd.y + bd.h - 12, 18, 10, dark);
+    }
+  } else if (style === 'hazard') {
+    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 14, roof);
+    for (let i = 0; i < bd.w - 4; i += 10) {
+      px(b, bd.x + 2 + i, bd.y + 2, 0xffff5050); px(b, bd.x + 2 + i + 3, bd.y + 2, 0xffffd858);
+      px(b, bd.x + 2 + i, bd.y + 8, 0xffffd858); px(b, bd.x + 2 + i + 3, bd.y + 8, 0xffff5050);
+    }
+    rect(b, bd.x + 2, bd.y + 16, bd.w - 4, 3, roofDark);
   } else {
-    rect(b, 80, 10, 24, 4, 0xffffffff); rect(b, 88, 8, 10, 3, 0xffffffff);
-    rect(b, 340, 18, 24, 4, 0xffffffff); rect(b, 348, 16, 10, 3, 0xffffffff);
+    // 平顶办公/学校/实验室
+    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 13, roof);
+    rect(b, bd.x + 2, bd.y + 15, bd.w - 4, 3, roofDark);
+    rect(b, bd.x + 4, bd.y + 4, bd.w - 8, 3, shade('#ffffff', pal.bright, pal.nightF, 0));
+    if (style === 'school') {
+      for (let i = 0; i < Math.floor((bd.w - 16) / 14); i++) rect(b, bd.x + 8 + i * 14, bd.y + 22, 8, 5, win);
+    } else if (style === 'lab') {
+      rect(b, bd.x + 6, bd.y + 22, bd.w - 12, 6, glass);
+      rect(b, bd.x + 6, bd.y + 29, bd.w - 12, 3, shade('#58a0e8', pal.bright, pal.nightF, pal.duskF));
+    }
   }
-  // 草地：珍珠/钻石薄荷绿，大块
-  rect(b, 0, 46, W, H - 46, pal.M);
-  // 明暗草块：柔和深浅块（珍珠钻石草地有层次）
-  const grassDark = shade('#3c8c4c', pal.bright, pal.nightF, pal.duskF);
-  const grassLight = shade('#8cd890', pal.bright, pal.nightF, pal.duskF);
-  for (let i = 0; i < 18; i++) {
-    const gx = (i * 83) % (W - 30), gy = 50 + ((i * 67) % (H - 100));
-    if (gy >= 144 && gy <= 182) continue;
-    rect(b, gx, gy, 20 + (i % 3) * 6, 7 + (i % 2) * 4, (i % 2) ? grassDark : grassLight);
+
+  // 普通窗户：非 row-window 建筑
+  if (style !== 'school' && style !== 'lab' && style !== 'greenhouse') {
+    rect(b, bd.x + 8, bd.y + 24, 10, 8, win);
+    rect(b, bd.x + bd.w - 20, bd.y + 24, 10, 8, win);
   }
-  // 稀疏草点
-  for (let i = 0; i < 160; i++) {
-    const gx = (i * 73) % W, gy = 50 + ((i * 41) % (H - 96));
-    if (gy >= 144 && gy <= 180) continue;
-    px(b, gx, gy, pal.L);
+
+  // 建筑专属细节（烟囱/旗帜/门廊等）
+  if (style === 'studio') {
+    // 大画窗
+    rect(b, bd.x + 5, bd.y + 23, bd.w - 10, 10, glass);
+    px(b, bd.x + 8, bd.y + 26, 0xffff5050); px(b, bd.x + 12, bd.y + 26, 0xff58a0e8); px(b, bd.x + 16, bd.y + 26, 0xff58d858); px(b, bd.x + 20, bd.y + 26, 0xffffd858);
+  } else if (style === 'library') {
+    rect(b, bd.x + 4, bd.y + 22, bd.w - 8, 6, wood);
+    rect(b, bd.x + 8, bd.y + 24, 4, 4, win); rect(b, bd.x + 16, bd.y + 24, 4, 4, win); rect(b, bd.x + 24, bd.y + 24, 4, 4, win);
+  } else if (style === 'tower') {
+    rect(b, bd.x + 4, bd.y + 22, 6, 6, win);
+  } else if (style === 'shed') {
+    rect(b, bd.x + 6, bd.y + 22, 10, 6, wood);
+    px(b, bd.x + 10, bd.y + 24, win);
   }
-  // 树墙：外围一圈（深绿树冠 + 亮绿高光），把小镇围起来
-  drawTreeWall(b, pal, 0, 46, W, 16);
-  drawTreeWall(b, pal, 0, 252, W, 18);
-  drawTreeWall(b, pal, 0, 46, 16, H);
-  drawTreeWall(b, pal, 464, 46, 16, H);
-  // 主街：珍珠/钻石灰色石板路（有灰边框）
-  rect(b, 0, 146, W, 34, shade('#c8c8d0', pal.bright, pal.nightF, pal.duskF));
-  for (let i = 0; i < 90; i++) { const rx = (i * 37) % W, ry = 150 + ((i * 17) % 26); px(b, rx, ry, shade('#b0b0bc', pal.bright, pal.nightF, pal.duskF)); }
-  rect(b, 0, 144, W, 2, shade('#8890a0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, 0, 180, W, 2, shade('#8890a0', pal.bright, pal.nightF, pal.duskF));
-  // 中央纵向石路
-  rect(b, 230, 180, 20, H - 180, shade('#c8c8d0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, 228, 180, 2, H - 180, shade('#8890a0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, 250, 180, 2, H - 180, shade('#8890a0', pal.bright, pal.nightF, pal.duskF));
-  // 小广场（主街与纵路交叉）
-  rect(b, 210, 146, 60, 34, shade('#d8d8e0', pal.bright, pal.nightF, pal.duskF));
-  // 左下角池塘
-  drawPond(b, pal, 24, 224, 64, 28);
-  // 右上角小树林（树墙围住）
-  drawTree(b, pal, 330, 64); drawTree(b, pal, 370, 60); drawTree(b, pal, 410, 64);
-  drawBush(b, pal, 346, 78); drawBush(b, pal, 390, 78);
-  // 草地上的小花/草（少量）
-  px(b, 100, 66, pal.P); px(b, 104, 70, pal.Y); px(b, 112, 64, pal.P);
-  px(b, 304, 90, pal.Y); px(b, 308, 94, pal.P); px(b, 316, 88, pal.Y);
-  // 路边的方形花坛（珍珠/钻石常见）
-  drawPlanter(b, pal, 60, 132); drawPlanter(b, pal, 340, 132);
-  drawPlanter(b, pal, 60, 192); drawPlanter(b, pal, 340, 192);
+
+  // 大门（保留 door 方向，功能不变）
+  if (bd.door === 'south') { rect(b, cx - 5, bd.y + bd.h - 13, 10, 12, door); }
+  else if (bd.door === 'north') { rect(b, cx - 5, bd.y + 1, 10, 12, door); }
+  else if (bd.door === 'east') { rect(b, bd.x + bd.w - 12, bd.y + bd.h / 2 - 5, 11, 10, door); }
+  else { rect(b, bd.x + 1, bd.y + bd.h / 2 - 5, 11, 10, door); }
+
+  // 职业徽记（保留，但屋顶形态本身已更有辨识度）
+  drawBuildingEmblem(b, bd, pal, Math.round(cx), bd.y + Math.max(18, Math.round(bd.h * 0.42)));
+
+  const meta = STAGE[bd.key];
+  if (meta) {
+    rect(b, cx - 8, bd.y + bd.h - 20, 16, 7, roof);
+    rect(b, cx - 6, bd.y + bd.h - 18, 12, 3, win);
+  }
 }
 
-function drawTreeWall(b, pal, x, y, w, h) {
-  // 成排大圆树墙：每个 7px 大圆冠，有深色底部和高光
-  const step = 8;
-  for (let j = 0; j < h; j += step) {
-    for (let i = 0; i < w; i += step) {
-      const tx = x + i, ty = y + j;
-      if (tx >= W || ty >= H) continue;
-      // 底部阴影
-      rect(b, tx - 1, ty + 4, 6, 2, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
-      // 深绿底球
-      rect(b, tx - 2, ty - 1, 7, 5, pal.G);
-      // 亮绿高光球
-      rect(b, tx, ty - 3, 5, 4, pal.L);
-      px(b, tx, ty - 3, shade('#a0e88a', pal.bright, pal.nightF, pal.duskF));
+function drawFountain(b, pal, cx, cy) {
+  const t = performance.now() / 1000;
+  const stone = shade('#cbb89a', pal.bright, pal.nightF, pal.duskF);
+  const stoneDark = shade('#a08b70', pal.bright, pal.nightF, pal.duskF);
+  const water = shade('#6aa8f0', pal.bright, pal.nightF, pal.duskF);
+  const waterLight = shade('#8cc8f8', pal.bright, pal.nightF, pal.duskF);
+  const pedestal = shade('#b8a88a', pal.bright, pal.nightF, pal.duskF);
+  const rim = shade('#d8d0c0', pal.bright, pal.nightF, pal.duskF);
+  fillEllipse(b, cx, cy, 27, 21, stone);
+  fillEllipse(b, cx, cy, 24, 18, stoneDark);
+  fillEllipse(b, cx, cy - 1, 21, 14, water);
+  fillEllipse(b, cx, cy - 3, 16, 10, waterLight);
+  // 水面动态微光
+  const wob = Math.sin(t * 2.2) * 2;
+  px(b, Math.round(cx + 6 + wob), Math.round(cy - 2), 0xffffffff);
+  px(b, Math.round(cx - 6 - wob), Math.round(cy + 3), 0xffffffff);
+  // 中央水柱
+  rect(b, cx - 2, cy - 19, 4, 14, waterLight);
+  rect(b, cx - 1, cy - 26, 2, 9, water);
+  rect(b, cx, cy - 28, 1, 5, 0xffffffff);
+  // 喷溅水珠：抛物线小点
+  for (let i = 0; i < 8; i++) {
+    const ph = (t * 1.1 + i * 0.31) % 1;
+    const dir = i % 2 ? 1 : -1;
+    const dx = dir * (3 + ph * 13);
+    const dy = -22 + Math.sin(ph * Math.PI) * 20;
+    const size = ph < 0.45 ? 1 : 0;
+    if (size) {
+      px(b, Math.round(cx + dx), Math.round(cy + dy), i % 3 ? 0xffffffff : 0xffdff5ff);
+      if (i % 2) px(b, Math.round(cx + dx + 1), Math.round(cy + dy), 0xffffffff);
+    }
+  }
+  // 基座
+  rect(b, cx - 3, cy - 7, 6, 9, pedestal);
+  rect(b, cx - 2, cy - 13, 4, 7, rim);
+  // 水面涟漪
+  for (let i = 0; i < 3; i++) {
+    const ph = (t * 0.7 + i * 0.37) % 1;
+    const rr = 3 + ph * 18;
+    const alpha = ph < 0.8 ? 0xffffffff : 0;
+    if (alpha) {
+      px(b, Math.round(cx + rr), cy - 2, alpha);
+      px(b, Math.round(cx - rr), cy - 2, alpha);
+      px(b, cx, Math.round(cy - 2 + rr * 0.45), alpha);
+      px(b, cx, Math.round(cy - 2 - rr * 0.45), alpha);
     }
   }
 }
 
-function drawPlanter(b, pal, x, y) {
-  // 方形花坛：灰/石色边框 + 彩色花
-  rect(b, x - 5, y - 2, 10, 4, shade('#b0b0bc', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x - 4, y - 1, 8, 2, shade('#d8d8e0', pal.bright, pal.nightF, pal.duskF));
-  px(b, x - 2, y, pal.P); px(b, x, y, pal.Y); px(b, x + 2, y, pal.P);
+/* 花草多样性：草簇、花朵小形状 */
+function drawGrassTuft(b, x, y, c1, c2, c3) {
+  px(b, x, y, c1); px(b, x, y - 1, c1);
+  px(b, x + 1, y, c2); px(b, x + 2, y - 1, c2);
+  px(b, x - 1, y - 2, c3 || c1); px(b, x + 1, y - 3, c3 || c2);
+}
+function drawFlower(b, x, y, petal, center, stem) {
+  px(b, x, y + 1, stem);
+  px(b, x - 1, y, petal); px(b, x + 1, y, petal);
+  px(b, x, y - 1, petal); px(b, x, y + 1, stem);
+  px(b, x, y, center);
+}
+function drawRain(b, pal, now) {
+  if (!rainMode) return;
+  const wet = shade('#6a7a9a', pal.bright, pal.nightF, pal.duskF);
+  const t = (now || performance.now()) / 1000;
+  for (let i = 0; i < 130; i++) {
+    const x = (i * 97 + ((t * 260) % 960)) % W;
+    const y = (i * 53 + ((t * 420) % 540)) % H;
+    const len = 5 + (i % 4);
+    rect(b, Math.round(x), Math.round(y), 1, len, wet);
+    px(b, Math.round(x - 1), Math.round(y + len), 0xffcfe2ff);
+  }
+  // 地面雨点圈
+  for (let i = 0; i < 22; i++) {
+    const rx = (i * 149) % W, ry = ((i * 97 + Math.floor(t * 3) * 37) % H);
+    if (isWalkPx(rx, ry)) {
+      px(b, rx, ry, 0xffffffff);
+      px(b, rx - 1, ry, 0xffffffff); px(b, rx + 1, ry, 0xffffffff);
+      px(b, rx, ry - 1, 0xffffffff); px(b, rx, ry + 1, 0xffffffff);
+    }
+  }
+  // 街面湿感
+  if (Math.floor(t * 1.5) % 2 === 0) {
+    rect(b, 50, 255, 130, 8, wet); rect(b, 470, 130, 20, 8, wet); rect(b, 700, 290, 90, 6, wet);
+  }
 }
 
-function drawBush(b, pal, x, y) {
-  // 珍珠/钻石灌木：圆润三层
-  rect(b, x - 5, y - 2, 10, 4, pal.G);
-  rect(b, x - 4, y - 5, 8, 4, pal.L);
-  px(b, x - 5, y - 3, shade('#3e7a3e', pal.bright, pal.nightF, pal.duskF));
-  px(b, x + 5, y - 3, shade('#3e7a3e', pal.bright, pal.nightF, pal.duskF));
-  px(b, x - 1, y - 6, shade('#a0e88a', pal.bright, pal.nightF, pal.duskF));
-  px(b, x + 1, y - 6, shade('#a0e88a', pal.bright, pal.nightF, pal.duskF));
+function drawScene(b, pal) {
+  rect(b, 0, 0, W, H, pal.M);
+  const grassDark = shade('#3c8c4c', pal.bright, pal.nightF, pal.duskF);
+  const grassLight = shade('#8cd890', pal.bright, pal.nightF, pal.duskF);
+  for (let i = 0; i < 32; i++) {
+    const gx2 = (i * 83) % (W - 30), gy2 = 10 + ((i * 67) % (H - 20));
+    rect(b, gx2, gy2, 22 + (i % 3) * 7, 7 + (i % 2) * 4, (i % 2) ? grassDark : grassLight);
+  }
+  for (let i = 0; i < 140; i++) {
+    const gx2 = (i * 73) % W, gy2 = 8 + ((i * 41) % (H - 16));
+    if (!isWalkPx(gx2, gy2)) continue;
+    const c1 = (i % 3 === 0) ? pal.H : pal.L;
+    const c2 = (i % 4 === 0) ? pal.G : pal.L;
+    drawGrassTuft(b, gx2, gy2, c1, c2, pal.H);
+  }
+  const road = shade('#c9b18e', pal.bright, pal.nightF, pal.duskF);
+  const roadDark = shade('#8f7352', pal.bright, pal.nightF, pal.duskF);
+  rect(b, 0, 248, W, 34, road);
+  for (let i = 0; i < 170; i++) { const rx = (i * 37) % W, ry = 252 + ((i * 17) % 26); px(b, rx, ry, roadDark); }
+  rect(b, 0, 246, W, 2, roadDark); rect(b, 0, 282, W, 2, roadDark);
+  rect(b, 456, 0, 48, H, road);
+  for (let i = 0; i < 140; i++) { const rx = 460 + ((i * 23) % 40), ry = (i * 53) % H; px(b, rx, ry, roadDark); }
+  rect(b, 454, 0, 2, H, roadDark); rect(b, 504, 0, 2, H, roadDark);
+  const plaza = shade('#ddd0b8', pal.bright, pal.nightF, pal.duskF);
+  rect(b, 396, 180, 168, 176, plaza);
+  rect(b, 394, 178, 172, 2, roadDark); rect(b, 394, 356, 172, 2, roadDark);
+  rect(b, 394, 178, 2, 180, roadDark); rect(b, 564, 178, 2, 180, roadDark);
+  drawFountain(b, pal, 480, 268);
+  drawPond(b, pal, 160, 460, 130, 52);
+  drawPond(b, pal, 850, 8, 86, 44);
+  drawFlowerField(b, pal, 220, 390, 120, 44);
+  drawFlowerField(b, pal, 300, 300, 76, 40);
+  drawFlowerField(b, pal, 790, 150, 76, 44);
+  drawFarm(b, pal, 360, 420, 90, 46);
+  for (const [tx, ty] of TREE_SPOTS) drawTree(b, pal, tx, ty);
+  for (let i = 0; i < 90; i++) {
+    const fx = (i * 89) % W, fy = 10 + ((i * 59) % (H - 20));
+    if (isWalkPx(fx, fy)) {
+      const petal = (i % 3 === 0) ? pal.P : (i % 3 === 1) ? pal.Y : shade('#ff9fb0', pal.bright, pal.nightF, pal.duskF);
+      const center = (i % 2) ? shade('#fff0a0', pal.bright, pal.nightF, pal.duskF) : shade('#c05a2a', pal.bright, pal.nightF, pal.duskF);
+      drawFlower(b, fx, fy, petal, center, pal.L);
+    }
+  }
+}
+function drawStations(b, pal) {
+  for (const bd of BUILDING_DEFS) drawBuilding(b, bd, pal);
 }
 
-function drawPond(b, pal, x, y, w, h) {
-  // 珍珠/钻石圆润池塘（圆角色块）
-  rect(b, x + 2, y, w - 4, h, shade('#4a8ee8', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x, y + 4, w, h - 8, shade('#4a8ee8', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x + 4, y + 4, w - 8, h - 8, shade('#5fa0f0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x + 10, y + 8, 24, 2, 0xffbfe8ff);
-  px(b, x + 28, y + 20, 0xffd8f0ff); px(b, x + 40, y + 12, 0xffd8f0ff);
-  px(b, x + 20, y + 24, 0xffd8f0ff);
-  rect(b, x - 1, y - 1, w + 2, 2, shade('#d8b26a', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x - 1, y + h - 1, w + 2, 2, shade('#d8b26a', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x, y - 1, 2, h + 2, shade('#d8b26a', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x + w - 1, y - 1, 2, h + 2, shade('#d8b26a', pal.bright, pal.nightF, pal.duskF));
-  px(b, x + 18, y + 14, 0xff7ad07a); px(b, x + 19, y + 14, 0xff9fe08a); px(b, x + 20, y + 14, 0xff7ad07a);
-}
-
-function drawTree(b, pal, x, y) {
-  // 珍珠/钻石圆形树冠
-  rect(b, x - 1, y, 3, 9, pal.K);
-  rect(b, x - 6, y - 9, 12, 8, pal.G);
-  rect(b, x - 5, y - 14, 10, 7, pal.L);
-  rect(b, x - 3, y - 18, 6, 5, shade('#a0e88a', pal.bright, pal.nightF, pal.duskF));
-  px(b, x - 6, y - 8, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
-  px(b, x + 6, y - 8, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
-  px(b, x - 1, y - 13, pal.R);
-}
-const ROOF_BY_SLOT = ['#e85040', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#f0a848', '#e85040', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#f0a848', '#e85040', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0'];
-const WALL_BY_SLOT = ['#f2e8d8', '#d8e0f2', '#e8f2d8', '#f2e0d8', '#e8d8f2', '#f2f2e0', '#d8f2e8', '#f2d8d8'];
-function drawStation(b, key, pal) {
-  const meta = STAGE[key], pos = STATION_POS[key];
-  if (!meta || !pos) return;
-  const x = pos.x, y = pos.y;
-  const idx = Object.keys(STAGE).indexOf(key);
-  const roofHex = ROOF_BY_SLOT[idx % ROOF_BY_SLOT.length];
-  const wallHex = WALL_BY_SLOT[idx % WALL_BY_SLOT.length];
-  const roof = shade(roofHex, pal.bright, pal.nightF, pal.duskF);
-  const wall = shade(wallHex, pal.bright, pal.nightF, pal.duskF);
-  const wallDark = shade('#a0a0b0', pal.bright, pal.nightF, pal.duskF);
-  // 门前灰色小广场（珍珠/钻石建筑常带铺装）
-  rect(b, x - 6, y - 2, 16, 3, shade('#b0b0bc', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x - 4, y - 2, 12, 2, shade('#d8d8e0', pal.bright, pal.nightF, pal.duskF));
-  // 珍珠钻石平顶大房：彩色屋顶 + 不同墙色 + 棕门 + 深描边
-  rect(b, x - 15, y - 21, 30, 2, shade('#000000', pal.bright, pal.nightF, 0));
-  spr(b, HOUSE, x - 16, y - 22, { W: wall, Y: shade('#f8e0a0', pal.bright, pal.nightF, pal.duskF), P: wallDark, K: shade('#7a5230', pal.bright, pal.nightF, pal.duskF), D: pal.D });
-  // 屋顶高光 / 暗边：左暗右亮，增强体积
-  rect(b, x - 15, y - 19, 30, 1, shade('#ffffff', pal.bright, pal.nightF, 0));
-  rect(b, x - 15, y - 20, 2, 15, shade('#8a80a0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x + 13, y - 20, 2, 15, shade('#e0d8e8', pal.bright, pal.nightF, pal.duskF));
-  // 门 / 窗底部投影
-  rect(b, x - 8, y - 7, 5, 1, shade('#5a3a20', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x + 5, y - 7, 5, 1, shade('#5a3a20', pal.bright, pal.nightF, pal.duskF));
-  // 门前台阶
-  rect(b, x - 4, y - 4, 10, 2, shade('#d8d0e0', pal.bright, pal.nightF, pal.duskF));
-  rect(b, x - 4, y - 3, 10, 1, shade('#b8aec8', pal.bright, pal.nightF, pal.duskF));
-}
-
+buildStationMap();
+buildNatureMap();
 /* ---------- NPC ---------- */
 const VILLAGER_PALETTES = ['#e85d3a', '#f4a7b9', '#58a858', '#5c8af0', '#f0c858', '#b06ad0', '#4ad0b0', '#e07050', '#70c8e0', '#d080c0'];
 
@@ -1065,85 +1597,158 @@ const PASSER_SPRITE = {
 
 /* 装饰角色数组 —— 行为状态机：idle / walk / chat / hop / follow / flee / fly */
 let passers = [];
+function createPasserHit(p) {
+  if (p.kind === 'bird') return null;
+  const hit = document.createElement('div');
+  hit.className = 'agent-hit passer-hit';
+  hit.innerHTML = '<div class="ab"></div><div class="at"></div><div class="heart">💗</div>';
+  hit.addEventListener('click', (e) => { e.stopPropagation(); interactPasser(p); });
+  agentsLayer.appendChild(hit);
+  p.hit = hit;
+  hit.style.left = ((p.cx) / W * 100) + '%';
+  hit.style.top = ((p.cy - 14) / H * 100) + '%';
+  return hit;
+}
 function spawnPassers() {
+  if (passers.length) for (const p of passers) if (p.hit) p.hit.remove();
   passers = [];
-  // 更多居民：5 路人 + 2 小孩 + 6 只宝可梦/小动物 + 3 鸟（小镇更热闹）
-  const makeHuman = (type, color) => ({ kind: 'human', type, color, clothesColor: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], cx: 60 + Math.random() * 300, cy: 90 + Math.random() * 130, tx: 0, ty: 0, frame: 0, speed: 0.7, state: 'idle', stateT: 1 + Math.random() * 2, dir: 1, targetUser: null });
-  const makePokemon = (type) => ({ kind: 'pokemon', type, cx: 60 + Math.random() * 300, cy: 90 + Math.random() * 130, tx: 0, ty: 0, frame: 0, speed: 0.8, state: 'idle', stateT: 1 + Math.random() * 2, dir: 1, targetUser: null, hopT: 0 });
-  const makeBird = () => ({ kind: 'bird', type: 'bird', cx: -20, cy: 12, tx: 0, ty: 0, frame: 0, speed: 0.9, state: 'fly', stateT: 0, dir: 1, path: [] });
-  for (let i = 0; i < 5; i++) passers.push(makeHuman('adult', VILLAGER_PALETTES[(i * 3) % VILLAGER_PALETTES.length]));
-  for (let i = 0; i < 2; i++) passers.push(makeHuman('child', VILLAGER_PALETTES[(i * 5 + 2) % VILLAGER_PALETTES.length]));
-  const ptypes = ['pokemon1', 'pokemon2', 'pokemon3', 'pokemon4', 'pokemon5', 'pokemon6', 'cat'];
-  for (let i = 0; i < 6; i++) passers.push(makePokemon(ptypes[i % ptypes.length]));
-  for (let i = 0; i < 3; i++) passers.push(makeBird());
+  const humans = [
+    { kind: 'human', type: 'adult', name: '木匠阿良', speed: 26 },
+    { kind: 'human', type: 'adult', name: '花匠小满', speed: 24 },
+    { kind: 'human', type: 'adult', name: '铁匠大锤', speed: 23 },
+    { kind: 'human', type: 'adult', name: '渔夫老黄', speed: 27 },
+    { kind: 'human', type: 'adult', name: '药师小铃', speed: 25 },
+    { kind: 'human', type: 'child', name: '豆豆', speed: 30 },
+    { kind: 'human', type: 'child', name: '米粒', speed: 28 }
+  ];
+  const spirits = [
+    { kind: 'pokemon', type: 'pokemon1', name: '皮皮' },
+    { kind: 'pokemon', type: 'pokemon2', name: '水灵' },
+    { kind: 'pokemon', type: 'pokemon3', name: '草芽' },
+    { kind: 'pokemon', type: 'pokemon4', name: '虫虫' },
+    { kind: 'pokemon', type: 'pokemon5', name: '雪球' },
+    { kind: 'pokemon', type: 'pokemon6', name: '啾啾' },
+    { kind: 'pokemon', type: 'cat', name: '橘猫' }
+  ];
+  const make = (base) => {
+    const p = Object.assign({}, base);
+    const start = nearestWalkable(100 + Math.random() * 760, 60 + Math.random() * 420);
+    p.cx = start.x; p.cy = start.y; p.tx = start.x; p.ty = start.y;
+    p.path = []; p.frame = 0; p.state = 'idle'; p.stateT = 1 + Math.random() * 2; p.dir = 1;
+    p.hopT = 0; p.chatWith = null;
+    p.clothesColor = VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)];
+    p.hairColor = ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)];
+    p.speed = base.speed || 26;
+    p.hit = null;
+    return p;
+  };
+  for (const h of humans) passers.push(make(h));
+  for (const s of spirits) passers.push(make(s));
+  for (let i = 0; i < 3; i++) passers.push({ kind: 'bird', type: 'bird', name: '小鸟', cx: -20, cy: 10 + i * 12, tx: 0, ty: 0, path: [], frame: i, state: 'fly', stateT: 0, dir: 1, speed: 50, hit: null });
+  for (const p of passers) createPasserHit(p);
 }
-
 function pickTownPoint() {
-  // 只在小镇道路/街区活动（不跑出地图）
-  const pick = Math.random();
-  if (pick < 0.5) return { x: 30 + Math.random() * (W - 60), y: 138 + Math.random() * 34 };
-  if (pick < 0.8) return { x: 225 + Math.random() * 30, y: 60 + Math.random() * 150 };
-  return { x: 40 + Math.random() * (W - 80), y: 92 + Math.random() * 90 };
+  for (let i = 0; i < 40; i++) {
+    const x = 30 + Math.random() * (W - 60), y = 40 + Math.random() * (H - 70);
+    if (isWalkPx(x, y)) return { x, y };
+  }
+  return { x: W / 2, y: H / 2 };
 }
-function clampTown(p) {
-  p.x = Math.max(24, Math.min(W - 24, p.x));
-  p.y = Math.max(60, Math.min(H - 24, p.y));
-  return p;
+function moveAlongPath(e, dt, speed) {
+  if (!e.path || !e.path.length) { e.moving = false; return; }
+  const wp = e.path[0];
+  const dx = wp.x - e.cx, dy = wp.y - e.cy, dist = Math.hypot(dx, dy);
+  if (dist < 3) { e.cx = wp.x; e.cy = wp.y; e.path.shift(); e.moving = false; return; }
+  const step = speed * dt;
+  e.cx += (dx / dist) * step; e.cy += (dy / dist) * step;
+  e.moving = true; e.dir = dx >= 0 ? 1 : -1; e.frame += dt * 8;
+}
+/* 动态分离：地面角色（路人/小精灵/agent）不与附近其他单位重叠，且不挤进建筑 */
+function separateGround(e) {
+  const crowd = [];
+  for (const q of passers) if (q !== e && q.kind !== 'bird') crowd.push(q);
+  for (const a of agents.values()) if (a !== e) crowd.push(a);
+  for (const q of crowd) {
+    const dx = e.cx - q.cx, dy = e.cy - q.cy, d = Math.hypot(dx, dy);
+    if (d > 0 && d < 14) {
+      const f = (14 - d) * 0.45;
+      let nx = e.cx + dx / d * f, ny = e.cy + dy / d * f;
+      if (!isWalkPx(nx, ny)) { nx = e.cx + dx / d * f * 0.5; ny = e.cy + dy / d * f * 0.5; }
+      if (isWalkPx(nx, ny)) { e.cx = nx; e.cy = ny; }
+    }
+  }
 }
 
 function updatePassers(dt) {
   for (const p of passers) {
-    // 人类：idle 站住 → walk 沿路线走 → 偶尔 chat 找附近人类
+    if (p.kind === 'bird') {
+      p.frame += dt * 6;
+      if (p.dir === 1) { p.cx += p.speed * dt; if (p.cx > W + 20) { p.cx = -20; p.cy = 8 + Math.random() * 30; p.dir = -1; } }
+      else { p.cx -= p.speed * dt; if (p.cx < -20) { p.cx = W + 20; p.cy = 8 + Math.random() * 30; p.dir = 1; } }
+      p.cy = Math.max(4, Math.min(42, p.cy + Math.sin(p.frame * 2) * dt * 3));
+      continue;
+    }
     if (p.kind === 'human') {
       p.stateT -= dt;
-      if (p.state === 'idle' && p.stateT <= 0) {
-        const pt = pickTownPoint(); p.tx = pt.x; p.ty = pt.y; p.state = 'walk'; p.stateT = 3 + Math.random() * 4;
-      } else if (p.state === 'walk') {
-        const dx = p.tx - p.cx, dy = p.ty - p.cy, dist = Math.hypot(dx, dy);
-        if (dist < 2 || p.stateT <= 0) {
-          // 到终点：站住休息一会儿，而不是立刻找新点
-          p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3;
-        } else {
-          const step = p.speed * dt * 22;
-          p.cx += (dx / dist) * step; p.cy += (dy / dist) * step;
-          p.frame += dt * 8; p.dir = dx >= 0 ? 1 : -1;
-        }
+      if (p.state === 'walk' && (!p.path || !p.path.length)) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      if (p.state === 'walk') {
+        moveAlongPath(p, dt, p.speed);
+        if (!p.path || !p.path.length) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      } else if (p.state === 'idle' && p.stateT <= 0) {
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) { p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y; }
+        else p.stateT = 1 + Math.random() * 2;
+      } else if (p.state === 'idle') {
+        const other = passers.find(q => q !== p && q.kind === 'human' && q.state === 'idle' && Math.hypot(q.cx - p.cx, q.cy - p.cy) < 20);
+        if (other && Math.random() < dt * 0.25) { p.state = 'chat'; p.stateT = 1.6 + Math.random() * 1.2; p.chatWith = other; other.state = 'chat'; other.stateT = p.stateT; other.chatWith = p; }
+      } else if (p.state === 'chat') { if (p.stateT <= 0) { p.state = 'idle'; p.stateT = 1 + Math.random() * 2; if (p.chatWith) { p.chatWith.chatWith = null; p.chatWith.state = 'idle'; p.chatWith.stateT = 1 + Math.random() * 2; p.chatWith = null; } } }
+      else if (p.state === 'wave') { if (p.stateT <= 0) p.state = 'idle'; }
+    } else if (p.kind === 'pokemon') {
+      if (p.state === 'sparkle') { p.stateT -= dt; p.hopT -= dt; if (p.stateT <= 0) p.state = 'idle'; continue; }
+      // 优先跟随人类/真实 agent，避免小精灵互相追成一团
+      let near = null, nearD = 70;
+      for (const q of passers) if (q !== p && q.kind === 'human') {
+        const d = Math.hypot(q.cx - p.cx, q.cy - p.cy);
+        if (d < nearD) { near = q; nearD = d; }
       }
-    }
-    // 宝可梦：跟随最近的路上/agent，偶尔跳，被靠近就跑开
-    if (p.kind === 'pokemon') {
-      const nearest = passers.find(q => q !== p && q.kind === 'human' && Math.hypot(q.cx - p.cx, q.cy - p.cy) < 80);
-      if (nearest) {
-        const dx = nearest.cx - p.cx, dy = nearest.cy - p.cy, dist = Math.hypot(dx, dy);
-        if (dist > 12) { const step = p.speed * dt * 16; p.cx += (dx / dist) * step; p.cy += (dy / dist) * step; p.dir = dx >= 0 ? 1 : -1; p.frame += dt * 8; p.state = 'follow'; }
+      for (const a of agents.values()) {
+        const d = Math.hypot(a.cx - p.cx, a.cy - p.cy);
+        if (d < nearD) { near = a; nearD = d; }
+      }
+      if (near) {
+        const dx = near.cx - p.cx, dy = near.cy - p.cy, dist = Math.hypot(dx, dy);
+        if (dist > 18) { const step = Math.min(p.speed * 2, dist) * dt; p.cx += (dx / dist) * step; p.cy += (dy / dist) * step; p.frame += dt * 6; p.dir = dx >= 0 ? 1 : -1; p.state = 'follow'; }
         else { p.state = 'idle'; p.frame += dt * 4; }
       } else {
         p.stateT -= dt;
-        if (p.stateT <= 0) { p.stateT = 1 + Math.random() * 2; p.state = 'hop'; p.hopT = 0.3; }
-        if (p.state === 'hop') { p.hopT -= dt; p.frame += dt * 10; if (p.hopT <= 0) p.state = 'idle'; }
+        if (p.stateT <= 0) { p.stateT = 1 + Math.random() * 2; p.state = 'hop'; p.hopT = 0.35; }
+        if (p.state === 'hop') { p.hopT -= dt; if (p.hopT <= 0) p.state = 'idle'; }
       }
     }
-    // 鸟：正弦路径横穿，飞出屏幕后从另一侧进入（不“拉回原点”）
-    if (p.kind === 'bird') {
-      p.frame += dt * 6;
-      if (p.dir === 1) { p.cx += p.speed * dt * 40; if (p.cx > W + 20) { p.cx = -20; p.cy = 8 + Math.random() * 28; } }
-      else { p.cx -= p.speed * dt * 40; if (p.cx < -20) { p.cx = W + 20; p.cy = 8 + Math.random() * 28; } }
-      p.cy = Math.max(6, Math.min(38, p.cy + Math.sin(p.frame * 2) * dt * 3));
-    }
+    if (p.kind !== 'bird') separateGround(p);
   }
 }
 function drawPasser(b, p, pal) {
+  if (p.kind === 'bird') {
+    const frame = Math.floor(p.frame) % 2;
+    const rows = PASSER_SPRITE.bird;
+    const colors = { W: 0xffe0e0e0 };
+    spr(b, rows, Math.round(p.cx - 4), Math.round(p.cy - 3 + frame), colors);
+    return;
+  }
+  const x = Math.round(p.cx), y = Math.round(p.cy);
   let rows, colors;
-  const x = p.cx | 0, y = p.cy | 0;
-  const frame = Math.floor(p.frame) % 2;
   if (p.kind === 'human') {
-    const base = p.type;
-    const stand = base + '_stand', w1 = base + '_walk1', w2 = base + '_walk2';
+    const stand = p.type + '_stand', w1 = p.type + '_walk1', w2 = p.type + '_walk2';
     const isWalk = p.state === 'walk';
+    const frame = Math.floor(p.frame) % 2;
     rows = isWalk ? (frame ? PASSER_SPRITE[w1] : PASSER_SPRITE[w2]) : PASSER_SPRITE[stand];
-    colors = { R: shade(p.color, pal.bright, pal.nightF, pal.duskF), H: shade((p.hairColor || '#5a3a26'), pal.bright, pal.nightF, pal.duskF), F: shade('#f2c6a0', pal.bright, pal.nightF, pal.duskF), E: 0xff20242b, S: shade((p.clothesColor || p.color), pal.bright, pal.nightF, pal.duskF), T: shade('#2f3a4a', pal.bright, pal.nightF, pal.duskF), B: shade('#20242b', pal.bright, pal.nightF, pal.duskF), A: shade('#20242b', pal.bright, pal.nightF, pal.duskF) };
-    rect(b, p.cx - 6, p.cy, 12, 2, shade('#000000', pal.bright, pal.nightF, 0));
-    spr(b, rows, x - 9, y - rows.length + 1, colors, p.dir < 0);
+    colors = { R: shade(p.clothesColor, pal.bright, pal.nightF, pal.duskF), H: shade(p.hairColor, pal.bright, pal.nightF, pal.duskF), F: shade('#f2c6a0', pal.bright, pal.nightF, pal.duskF), E: 0xff20242b, S: shade(p.clothesColor, pal.bright, pal.nightF, pal.duskF), T: shade('#2f3a4a', pal.bright, pal.nightF, pal.duskF), B: shade('#20242b', pal.bright, pal.nightF, pal.duskF), A: shade('#20242b', pal.bright, pal.nightF, pal.duskF) };
+    drawShadow(b, p.cx - 6, p.cy, 12, 3, pal, 0.2);
+    const lift = p.state === 'wave' ? (Math.sin(performance.now() / 80) > 0 ? -2 : 0) : (p.state === 'chat' ? 1 : 0);
+    spr(b, rows, x - 9, y - rows.length + 1 + lift, colors, p.dir < 0);
+    if (p.state === 'chat' || p.state === 'wave') { if (p.hit) { const bb = p.hit.querySelector('.ab'); if (bb) bb.textContent = p.state === 'chat' ? '💬 ' + (p.chatWith ? p.chatWith.name : '你好') + '！' : '👋 你好！'; } }
   } else if (p.kind === 'pokemon') {
     rows = PASSER_SPRITE[p.type];
     colors = p.type === 'pokemon1' ? { Y: 0xfff0d050, E: 0xff20242b, R: 0xffc04040 }
@@ -1153,16 +1758,60 @@ function drawPasser(b, p, pal) {
       : p.type === 'pokemon5' ? { R: 0xffe0a0a0, E: 0xff20242b }
       : p.type === 'pokemon6' ? { B: 0xff70a8e0, E: 0xff20242b }
       : { O: 0xffd08050, E: 0xff20242b };
-    rect(b, p.cx - 4, p.cy, 8, 2, shade('#000000', pal.bright, pal.nightF, 0));
-    const hop = p.state === 'hop' ? -Math.max(0, p.hopT) * 6 : 0;
+    drawShadow(b, p.cx - 4, p.cy, 8, 3, pal, 0.2);
+    const hop = p.state === 'hop' || p.state === 'sparkle' ? -Math.max(0, p.hopT || 0.4) * 5 : 0;
     spr(b, rows, x - 5, y - rows.length + 1 + hop, colors, p.dir < 0);
-  } else if (p.kind === 'bird') {
-    rows = PASSER_SPRITE.bird;
-    colors = { W: 0xffe0e0e0 };
-    const flap = frame ? 1 : 0;
-    // 鸟画在天空层，无地面阴影
-    spr(b, rows, x - 4, y - 3 + flap, colors);
+    if (p.state === 'sparkle') { px(b, x + 4, y - 12, 0xfffff0a0); px(b, x - 6, y - 9, 0xfffff0a0); px(b, x, y - 16, 0xfffff0a0); }
   }
+  if (p.hit) {
+    const tag = p.hit.querySelector('.at');
+    if (tag) tag.textContent = p.name || '';
+    const bb = p.hit.querySelector('.ab');
+    if (bb && p.state !== 'chat' && p.state !== 'wave') bb.textContent = '';
+  }
+}
+function interactPasser(p) {
+  if (p.kind === 'bird') return;
+  if (p.kind === 'human') { p.state = 'wave'; p.stateT = 1.2; p.path = []; }
+  else if (p.kind === 'pokemon') { p.state = 'sparkle'; p.stateT = 0.9; p.hopT = 0.5; p.path = []; }
+  if (p.hit) {
+    const h = p.hit.querySelector('.heart');
+    if (h) { h.classList.remove('show'); void h.offsetWidth; h.classList.add('show'); }
+  }
+  showToast('✨ 与 ' + (p.name || '小精灵') + ' 互动');
+}
+function updateAgent(a, dt) {
+  a.working = a.data.status !== 'idle' && a.key !== 'idle';
+  if (a.working && !a.assigned) {
+    const pos = STATION_POS[a.key] || STATION_POS.working || { x: W / 2, y: H / 2 };
+    a.tx = pos.x; a.ty = pos.y;
+    a.path = findPath(a.cx, a.cy, a.tx, a.ty);
+    a.assigned = true; a.state = 'toWork';
+    if (!a.path || !a.path.length) a.state = 'working';
+  }
+  if (a.working && a.assigned) {
+    if (a.state !== 'working' && a.path && a.path.length) {
+      moveAlongPath(a, dt, 30);
+      if (!a.path.length) { a.state = 'working'; a.moving = false; a.cx = a.tx; a.cy = a.ty; }
+    } else {
+      a.state = 'working'; a.moving = false;
+    }
+  } else {
+    a.assigned = false;
+    a.path = [];
+    a.stateT -= dt;
+    if (a.state === 'toWork' || a.state === 'working') { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
+    if (a.state === 'idle' && a.stateT <= 0) {
+      const target = pickTownPoint();
+      a.path = findPath(a.cx, a.cy, target.x, target.y);
+      if (a.path && a.path.length) { a.state = 'walk'; a.stateT = 5 + Math.random() * 4; a.tx = target.x; a.ty = target.y; }
+      else a.stateT = 1 + Math.random() * 2;
+    } else if (a.state === 'walk') {
+      if (a.path && a.path.length) moveAlongPath(a, dt, 26);
+      else { a.state = 'idle'; a.stateT = 1.5 + Math.random() * 3; }
+    }
+  }
+  separateGround(a);
 }
 function drawNPC(b, a, pal) {
   const meta = STAGE[a.key] || STAGE.working;
@@ -1173,16 +1822,14 @@ function drawNPC(b, a, pal) {
   const hatKey = 'hat' + (a.hatStyle || 0);
   const rows = (NPC[pose] && NPC[pose][hatKey]) || NPC.stand.hat0;
   const flip = a.dir < 0;
-  // 个性化配色：帽子/头发/衣服/裤子/鞋每人随机
-  const shirt = a.working ? shade(meta.color, pal.bright, pal.nightF, pal.duskF) : shade((a.palette || VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)]), pal.bright, pal.nightF, pal.duskF);
+  const shirt = a.working ? shade(meta.color, pal.bright, pal.nightF, pal.duskF) : shade((a.palette || VILLAGER_PALETTES[0]), pal.bright, pal.nightF, pal.duskF);
   const hat = shade((a.hatColor || '#e85d3a'), pal.bright, pal.nightF, pal.duskF);
-  const scarf = shade((a.scarfColor || '#e85d3a'), pal.bright, pal.nightF, pal.duskF);
   const hair = shade((a.hairColor || '#5a3a26'), pal.bright, pal.nightF, pal.duskF);
   const face = shade('#f2c6a0', pal.bright, pal.nightF, pal.duskF);
   const pants = shade((a.pantsColor || '#2f3a4a'), pal.bright, pal.nightF, pal.duskF);
   const shoe = shade((a.shoeColor || '#20242b'), pal.bright, pal.nightF, pal.duskF);
-  rect(b, x - 9, y - 1, 18, 3, shade('#000000', pal.bright, pal.nightF, 0));
-  const cl = { R: hat, H: hair, F: face, E: 0xff20242b, S: shirt, T: pants, B: shoe, A: shade('#20242b', pal.bright, pal.nightF, pal.duskF), N: scarf };
+  drawShadow(b, x - 9, y - 1, 18, 3, pal, 0.2);
+  const cl = { R: hat, H: hair, F: face, E: 0xff20242b, S: shirt, T: pants, B: shoe, A: shade('#20242b', pal.bright, pal.nightF, pal.duskF), N: shade((a.scarfColor || '#e85d3a'), pal.bright, pal.nightF, pal.duskF) };
   spr(b, rows, x - 9, y - 25, cl, flip);
   if (a.working && !moving && !reducedMotion) {
     const bob = Math.sin(performance.now() / 120) > 0 ? 1 : 0;
@@ -1190,7 +1837,6 @@ function drawNPC(b, a, pal) {
   }
   a.footY = y;
 }
-
 /* ---------- 粒子 ---------- */
 let particles = [];
 let lastSeasonKey = '';
@@ -1220,44 +1866,38 @@ function drawParticles(b, pal, season, now) {
   }
 }
 
-/* ---------- 主循环 ---------- */
 let lastT = 0;
+function phaseName(min) {
+  if (min < 330 || min >= 1170) return '深夜';
+  if (min < 450) return '清晨';
+  if (min < 1050) return '白天';
+  if (min < 1170) return '黄昏';
+  return '夜晚';
+}
+function updateHeader(pal) {
+  const el = $('#period');
+  if (el) el.textContent = phaseName(pal.min) + ' · ' + pal.season.name + '季';
+  const sunEl = $('#sun');
+  if (sunEl) {
+    const deg = Math.round((pal.sunAz * 180 / Math.PI) - 90);
+    sunEl.textContent = '☀ ' + deg + '°';
+  }
+}
 function tick(now) {
   const dt = Math.min(0.05, (now - lastT) / 1000 || 0.016);
   lastT = now;
   curPal = palNow(now);
   const b = makeBuf();
   drawScene(b, curPal);
-  for (const key in STAGE) drawStation(b, key, curPal);
+  drawStations(b, curPal);
   for (const a of agents.values()) {
-    a.working = a.data.status !== 'idle' && a.key !== 'idle';
-    if (a.working && !a.assigned) {
-      const pos = STATION_POS[a.key] || STATION_POS.working;
-      a.tx = pos.x; a.ty = pos.y + 2; a.assigned = true; a.state = 'toWork'; a.stateT = 0;
-    }
-    if (a.working && a.assigned) {
-      if (a.state !== 'working') a.state = 'toWork';
-      const dx = a.tx - a.cx, dy = a.ty - a.cy, dist = Math.hypot(dx, dy);
-      if (dist < 2) { a.state = 'working'; a.moving = false; a.cx = a.tx; a.cy = a.ty; }
-      else { const step = 0.7 * dt * 22; a.cx += (dx / dist) * step; a.cy += (dy / dist) * step; a.moving = true; a.frame += dt * 8; a.dir = dx >= 0 ? 1 : -1; }
-    } else if (!a.working) {
-      a.assigned = false;
-      a.stateT -= dt;
-      if (a.state === 'toWork' || a.state === 'working') { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
-      if (a.state === 'idle' && a.stateT <= 0) {
-        const pt = pickTownPoint(); a.tx = pt.x; a.ty = pt.y; a.state = 'walk'; a.stateT = 4 + Math.random() * 4;
-      } else if (a.state === 'walk') {
-        const dx = a.tx - a.cx, dy = a.ty - a.cy, dist = Math.hypot(dx, dy);
-        if (dist < 2 || a.stateT <= 0) { a.state = 'idle'; a.stateT = 1.5 + Math.random() * 3; a.moving = false; }
-        else { const step = 0.7 * dt * 22; a.cx += (dx / dist) * step; a.cy += (dy / dist) * step; a.moving = true; a.frame += dt * 8; a.dir = dx >= 0 ? 1 : -1; }
-      }
-      if (a.state !== 'walk') a.moving = false;
-    }
+    updateAgent(a, dt);
     drawNPC(b, a, curPal);
   }
   updatePassers(dt);
   for (const p of passers) drawPasser(b, p, curPal);
   drawParticles(b, curPal, curPal.season, now);
+  drawRain(b, curPal, now);
   const img = ctx.createImageData(W, H);
   const out = img.data;
   for (let i = 0; i < W * H; i++) {
@@ -1269,10 +1909,10 @@ function tick(now) {
   }
   ctx.putImageData(img, 0, 0);
   syncOverlay();
+  updateHeader(curPal);
   $('#season').textContent = curPal.season.emoji + curPal.season.name;
   requestAnimationFrame(tick);
 }
-
 /* ---------- 覆盖层 ---------- */
 function ensureHit(a) {
   if (a.hit) return;
@@ -1294,6 +1934,13 @@ function syncOverlay() {
     if (bubble) bubble.textContent = meta.bubble + ' ' + meta.symbol;
     if (tag) tag.textContent = (a.data.status === 'idle' ? '☕ ' : '') + meta.label;
     a.hit.title = meta.label + ' · ' + String(a.data.task || '').split('\n')[0];
+  }
+  for (const p of passers) {
+    if (!p.hit) continue;
+    p.hit.style.left = ((p.cx) / W * 100) + '%';
+    p.hit.style.top = ((p.cy - 14) / H * 100) + '%';
+    const tag = p.hit.querySelector('.at');
+    if (tag) tag.textContent = p.name || '';
   }
 }
 function removeAgent(sid) {
@@ -1321,7 +1968,7 @@ async function poll() {
       let a = agents.get(d.sessionId);
       if (!a) {
         const pos = STATION_POS[key] || STATION_POS.working;
-        a = { sid: d.sessionId, data: d, key, cx: 30, cy: 90, tx: 30, ty: 90, frame: 0, moving: false, working: false, cheering: false, hit: null, roamT: 0, assigned: false, palette: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], state: 'idle', stateT: 0, dir: 1, hatStyle: Math.floor(Math.random() * 3), scarfColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hatColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], pantsColor: ['#2f3a4a', '#4a3a5a', '#3a5a3a', '#5a3a3a', '#3a3a6a'][Math.floor(Math.random() * 5)], shoeColor: ['#20242b', '#402020', '#204020', '#202040'][Math.floor(Math.random() * 4)] };
+        a = { sid: d.sessionId, data: d, key, cx: 480, cy: 300, tx: 480, ty: 300, frame: 0, moving: false, working: false, cheering: false, hit: null, roamT: 0, assigned: false, palette: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], state: 'idle', stateT: 0, dir: 1, hatStyle: Math.floor(Math.random() * 3), scarfColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hatColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], pantsColor: ['#2f3a4a', '#4a3a5a', '#3a5a3a', '#5a3a3a', '#3a3a6a'][Math.floor(Math.random() * 5)], shoeColor: ['#20242b', '#402020', '#204020', '#202040'][Math.floor(Math.random() * 4)] };
         agents.set(d.sessionId, a);
         lastStage.set(d.sessionId, key);
         logEvent('👋', d, '进入小镇');
@@ -1412,13 +2059,19 @@ function showDetail(sid) {
   $('#dAva').textContent = meta.emoji;
   $('#dTitle').textContent = meta.label + ' · ' + shortSession(sid);
   $('#dSub').textContent = a.data.sessionId || '';
+  const bname = meta.building || '—';
+  const occ = meta.occupation || meta.label;
+  const zone = meta.zone || '—';
   $('#dKv').innerHTML =
     '<dt>阶段</dt><dd>' + esc(meta.label) + ' ' + meta.emoji + ' ' + esc(a.data.phase || '') + '</dd>' +
+    '<dt>职业</dt><dd>' + esc(occ) + '</dd>' +
+    '<dt>工位</dt><dd>' + esc(bname) + '</dd>' +
+    '<dt>分区</dt><dd>' + esc(zone) + '</dd>' +
     '<dt>任务</dt><dd>' + esc(task) + '</dd>' +
     '<dt>项目</dt><dd>' + esc(a.data.project || '—') + '</dd>' +
     '<dt>状态</dt><dd>' + esc(a.data.status === 'idle' ? '休息' : '工作中') + '</dd>' +
-    '<dt>时长</dt><dd>' + esc(fmtElapsed(a.data.elapsed)) + '</dd>' +
-    '<dt>动作</dt><dd>' + esc(meta.action) + ' ' + meta.symbol + '</dd>';
+    '<dt>动作</dt><dd>' + esc(a.state === 'working' ? '正在工位' : (a.state === 'toWork' ? '前往工位' : (a.state === 'walk' ? '小镇游走' : '空闲'))) + '</dd>' +
+    '<dt>时长</dt><dd>' + esc(fmtElapsed(a.data.elapsed)) + '</dd>';
   $('#detail').classList.add('show');
 }
 function closeDetail() { selectedId = null; $('#detail').classList.remove('show'); }
@@ -1524,6 +2177,7 @@ function grill(sid) { openChat(sid); }
 
 function clock() { $('#clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
 function toggleNight() { nightMode = !nightMode; $('#nightBtn').textContent = nightMode ? '☀️ 昼' : '🌙 夜'; }
+function toggleRain() { rainMode = !rainMode; $('#rainBtn').textContent = rainMode ? '☀️ 晴' : '🌧️ 雨'; }
 
 /* ---------- 全屏 ---------- */
 function toggleFullscreen() { const t = $('#town'); if (document.fullscreenElement) { document.exitFullscreen(); return; } if (t && t.requestFullscreen) t.requestFullscreen(); }
@@ -1540,6 +2194,7 @@ setInterval(pollKBStats, 30000);
 requestAnimationFrame(tick);
 
 $('#nightBtn').addEventListener('click', toggleNight);
+$('#rainBtn').addEventListener('click', toggleRain);
 $('#fullscreenBtn').addEventListener('click', toggleFullscreen);
 document.addEventListener('fullscreenchange', () => { $('#fullscreenBtn').textContent = document.fullscreenElement ? '✕' : '⛶'; });
 $('#dCheer').addEventListener('click', () => { if (selectedId) cheer(selectedId); });

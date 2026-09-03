@@ -33,6 +33,7 @@ import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
 import { execFile } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { randomUUID } from "node:crypto"
 
 export const name = "kb-preflight"
 export const inject = []
@@ -268,7 +269,14 @@ function sessionHasInjectedBlock(agent) {
 
 /** 合成注入消息（形状对齐 kb-distill / dsh-commands 的 followup 消息）。 */
 function messageFor(text) {
-  return { role: "user", content: [{ type: "text", text }], source: { kind: "plugin", plugin: "kb-preflight" } }
+  return {
+    role: "user",
+    // 消息必须带非空字符串 id，否则会话持久化后加载校验失败
+    //（"session event ... lacks an identified message"）
+    id: `kb-preflight-${randomUUID()}`,
+    content: [{ type: "text", text }],
+    source: { kind: "plugin", plugin: "kb-preflight" },
+  }
 }
 
 /* ────────────────────────────── 项目上下文 ──────────────────────────────── */

@@ -217,8 +217,8 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 }
 每个决策点 2-4 个选项；recommended 必须是 options 里存在的 id。
 
-用户会一轮回复所有决策（格式 D1=A D2=B …，可附简短补充）。你收到后：
-- 把每个决策写回需求文档（更新/补充 REQ 的技术规格、状态与数据、验收标准等章节）
+用户会一轮回复所有决策（每行一个 `+"`D1=<答案>`"+`；答案通常是选项 id，也可能是用户的自填文本——自填文本可跨多行，直到下一个 D1= 行）。你收到后：
+- 把每个决策写回需求文档（更新/补充 REQ 的技术规格、状态与数据、验收标准等章节）；选项 id 写对应选项内容，自填文本原样纳入规格
 - 输出「决策总结」：逐项列出用户选择 + 已写回位置
 - 如有剩余歧义，总结末尾列「待澄清」，但不要阻塞本轮写回
 
@@ -257,9 +257,10 @@ type option struct {
 }
 
 // extractJSON pulls the first ```json fenced block out of the model reply.
-// It returns the trimmed inner text and whether a block was found.
+// It returns the trimmed inner text and whether a block was found. The fence
+// tag is matched case-insensitively (```JSON is seen in the wild).
 func extractJSON(text string) (string, bool) {
-	start := strings.Index(text, "```json")
+	start := strings.Index(strings.ToLower(text), "```json")
 	if start < 0 {
 		return "", false
 	}
@@ -272,6 +273,52 @@ func extractJSON(text string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(text[start : start+end]), true
+}
+
+// parseQuestionnaire extracts a structured questionnaire from the model reply
+// and is deliberately tolerant about the envelope: the prompt asks for a
+// ```json fence, but models in practice emit bare JSON or wrap it in prose.
+// Every such reply must still reach the interactive questionnaire — otherwise
+// the valid JSON is dumped raw and the tab parks at the plain-text
+// manualFill prompt, which the user cannot answer (观测 2026-09-03：
+// magic-models-manager 决策清单 D-5 的裸 JSON 问卷被整体倒进 tab，
+// 「完全不能做问答」).
+func parseQuestionnaire(text string) (questionnaire, bool) {
+	if raw, ok := extractJSON(text); ok {
+		if q, ok := unmarshalQuestionnaire(raw); ok {
+			return q, true
+		}
+	}
+	// 裸 JSON：整个回复就是问卷。
+	if q, ok := unmarshalQuestionnaire(strings.TrimSpace(text)); ok {
+		return q, true
+	}
+	// 散文包裹的 JSON：从第一个 '{' 到最后一个 '}'。
+	t := strings.TrimSpace(text)
+	if i := strings.IndexByte(t, '{'); i >= 0 {
+		if j := strings.LastIndexByte(t, '}'); j > i {
+			if q, ok := unmarshalQuestionnaire(t[i : j+1]); ok {
+				return q, true
+			}
+		}
+	}
+	return questionnaire{}, false
+}
+
+// unmarshalQuestionnaire parses JSON into the questionnaire shape and
+// requires the "decisions" key to actually exist. Anything that unmarshals
+// without that key (e.g. an unrelated JSON object) must fall through to
+// manualFill instead of silently rendering the misleading zero-pending
+// screen.
+func unmarshalQuestionnaire(raw string) (questionnaire, bool) {
+	var q questionnaire
+	if err := json.Unmarshal([]byte(raw), &q); err != nil {
+		return questionnaire{}, false
+	}
+	if q.Decisions == nil {
+		return questionnaire{}, false
+	}
+	return q, true
 }
 
 // taskProject derives the project directory name from a task's resolved file
@@ -399,6 +446,7 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 	fmt.Printf("║\n")
 	fmt.Printf("║  模型列出所有决策点，你用 ↑↓ 选择、Enter 确认，一轮完成。\n")
 	fmt.Printf("║  ←/h →/l 切题 · ↓/j ↑/k 选选项 · Enter 确认 · Tab 跳未答\n")
+	fmt.Printf("║  每项首行 ✍️ 可自由填写答案（如粘贴 curl 原文）\n")
 	fmt.Printf("║  q 提交写回 · Ctrl+C 退出\n")
 	fmt.Printf("╚══════════════════════════════════════════════════════════════╝\n\n")
 
@@ -410,14 +458,10 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 	}
 	sessionID = resp.SessionID
 
-	// 解析结构化 JSON 问卷；失败则回退打印原始文本 + 手动填写。
-	raw, ok := extractJSON(resp.Text)
+	// 解析结构化 JSON 问卷（fenced / 裸 JSON / 散文包裹均接受）；
+	// 失败才回退打印原始文本 + 手动填写。
+	q, ok := parseQuestionnaire(resp.Text)
 	if !ok {
-		fmt.Println(resp.Text)
-		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
-	}
-	var q questionnaire
-	if err := json.Unmarshal([]byte(raw), &q); err != nil {
 		fmt.Println(resp.Text)
 		return manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt)
 	}
@@ -441,14 +485,9 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 		return nil
 	}
 
-	// 组装 D1=A D2=B … 提交。
-	var parts []string
-	for i, d := range q.Decisions {
-		if i < len(answers) && answers[i] != "" {
-			parts = append(parts, fmt.Sprintf("%s=%s", d.ID, answers[i]))
-		}
-	}
-	if len(parts) == 0 {
+	// 组装提交消息：每行一个 D-n=<答案>；自填文本原样嵌入（可多行）。
+	msg := buildAnswerMessage(q.Decisions, answers)
+	if msg == "" {
 		return nil
 	}
 
@@ -466,7 +505,7 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 	if reqPath != "" && vaultPath != "" {
 		reqPath = filepath.Join(vaultPath, reqDoc)
 	}
-	submitAnswers(addr, provider, model, effort, sessionID, strings.Join(parts, " "), taskID, writebackContext{
+	submitAnswers(addr, provider, model, effort, sessionID, msg, taskID, writebackContext{
 		Kind:          "req",
 		Target:        reqPath,
 		TaskID:        taskID,
@@ -503,6 +542,9 @@ func submitAnswers(addr, provider, model, effort, sessionID, message, taskID str
 // manualFill is the fallback when the model does not emit a parseable JSON
 // questionnaire: print the raw reply and read one multi-line round of answers.
 func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, reqDoc, prompt string) error {
+	fmt.Println()
+	fmt.Println("⚠️  模型未输出可解析的问卷 JSON，已回退为手动填写模式（上方为模型原文）。")
+	fmt.Println("    回复格式：D-n=选项（如 D-5=A），多决策空格分隔；空行提交，/quit 退出。")
 	fmt.Println()
 	in := bufio.NewReader(os.Stdin)
 	var answers []string
@@ -596,7 +638,7 @@ type writebackContext struct {
 func (c writebackContext) FreshPrompt() string {
 	var b strings.Builder
 	b.WriteString(c.SkillPrompt)
-	b.WriteString("\n\n【无需再次生成问卷】用户已经完成问卷并提交答复：\n")
+	b.WriteString("\n\n【无需再次生成问卷】用户已经完成问卷并提交答复（每行一个 D-n=<答案>；自填文本原样保留，可跨多行直到下一个 D-n= 行）：\n")
 	b.WriteString(c.Answers)
 	if len(c.Questionnaire.Decisions) > 0 {
 		if data, err := json.Marshal(c.Questionnaire); err == nil {

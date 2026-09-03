@@ -280,6 +280,109 @@ exit 1
 	}
 }
 
+// TestEnsureProjectCheckoutInitializesExistingEmptyCheckout covers the
+// dshtui regression: a project's conventional checkout may already exist as an
+// empty, non-git directory (user created the folder before the daemon
+// promoted it). The daemon must initialize it with a HEAD commit so Round 2
+// worktree preparation stops looping on "not a git repository" and the agent
+// monitor gets a live NPC/session for the implementing task.
+func TestEnsureProjectCheckoutInitializesExistingEmptyCheckout(t *testing.T) {
+	dir := t.TempDir()
+	// Isolate git identity from the developer's global config.
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\temail = test@example.com\n\tname = Test User\n[commit]\n\tgpgsign = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	vault := filepath.Join(dir, "vault")
+	projectDir := filepath.Join(vault, "Projects", "005-dshtui")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reqPath := filepath.Join(projectDir, "Requirements", "REQ-001-dshtui.md")
+	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reqPath, []byte("---\ntitle: dshtui 基础底座\n---\n\nRust TUI 客户端\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skillDir := writeVaultMapWithRemote(t, dir, "dshtui", projectDir, "github.com/ndzuki/dshtui")
+	runner := newAutoRegRunner(t, vault, skillDir)
+	checkout := filepath.Join(runner.cfg.NewProjectRoot, "dshtui")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("test precondition failed: checkout should start non-git")
+	}
+
+	// Fake gh: repo view fails until a create happened, then succeeds.
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "gh-create-called")
+	ghScript := fmt.Sprintf(`#!/bin/sh
+marker=%q
+case "$1" in
+  repo)
+    case "$2" in
+      view)
+        [ -f "$marker" ] && exit 0 || exit 1
+        ;;
+      create)
+        git remote add origin git@github.com:ndzuki/dshtui.git
+        touch "$marker"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+exit 1
+`, marker)
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	candidate := task.ReadyTask{
+		ID: "001", Title: "dshtui", Project: "dshtui",
+		FilePath: filepath.Join(projectDir, "Tasks", "TASK-001-dshtui-v01-core.md"),
+		ReqDoc:   "Projects/005-dshtui/Requirements/REQ-001-dshtui.md",
+	}
+	got, err := runner.ensureProjectCheckout(candidate, projectDir)
+	if err != nil {
+		t.Fatalf("ensureProjectCheckout: %v", err)
+	}
+	if got != checkout {
+		t.Fatalf("checkout = %q, want %q", got, checkout)
+	}
+	if top, err := gitTopLevel(checkout); err != nil || filepath.Clean(top) != filepath.Clean(checkout) {
+		t.Fatalf("checkout is not a git root: %q (%v)", top, err)
+	}
+	logs, err := exec.Command("git", "-C", checkout, "log", "--oneline").CombinedOutput()
+	if err != nil || !strings.Contains(string(logs), "chore: initial README") {
+		t.Fatalf("checkout initial commit missing: %s (%v)", logs, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("gh repo create was not invoked: %v", err)
+	}
+
+	// Idempotent: a second call reuses the git checkout and does not re-create
+	// the remote (repo view now succeeds).
+	if again, err := runner.ensureProjectCheckout(candidate, projectDir); err != nil || again != checkout {
+		t.Fatalf("second ensureProjectCheckout = %q, %v; want %q", again, err, checkout)
+	}
+	if data, err := os.ReadFile(marker); err != nil || strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("remote repo re-created on second call: %q (%v)", data, err)
+	}
+}
+
 // TestEnsureProjectCheckoutSkipsGitRoot covers the fast path: a project that
 // already resolves to its own repository is never touched.
 func TestEnsureProjectCheckoutSkipsGitRoot(t *testing.T) {

@@ -739,7 +739,7 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "任务参数：consolidate") {
+	if !strings.Contains(args, "/obsidian-task-runner-pm consolidate") {
 		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 	if !strings.Contains(args, "TASK-012") || !strings.Contains(args, "TASK-074") {
@@ -787,7 +787,7 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 		t.Fatalf("processed = %d, want 1", processed)
 	}
 	args := waitForPmArgs(t, argsPath)
-	if !strings.Contains(args, "任务参数：distribute") {
+	if !strings.Contains(args, "/obsidian-task-runner-pm distribute") {
 		t.Fatalf("pm args = %q, want distribute prompt", args)
 	}
 	if !strings.Contains(args, "Grilling-Decisions.md") {

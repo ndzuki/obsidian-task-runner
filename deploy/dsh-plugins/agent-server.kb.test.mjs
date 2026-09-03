@@ -656,4 +656,37 @@ status: proposed
   console.log("PASS kb stats persistence")
 }
 
+// --- Agent Town 会话标签：session.events 兼容 shim（alpha.4+ 移除 .events） ---
+{
+  const { sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs } = _kbTest
+
+  // 旧版：session.events 直接存在。
+  const legacy = { events: [{ type: "user/message", seq: 1, time: 100, data: { content: [{ type: "text", text: "TASK-001 legacy" }] } }] }
+  assert.deepStrictEqual(sessionEvents(legacy), legacy.events, "legacy .events returned as-is")
+
+  // 新版：session.events 缺失，需 ownEvents() / snapshotEvents() 读取。
+  const snapEvents = [{ type: "agent/inbox/spliced", seq: 2, time: 200, data: { inserted: [{ role: "user", content: [{ type: "text", text: "执行 /obsidian-task-runner-round2 .../Projects/005-dshtui/Tasks/TASK-001-dshtui-v01-core.md" }] }] } }]
+  const modern = { ownEvents: () => snapEvents }
+  assert.deepStrictEqual(sessionEvents(modern), snapEvents, "ownEvents() fallback used when .events is absent")
+  const modernSnapshotOnly = { snapshotEvents: () => snapEvents }
+  assert.deepStrictEqual(sessionEvents(modernSnapshotOnly), snapEvents, "snapshotEvents() fallback used when ownEvents is absent")
+  assert.deepStrictEqual(sessionEvents({}), [], "no events/own/snapshot -> empty array")
+
+  // firstUserText 在两种事件形态下都能提取。
+  assert.strictEqual(firstUserText(modern), "执行 /obsidian-task-runner-round2 .../Projects/005-dshtui/Tasks/TASK-001-dshtui-v01-core.md", "firstUserText reads agent/inbox/spliced via ownEvents")
+  assert.strictEqual(firstUserText(legacy), "TASK-001 legacy", "firstUserText reads user/message via .events")
+
+  // labelFromText 从任务 prompt 提取展示字段。
+  const label = labelFromText("执行 obsidian-task-runner 阶段任务：\n\n/obsidian-task-runner-round2 /home/user/src/repos/github.com/ndzuki/myNote/Projects/005-dshtui/Tasks/TASK-001-dshtui-v01-core.md")
+  assert.strictEqual(label.phase, "round2", "phase from skill")
+  assert.strictEqual(label.task, "TASK-001-dshtui-v01-core", "task from TASK path")
+  assert.strictEqual(label.project, "005-dshtui", "project from Projects/<dir>/Tasks/")
+  assert.strictEqual(labelFromText("").phase, "session", "empty text -> session phase")
+
+  // sessionCreatedAtMs 缺 createdAt 时从 ownEvents 首事件取时间。
+  const created = sessionCreatedAtMs({ ownEvents: () => [{ type: "user/message", time: 123456 }] })
+  assert.strictEqual(created, 123456, "createdAt falls back to first own event time")
+  console.log("PASS sessionEvents/firstUserText/labelFromText/sessionCreatedAtMs")
+}
+
 console.log("agent-server KB-first tests: all passed")

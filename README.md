@@ -14,7 +14,7 @@ Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作轻量的需求�
 | 推理强度 | 无法 per-阶段传递 | 每阶段自动传 `reasoningEffort`（`low/medium/high/xhigh`），grilling 单独分级（见「推理强度」节） |
 | 交互会话 | 与自动化割裂 | grilling / dsh web / Agent Town 问答统一走 `/agent/chat`：**KB-first 服务端预检索 + 项目上下文注入**（CONTEXT.md / ADR / 规范摘要），本地优先零豁免（见「交互会话本地优先」节） |
 | 知识沉淀 | 依赖模型自觉 | `kb-distill` 会话结束自动提炼（确定性踩坑抽取零 LLM token + 门控小模型语义提炼）、daemon merge 自动提取、watcher 自动建索引——"写入即检索" |
-| 监控 | 翻日志 | **Agent Town** 像素小镇实时看并发会话 + 问答弹窗 + 「📊 KB 预检索」小图（命中率 / 耗时直方图） |
+| 监控 | 翻日志 | **Agent Town** 俯视 RPG 像素小镇（960×540）实时看并发会话：职业建筑/四季昼夜/实时太阳影子/A* 寻路/装饰居民互动 + 问答弹窗 + 「📊 KB 预检索」小图（命中率 / 耗时直方图） |
 
 **插件矩阵**（cordis patch 挂载，dsh 升级不丢；📦 = 随 `make deploy` 从本仓库同步）：
 

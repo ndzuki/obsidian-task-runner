@@ -56,6 +56,84 @@ func TestExtractJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExtractJSONUppercaseFence(t *testing.T) {
+	text := "```JSON\n{\"decisions\":[]}\n```"
+	raw, ok := extractJSON(text)
+	if !ok {
+		t.Fatal("extractJSON 应接受大写 JSON fence")
+	}
+	if !strings.Contains(raw, `"decisions"`) {
+		t.Fatalf("extractJSON 内容错误: %q", raw)
+	}
+}
+
+// TestParseQuestionnaireBareJSON guards the 2026-09-03 regression: the model
+// (deepseek_magic / gpt-5.4-mini → deepseek-v4-flash) answered the
+// decision-list questionnaire with a bare JSON object and no ```json fence.
+// extractJSON 因此失败，repl 把合法问卷原文倒进 tab 并停在
+// 「✍️ 你的决策 >」纯文本回退——用户看到的是无法作答的原始 JSON。
+// reply 为事故现场抓取的真实模型回复原文（session-5fc0f291…）。
+func TestParseQuestionnaireBareJSON(t *testing.T) {
+	reply := `{"decisions":[{"id":"D-5","question":"REQ-002 平台 API 契约缺实际 curl 正文（AC-1 阻塞）——请提供权威 curl 以回填请求体字段表/鉴权头/查询接口契约","options":[{"id":"A","label":"提供国内测试环境完整页面请求 curl（目标 https://magic-web.internal.example/admin/platform/model/llm，建议的最小权威契约）"},{"id":"B","label":"提供三环境（国内测试/国内预发布/国外预发布）的完整 curl 各一份"},{"id":"C","label":"暂无法提供完整 curl，改为提供请求体字段表 + 鉴权头（header/cookie/token）摘要"}],"recommended":"A","reason":"建议行明确指定国内测试环境完整 curl 为最小权威契约，可解除 AC-1 阻塞并由 PM 据此回填 REQ-002 契约、D-6 查询接口块"}]}`
+	q, ok := parseQuestionnaire(reply)
+	if !ok {
+		t.Fatal("裸 JSON 问卷应被解析（模型不总是输出 fenced block）")
+	}
+	if len(q.Decisions) != 1 || q.Decisions[0].ID != "D-5" || q.Decisions[0].Recommended != "A" {
+		t.Fatalf("解析结果错误: %+v", q)
+	}
+	if len(q.Decisions[0].Options) != 3 {
+		t.Fatalf("期望 3 个选项，got %d", len(q.Decisions[0].Options))
+	}
+}
+
+func TestParseQuestionnaireProseWrapped(t *testing.T) {
+	reply := "好的，以下是问卷：\n" +
+		`{"decisions":[{"id":"D1","question":"Q1","options":[{"id":"A","label":"a"}],"recommended":"A","reason":"r"}]}` +
+		"\n请逐项作答。"
+	q, ok := parseQuestionnaire(reply)
+	if !ok {
+		t.Fatal("散文包裹的 JSON 问卷应被解析")
+	}
+	if len(q.Decisions) != 1 || q.Decisions[0].ID != "D1" {
+		t.Fatalf("解析结果错误: %+v", q)
+	}
+}
+
+func TestParseQuestionnaireFenced(t *testing.T) {
+	reply := "```json\n{\"decisions\":[{\"id\":\"D1\"}]}\n```"
+	q, ok := parseQuestionnaire(reply)
+	if !ok || len(q.Decisions) != 1 {
+		t.Fatalf("fenced 问卷解析失败: ok=%v q=%+v", ok, q)
+	}
+}
+
+func TestParseQuestionnaireRejectsUnparseable(t *testing.T) {
+	// 无 decisions 字段的 JSON 必须拒绝：否则会被误判为「零待答点」走
+	// 干净退出，而非回退到 manualFill。
+	if _, ok := parseQuestionnaire(`{"foo":1}`); ok {
+		t.Fatal("无 decisions 字段的 JSON 应被拒绝")
+	}
+	if _, ok := parseQuestionnaire("没有代码块也不是 JSON"); ok {
+		t.Fatal("纯文本应被拒绝")
+	}
+	if _, ok := parseQuestionnaire(`{"decisions":`); ok {
+		t.Fatal("截断 JSON 应被拒绝")
+	}
+}
+
+func TestParseQuestionnaireEmptyDecisionsOK(t *testing.T) {
+	// decisions:[] 是合法空问卷（requirement-elaborator 的
+	// fully_mature 形态）→ ok=true 且 len==0，repl 走 noPendingScreen。
+	q, ok := parseQuestionnaire(`{"requirement":"REQ-065","maturity":"fully_mature","decisions":[]}`)
+	if !ok {
+		t.Fatal("decisions:[] 是合法空问卷，应解析成功")
+	}
+	if len(q.Decisions) != 0 {
+		t.Fatalf("期望 0 个决策，got %+v", q.Decisions)
+	}
+}
+
 // TestReplZeroDecisionsExitsCleanly guards the decision-list tab regression:
 // when the model returns an empty questionnaire (all decisions answered
 // between tab launch and questionnaire generation — 2026-08-24 19:32 观测),
@@ -118,8 +196,140 @@ func TestQModelRecommendedCursor(t *testing.T) {
 		Recommended: "B",
 	}}
 	m := newQModel(d)
+	// 自填项占组合下标 0，真实选项下标整体 +1：A=1 B=2 C=3。
+	if m.cursor != 2 {
+		t.Fatalf("默认光标应落在推荐项 B（组合下标 2），got %d", m.cursor)
+	}
+}
+
+// TestQModelCustomOptionFirst guards the 2026-09-03 feature request: every
+// decision's option list must start with the free-text entry so users can
+// write their own answer (e.g. paste a curl) instead of being forced into
+// A/B/C choices.
+func TestQModelCustomOptionFirst(t *testing.T) {
+	d := []decision{{
+		ID:          "D1",
+		Question:    "Q",
+		Options:     []option{{ID: "A", Label: "a"}, {ID: "B", Label: "b"}},
+		Recommended: "A",
+	}}
+	m := newQModel(d)
+	combined := m.combinedOptions(0)
+	if len(combined) != 3 || combined[0].ID != customOptionID {
+		t.Fatalf("自填项必须是第一项: %+v", combined)
+	}
 	if m.cursor != 1 {
-		t.Fatalf("默认光标应落在推荐项 B（index 1），got %d", m.cursor)
+		t.Fatalf("默认光标应在推荐项 A（组合下标 1），got %d", m.cursor)
+	}
+	v := m.View()
+	if !strings.Contains(v, "✍️") || !strings.Contains(v, customOptionLabel) {
+		t.Fatalf("View 应渲染自填项:\n%s", v)
+	}
+}
+
+func TestQModelSelectCustomEntersInputMode(t *testing.T) {
+	d := []decision{{
+		ID: "D1", Question: "Q", Options: []option{{ID: "A", Label: "a"}}, Recommended: "A",
+	}}
+	m := newQModel(d)
+	m.cursor = 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := updated.(qModel)
+	if !m2.inputMode {
+		t.Fatal("选中首项 Enter 应进入自由文本输入")
+	}
+	if !m2.ta.Focused() {
+		t.Fatal("进入输入模式后 textarea 应聚焦")
+	}
+}
+
+// TestQModelCustomAnswerRecordsAndAdvances drives the full free-text flow:
+// enter input mode, type a multi-line curl, confirm with Ctrl+D.
+func TestQModelCustomAnswerRecordsAndAdvances(t *testing.T) {
+	d := []decision{
+		{ID: "D1", Question: "Q1", Options: []option{{ID: "A", Label: "a"}}, Recommended: "A"},
+		{ID: "D2", Question: "Q2", Options: []option{{ID: "A", Label: "a"}}, Recommended: "A"},
+	}
+	m := newQModel(d)
+	m.cursor = 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(qModel)
+	if !m.inputMode {
+		t.Fatal("应进入输入模式")
+	}
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("curl -X POST https://x")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("-H 'Cookie: t=1'")},
+		{Type: tea.KeyCtrlD},
+	} {
+		updated, _ = m.Update(k)
+		m = updated.(qModel)
+	}
+	if m.inputMode {
+		t.Fatal("Ctrl+D 应确认并退出输入模式")
+	}
+	want := "curl -X POST https://x\n-H 'Cookie: t=1'"
+	if m.answers[0] != customOptionID || m.custom[0] != want {
+		t.Fatalf("自填答案未记录: answers=%q custom=%q", m.answers[0], m.custom[0])
+	}
+	if m.idx != 1 {
+		t.Fatalf("确认后应前进到 D2，got idx=%d", m.idx)
+	}
+}
+
+func TestQModelCustomEmptyInputCancels(t *testing.T) {
+	d := []decision{{
+		ID: "D1", Question: "Q", Options: []option{{ID: "A", Label: "a"}}, Recommended: "A",
+	}}
+	m := newQModel(d)
+	m.cursor = 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(qModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = updated.(qModel)
+	if m.inputMode {
+		t.Fatal("空输入确认应退出输入模式")
+	}
+	if m.answers[0] != "" {
+		t.Fatalf("空输入不应记为答案，got %q", m.answers[0])
+	}
+}
+
+func TestQModelEscCancelsCustomKeepsPrevious(t *testing.T) {
+	d := []decision{{
+		ID: "D1", Question: "Q", Options: []option{{ID: "A", Label: "a"}}, Recommended: "A",
+	}}
+	m := newQModel(d)
+	m.answers[0] = "A"
+	m.cursor = 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(qModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("junk")})
+	m = updated.(qModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(qModel)
+	if m.inputMode {
+		t.Fatal("Esc 应退出输入模式")
+	}
+	if m.answers[0] != "A" || m.custom[0] != "" {
+		t.Fatalf("Esc 取消不得覆盖原答案: answers=%q custom=%q", m.answers[0], m.custom[0])
+	}
+}
+
+// TestBuildAnswerMessage verifies the write-back message shape: one decision
+// per line, free text embedded verbatim (multi-line ok), unanswered skipped.
+func TestBuildAnswerMessage(t *testing.T) {
+	decisions := []decision{{ID: "D1"}, {ID: "D2"}, {ID: "D3"}}
+	answers := []answerEntry{
+		{id: "A"},
+		{id: customOptionID, text: "curl -X POST https://x\n-H 'Cookie: t=1'"},
+		{},
+	}
+	msg := buildAnswerMessage(decisions, answers)
+	want := "D1=A\nD2=curl -X POST https://x\n-H 'Cookie: t=1'"
+	if msg != want {
+		t.Fatalf("buildAnswerMessage = %q, want %q", msg, want)
 	}
 }
 
