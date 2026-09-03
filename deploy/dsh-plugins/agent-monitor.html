@@ -1235,15 +1235,11 @@ function drawScene(b, pal) {
   const roadDark = shade('#8f7352', pal.bright, pal.nightF, pal.duskF);
   rect(b, 0, 248, W, 34, road);
   for (let i = 0; i < 170; i++) { const rx = (i * 37) % W, ry = 252 + ((i * 17) % 26); px(b, rx, ry, roadDark); }
-  rect(b, 0, 246, W, 2, roadDark); rect(b, 0, 282, W, 2, roadDark);
   rect(b, 456, 0, 48, H, road);
   for (let i = 0; i < 140; i++) { const rx = 460 + ((i * 23) % 40), ry = (i * 53) % H; px(b, rx, ry, roadDark); }
-  rect(b, 454, 0, 2, H, roadDark); rect(b, 504, 0, 2, H, roadDark);
   const plaza = road; // 与十字路同色，融合成一体
   rect(b, 396, 180, 168, 176, plaza);
   for (let i = 0; i < 90; i++) { const rx = 400 + ((i * 29) % 160), ry = 184 + ((i * 47) % 168); px(b, rx, ry, roadDark); }
-  rect(b, 394, 178, 172, 2, roadDark); rect(b, 394, 356, 172, 2, roadDark);
-  rect(b, 394, 178, 2, 180, roadDark); rect(b, 564, 178, 2, 180, roadDark);
   drawFountain(b, pal, 480, 268);
   drawPond(b, pal, 160, 460, 130, 52);
   drawPond(b, pal, 850, 8, 86, 44);
