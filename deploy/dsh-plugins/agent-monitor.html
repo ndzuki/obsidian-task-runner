@@ -791,7 +791,20 @@ function initLegend() {
 }
 
 /* 静态自然障碍：初始化时一次性写入 walkGrid，避免每帧重复标记 */
-const TREE_SPOTS = [[20,40],[100,30],[200,30],[300,30],[520,30],[620,30],[720,30],[820,30],[20,160],[20,220],[20,380],[20,470],[900,220],[900,160],[920,340],[840,220],[900,470],[400,390],[300,350],[230,350]];
+const TREE_SPOTS = [
+  // 西北树林
+  [28,44],[48,36],[66,48],[86,30],[106,44],
+  // 北侧小树林
+  [180,34],[200,28],[218,44],[300,32],[318,42],
+  // 东北树林
+  [520,30],[540,42],[560,28],[620,34],[642,46],[720,32],[740,40],
+  // 西门 / 西侧
+  [18,160],[36,172],[18,220],[38,228],[24,380],[44,392],
+  // 东南
+  [838,218],[858,208],[878,226],[898,168],[918,178],[900,470],[918,482],
+  // 南侧花田边
+  [230,352],[250,344],[268,356],[400,392],[420,384]
+];
 const NATURE_RECTS = [
   { x: 160, y: 460, w: 130, h: 52 },  // 南侧池塘
   { x: 850, y: 8,   w: 86,  h: 44 },  // 东北池塘
@@ -1008,125 +1021,244 @@ function drawBuilding(b, bd, pal) {
   const door = shade('#6b4423', pal.bright, pal.nightF, pal.duskF);
   const wood = shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF);
   const glass = shade('#b8e0f0', pal.bright, pal.nightF, pal.duskF);
-  const style = bd.style || 'cottage';
-
-  drawShadow(b, bd.x + 3, bd.y + bd.h - 7, bd.w - 6, 12, pal, 0.3);
-
-  // 主体墙（不同类型可微调外轮廓）
-  rect(b, bd.x, bd.y, bd.w, bd.h, wall);
-  rect(b, bd.x - 1, bd.y - 1, bd.w + 2, 2, dark);
-  rect(b, bd.x - 1, bd.y + bd.h - 1, bd.w + 2, 2, dark);
-  rect(b, bd.x - 1, bd.y - 1, 2, bd.h + 2, dark);
-  rect(b, bd.x + bd.w - 1, bd.y - 1, 2, bd.h + 2, dark);
-
   const cx = bd.x + bd.w / 2;
-  // 屋顶画法按职业风格区分
-  if (style === 'cottage' || style === 'hall' || style === 'cafe') {
-    const rw = bd.w - 4, rh = Math.min(20, Math.max(12, bd.h * 0.28));
-    for (let yy = 0; yy < rh; yy++) {
-      const half = Math.max(2, Math.round((yy + 1) / rh * (rw / 2)));
-      rect(b, Math.round(bd.x + 2 + rw / 2 - half), bd.y + yy, half * 2, 1, yy % 2 ? roof : roofDark);
-      rect(b, Math.round(bd.x + 2 + rw / 2 - half), bd.y + rh, 1, 2, roofDark);
+  const key = bd.key;
+  const W = bd.w, H = bd.h, X = bd.x, Y = bd.y;
+
+  drawShadow(b, X + 3, Y + H - 7, W - 6, 12, pal, 0.3);
+
+  switch (key) {
+    case 'refining': { // 图书馆：三角山墙 + 两翼 + 方柱
+      rect(b, X + 1, Y + 14, W - 2, H - 14, wall);
+      rect(b, X - 4, Y + 10, 10, H - 10, wall); rect(b, X + W - 6, Y + 10, 10, H - 10, wall);
+      const rh = 12;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      rect(b, X + 1, Y + 12, W - 2, 3, roofDark);
+      rect(b, X + 16, Y + 20, 5, H - 22, wood);
+      rect(b, X + 30, Y + 20, 5, H - 22, wood);
+      rect(b, X + W - 21, Y + 20, 5, H - 22, wood);
+      rect(b, X + 8, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
     }
-    rect(b, bd.x + 2, bd.y + rh, rw, 3, roofDark);
-    rect(b, bd.x + 2, bd.y + rh + 3, rw, 2, roof);
-    if (style === 'cafe') { // 咖啡馆条纹雨棚
-      rect(b, cx - 13, bd.y + rh + 5, 26, 4, roof);
-      px(b, cx - 9, bd.y + rh + 5, 0xffff5050); px(b, cx - 3, bd.y + rh + 5, 0xffff5050); px(b, cx + 3, bd.y + rh + 5, 0xffff5050); px(b, cx + 9, bd.y + rh + 5, 0xffff5050);
+    case 'planning': { // 圆规：圆形大楼 + 罗盘指针屋顶
+      fillEllipse(b, cx, Y + Math.round(H * 0.58), Math.round(W / 2 - 3), Math.round(H * 0.42), wall);
+      rect(b, X + 2, Y + 10, W - 4, H - 10, wall);
+      rect(b, cx - 1, Y + 2, 2, H - 8, dark);
+      for (let i = 0; i < 8; i++) {
+        const xa = X + 12 + i * (W - 24) / 7, ya = Y + 12 + ((i * 5) % 9);
+        rect(b, Math.round(xa), Math.round(ya), 6, 3, glass);
+      }
+      // 罗盘指针
+      for (let i = 0; i < 8; i++) rect(b, Math.round(cx - i * 0.4), Y - 6 + i, 2, 1, i < 4 ? win : roof);
+      rect(b, Math.round(cx - 1), Y - 10, 2, 5, win);
+      break;
     }
-  } else if (style === 'tower') {
-    const rw = bd.w - 8, rh = Math.min(20, Math.max(14, bd.h * 0.3));
-    for (let yy = 0; yy < rh; yy++) {
-      const half = Math.max(2, Math.round(rw / 2 * (1 - yy / rh)));
-      rect(b, Math.round(bd.x + 4 + rw / 2 - half), bd.y + yy, half * 2, 1, yy < rh / 2 ? roof : roofDark);
+    case 'plan-review': { // 法槌/公正：三角挑檐 + 中央天平纹章
+      rect(b, X, Y + 10, W, H - 10, wall);
+      const rh = 10;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      rect(b, cx - 1, Y + 16, 2, H - 18, wood);
+      rect(b, cx - 8, Y + 18, 16, 2, wood);
+      rect(b, cx - 7, Y + 22, 6, 4, wood); rect(b, cx + 1, Y + 22, 6, 4, wood);
+      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+      break;
     }
-    rect(b, bd.x + 4, bd.y + rh, rw, 3, roofDark);
-    rect(b, bd.x + 4, bd.y + rh + 3, rw, 2, roof);
-    px(b, cx, bd.y - 2, 0xffffe0a0);
-  } else if (style === 'factory') {
-    // 锯齿厂房顶
-    for (let i = 0; i < Math.ceil(bd.w / 12); i++) {
-      const sx = bd.x + 2 + i * 12;
-      rect(b, sx, bd.y + 2, 10, 3, roof);
-      rect(b, sx + 5, bd.y + 2, 5, 1, roofDark);
-      rect(b, sx + 10, bd.y + 5, 1, 4, roofDark);
-      rect(b, sx, bd.y + 5, 10, 2, roofDark);
+    case 'design': { // 设计工作室：A 字三角画室 + 大画窗
+      const rh = Math.min(18, Math.round(H * 0.42));
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      for (let i = 0; i < H - rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (H - rh - i) / (H - rh)));
+        rect(b, Math.round(cx - half), Y + rh + i, half * 2, 1, wall);
+      }
+      rect(b, X + 6, Y + 24, W - 12, 10, glass);
+      px(b, X + 10, Y + 28, 0xffff5050); px(b, X + 16, Y + 28, 0xff58a0e8); px(b, X + 22, Y + 28, 0xff58d858); px(b, X + 28, Y + 28, 0xffffd858);
+      break;
     }
-    rect(b, bd.x + 2, bd.y + 8, bd.w - 4, 3, roofDark);
-    // 烟囱
-    rect(b, bd.x + 12, bd.y - 8, 8, 12, roofDark);
-    rect(b, bd.x + 13, bd.y - 10, 6, 3, roof);
-    px(b, bd.x + 14, bd.y - 9, 0xffdddddd);
-  } else if (style === 'greenhouse') {
-    const rw = bd.w - 8, rh = Math.min(20, Math.max(10, bd.h * 0.25));
-    for (let yy = 0; yy < rh; yy++) {
-      const half = Math.max(2, Math.round((yy + 1) / rh * (rw / 2)));
-      rect(b, Math.round(bd.x + 4 + rw / 2 - half), bd.y + yy, half * 2, 1, yy % 2 ? glass : shade('#ffffff', pal.bright, pal.nightF, pal.duskF));
+    case 'conventions': { // 规范文书房：柱廊 + 三角楣
+      rect(b, X, Y + 10, W, H - 10, wall);
+      const rh = 9;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      for (let i = 0; i < 4; i++) rect(b, X + 6 + i * (W - 12) / 3, Y + 18, 6, H - 22, wood);
+      rect(b, X + 8, Y + 22, W - 16, 6, win);
+      break;
     }
-    rect(b, bd.x + 4, bd.y + rh, rw, 2, dark);
-    rect(b, cx, bd.y, 1, rh, dark);
-  } else if (style === 'gate') {
-    // 平顶大门式
-    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 12, roof);
-    rect(b, bd.x + 2, bd.y + 14, bd.w - 4, 3, roofDark);
-    rect(b, bd.x + 2, bd.y + 17, bd.w - 4, 2, roof);
-    if (bd.w >= 62) { // 拱门
-      rect(b, cx - 11, bd.y + bd.h - 16, 22, 14, dark);
-      fillEllipse(b, cx, bd.y + bd.h - 14, 10, 5, wall);
-      rect(b, cx - 9, bd.y + bd.h - 12, 18, 10, dark);
+    case 'knowledge': { // 知识树馆：塔身 + 树冠屋顶
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 7, pal.G);
+      fillEllipse(b, cx - 6, Y + 5, 5, 4, pal.L); fillEllipse(b, cx + 6, Y + 5, 5, 4, pal.L);
+      fillEllipse(b, cx, Y + 2, 3, 3, roof);
+      rect(b, cx - 4, Y + 20, 8, H - 22, wood);
+      rect(b, X + 14, Y + 24, 8, 6, win); rect(b, X + W - 22, Y + 24, 8, 6, win);
+      break;
     }
-  } else if (style === 'hazard') {
-    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 14, roof);
-    for (let i = 0; i < bd.w - 4; i += 10) {
-      px(b, bd.x + 2 + i, bd.y + 2, 0xffff5050); px(b, bd.x + 2 + i + 3, bd.y + 2, 0xffffd858);
-      px(b, bd.x + 2 + i, bd.y + 8, 0xffffd858); px(b, bd.x + 2 + i + 3, bd.y + 8, 0xffff5050);
+    case 'priority': { // 优先级塔：CBD 高塔 + 顶部红旗
+      for (let i = 0; i < H; i++) {
+        const half = Math.round(W / 2 * (1.1 - 0.4 * i / H));
+        rect(b, Math.round(cx - Math.max(3, half)), Y + i, Math.max(6, half * 2), 1, i % 6 === 0 ? wall : shade(bd.wall, pal.bright, pal.nightF, pal.duskF));
+      }
+      rect(b, cx - 1, Y + 4, 2, 14, dark);
+      rect(b, cx - 1, Y + 4, 14, 6, roof);
+      px(b, cx + 13, Y + 6, roofDark);
+      rect(b, X + 10, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
     }
-    rect(b, bd.x + 2, bd.y + 16, bd.w - 4, 3, roofDark);
-  } else {
-    // 平顶办公/学校/实验室
-    rect(b, bd.x + 2, bd.y + 2, bd.w - 4, 13, roof);
-    rect(b, bd.x + 2, bd.y + 15, bd.w - 4, 3, roofDark);
-    rect(b, bd.x + 4, bd.y + 4, bd.w - 8, 3, shade('#ffffff', pal.bright, pal.nightF, 0));
-    if (style === 'school') {
-      for (let i = 0; i < Math.floor((bd.w - 16) / 14); i++) rect(b, bd.x + 8 + i * 14, bd.y + 22, 8, 5, win);
-    } else if (style === 'lab') {
-      rect(b, bd.x + 6, bd.y + 22, bd.w - 12, 6, glass);
-      rect(b, bd.x + 6, bd.y + 29, bd.w - 12, 3, shade('#58a0e8', pal.bright, pal.nightF, pal.duskF));
+    case 'pm': { // 统筹议事厅：圆顶大厅
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 2), 12, roof);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 5), 7, roofDark);
+      rect(b, cx - 2, Y - 2, 4, 2, roofDark);
+      rect(b, X + 8, Y + 24, 8, 6, win); rect(b, X + W - 16, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'split': { // 拆分工作台：斜切剪刀造型
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      for (let i = 0; i < 12; i++) rect(b, X + 2 + i, Y + 4 + Math.floor(i / 2), 1, 12 - Math.floor(i / 2), i % 2 ? roof : roofDark);
+      for (let i = 0; i < 12; i++) rect(b, X + W - 3 - i, Y + 4 + Math.floor(i / 2), 1, 12 - Math.floor(i / 2), i % 2 ? roofDark : roof);
+      rect(b, X + 8, Y + 22, 8, 6, win); rect(b, X + W - 16, Y + 22, 8, 6, win);
+      break;
+    }
+    case 'closed': { // 归档小馆：保险库圆形门
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 8), 20, dark);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 12), 17, roof);
+      for (let r = 0; r < 3; r++) fillEllipse(b, cx, Y + 28, Math.round((W / 2 - 12) * (r + 1) / 3.2), Math.round(17 * (r + 1) / 3.4), shade(['#8a5a2f','#b07a46','#e0b06a'][r], pal.bright, pal.nightF, pal.duskF));
+      break;
+    }
+    case 'ready': { // 待命驿站：胶囊发射塔
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 4), 8, roof);
+      rect(b, cx - 1, Y - 8, 2, 10, dark); px(b, cx, Y - 10, 0xffffe0a0);
+      rect(b, X + 10, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'audit': { // 审计塔：广州塔式渐变细腰塔
+      const topY = Y + 6, botY = Y + H;
+      for (let i = 0; i < H; i++) {
+        const t = i / H;
+        const r = 3 + Math.round((W / 2 - 4) * (1 - Math.abs(t - 0.5) * 1.4));
+        rect(b, Math.round(cx - r), Y + i, r * 2, 1, i % 3 === 0 ? roofDark : wall);
+      }
+      rect(b, Math.round(cx - 1), topY - 16, 2, 18, dark);
+      px(b, cx, topY - 18, 0xffffe0a0);
+      for (let i = 0; i < 4; i++) rect(b, Math.round(cx - 5), Y + 18 + i * 12, 10, 2, glass);
+      break;
+    }
+    case 'needs-grilling': { // 访谈茶馆：对话气泡屋顶
+      rect(b, X + 2, Y + 16, W - 4, H - 16, wall);
+      rect(b, X + 4, Y + 6, W - 8, 14, roof);
+      rect(b, X + 12, Y + 18, 18, 8, roof);
+      px(b, X + 12, Y + 12, 0xffff5050); px(b, X + 20, Y + 12, 0xffffd858); px(b, X + 28, Y + 12, 0xff58a0e8);
+      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+      break;
+    }
+    case 'idle': { // 休息草坪：叶片小屋
+      rect(b, X + 3, Y + 14, W - 6, H - 14, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 9, pal.G);
+      fillEllipse(b, cx - 5, Y + 5, 7, 5, pal.L);
+      fillEllipse(b, cx + 5, Y + 5, 7, 5, pal.L);
+      rect(b, cx - 1, Y + 16, 2, H - 18, wood);
+      rect(b, X + 8, Y + 22, 8, 6, win);
+      break;
+    }
+    case 'implementing': { // 开发工厂：锯齿厂房 + 传送带齿轮
+      for (let i = 0; i < Math.ceil(W / 12); i++) {
+        const sx = X + 2 + i * 12;
+        rect(b, sx, Y + 2, 10, 3, roof);
+        rect(b, sx + 5, Y + 2, 5, 1, roofDark);
+        rect(b, sx + 10, Y + 5, 1, 4, roofDark);
+        rect(b, sx, Y + 5, 10, 2, roofDark);
+      }
+      rect(b, X + 2, Y + 8, W - 4, H - 8, wall);
+      rect(b, X + 12, Y - 8, 8, 12, roofDark); rect(b, X + 13, Y - 10, 6, 3, roof);
+      px(b, X + 14, Y - 9, 0xffdddddd);
+      // 传送带
+      rect(b, X + 10, Y + H - 10, W - 20, 4, dark);
+      for (let i = 0; i < (W - 20) / 10; i++) rect(b, X + 12 + i * 10, Y + H - 9, 2, 2, roof);
+      // 齿轮
+      fillEllipse(b, X + 14, Y + 22, 7, 7, pal.Y);
+      px(b, X + 7, Y + 22, pal.Y); px(b, X + 21, Y + 22, pal.Y); px(b, X + 14, Y + 15, pal.Y); px(b, X + 14, Y + 29, pal.Y);
+      px(b, X + 9, Y + 17, pal.Y); px(b, X + 19, Y + 17, pal.Y); px(b, X + 9, Y + 27, pal.Y); px(b, X + 19, Y + 27, pal.Y);
+      fillEllipse(b, X + 14, Y + 22, 3, 3, win);
+      break;
+    }
+    case 'review': { // 验收场：圆形靶场
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 16), 18, pal.G);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 20), 14, win);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 24), 10, pal.G);
+      fillEllipse(b, cx, Y + 28, 3, 3, dark);
+      rect(b, X + 10, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'merge': { // 合并发布站：双道汇流拱门
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      for (let i = 0; i < 10; i++) rect(b, X + 4 + i, Y + 3 + Math.floor(i / 2), W - 8 - i * 2, 1, i % 2 ? roof : roofDark);
+      rect(b, cx - 8, Y + 14, 16, 14, glass);
+      rect(b, cx - 10, Y + 28, 20, 5, dark);
+      rect(b, X + 4, Y + 20, 10, 4, roof); rect(b, X + W - 14, Y + 20, 10, 4, roof);
+      break;
+    }
+    case 'conflict': { // 仲裁庭：警告三角塔
+      rect(b, X + 2, Y + 16, W - 4, H - 16, wall);
+      for (let i = 0; i < 10; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / 10));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      px(b, cx, Y + 6, win); px(b, cx, Y + 10, win); px(b, cx, Y + 14, win);
+      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+      break;
+    }
+    case 'done': { // 凯旋广场：凯旋门
+      rect(b, X + 2, Y + 12, 10, H - 12, wall); rect(b, X + W - 12, Y + 12, 10, H - 12, wall);
+      rect(b, X + 2, Y + 12, W - 4, 12, roof);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 2), 7, roof); fillEllipse(b, cx, Y + 18, Math.round(W / 2 - 14), 6, wall);
+      rect(b, cx - 7, Y + 26, 14, H - 28, wall);
+      break;
+    }
+    case 'working': { // 综合工位：小齿轮屋
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 4), 6, roof);
+      fillEllipse(b, cx, Y + 25, Math.round(W / 4 - 1), 8, pal.Y);
+      fillEllipse(b, cx, Y + 25, 3, 4, wall);
+      px(b, cx - 7, Y + 25, pal.Y); px(b, cx + 7, Y + 25, pal.Y); px(b, cx, Y + 18, pal.Y); px(b, cx, Y + 32, pal.Y);
+      break;
+    }
+    case 'blocked': { // 阻塞亭：红黄路障檐
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      rect(b, X + 2, Y + 2, W - 4, 10, roof);
+      for (let i = 0; i < W - 4; i += 8) { px(b, X + 2 + i, Y + 1, 0xffff5050); px(b, X + 2 + i + 3, Y + 1, 0xffffd858); px(b, X + 2 + i, Y + 7, 0xffffd858); px(b, X + 2 + i + 3, Y + 7, 0xffff5050); }
+      rect(b, X + 6, Y + 22, 8, 6, win);
+      break;
+    }
+    default: { // 通用平顶
+      rect(b, X, Y, W, H, wall);
+      rect(b, X + 2, Y + 2, W - 4, 12, roof);
+      rect(b, X + 2, Y + 14, W - 4, 3, roofDark);
     }
   }
 
-  // 普通窗户：非 row-window 建筑
-  if (style !== 'school' && style !== 'lab' && style !== 'greenhouse') {
-    rect(b, bd.x + 8, bd.y + 24, 10, 8, win);
-    rect(b, bd.x + bd.w - 20, bd.y + 24, 10, 8, win);
-  }
-
-  // 建筑专属细节（烟囱/旗帜/门廊等）
-  if (style === 'studio') {
-    // 大画窗
-    rect(b, bd.x + 5, bd.y + 23, bd.w - 10, 10, glass);
-    px(b, bd.x + 8, bd.y + 26, 0xffff5050); px(b, bd.x + 12, bd.y + 26, 0xff58a0e8); px(b, bd.x + 16, bd.y + 26, 0xff58d858); px(b, bd.x + 20, bd.y + 26, 0xffffd858);
-  } else if (style === 'library') {
-    rect(b, bd.x + 4, bd.y + 22, bd.w - 8, 6, wood);
-    rect(b, bd.x + 8, bd.y + 24, 4, 4, win); rect(b, bd.x + 16, bd.y + 24, 4, 4, win); rect(b, bd.x + 24, bd.y + 24, 4, 4, win);
-  } else if (style === 'tower') {
-    rect(b, bd.x + 4, bd.y + 22, 6, 6, win);
-  } else if (style === 'shed') {
-    rect(b, bd.x + 6, bd.y + 22, 10, 6, wood);
-    px(b, bd.x + 10, bd.y + 24, win);
+  // 普通窗户兜底：没有单独点窗的建筑补两个
+  if (!['refining','conventions','knowledge','priority','pm','split','closed','working','blocked','ready','review','merge'].includes(key)) {
+    rect(b, X + 6, Y + 24, 8, 6, win); rect(b, X + W - 14, Y + 24, 8, 6, win);
   }
 
   // 大门（保留 door 方向，功能不变）
-  if (bd.door === 'south') { rect(b, cx - 5, bd.y + bd.h - 13, 10, 12, door); }
-  else if (bd.door === 'north') { rect(b, cx - 5, bd.y + 1, 10, 12, door); }
-  else if (bd.door === 'east') { rect(b, bd.x + bd.w - 12, bd.y + bd.h / 2 - 5, 11, 10, door); }
-  else { rect(b, bd.x + 1, bd.y + bd.h / 2 - 5, 11, 10, door); }
-
-  const meta = STAGE[bd.key];
-  if (meta) {
-    rect(b, cx - 8, bd.y + bd.h - 20, 16, 7, roof);
-    rect(b, cx - 6, bd.y + bd.h - 18, 12, 3, win);
-  }
+  if (bd.door === 'south') { rect(b, cx - 5, Y + H - 13, 10, 12, door); }
+  else if (bd.door === 'north') { rect(b, cx - 5, Y + 1, 10, 12, door); }
+  else if (bd.door === 'east') { rect(b, X + W - 12, Y + H / 2 - 5, 11, 10, door); }
+  else { rect(b, X + 1, Y + H / 2 - 5, 11, 10, door); }
 }
 
 function drawFountain(b, pal, cx, cy) {
