@@ -12,7 +12,6 @@ import (
 
 // Config holds all configuration for the task runner.
 type Config struct {
-	ConfigVersion  int    `json:"config_version"`
 	ObsidianVault  string `json:"obsidian_vault"`
 	NewProjectRoot string `json:"new_project_root"`
 	// WorktreeBase overrides where task worktrees are created. Empty uses the
@@ -26,10 +25,8 @@ type Config struct {
 	MaxConcurrentTasksPerProject int               `json:"max_concurrent_tasks_per_project"`
 	PhaseConcurrency             map[string]int    `json:"phase_concurrency"`
 	PhaseTimeoutMinutes          map[string]int    `json:"phase_timeouts_minutes"`
-	ShutdownGraceSeconds         int               `json:"shutdown_grace_seconds"`
 	OffPeakTimezone              string            `json:"off_peak_timezone"`
 	OffPeakWindows               []TimeWindow      `json:"off_peak_windows"`
-	StarvationWarningDays        map[string]int    `json:"starvation_warning_days"`
 	Models                       map[string]string `json:"models"`
 	// Fallback controls the DSH cross-model fallback chains from vault-map.
 	// When set, the daemon forwards it to the agent-server with every
@@ -39,10 +36,13 @@ type Config struct {
 	// interactive dsh web / dsh-tui sessions never receive it, so the user
 	// keeps full control of model selection and failures never auto-switch.
 	Fallback *FallbackConfig `json:"fallback,omitempty"`
-	// DSHCmd / DSHProfile drive DSH-native phases (global design first;
-	// remaining phases migrate behind PhaseExecutor incrementally). The
-	// headless app has no per-invocation --model flag, so the selected profile
-	// owns model routing (the default headless profile uses v4-pro here).
+	// DSHCmd / DSHProfile drive the spawn-headless DSH adapter. DSHCmd is also
+	// the binary used to launch the agent-server child. DSHProfile is
+	// DEPRECATED (2026-09-02): under the default executor dsh-embed every
+	// phase (design included) runs through the agent-server whose profile is
+	// hardcoded `headless-agent-server`; DSHProfile now only affects the
+	// legacy executor="dsh" spawn path. The headless app has no per-invocation
+	// --model flag, so the profile owns model routing there.
 	DSHCmd     string `json:"dsh_cmd"`
 	DSHProfile string `json:"dsh_profile"`
 	// AgentServerAddr is the long-lived `dsh --profile headless-agent-server`
@@ -472,7 +472,6 @@ func DefaultKBChat() *KBChatConfig {
 func Defaults() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		ConfigVersion:   1,
 		NewProjectRoot:  filepath.Join(home, "src"),
 		PollIntervalMin: 30,
 		// max_concurrent_tasks = optional global cap across all projects
@@ -487,10 +486,8 @@ func Defaults() *Config {
 		// planning 45m：2026-09-02 planning→max 后思维链会话更长，大 REQ 的
 		// plan 生成需要余量（30m 会在活跃会话下误判 wedged 的风险升高）。
 		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 45, "round2": 120, "merge": 15, "design": 90},
-		ShutdownGraceSeconds:   30,
 		OffPeakTimezone:        "Asia/Shanghai",
 		OffPeakWindows:         []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
-		StarvationWarningDays:  map[string]int{"P3": 14, "P4": 30},
 		ScanMinIntervalSeconds: 10,
 		// Overlap deferral cap: 12h exceeds the round2 no-progress cooldown
 		// ceiling (~10.7h), so a stalled upstream stops being re-dispatched
@@ -564,9 +561,6 @@ func Load(mapPath string) (*Config, error) {
 
 func mergeDefaults(cfg *Config) {
 	defaults := Defaults()
-	if cfg.ConfigVersion == 0 {
-		cfg.ConfigVersion = defaults.ConfigVersion
-	}
 	// MaxConcurrentTasks: 0 is a valid value (no global cap) — missing and
 	// explicit 0 are identical, so no fallback. Per-project capacity: 0
 	// (missing or explicit) falls back to the default 2 — a per-project cap
@@ -592,17 +586,11 @@ func mergeDefaults(cfg *Config) {
 			}
 		}
 	}
-	if cfg.ShutdownGraceSeconds == 0 {
-		cfg.ShutdownGraceSeconds = defaults.ShutdownGraceSeconds
-	}
 	if cfg.OffPeakTimezone == "" {
 		cfg.OffPeakTimezone = defaults.OffPeakTimezone
 	}
 	if len(cfg.OffPeakWindows) == 0 {
 		cfg.OffPeakWindows = defaults.OffPeakWindows
-	}
-	if cfg.StarvationWarningDays == nil {
-		cfg.StarvationWarningDays = defaults.StarvationWarningDays
 	}
 	if cfg.Models == nil {
 		cfg.Models = DefaultModels()
@@ -777,9 +765,6 @@ func firstNonEmptyEnv(names ...string) string {
 }
 
 func (c *Config) Validate() error {
-	if c.ConfigVersion != 1 {
-		return fmt.Errorf("CONFIG_INVALID: unsupported config_version %d", c.ConfigVersion)
-	}
 	if c.MaxConcurrentTasks < 0 {
 		return fmt.Errorf("CONFIG_INVALID: max_concurrent_tasks must be >= 0 (0 = no global cap)")
 	}
@@ -797,8 +782,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("CONFIG_INVALID: phase_concurrency.%s must be >= 0 (0 = unlimited)", phase)
 		}
 	}
-	if c.PollIntervalMin < 1 || c.ShutdownGraceSeconds < 1 {
-		return fmt.Errorf("CONFIG_INVALID: polling and shutdown values must be positive")
+	if c.PollIntervalMin < 1 {
+		return fmt.Errorf("CONFIG_INVALID: poll_interval_minutes must be positive")
 	}
 	if _, err := time.LoadLocation(c.OffPeakTimezone); err != nil {
 		return fmt.Errorf("CONFIG_INVALID: off_peak_timezone %q: %w", c.OffPeakTimezone, err)

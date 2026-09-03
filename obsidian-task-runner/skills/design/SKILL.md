@@ -28,11 +28,14 @@ ones rather than silently rewriting them.
 
 ## Step 0: Write-probe (mandatory, before any artifact work)
 
-Your working directory is `design_dir` itself, and the daemon has already
-probed write access — but verify again before spending the session:
+The daemon passes `design_dir` / `project_dir` / `repo_dir` as absolute
+arguments — **do not rely on the working directory** (design sessions run on
+the agent-server like every other phase since 2026-09-02; the process cwd is
+NOT `design_dir`). The daemon has already probed write access — but verify
+again against the real path before spending the session:
 
 ```bash
-touch .otg-design-probe && rm .otg-design-probe
+touch "$design_dir/.otg-design-probe" && rm "$design_dir/.otg-design-probe"
 ```
 
 - Probe succeeds → continue.

@@ -278,7 +278,6 @@ func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
 
 	config := map[string]interface{}{
-		"config_version":   1,
 		"obsidian_vault":   opts.ObsidianVault,
 		"new_project_root": opts.NewProjectRoot,
 		"projects":         []interface{}{},
@@ -298,7 +297,6 @@ func generateVaultMap(opts Options) error {
 		"max_concurrent_tasks_per_project": 2,
 		"off_peak_timezone":                "Asia/Shanghai",
 		"off_peak_windows":                 []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
-		"starvation_warning_days":          map[string]int{"P3": 14, "P4": 30},
 		// 全局共享知识库根：交互会话 KB-first 预检索的语料来源；为空回退
 		// obsidian_vault（缺省行为），交互注入自动关闭。
 		"kb_vault": "",
@@ -325,13 +323,12 @@ func generateVaultMap(opts Options) error {
 	// most editors) with "projects" pinned last — appending a new project is
 	// the most frequent manual edit, so the array stays at the bottom.
 	orderedKeys := []string{
-		"agent_server_managed", "auto_resume_aged_after_hours", "config_version",
+		"agent_server_managed", "auto_resume_aged_after_hours",
 		"env_cleanup", "kb_vault", "max_concurrent_tasks",
 		"max_concurrent_tasks_per_project", "memory_gate", "models",
 		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
 		"off_peak_windows", "phase_concurrency", "phase_timeouts_minutes",
-		"poll_interval_minutes", "shutdown_grace_seconds", "starvation_warning_days",
-		"projects",
+		"poll_interval_minutes", "projects",
 	}
 
 	// Merge new defaults into existing config — never overwrite user values,

@@ -27,6 +27,21 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 	return e
 }
 
+// newDesignExecutor selects the backend for global design sessions. It follows
+// the same selection as newPhaseExecutor: embed (per-request reasoningEffort +
+// durable resume + fallback forwarding) under the default dsh-embed executor,
+// spawn only when the user explicitly pinned executor="dsh" (spawn cannot
+// transmit ReasoningEffort — the effort falls to the profile default, which is
+// why design was migrated to embed on 2026-09-02).
+func newDesignExecutor(cfg *config.Config) PhaseExecutor {
+	if cfg.Executor == "dsh" {
+		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
+	}
+	e := newDSHEmbedExecutor(cfg.AgentServerAddr, "")
+	e.fallback = cfg.Fallback
+	return e
+}
+
 // staleSessionReconciler is implemented by executors with server-side durable
 // sessions (dsh-embed). Before any fresh Start for a task, the runner cancels
 // still-working sessions of a previous daemon incarnation (daemon restarts

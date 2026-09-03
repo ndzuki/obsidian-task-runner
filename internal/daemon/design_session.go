@@ -66,7 +66,7 @@ func (r *Runner) runGlobalDesignSession(ctx context.Context, project, taskID, ta
 		return fmt.Errorf("design session %s: %w", taskID, err)
 	}
 	if r.designExecutor == nil {
-		r.designExecutor = newDSHExecutorWithProfile(r.cfg.DSHCmd, r.cfg.DSHProfile, "")
+		r.designExecutor = newDesignExecutor(r.cfg)
 	}
 	// WorkingDir = the Design directory: the session's workspace-write scope
 	// is exactly the artifact tree (glossary + contracts/decisions/waves).

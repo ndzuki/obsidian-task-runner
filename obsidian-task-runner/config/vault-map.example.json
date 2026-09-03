@@ -1,5 +1,6 @@
 {
   "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。字段顺序可自由调整（daemon 保序维护、只追加缺失字段）；建议 projects 置末——追加新项目是最频繁的手工编辑。",
+  "_comment_deprecated": "2026-09-02 移除的零消费字段：config_version、shutdown_grace_seconds、starvation_warning_days（解析后无任何代码消费；上游停滞告警实际用 upstream_stall_days）。旧文件中的这些键按「未知键保留」容忍、不影响运行；otg config migrate 只追加缺失字段、绝不删除——已删除的不会恢复，仍在的也不会自动移除（手动删除即可，delete 一次即净）。dsh_profile 标注 deprecated：默认 executor=dsh-embed 下全部阶段（含 design）经 agent-server（profile 硬编码 headless-agent-server），该字段仅影响旧 executor=\"dsh\" spawn 路径。",
   "kb_chat": {
     "_comment": "知识库问答（可选，otg kb ask 的生成模型）。需 kb_embedding（检索是 RAG 的 R）；ollama 需 ollama pull qwen3:1.7b。",
     "backend": "ollama",

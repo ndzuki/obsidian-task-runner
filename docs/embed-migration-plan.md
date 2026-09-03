@@ -213,7 +213,7 @@ dsh-embed 具备生产可用性。
 | merge（冲突解决） | high（PhaseSpec 显式） | `high` | ✅ |
 | pm / conventions | low（PhaseSpec 显式） | `low` | ✅ |
 | audit | low（PhaseSpec 显式） | `low` | ✅（原先不传已被显式 low 取代） |
-| design（全局设计） | max（PhaseSpec 显式） | `xhigh` | ✅ |
+| design（全局设计） | max（PhaseSpec 显式） | `xhigh` | ✅ 2026-09-02 起真实生效——此前 design 经 spawn 适配器派发（spawn 无法传 reasoningEffort），强度落在 settings.yaml agent-default-model 的 profile 默认（当时恰为 xhigh，纯属巧合）；design 已随 newDesignExecutor 迁入 dsh-embed |
 
 **官方要点**（对照后确认）：
 - DSH headless 无 `--thinking` flag——embed 用 `agentOptions.reasoningEffort`

@@ -75,13 +75,18 @@ type Runner struct {
 	conflictPRProbed   sync.Map              // taskPath → time.Time (last manual-merge PR probe; bounded polling of handed-back conflict tasks)
 	gatedLogged        map[string]bool       // task paths whose dependency-gate log was emitted
 	// designExecutor is injectable for deterministic Phase 3 tests. Production
-	// uses DSH headless (global design session).
+	// selects the same backend as phaseExecutor (see newDesignExecutor):
+	// dsh-embed under the default executor, spawn-headless under "dsh".
+	// 2026-09-02 前设计会话固定走 spawn 适配器——spawn 无法传递
+	// ReasoningEffort，PhaseSpec 的 max 从未生效（强度落在 profile 默认），
+	// 迁到 embed 后 per-request 强度 / durable resume / fallback 下发才真正
+	// 覆盖 design 会话。
 	designExecutor PhaseExecutor
 	// phaseExecutor is the processBatchSequential phase-dispatch backend,
 	// selected by cfg.Executor ("dsh" spawn-headless / "dsh-embed" default;
 	// any other value resolves to dsh-embed). It is injectable in tests;
-	// New() builds it from config. Distinct from designExecutor, which is
-	// always the DSH headless adapter.
+	// New() builds it from config. Distinct from designExecutor, which
+	// follows the same backend selection.
 	phaseExecutor PhaseExecutor
 	// agentServerCmd is the long-lived `dsh --profile headless-agent-server`
 	// child process the dsh-embed executor talks to. Non-nil only when
@@ -153,7 +158,7 @@ func New(cfg *config.Config) *Runner {
 		taskIdx:            task.NewIndex(),
 		gatedLogged:        map[string]bool{},
 		scanMinInterval:    time.Duration(cfg.ScanMinIntervalSeconds) * time.Second,
-		designExecutor:     newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, ""),
+		designExecutor:     newDesignExecutor(cfg),
 		phaseExecutor:      newPhaseExecutor(cfg),
 	}
 }
