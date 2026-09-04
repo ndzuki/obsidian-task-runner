@@ -11,7 +11,7 @@ created: 2026-07-31
 
 ## Context
 
-Round 2 OMP 需要项目上下文（CONTEXT.md 领域术语、ADR 决策、约束、反模式）来提高实现质量。需要 daemon 在调度 OMP 前自动注入上下文，避免 agent 手动读取文件消耗 token。
+Round 2 早期执行器 需要项目上下文（CONTEXT.md 领域术语、ADR 决策、约束、反模式）来提高实现质量。需要 daemon 在调度 早期执行器 前自动注入上下文，避免 agent 手动读取文件消耗 token。
 
 ## Decision
 

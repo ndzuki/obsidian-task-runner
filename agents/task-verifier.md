@@ -1,7 +1,7 @@
 ---
 name: task-verifier
 description: 对照 Obsidian 任务文档里的"验收标准"清单，逐条核实刚完成的实现是否达标，并运行测试/lint。在把任务状态推进到 review 之前必须调用一次。
-tools: Read, Bash, Grep, Glob
+# 工具面由调用方（daemon/DSH harness）按只读集合提供，不在本文件声明。
 ---
 
 # Task Verifier
@@ -71,13 +71,13 @@ golangci-lint run ./... 2>&1
 
 ### Step 6: 写回验收记录
 
-在任务文档的「## 验收记录」section 写入（替换 `<!-- 🤖 Claude + task-verifier 自动填充 -->` 注释）：
+在任务文档的「## 验收记录」section 写入（替换 `<!-- 🤖 task-verifier 自动填充 -->` 注释）：
 
 ```markdown
 ## 验收记录
 
 **验收时间**：<ISO8601>
-**验收人**：Claude (task-verifier)
+**验收人**：task-verifier
 
 ### 验收标准核实
 - [x] 第一条验收标准 — 通过：<证据>

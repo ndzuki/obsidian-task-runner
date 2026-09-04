@@ -11,7 +11,7 @@ created: 2026-08-05
 
 ## Context
 
-模型兜底原先在代码中硬编码：`FallbackModel` 写死 `acme-pro`，assignee 集合（gpt/default/acme）也是 switch 写死。omp 会话级 fallback（`config.yml` `retry.fallbackChains`）只覆盖 API 可重试错误（socket/timeout/429/5xx）；进程级失败（进程退出、阶段超时、token quota）需要 daemon 用不同模型重启整个 OMP 进程。项目开源后，使用者应能不改代码配置任意兜底模型与兜底对象集合。
+模型兜底原先在代码中硬编码：`FallbackModel` 写死 `acme-pro`，assignee 集合（gpt/default/acme）也是 switch 写死。早期执行器 会话级 fallback（`config.yml` `retry.fallbackChains`）只覆盖 API 可重试错误（socket/timeout/429/5xx）；进程级失败（进程退出、阶段超时、token quota）需要 daemon 用不同模型重启整个 早期执行器 进程。项目开源后，使用者应能不改代码配置任意兜底模型与兜底对象集合。
 
 ## Decision
 
@@ -21,7 +21,7 @@ created: 2026-08-05
 - 可增删任意 key（如给 `gemini` 配兜底）、改任意模型（如切回 `acme/acme-pro` 做深度推理）、置 `""` 禁用单个 assignee
 - 部分配置与默认合并（`Load` 从 `Defaults()` 起步，`encoding/json` 对 map 是合并语义）
 - `FallbackModelFor(assignee)` 纯 map 查找，代码零模型字符串；`ModelReference()` 表格由默认值动态生成，单一数据源无失同步路径
-- 两层兜底分工：会话内 API 错误 → omp `fallbackChains`（按 role，同进程换模型重试）；进程级失败 → daemon 用 `fallback_models` 重启 OMP（全新 timeout 预算）
+- 两层兜底分工：会话内 API 错误 → 早期执行器 `fallbackChains`（按 role，同进程换模型重试）；进程级失败 → daemon 用 `fallback_models` 重启 早期执行器（全新 timeout 预算）
 - `models.acme` 主模型同步调整为 v4-flash；需要深度推理时通过配置切回 pro
 
 ## Consequences

@@ -19,10 +19,10 @@ tasks:
 accepted
 
 ## Context
-同一仓库的 Planning、Round 2 和 Merge 访问模式不同。全局串行会浪费 OMP 槽位；完全无锁会让主工作区写操作和读操作竞争，甚至破坏 worktree/branch 状态。
+同一仓库的 Planning、Round 2 和 Merge 访问模式不同。全局串行会浪费 早期执行器 槽位；完全无锁会让主工作区写操作和读操作竞争，甚至破坏 worktree/branch 状态。
 
 ## Decision
-每个仓库使用 `sync.RWMutex`：Refining/Planning 获取共享读锁；Merge 获取独占写锁；Round 2 仅在隔离 task worktree 运行，不持有 repo lock。等待 repo lock 不占 OMP 槽位；同一 TASK 通过 canonical task-path hash 进程内去重。
+每个仓库使用 `sync.RWMutex`：Refining/Planning 获取共享读锁；Merge 获取独占写锁；Round 2 仅在隔离 task worktree 运行，不持有 repo lock。等待 repo lock 不占 早期执行器 槽位；同一 TASK 通过 canonical task-path hash 进程内去重。
 
 ## Alternatives Considered
 - 全局 mutex：不同仓库和共享读阶段无法并行。

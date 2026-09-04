@@ -1373,8 +1373,8 @@ const (
 )
 
 // resolveMergeConflict runs one execution session that loads the merge skill's
-// Automated Conflict Resolution step (skill://resolving-merge-conflicts) to
-// resolve PR conflicts locally. The AI may commit a resolution; the daemon
+// Automated Conflict Resolution step (bundled in /obsidian-task-runner-merge,
+// no external skill required) to resolve PR conflicts locally. The AI may commit a resolution; the daemon
 // pushes and re-evaluates checks afterwards. The session is local-only —
 // push/PR/merge stay with the daemon.
 func (r *Runner) resolveMergeConflict(candidate task.ReadyTask, repoDir string) error {

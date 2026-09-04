@@ -1631,7 +1631,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	// stage set so the unstaged-task scan does not dispatch a PM
 	// consolidate session through the fake DSH (corrupts start counts).
 	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
-	// The fake OMP advances this planning task to plan-review on barrier
+	// The fake 早期执行器 advances this planning task to plan-review on barrier
 	// release; otherwise it stays ready forever and every completed dispatch
 	// triggers another scan, so the gate never settles (flaky on CI).
 	t.Setenv("OMP_TASK_PATH", taskPath)

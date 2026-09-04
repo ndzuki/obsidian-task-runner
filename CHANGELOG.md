@@ -6,6 +6,8 @@
 
 ## 2026
 
+- **[v0.50.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.50.0)**（2026-09-04）— 开源化收敛：README 门面重写（104 行）、quickstart/ops-manual/CHANGELOG/ROADMAP/CONTRIBUTING/ADR 目录、五篇迁移文档归档、死字段与旧执行器字眼全仓清零、内置模型路由移除（models 由操作者配置）、自动化命令绝不覆盖用户配置（Makefile 去 sed/pkill、shell 配置 opt-in）、migrate 零值默认不落盘
+- **[v0.49.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.49.0)**（2026-09-04）— 首问非阻塞 KB 预检索 + hybrid-only 快路径；merge 前确保 GitHub 远程存在并推送默认分支（空仓库 PR base==head 修复）
 - **[v0.48.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.48.0)**（2026-09-03）— 48.0: monitor 小镇重设计 + NPC 身份/归属展示
 - **[v0.47.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.47.0)**（2026-09-03）— fix(daemon,agent-server,ci): 非 Git 项目 checkout 自动 init + sessionEvents 兼容 shim + CI 测试修复
 - **[v0.46.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.46.0)**（2026-09-01）— 46.0: DSH 2.0 时代——KB-first 交互链路 + fallback 动态下发 + 决策写回安全加固

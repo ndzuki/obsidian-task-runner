@@ -141,7 +141,7 @@ ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jso
 
 ## 9. 迁移历史（归档）
 
-架构经历三代表演进：Python 脚本（Claude Code 时代）→ Go 单二进制 + OMP/DSH spawn → DSH 2.0 embed。
+架构经历三代表演进：Python 脚本（Claude Code 时代）→ Go 单二进制 + 早期执行器 / DSH spawn → DSH 2.0 embed。
 以下迁移文档仅作历史资料，按需查阅，**不作为现势实现依据**：
 
 | 文档 | 内容 |
