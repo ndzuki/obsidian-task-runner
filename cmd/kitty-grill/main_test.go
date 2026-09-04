@@ -18,8 +18,8 @@ import (
 // `kitty @ close-window --match id:<KITTY_WINDOW_ID>` 关闭用户正在跑
 // `make test` 的那个 tab（2026-08-28 观测：make test 卡死 + kitty tab 被删）。
 func TestMain(m *testing.M) {
-	os.Unsetenv("KITTY_WINDOW_ID")
-	os.Unsetenv("KITTY_LISTEN_ON")
+	_ = os.Unsetenv("KITTY_WINDOW_ID")
+	_ = os.Unsetenv("KITTY_LISTEN_ON")
 	os.Exit(m.Run())
 }
 
@@ -169,7 +169,7 @@ func TestReplZeroDecisionsExitsCleanly(t *testing.T) {
 	}
 	os.Stdin = pr
 	defer func() { os.Stdin = oldStdin }()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 
 	done := make(chan error, 1)
 	go func() {

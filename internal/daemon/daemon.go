@@ -2708,7 +2708,7 @@ func RemoveProjectWorktrees(base, repoDir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// 无 worktree 目录：仍 prune，清掉可能残留的失效注册。
-		exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+		_ = exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
 		return nil
 	}
 	var firstErr error
@@ -2723,10 +2723,10 @@ func RemoveProjectWorktrees(base, repoDir string) error {
 			}
 			continue
 		}
-		os.RemoveAll(wtPath)
+		_ = os.RemoveAll(wtPath)
 	}
-	os.Remove(dir)
-	exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+	_ = os.Remove(dir)
+	_ = exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
 	return firstErr
 }
 
@@ -2799,7 +2799,7 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 					if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
 						if isManagedWorktreePath(occupied, base, repoDir) {
 							log.Printf("task worktree: detached %s blocked by stale managed worktree %s, removing and retrying checkout", path, occupied)
-							exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+							_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
 							if output2, err2 := cmd.CombinedOutput(); err2 == nil {
 								return path, nil
 							} else {
@@ -2865,7 +2865,7 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
 			if isManagedWorktreePath(occupied, base, repoDir) {
 				log.Printf("task worktree: branch %s occupied by stale managed worktree %s, removing", targetBranch, occupied)
-				exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
+				_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", occupied).Run()
 				if _, err3 := add(); err3 == nil {
 					return path, nil
 				}
@@ -2902,9 +2902,9 @@ func worktreePathFromError(errText string) string {
 // "already exists" is removed outright. Each step tolerates failure — the
 // repair is best-effort and the retried add reports the real outcome.
 func repairStaleWorktree(repoDir, path string) {
-	exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
-	exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).Run()
-	os.RemoveAll(path)
+	_ = exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+	_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", path).Run()
+	_ = os.RemoveAll(path)
 }
 
 func gitBranchExists(repoDir, branch string) bool {
@@ -3562,10 +3562,6 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				r.logger.Printf("task %s: write task log header: %v", t.ID, writeErr)
 			}
 		}
-		timeout := r.cfg.PhaseTimeout(phase)
-		if timeout <= 0 {
-			timeout = 30 * time.Minute
-		}
 		// 阶段派发统一走 DSH executor（dsh-embed 长驻 agent-server 或 dsh spawn）。
 		// runDSHPhaseDispatch 内部处理成功/失败的 shared tail（写回 + 通知），
 		// 返回 handled=true 表示本阶段已完整处理。
@@ -4055,7 +4051,7 @@ func (r *Runner) cleanupOrphanWorktrees() {
 		// 回收后若 repoHash 目录已空，删除它，避免累积 4KB 空壳父目录
 		//（旧版只删 TASK-* 子目录）。
 		if remaining, err := os.ReadDir(dir); err == nil && len(remaining) == 0 {
-			os.Remove(dir)
+			_ = os.Remove(dir)
 		}
 	}
 }

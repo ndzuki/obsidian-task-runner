@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("create test cache dir: " + err.Error())
 	}
-	os.Setenv("XDG_CACHE_HOME", cacheDir)
+	_ = os.Setenv("XDG_CACHE_HOME", cacheDir)
 	os.Exit(m.Run())
 }
 
@@ -805,8 +805,8 @@ func TestProcessBatchNonPositiveGlobalLimitMeansUnlimited(t *testing.T) {
 func TestProcessBatchPerProjectConcurrency(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	os.MkdirAll(filepath.Join(dir, "one"), 0755)
-	os.MkdirAll(filepath.Join(dir, "two"), 0755)
+	_ = os.MkdirAll(filepath.Join(dir, "one"), 0755)
+	_ = os.MkdirAll(filepath.Join(dir, "two"), 0755)
 	projectOne := createRepository(t, filepath.Join(dir, "one"))
 	projectTwo := createRepository(t, filepath.Join(dir, "two"))
 

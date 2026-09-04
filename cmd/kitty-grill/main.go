@@ -811,7 +811,7 @@ func closeChatSession(addr, sessionID string) {
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // writebackLogDir returns the directory for detached write-back logs.
@@ -865,12 +865,12 @@ func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, task
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	fmt.Printf("\n✅ 决策已提交，后台异步写回需求文档（进度见 %s），本标签页即将关闭。\n", logPath)
 	// 关闭日志句柄：子进程继承 fd，父进程无需等待。
-	f.Close()
+	_ = f.Close()
 	return nil
 }
 
@@ -962,7 +962,7 @@ func chat(addr, provider, model, effort, sessionID, message string, timeout time
 		}
 		return nil, fmt.Errorf("agent-server unreachable: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {

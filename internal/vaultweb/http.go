@@ -102,7 +102,7 @@ func (s *Service) handleAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if v := resp.Header.Get("X-Agents-Finished"); v != "" {
 		w.Header().Set("X-Agents-Finished", v)
 	}

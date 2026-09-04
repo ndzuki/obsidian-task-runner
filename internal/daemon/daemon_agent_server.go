@@ -80,7 +80,7 @@ func (r *Runner) startAgentServer(ctx context.Context) error {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://" + r.cfg.AgentServerAddr + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				r.logger.Printf("agent-server healthy (%s)", r.cfg.AgentServerAddr)
 				// 防御：健康检查通过后，确认响应 8799 的是我们自管的子进程，

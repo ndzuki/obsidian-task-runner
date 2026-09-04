@@ -865,7 +865,7 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 		return s
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("daemon 注入依赖闭包上下文（replan_gate_threshold=%d）：\n", r.cfg.ReplanGateThreshold))
+	fmt.Fprintf(&b, "daemon 注入依赖闭包上下文（replan_gate_threshold=%d）：\n", r.cfg.ReplanGateThreshold)
 	for _, p := range taskPaths {
 		fm, err := readFrontmatter(p)
 		if err != nil || fm == nil {
@@ -882,10 +882,10 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 				}
 			}
 		}
-		b.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&b,
 			"- TASK-%s (%s) stage=%s plan_v=%d design_replan_v=%d blocked_by=[%s] blocks=[%s] req=%s req_depends_on=[%s]\n",
 			fm.ID, orDash(fm.Title), orDash(fm.Stage), fm.PlanVersion, fm.DesignReplanVersion,
-			strings.Join(fm.BlockedBy, ", "), strings.Join(fm.Blocks, ", "), orDash(fm.ReqDoc), depends))
+			strings.Join(fm.BlockedBy, ", "), strings.Join(fm.Blocks, ", "), orDash(fm.ReqDoc), depends)
 	}
 	// Design library inventory: an empty library means any planning task with
 	// plan_version >= threshold will be swallowed by the replan gate and never
@@ -894,8 +894,8 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 	if fm, err := readFrontmatter(taskPaths[0]); err == nil && fm != nil {
 		if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, fm.Project); projDir != "" {
 			if sum, serr := designlib.ForProject(projDir).ReadSummary(); serr == nil {
-				b.WriteString(fmt.Sprintf("设计库: revision=%d contracts=%d decisions=%d waves=%d glossary=%v\n",
-					sum.Revision, len(sum.Contracts), len(sum.Decisions), len(sum.Waves), sum.HasGlossary))
+				fmt.Fprintf(&b, "设计库: revision=%d contracts=%d decisions=%d waves=%d glossary=%v\n",
+					sum.Revision, len(sum.Contracts), len(sum.Decisions), len(sum.Waves), sum.HasGlossary)
 			} else {
 				b.WriteString("设计库: 空/不可读（replan gate 未通过——规划阶段会被 gate 拦截，必须作为决策点提出）\n")
 			}
@@ -903,7 +903,7 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 			// archive before asking the user to decide anything again.
 			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" {
 				archivePath := filepath.Join(filepath.Dir(listPath), "Grilling-Decisions-archive.md")
-				b.WriteString(fmt.Sprintf("决策先例范围: 主清单=%s 归档=%s\n", listPath, archivePath))
+				fmt.Fprintf(&b, "决策先例范围: 主清单=%s 归档=%s\n", listPath, archivePath)
 			}
 		}
 	}
