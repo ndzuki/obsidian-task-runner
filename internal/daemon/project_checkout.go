@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/notify"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
@@ -45,6 +47,14 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 	}
 	// Already a standalone checkout (or a real repo) — nothing to promote.
 	if top, err := gitTopLevel(fallbackPath); err == nil && filepath.Clean(top) == filepath.Clean(fallbackPath) {
+		// For merge-bound work, make sure the GitHub home actually exists and
+		// has a sane default branch before the merge flow tries to create a
+		// PR. Without this an empty newly-created GitHub repo gets its first
+		// pushed feature branch as default, which makes PR base == head and
+		// stalls the task (observed: dshtui TASK-001).
+		if t.Status == "review" || t.Status == "conflict" {
+			r.ensureCheckoutRemoteRepo(t, fallbackPath, gitRemote)
+		}
 		return fallbackPath, nil
 	}
 	if r.cfg.NewProjectRoot == "" {
@@ -148,30 +158,96 @@ func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote 
 	if exec.Command("gh", "repo", "view", ownerRepo).Run() == nil {
 		// Repo already exists — only origin may be missing (partial setup).
 		if _, rerr := exec.Command("git", "-C", checkout, "remote", "get-url", "origin").CombinedOutput(); rerr != nil {
-			_ = exec.Command("git", "-C", checkout, "remote", "add", "origin", url).Run()
-		}
-		return
-	}
-	// gh ≥2.9x requires --source for --remote; the form works on older gh
-	// too, so create from the checkout directory itself.
-	args := []string{"repo", "create", ownerRepo, "--private", "--source", ".", "--remote", "origin"}
-	if desc := r.projectDescription(t); desc != "" {
-		args = append(args, "--description", desc)
-	}
-	ghCmd := exec.Command("gh", args...)
-	ghCmd.Dir = checkout
-	if out, gerr := ghCmd.CombinedOutput(); gerr != nil {
-		// Race with a concurrent create or manual creation: probe again.
-		if exec.Command("gh", "repo", "view", ownerRepo).Run() == nil {
-			if _, rerr := exec.Command("git", "-C", checkout, "remote", "get-url", "origin").CombinedOutput(); rerr != nil {
-				_ = exec.Command("git", "-C", checkout, "remote", "add", "origin", url).Run()
+			if addErr := exec.Command("git", "-C", checkout, "remote", "add", "origin", url).Run(); addErr != nil {
+				r.logger.Printf("task %s: add origin %s: %v", t.ID, url, addErr)
+				r.notifyRemoteRepoFailure(t, ownerRepo, fmt.Errorf("add origin %s: %w", url, addErr))
+				return
 			}
+		}
+	} else {
+		// gh ≥2.9x requires --source for --remote; the form works on older gh
+		// too, so create from the checkout directory itself.
+		args := []string{"repo", "create", ownerRepo, "--private", "--source", ".", "--remote", "origin"}
+		if desc := r.projectDescription(t); desc != "" {
+			args = append(args, "--description", desc)
+		}
+		ghCmd := exec.Command("gh", args...)
+		ghCmd.Dir = checkout
+		if out, gerr := ghCmd.CombinedOutput(); gerr != nil {
+			// Race with a concurrent create or manual creation: probe again.
+			if exec.Command("gh", "repo", "view", ownerRepo).Run() == nil {
+				if _, rerr := exec.Command("git", "-C", checkout, "remote", "get-url", "origin").CombinedOutput(); rerr != nil {
+					_ = exec.Command("git", "-C", checkout, "remote", "add", "origin", url).Run()
+				}
+			} else {
+				err := fmt.Errorf("gh repo create %s: %v: %s", ownerRepo, gerr, strings.TrimSpace(string(out)))
+				r.logger.Printf("task %s: create remote repo %s: %v", t.ID, ownerRepo, err)
+				r.notifyRemoteRepoFailure(t, ownerRepo, err)
+				return
+			}
+		} else {
+			r.logger.Printf("task %s: created remote repo %s", t.ID, ownerRepo)
+		}
+	}
+	// A freshly created GitHub repo is empty until some branch is pushed.
+	// For merge-bound work, push the local default branch immediately and set
+	// it as the remote default so a later feature-branch PR has a proper base
+	// (otherwise the first pushed feature branch becomes default and PR
+	// base==head, as observed on dshtui TASK-001).
+	if t.Status == "review" || t.Status == "conflict" {
+		if err := ensureRemoteDefaultBranch(checkout, ownerRepo); err != nil {
+			r.logger.Printf("task %s: ensure remote default branch %s: %v", t.ID, ownerRepo, err)
+			r.notifyRemoteRepoFailure(t, ownerRepo, err)
+		}
+	}
+}
+
+// ensureRemoteDefaultBranch pushes the local default branch to origin and
+// sets it as the GitHub default branch. Idempotent: an already-pushed main
+// just fast-forwards/updates and re-setting the default no-ops.
+func ensureRemoteDefaultBranch(repoDir, ownerRepo string) error {
+	defaultBranch := ""
+	for _, candidate := range []string{"main", "master"} {
+		if exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/"+candidate).Run() == nil {
+			defaultBranch = candidate
+			break
+		}
+	}
+	if defaultBranch == "" {
+		if out, err := exec.Command("git", "-C", repoDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+			defaultBranch = strings.TrimSpace(string(out))
+		}
+	}
+	if defaultBranch == "" || defaultBranch == "HEAD" {
+		return fmt.Errorf("cannot determine a default branch for %s", ownerRepo)
+	}
+	// Only create the remote default branch when it is missing. If the remote
+	// already has main/master we do not force-push local history over it — the
+	// PR base is the remote branch, not our local copy.
+	remoteHasDefault := exec.Command("git", "-C", repoDir, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+defaultBranch).Run() == nil
+	if !remoteHasDefault {
+		if out, err := exec.Command("git", "-C", repoDir, "push", "-u", "origin", defaultBranch).CombinedOutput(); err != nil {
+			return fmt.Errorf("push default branch %s to origin: %v: %s", defaultBranch, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if out, err := exec.Command("gh", "repo", "edit", ownerRepo, "--default-branch", defaultBranch).CombinedOutput(); err != nil {
+		return fmt.Errorf("set default branch %s on %s: %v: %s", defaultBranch, ownerRepo, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// notifyRemoteRepoFailure sends a debounced, actionable desktop notification
+// when the daemon cannot automatically create/initialize a GitHub repository.
+func (r *Runner) notifyRemoteRepoFailure(t task.ReadyTask, ownerRepo string, err error) {
+	if r.cfg.Notifications.Desktop {
+		if last, ok := r.remoteRepoNotifyAt.Load(t.FilePath); ok && time.Since(last.(time.Time)) < 5*time.Minute {
 			return
 		}
-		r.logger.Printf("task %s: create remote repo %s: %v: %s", t.ID, ownerRepo, gerr, strings.TrimSpace(string(out)))
-		return
+		r.remoteRepoNotifyAt.Store(t.FilePath, time.Now())
 	}
-	r.logger.Printf("task %s: created remote repo %s", t.ID, ownerRepo)
+	notify.SendTaskAction(t.ID, t.Title, "⚠️", "GitHub 仓库自动初始化受阻",
+		fmt.Sprintf("项目 %s 的仓库 %s 自动创建/初始化失败：%v\n请手动执行：\n  gh repo create %s --private --source . --remote origin\n  gh repo edit %s --default-branch main\n然后重试或设置 resume/merge_approved 继续。", t.Project, ownerRepo, err, ownerRepo, ownerRepo),
+		r.cfg.Notifications.Desktop)
 }
 
 // projectDescription derives the one-line project description for the README

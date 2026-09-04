@@ -400,6 +400,103 @@ func TestEnsureProjectCheckoutSkipsGitRoot(t *testing.T) {
 	}
 }
 
+// TestEnsureProjectCheckoutCreatesMissingRemoteOnMerge covers the dshtui
+// regression: an existing standalone checkout may have a local origin pointing
+// at a GitHub repo that does not exist yet. A merge-bound task must auto-create
+// the GitHub repo with gh, push the local default branch, and set it as the
+// remote default so the later feature-branch PR has a sane base.
+func TestEnsureProjectCheckoutCreatesMissingRemoteOnMerge(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\temail = test@example.com\n\tname = Test User\n[commit]\n\tgpgsign = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	repo := createRepository(t, dir)
+	// Deterministic default branch name for both local and remote.
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("rename default branch: %v: %s", err, out)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, out)
+	}
+
+	skillDir := writeVaultMapWithRemote(t, dir, "demo", repo, "github.com/ndzuki/demo")
+	runner := newAutoRegRunner(t, dir, skillDir)
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "gh-create-called")
+	editMarker := filepath.Join(dir, "gh-edit-called")
+	ghScript := fmt.Sprintf(`#!/bin/sh
+marker=%q
+editmarker=%q
+origin=%q
+checkout=%q
+case "$1" in
+  repo)
+    case "$2" in
+      view)
+        [ -f "$marker" ] && exit 0 || exit 1
+        ;;
+      create)
+        git -C "$checkout" remote add origin "$origin" 2>/dev/null || git -C "$checkout" remote set-url origin "$origin"
+        touch "$marker"
+        exit 0
+        ;;
+      edit)
+        touch "$editmarker"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+exit 1
+`, marker, editMarker, origin, repo)
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	candidate := task.ReadyTask{
+		ID: "001", Title: "Demo", Project: "demo", Status: "review",
+		FilePath: filepath.Join(repo, "Tasks", "TASK-001-demo.md"),
+		ReqDoc:   "Projects/010-demo/Requirements/REQ-001-demo.md",
+	}
+	got, err := runner.ensureProjectCheckout(candidate, repo)
+	if err != nil {
+		t.Fatalf("ensureProjectCheckout: %v", err)
+	}
+	if got != repo {
+		t.Fatalf("git-root merge project must keep checkout, got %q", got)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("gh repo create was not invoked: %v", err)
+	}
+	if _, err := os.Stat(editMarker); err != nil {
+		t.Fatalf("gh repo edit (default-branch) was not invoked: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", origin, "rev-parse", "--verify", "refs/heads/main").CombinedOutput(); err != nil {
+		t.Fatalf("origin/main missing after auto-create: %v: %s", err, out)
+	}
+	remoteURL, err := exec.Command("git", "-C", repo, "remote", "get-url", "origin").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(remoteURL)) != origin {
+		t.Fatalf("origin = %q (%v), want %q", strings.TrimSpace(string(remoteURL)), err, origin)
+	}
+
+	// Idempotent: a second call must not re-create the remote or error.
+	if again, err := runner.ensureProjectCheckout(candidate, repo); err != nil || again != repo {
+		t.Fatalf("second ensureProjectCheckout = %q, %v; want %q", again, err, repo)
+	}
+}
+
 // TestEnsureProjectCheckoutSkipsVaultOnlyProject covers projects without a
 // git_remote: they stay vault-only by choice and keep the fallback path.
 func TestEnsureProjectCheckoutSkipsVaultOnlyProject(t *testing.T) {

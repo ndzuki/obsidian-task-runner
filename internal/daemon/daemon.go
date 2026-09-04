@@ -55,6 +55,7 @@ type Runner struct {
 	envCleanupSeen     sync.Map              // taskPath → dead-end episode signature (env teardown ran once per episode)
 	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
 	grillNotified      sync.Map              // taskID → time.Time (last grilling notification)
+	remoteRepoNotifyAt sync.Map              // taskPath → time.Time (last missing-GitHub-repo failure notification)
 	keyNotifyAt        sync.Map              // "key" → time.Time (API-key-unavailable toast debounce)
 	refNotifyAt        sync.Map              // refPath → time.Time (knowledge intake validation toast debounce)
 	failNotifyAt       sync.Map              // taskPath → failNotifyEntry (failure/fallback toast debounce)
