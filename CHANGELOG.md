@@ -1,0 +1,96 @@
+# Changelog
+
+
+> 从 git tag 自动生成（内部任务编号等私有语境已剔除）。格式参考 Keep a Changelog。
+
+
+## 2026
+
+- **[v0.48.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.48.0)**（2026-09-03）— 48.0: monitor 小镇重设计 + NPC 身份/归属展示
+- **[v0.47.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.47.0)**（2026-09-03）— fix(daemon,agent-server,ci): 非 Git 项目 checkout 自动 init + sessionEvents 兼容 shim + CI 测试修复
+- **[v0.46.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.46.0)**（2026-09-01）— 46.0: DSH 2.0 时代——KB-first 交互链路 + fallback 动态下发 + 决策写回安全加固
+- **[v0.45.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.45.1)**（2026-08-31）— 45.1: deploy 自动补齐 vault-map.json 新字段（config migrate 安全追加+原子写）+ 运行期 config 语法校验提醒
+- **[v0.45.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.45.0)**（2026-08-31）— 45.0: 交互会话 KB-first（kb_vault + 服务端预检索 + 项目上下文注入）+ web 问答 UI + env_cleanup.on_block + 相关修复/文档
+- **[v0.44.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.44.1)**（2026-08-25）— auto-approve 放行 + 瞬态故障保守重试 + 部署自动化 (make deploy)
+- **[v0.44.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.44.0)**（2026-08-24）— 44.0: 环境清理硬性契约（会话退出自动清理临时资源 + 完成审计核验清理证据 + 禁停用户服务红线）
+- **[v0.43.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.43.0)**（2026-08-18）— feat: task-verifier 提示词升级 + 血缘校验修复
+- **[v0.42.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.42.0)**（2026-08-18）— feat: 阶段并发上限收敛 + unregister-project 命令 + skill 文档治理
+- **[v0.41.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.41.0)**（2026-08-17）— fix(daemon): ensureTaskWorktree 自愈残留 worktree 注册，外部删除不再卡死派发
+- **[v0.40.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.40.0)**（2026-08-14）— round2 并发改为每项目上限（max_concurrent_tasks_per_project 默认 2），max_concurrent_tasks 降为可选全局总封顶（0=不限）
+- **[v0.39.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.39.0)**（2026-08-14）— 39.0: 任务级临时资源生命周期与防泄漏治理
+- **[v0.38.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.38.1)**（2026-08-14）— 38.1: fix CI lint failures (golangci-lint v2, 68 issues to zero); fix mermaid diagrams in README
+- **[v0.38.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.38.0)**（2026-08-14）— 38.0: merge-flow hardening （冲突规模熔断 + 上游停滞告警 + 修复预算封顶）
+- **[v0.37.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.37.1)**（2026-08-14）— fix(daemon): stale-done reopen fetch recheck; feat(knowledge): frontmatter intake self-heal
+- **[v0.37.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.37.0)**（2026-08-14）— 37.0: team-project delivery modes (manual + fork-merge), conventions gate, project-conventions skill
+- **[v0.36.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.36.0)**（2026-08-13）— feat(daemon): overlap serialization, stale-terminal reopens, empty-response fallback
+- **[v0.35.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.35.0)**（2026-08-13）— feat: debounce failure toasts, hold grilling flow on decision-list pause, kb distill rework
+- **[v0.34.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.34.2)**（2026-08-11）— fix(daemon): defer blocked_by validation when target file is transiently unparsable
+- **[v0.34.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.34.1)**（2026-08-11）— 34.1: 争议搁置与前置门禁的恢复路径区分
+- **[v0.34.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.34.0)**（2026-08-11）— 34.0: gh CLI 认证通道、知识提炼自动补救、default_assignee 默认委派
+- **[v0.33.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.33.0)**（2026-08-11）— 33.0: otg install-systemd + systemd PATH fix for mise-managed dsh
+- **[v0.32.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.32.0)**（2026-08-10）— 32.0: grilling PM concurrency guard
+- **[v0.31.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.31.0)**（2026-08-07）— feat: stage scheduling & knowledge auto-sync release
+- **[v0.30.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.30.0)**（2026-08-07）— SQLite FTS5 + sqlite-vec retrieval store; session-end knowledge distillation
+- **[v0.29.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.29.0)**（2026-08-07）— feat(skills): lifecycle optimizations
+- **[v0.28.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.28.1)**（2026-08-07）— 28.1: skill lifecycle optimizations — architecture survey
+- **[v0.28.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.28.0)**（2026-08-07）— 28.0: knowledge experience sink, heat ranking, 10k-scale retrieval
+- **[v0.27.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.27.1)**（2026-08-07）— fix: grilling decision tabs, PHASE_INTERRUPTED self-heal, assignee-model planning
+- **[v0.27.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.27.0)**（2026-08-06）— 27.0: auto-register new projects, REQ discovery from project root, doc-validation reliability
+- **[v0.26.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.26.0)**（2026-08-05）— 26.0: stage-based delivery + docs alignment
+- **[v0.25.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.25.0)**（2026-08-05）— 25.0: knowledge lifecycle + task index + remote creation
+- **[v0.24.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.24.0)**（2026-08-05）— 24.0: configurable model fallback + PM grilling consolidation
+- **[v0.23.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.23.0)**（2026-08-04）— feat: install builds versioned otg binary
+- **[v0.22.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.22.0)**（2026-08-04）— fix: migrate legacy needs-refining status; make apiKeyProbe atomic
+- **[v0.21.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.21.0)**（2026-08-04）— feat: resilient merge retries, frontmatter schema normalization, async task dispatch
+- **[v0.20.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.20.0)**（2026-08-03）— feat: auto-merge pipeline + AI conflict resolution + async grilling
+- **[v0.19.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.19.1)**（2026-08-03）— 19.1: lossless daemon restarts
+- **[v0.19.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.19.0)**（2026-08-03）— 19.0: API key unavailable fallback + graceful shutdown
+- **[v0.18.6](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.6)**（2026-08-03）— 18.6: grilling reminder debounce + phase-failure cooldown + template schema v1
+- **[v0.18.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.5)**（2026-07-31）— 18.5: doc alignment + CI lint fixes
+- **[v0.18.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.4)**（2026-07-31）— 18.4: auto-resume budget counts only resume failures
+- **[v0.18.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.3)**（2026-07-31）— 18.3: bounded auto-resume (failures count)
+- **[v0.18.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.2)**（2026-07-31）— 18.2: resolver ID validation + dir preference + E2E
+- **[v0.18.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.1)**（2026-07-31）— 18.1: dependency cycle project identity fix
+- **[v0.18.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.18.0)**（2026-07-31）— 18.0: dependency resolver safety fixes
+- **[v0.17.9](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.9)**（2026-07-31）— 17.9: dependency auto-resume error handling + test coverage
+- **[v0.17.8](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.8)**（2026-07-31）— 17.8: auto-resolve blocked_by dependency chains
+- **[v0.17.7](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.7)**（2026-07-31）— 17.7: thinking mode exclusive control
+- **[v0.17.6](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.6)**（2026-07-31）— 17.6: max thinking for round2
+- **[v0.17.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.5)**（2026-07-31）— 17.5: phase-aware thinking mode
+- **[v0.17.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.4)**（2026-07-31）— 17.4: Flash→Pro fallback + model ref update
+- **[v0.17.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.3)**（2026-07-31）— 17.3: knowledge-base cross-reference hint in context
+- **[v0.17.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.2)**（2026-07-31）— 17.2: fix context actually reaching OMP process
+- **[v0.17.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.1)**（2026-07-31）— 17.1: context injection logging
+- **[v0.17.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.0)**（2026-07-31）— 17.0: selective knowledge extraction timing
+- **[v0.16.9](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.9)**（2026-07-31）— 16.9: knowledge extraction on Round 2 completion
+- **[v0.16.8](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.8)**（2026-07-31）— 16.8: structured context injection format
+- **[v0.16.7](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.7)**（2026-07-31）— 16.7: CONTEXT+ADR injection + 30s adaptive re-scan
+- **[v0.16.6](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.6)**（2026-07-31）— 16.6: preserve plan_approved for Round 2 OMP
+- **[v0.16.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.5)**（2026-07-31）— 16.5: fix gh pr commands working directory
+- **[v0.16.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.4)**（2026-07-31）— 16.4: git_remote resolution + target_branch write-back
+- **[v0.16.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.3)**（2026-07-31）— 16.3: daemon-wide implementing concurrency gate with restart-survivor tracking
+- **[v0.16.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.2)**（2026-07-30）— 16.2: fix Round 2 concurrency — isRound2 no longer requires PlanApproved
+- **[v0.16.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.1)**（2026-07-30）— fix: scanMu blocking concurrent scans during OMP execution
+- **[v0.16.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.0)**（2026-07-30）— 16.0 — wayfinder status, efficiency pipeline, v10 state machine, priority assessment
+- **[v0.15.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.15.2)**（2026-07-28）— 15.2 — docs: sync skill structure changes (symlink→copies, diagnose→diagnosing-bugs, 6-skill install)
+- **[v0.15.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.15.1)**（2026-07-28）— 15.1 — config review: merge diagnose/diagnosing-bugs, merge review/code-review, fix obsidian-task-runner symlinks to real file copies
+- **[v0.15.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.15.0)**（2026-07-28）— 15.0: closed state, Priority Assessment, CLI commands, 5 new skills, knowledge base 3-layer, Shape Up integration, mandatory code audit
+- **[v0.14.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.14.3)**（2026-07-27）— 14.3: blocked automation optimization (R1/R2/R3) + remove unused blocks field
+- **[v0.14.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.14.2)**（2026-07-24）— 14.2: project context injection + frontmatter repair hardening
+- **[v0.14.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.14.1)**（2026-07-24）— 14.1: fix vault-map.json preservation on --force install
+- **[v0.14.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.14.0)**（2026-07-23）— 14.0: ADR automation, universal doc validation, CONTEXT.md maintenance
+- **[v0.13.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.5)**（2026-07-23）— 13.5: body tag validation and auto-escape
+- **[v0.13.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.4)**（2026-07-23）— 13.4: docs, dashboard views, pipeline/watch fixes
+- **[v0.13.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.3)**（2026-07-23）— 13.3: frontmatter post-write validation, Repair, validate-doc/repair-doc
+- **[v0.13.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.2)**（2026-07-23）— 13.2: 状态机可靠性修复
+- **[v0.13.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.1)**（2026-07-22）— 13.1
+- **[v0.13.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.13.0)**（2026-07-22）— 13.0: per-task Grilling, concurrency fix, install safety
+- **[v0.12.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.12.2)**（2026-07-22）— 12.2: fix worktree conflict when main repo already on target branch
+- **[v0.12.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.12.1)**（2026-07-22）— 12.1: flock atomicity for Grilling tab deduplication
+- **[v0.12.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.12.0)**（2026-07-22）— 12.0: state machine v2, skill split, grilling overhaul
+- **[v0.11.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.11.0)**（2026-07-21）— 11.0: grill_owner ownership and timeout mechanism for grilling sessions
+- **[v0.10.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.10.0)**（2026-07-20）— 10.0 — implementing bounce guard + doc audit
+- **[v0.9.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.9.0)**（2026-07-17）— 9.0: auto-transition needs-grilling → plan-review, OnReqChanged gap fix, grill_done clear on reset
+- **[v0.3.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.3.0)**（2026-07-17）— 3.0: Grilling notification flow
+- **[v0.2.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.2.0)**（2026-07-17）— 2.0: deprecate memory.md, redistribute to CONTEXT.md + ADR
+- **[v0.1.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.1.0)**（2026-07-17）— 1.0: first tagged release
