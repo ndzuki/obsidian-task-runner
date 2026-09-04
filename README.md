@@ -3,7 +3,10 @@
 > **你的第二大脑会写代码了。** 在 Obsidian 写需求，AI Agent 在真实 Git 仓库里
 > 规划、实现、测试、开 PR、合并——你只做两件事：**定方向，验收产品**。
 
-<!-- TODO(screenshots): 15 秒录屏（Agent Town 小镇 + Kitty Grilling tab）占位 -->
+<p align="center">
+  <img src="docs/assets/agent-town.gif" width="46%" alt="Agent Town：960×540 像素小镇实时监控并发会话（四季/昼夜/寻路）"/>
+  <img src="docs/assets/grilling-tab.gif" width="46%" alt="Kitty Grilling tab：需求对齐光标问卷（↑↓ 选择、Enter 确认、一轮完成）"/>
+</p>
 
 Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作需求入口，把代码仓库
 当作执行目标。一条流水线，全自动：
