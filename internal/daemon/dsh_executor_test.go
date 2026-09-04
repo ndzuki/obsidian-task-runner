@@ -32,7 +32,7 @@ func TestDSHExecutorStartArgs(t *testing.T) {
 	e := newDSHExecutor(fake)
 	spec := PhaseSpec{
 		Phase:       "round2",
-		Model:       "magic/deepseek-v4-pro",
+		Model:       "magic/acme-pro",
 		SkillPrompt: "/obsidian-task-runner-round2 /vault/Tasks/TASK-001.md",
 		Timeout:     30 * time.Second,
 		WorkingDir:  dir,
@@ -113,7 +113,7 @@ func TestDSHExecutorTimeout(t *testing.T) {
 	e := newDSHExecutor(fake)
 	spec := PhaseSpec{
 		Phase:      "refining",
-		Model:      "magic/deepseek-v4-pro",
+		Model:      "magic/acme-pro",
 		Timeout:    200 * time.Millisecond,
 		WorkingDir: dir,
 	}

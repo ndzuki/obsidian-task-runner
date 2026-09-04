@@ -44,7 +44,7 @@ title: 用户登录 API
 project: my-backend
 status: plan-review
 priority: P2
-assignee: deepseek
+assignee: acme
 created: 2026-07-15T10:00:00+08:00
 updated: 2026-07-15T10:30:00+08:00
 ---
@@ -136,7 +136,7 @@ SORT file.mtime desc
 ```dataview
 TABLE title, status, priority, file.link AS "任务"
 FROM "Projects"
-WHERE contains(file.folder, "Tasks") AND assignee = "deepseek"
+WHERE contains(file.folder, "Tasks") AND assignee = "acme"
 SORT priority asc
 ```
 

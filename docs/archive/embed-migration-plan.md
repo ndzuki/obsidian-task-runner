@@ -284,9 +284,9 @@ low/medium/high/xhigh 四档）：
 
 ### 配置与持久化
 
-- agent-default-model 修复为 `deepseek_magic/deepseek-v4-pro`（magic 免费优先），
-  fallback 只在免费渠道间切换：`deepseek_magic → openai gpt-5.6`（能力映射），
-  `ds-official` 官方付费渠道仅由任务 `assignee=ds-official` 显式启用。
+- agent-default-model 修复为 `acme/acme-pro`（magic 免费优先），
+  fallback 只在免费渠道间切换：`acme → beta beta-`（能力映射），
+  `paid` 官方付费渠道仅由任务 `assignee=paid` 显式启用。
 - `早期执行器-commands` 插件改名 `dsh-commands`。
 - daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，
   完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描

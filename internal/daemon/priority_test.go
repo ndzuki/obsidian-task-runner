@@ -31,7 +31,7 @@ func TestRunPriorityAssessmentWritesNormalizedResult(t *testing.T) {
 	}
 
 	runner := &Runner{cfg: &config.Config{Executor: "dsh",
-		DSHCmd: dshCmd, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
+		DSHCmd: dshCmd, Models: testModels()}, logger: log.New(os.Stderr, "", 0)}
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)
 	apiKeyProbe.Store(func() bool { return true })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
@@ -96,7 +96,7 @@ req_doc: %s
 		ObsidianVault: vault,
 		Executor:      "dsh",
 		DSHCmd:        dshCmd,
-		Models:        config.DefaultModels(),
+		Models:        testModels(),
 	})
 	runner.logger = log.New(os.Stderr, "", 0)
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)

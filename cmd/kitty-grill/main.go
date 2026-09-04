@@ -57,8 +57,8 @@ func main() {
 		reqDoc    = flag.String("req", "", "requirement doc path (relative to vault)")
 		vaultPath = flag.String("vault", "", "obsidian vault absolute path")
 		addr      = flag.String("addr", "127.0.0.1:8799", "agent-server address")
-		provider  = flag.String("provider", "deepseek_magic", "DSH provider")
-		model     = flag.String("model", "deepseek-v4-pro", "DSH model")
+		provider  = flag.String("provider", "", "DSH provider (required)")
+		model     = flag.String("model", "", "DSH model (required)")
 		effort    = flag.String("effort", "low", "reasoning effort for questionnaire generation (off/low/high/max)")
 		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
 		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
@@ -73,6 +73,10 @@ func main() {
 
 	if *addr == "" {
 		fmt.Fprintln(os.Stderr, "kitty-grill: --addr is required")
+		os.Exit(2)
+	}
+	if *provider == "" || *model == "" {
+		fmt.Fprintln(os.Stderr, "kitty-grill: --provider and --model are required (no built-in model routes)")
 		os.Exit(2)
 	}
 

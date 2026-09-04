@@ -51,6 +51,7 @@ type Runner struct {
 	agedSkipLogged     sync.Map              // taskPath → bool (aged auto-resume skip already logged this daemon run)
 	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (free-tier exhaustion exponential backoff)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
+	modelGapLogged     sync.Map              // taskPath → bool (no-model-configured log once per state)
 	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
 	envCleanupSeen     sync.Map              // taskPath → dead-end episode signature (env teardown ran once per episode)
 	normCache          sync.Map              // docPath → normStamp (mtime+size of last normalized document)
@@ -1448,8 +1449,11 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// implementing session left (TASK-066 blocked-residual lesson).
 				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 && !grillingListPaused(listPath) {
-					gp, gm := mapDSHModel(r.cfg.Model("default"))
-					notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm)
+					if gp, gm := mapDSHModel(r.cfg.Model("default")); gp != "" {
+						notify.TryKittyDecisionTab(t.Project, listPath, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm)
+					}
+				} else {
+					r.logger.Printf("task %s: no models.default configured — decision tab skipped until vault-map models is set", t.ID)
 				}
 				r.logger.Printf("task %s: parked, waiting for project decision list", t.ID)
 				continue
@@ -1466,9 +1470,12 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 					}
 				}
 				r.grillNotified.Store(t.ID, time.Now())
-				gp, gm := mapDSHModel(r.cfg.Model("default"))
-				notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm, r.cfg.Notifications.Desktop)
-				continue
+				if gp, gm := mapDSHModel(r.cfg.Model("default")); gp != "" {
+					notify.SendGrillingReminder(t.ID, t.Title, t.ReqDoc, r.cfg.ObsidianVault, r.cfg.AgentServerAddr, gp, gm, r.cfg.Notifications.Desktop)
+					continue
+				} else {
+					r.logger.Printf("task %s: no models.default configured — grilling reminder skipped until vault-map models is set", t.ID)
+				}
 			}
 		}
 		if t.Status == "closed" {
@@ -3405,8 +3412,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			if t.Maturity == "fully_mature" && t.RefineReqHash != "" && t.RefineReqHash == r.reqHash(t.ReqDoc) {
 				r.logger.Printf("task %s: fully mature, audit current → planning", t.ID)
 				phase = "planning"
-				// 重型阶段默认走免费旗舰 v4-pro；显式 assignee 仍可覆盖
-				// （selectModel 相位感知路由）。
+				// 模型路由统一走 models 配置（显式 assignee 优先，否则 default）
+
 				model = r.selectModel(t.Assignee, "planning")
 				skillPrompt = "/obsidian-task-runner-round1 " + t.FilePath
 			} else {
@@ -3964,32 +3971,16 @@ func (r *Runner) ensureProjectContext(projDir string) error {
 	return os.WriteFile(contextPath, []byte(content), 0o644)
 }
 
-// selectModel routes a phase to its model identity.
-//   - 显式 assignee（非空且非 "default"）覆盖一切——用户可逐任务指定模型；
-//   - 否则重型阶段（planning/round2/merge）用 models.deepseek_magic（免费
-//     旗舰 deepseek-v4-pro），轻量阶段（refining/priority/pm/audit/
-//     conventions/design）用 models.default（gpt-5.4-mini）。
-//
-// 背景（2026-08-22 收口复盘）：config.DefaultModels 的注释声称重型阶段用
-// 旗舰，但实现一直按 assignee 全阶段统一路由——default assignee 让 planning/
-// round2 也跑在 V4 Flash 级 mini 上，spec/计划/代码质量与「high/max effort」
-// 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。
+// selectModel resolves a task's model identity: an explicit non-default
+// assignee wins; otherwise the operator-configured `models.default` is
+// used. Returns "" when no mapping is configured — the caller logs the
+// gap and leaves the task waiting (no built-in routes exist).
 func (r *Runner) selectModel(assignee, phase string) string {
+	_ = phase // phase-aware routing was an operator preference; routing is now uniform
 	if assignee != "" && assignee != "default" {
 		return r.cfg.Model(assignee)
 	}
-	switch phase {
-	case "planning", "round2", "merge":
-		// 注意：不能用 cfg.Model("deepseek_magic")——键缺失时会回退 default
-		// （mini），重型阶段又退化成 Flash。直接查 models 表，缺失时硬编码
-		// 免费旗舰。
-		if m, ok := r.cfg.Models["deepseek_magic"]; ok && m != "" {
-			return m
-		}
-		return "deepseek_magic/deepseek-v4-pro"
-	default:
-		return r.cfg.Model("default")
-	}
+	return r.cfg.Model("default")
 }
 
 // cleanupOrphanWorktrees 回收已交付/关闭/孤儿任务的 git worktree。

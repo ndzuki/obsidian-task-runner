@@ -567,7 +567,7 @@ func TestRunMergeAISessionReconcilesBeforeStart(t *testing.T) {
 	r.phaseExecutor = stub
 
 	candidate := task.ReadyTask{ID: "TASK-065", FilePath: filepath.Join(t.TempDir(), "TASK-065.md"), Project: "demo"}
-	if err := r.runMergeAISessionDSH(context.Background(), candidate, ".", mergeFixCI, "gateway/gpt-5.4-mini", "prompt", time.Minute); err != nil {
+	if err := r.runMergeAISessionDSH(context.Background(), candidate, ".", mergeFixCI, "gateway/acme-mini", "prompt", time.Minute); err != nil {
 		t.Fatalf("runMergeAISessionDSH: %v", err)
 	}
 	if !stub.reconcileCalled || stub.reconcileTaskID != "TASK-065" {
@@ -587,7 +587,7 @@ func TestRunAuditSessionReconcilesBeforeStart(t *testing.T) {
 	r.phaseExecutor = stub
 
 	candidate := task.ReadyTask{ID: "TASK-065", FilePath: filepath.Join(t.TempDir(), "TASK-065.md"), Project: "demo", Status: "implementing"}
-	if _, _, err := r.runAuditSessionDSH(context.Background(), candidate, ".", ".", "gateway/gpt-5.4-mini", "prompt"); err == nil {
+	if _, _, err := r.runAuditSessionDSH(context.Background(), candidate, ".", ".", "gateway/acme-mini", "prompt"); err == nil {
 		t.Fatal("stub 返回失败，runAuditSessionDSH 应报错")
 	}
 	if !stub.reconcileCalled || stub.reconcileTaskID != "TASK-065" {

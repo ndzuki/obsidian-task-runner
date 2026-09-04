@@ -573,7 +573,7 @@ func createTaskForReq(vaultPath, reqRelPath, defaultAssignee string) *AffectedRe
 	assigneeStatus := "✅ 已委派（可改）"
 	assigneeNote := ""
 	if assignee == "" {
-		assigneeStatus = "🔴 必填（如 default / deepseek / gpt）"
+		assigneeStatus = "🔴 必填（vault-map.json models 的 key，如 default）"
 		assigneeNote = "> ⚠️ **任务已暂停在 blocked。** 请在 frontmatter 中补 `assignee` 后保存，daemon 自动进入 refining → maturity gate。"
 	} else {
 		assigneeNote = "> ✅ **任务已创建并默认委派 `" + assignee + "`**——daemon 下一轮 scan 自动解锁为 ready，进入 priority 评估 → refining → maturity gate。如需换模型，改 `assignee` 后保存即可。"

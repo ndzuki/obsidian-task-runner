@@ -20,6 +20,15 @@ import (
 // watch, or a daemon-side fallback loop — those live in the DSH fallback
 // plugin.
 func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase, model, skillPrompt, logPath string) bool {
+	if model == "" {
+		// 未配置模型映射：绝不向 agent-server 派发空 provider/model。
+		// 任务留在当前状态，操作者补齐 vault-map.json `models` 后下轮 scan 自动继续。
+		key := taskPath + ":" + phase
+		if _, dup := r.modelGapLogged.LoadOrStore(key, true); !dup {
+			r.logger.Printf("task %s: no model configured for phase %s (vault-map models) — dispatch skipped", t.ID, phase)
+		}
+		return true
+	}
 	timeout := r.cfg.PhaseTimeout(phase)
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
@@ -134,8 +143,8 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		}
 		r.handlePhaseFailure(taskPath, t.ID, t.Title, t.Status, phase, code, reason, logPath)
 		desc := fmt.Sprintf("%s 阶段失败（%s）：%s", phase, code, reason)
-		if isFreeModelRoute(model) && (code == ErrModelQuotaExhausted || code == ErrModelFailed) {
-			desc = fmt.Sprintf("%s 阶段失败：免费模型渠道不可用或额度耗尽（deepseek_magic / openai gpt-5.6）——请把任务文档 assignee 改为 ds-official 后 resume_approved=true 恢复", phase)
+		if code == ErrModelQuotaExhausted || code == ErrModelFailed {
+			desc = fmt.Sprintf("%s 阶段失败：模型渠道不可用或额度耗尽——请检查 vault-map.json 的 models 配置，或为任务更换 assignee 后 resume_approved=true 恢复", phase)
 		}
 		r.notifyFailure(taskPath, t.ID, t.Title, "💥", "DSH 阶段失败", desc, failNotifyReason)
 		return true

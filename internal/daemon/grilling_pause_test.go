@@ -117,7 +117,7 @@ func TestGrillingPMHoldsDistributeWhenListPaused(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -152,7 +152,7 @@ func TestGrillingPMHoldsConsolidateWhenListPaused(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}

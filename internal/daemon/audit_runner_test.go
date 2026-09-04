@@ -104,7 +104,7 @@ func newAuditRunner(t *testing.T, skillDir, dshCmd, logDir string) *Runner {
 		DSHCmd:             dshCmd,
 		LogDir:             logDir,
 		MaxConcurrentTasks: 1,
-		Models:             config.DefaultModels(),
+		Models:             testModels(),
 		PhaseConcurrency:   config.DefaultPhaseConcurrency(),
 		Audit:              &config.AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15},
 	})

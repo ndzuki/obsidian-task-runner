@@ -1257,7 +1257,7 @@ func newTestRunnerLimits(skillDir, dshCmd, logDir string, limit, perProject int)
 		LogDir:                       logDir,
 		MaxConcurrentTasks:           limit,
 		MaxConcurrentTasksPerProject: perProject,
-		Models:                       config.DefaultModels(),
+		Models:                       testModels(),
 	})
 	runner.logger = log.New(io.Discard, "", 0)
 	return runner
@@ -1573,7 +1573,7 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 		LogDir:             filepath.Join(dir, "logs"),
 		MaxConcurrentTasks: 4,
 		PhaseConcurrency:   map[string]int{"refining": 2},
-		Models:             config.DefaultModels(),
+		Models:             testModels(),
 	}
 	runner := New(cfg)
 	runner.logger = log.New(io.Discard, "", 0)
@@ -1880,5 +1880,14 @@ func TestPrematurePlanApprovalResetAppendsAuditRecord(t *testing.T) {
 	}
 	if fm.PlanApproved {
 		t.Fatal("premature plan_approved must be reset to false")
+	}
+}
+
+// testModels is the neutral model-routing fixture for tests: no operator
+// routes are shipped by the project, so tests must provide their own.
+func testModels() map[string]string {
+	return map[string]string{
+		"default": "acme/acme-mini",
+		"acme":    "acme/acme-pro",
 	}
 }

@@ -336,45 +336,13 @@ type ModelRef struct {
 
 // DefaultModels returns the built-in model mappings.
 //
-// Routing policy: free channels first. The daemon and phase skills resolve
-// assignee keys to DSH route form via mapDSHModel; "deepseek_magic" is the
-// free DeepSeek gateway and "openai" is the free OpenAI-compatible gateway
-// (gpt-5.6 family). ds-official is the paid official DeepSeek channel and is
-// never auto-selected — a human opts in by setting the task assignee to
-// "ds-official" (or a model key mapped to ds-official/*).
+// There are no built-in routes: every assignee key → DSH provider/model
+// route is operator-provided via vault-map.json `models`. An empty or
+// missing mapping means tasks wait (the daemon logs the gap) until the
+// operator configures one — the project never ships operator-specific
+// model/gateway preferences.
 func DefaultModels() map[string]string {
-	return map[string]string{
-		// Light phases (refining/priority/pm/conventions/audit) use default:
-		// magic's cheap/fast model (gpt-5.4-mini == DeepSeek V4 Flash on the
-		// magic gateway).
-		"default": "deepseek_magic/gpt-5.4-mini",
-		// Heavy phases (planning/round2/merge/design) use the free magic
-		// flagship unless a task assignee says otherwise.
-		"deepseek": "deepseek_magic/deepseek-v4-pro",
-		// OpenAI free gateway (gpt-5.6 family) — the capability-mapped
-		// fallback channel and an explicit assignee option.
-		"gpt":    "openai/gpt-5.6-sol",
-		"openai": "openai/gpt-5.6-sol",
-		// Explicit aliases so assignee can name the provider directly.
-		"deepseek_magic": "deepseek_magic/deepseek-v4-pro",
-		// Paid official DeepSeek. Never used automatically; opt in per task
-		// via assignee=ds-official.
-		"ds-official": "ds-official/deepseek-v4-pro",
-		// DSH 2.0 模型家族缩写（assignee 词汇表）：
-		//   gp = OpenAI GPT 系列（gpt/openai 为同渠道历史别名，保留兼容）
-		//   ge = 谷歌 Gemini 系列
-		//   cl = 网宿 CL（ClaudeCode 系列）
-		//   qw = 阿里千问（Qwen 系列）
-		//   db = 字节豆包（Seedance 系列）
-		// Optional channels: only used when a task assignee explicitly selects
-		// them and the corresponding provider is configured in
-		// ~/.dsh/settings.yaml.
-		"gp": "openai/gpt-5.6-sol",
-		"ge": "google/gemini-2.5-pro",
-		"cl": "anthropic/claude-sonnet-4-20250514",
-		"qw": "qwen/qwen3-max",
-		"db": "doubao/doubao-seedance-1-0",
-	}
+	return map[string]string{}
 }
 
 // DefaultPhaseConcurrency returns the per-phase phase concurrency ceilings.
@@ -405,22 +373,6 @@ func (c *Config) ConcurrencyFor(phase string) int {
 // ModelReference returns a human-readable model reference table.
 // Model identifiers are sourced from DefaultModels so the table never drifts
 // from the shipped defaults.
-func ModelReference() string {
-	d := DefaultModels()
-	return fmt.Sprintf(`| key | 模型标识 | 用途 |
-|----------|---------|------|
-| default  | %s | refining/priority/pm/conventions/audit 轻量任务（magic 免费 flash） |
-| deepseek | %s | planning/round2/merge/design 重度任务（magic 免费 v4-pro） |
-| gp       | %s | OpenAI GPT 系列（gpt/openai 为历史别名） |
-| openai   | %s | 同上（assignee 直接指定 openai 渠道） |
-| deepseek_magic | %s | 同上（assignee 直接指定 magic 渠道） |
-| ds-official | %s | 自费官方渠道，仅 assignee 显式指定时使用 |
-| ge       | %s | 谷歌 Gemini 系列（需 settings.yaml 配置对应 provider） |
-| cl       | %s | 网宿 CL（ClaudeCode 系列，需 settings.yaml 配置对应 provider） |
-| qw       | %s | 阿里千问（Qwen 系列，需 settings.yaml 配置对应 provider） |
-| db       | %s | 字节豆包（Seedance 系列，需 settings.yaml 配置对应 provider） |
-`, d["default"], d["deepseek"], d["gp"], d["openai"], d["deepseek_magic"], d["ds-official"], d["ge"], d["cl"], d["qw"], d["db"])
-}
 
 // DefaultKBEmbedding returns the shipped embedding defaults (ollama, bge-m3,
 // equal blend). Callers may override per field; a nil config disables vector

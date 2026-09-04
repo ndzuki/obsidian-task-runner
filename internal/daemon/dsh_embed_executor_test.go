@@ -17,43 +17,15 @@ func TestMapDSHModel(t *testing.T) {
 		in                string
 		wantProv, wantMod string
 	}{
-		{"", "deepseek_magic", "deepseek-v4-pro"},
-		{"gateway/deepseek-v4-pro", "deepseek_magic", "deepseek-v4-pro"},
-		{"gateway/gpt-5.4-mini", "deepseek_magic", "gpt-5.4-mini"},
-		{"deepseek/deepseek-v4-flash", "deepseek_magic", "deepseek-v4-flash"},
-		{"deepseek_magic/deepseek-v4-pro", "deepseek_magic", "deepseek-v4-pro"}, // 已 DSH 形式直传
-		{"openai/gpt-5.6-sol", "openai", "gpt-5.6-sol"},
-		{"ds-official/deepseek-v4-flash", "ds-official", "deepseek-v4-flash"},
+		{"", "", ""},
+		{"acme/acme-pro", "acme", "acme-pro"},
+		{"beta/beta-sol", "beta", "beta-sol"},
+		{"bare-name", "bare-name", ""},
 	}
 	for _, c := range cases {
 		prov, mod := mapDSHModel(c.in)
 		if prov != c.wantProv || mod != c.wantMod {
 			t.Errorf("mapDSHModel(%q) = (%q, %q), want (%q, %q)", c.in, prov, mod, c.wantProv, c.wantMod)
-		}
-	}
-}
-
-func TestIsFreeModelRoute(t *testing.T) {
-	free := []string{
-		"deepseek_magic/deepseek-v4-pro",
-		"deepseek_magic/gpt-5.4-mini",
-		"openai/gpt-5.6-sol",
-		"gateway/deepseek-v4-pro",
-		"deepseek/deepseek-v4-flash",
-	}
-	for _, model := range free {
-		if !isFreeModelRoute(model) {
-			t.Errorf("isFreeModelRoute(%q) = false, want true", model)
-		}
-	}
-	paid := []string{
-		"ds-official/deepseek-v4-pro",
-		"google/gemini-2.5-pro",
-		"anthropic/claude-sonnet-4-20250514",
-	}
-	for _, model := range paid {
-		if isFreeModelRoute(model) {
-			t.Errorf("isFreeModelRoute(%q) = true, want false", model)
 		}
 	}
 }
@@ -119,7 +91,7 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:           "planning",
-		Model:           "gateway/deepseek-v4-pro",
+		Model:           "acme/acme-pro",
 		ReasoningEffort: "high",
 		SkillPrompt:     "/obsidian-task-runner-round1 /vault/TASK.md",
 		TaskStatus:      "planning",
@@ -142,8 +114,8 @@ func TestDSHEmbedExecutorRun(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil || tok.SessionID != "session-abc" {
 		t.Errorf("resumeToken = %q, want JSON with sessionId=session-abc (err=%v)", res.ResumeToken, err)
 	}
-	if gotReq.Provider != "deepseek_magic" || gotReq.Model != "deepseek-v4-pro" {
-		t.Errorf("request provider/model = %q/%q, want deepseek_magic/deepseek-v4-pro", gotReq.Provider, gotReq.Model)
+	if gotReq.Provider != "acme" || gotReq.Model != "acme-pro" {
+		t.Errorf("request provider/model = %q/%q, want acme/acme-pro", gotReq.Provider, gotReq.Model)
 	}
 	if gotReq.ReasoningEffort != "high" {
 		t.Errorf("reasoningEffort = %q, want high", gotReq.ReasoningEffort)
@@ -188,17 +160,17 @@ func TestDSHEmbedExecutorRunFallback(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	e.fallback = &config.FallbackConfig{
 		Chains: []config.FallbackChain{{
-			From: config.ModelRef{Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
+			From: config.ModelRef{Provider: "acme", Model: "acme-pro"},
 			To: []config.ModelRef{
-				{Provider: "deepseek_magic", Model: "gpt-5.4-mini"},
-				{Provider: "openai", Model: "gpt-5.6-sol"},
+				{Provider: "acme", Model: "acme-mini"},
+				{Provider: "beta", Model: "beta-sol"},
 			},
 		}},
 		FallbackOnCodes: []string{"SERVER", "QUOTA"},
 	}
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:       "planning",
-		Model:       "gateway/deepseek-v4-pro",
+		Model:       "acme/acme-pro",
 		SkillPrompt: "/obsidian-task-runner-round1 /vault/TASK.md",
 		Timeout:     30 * time.Second,
 	}, TaskSnapshot{TaskID: "TASK-001"})
@@ -215,11 +187,11 @@ func TestDSHEmbedExecutorRunFallback(t *testing.T) {
 		t.Fatalf("fallback chains = %d, want 1", len(gotReq.Fallback.Chains))
 	}
 	chain := gotReq.Fallback.Chains[0]
-	if chain.From.Provider != "deepseek_magic" || chain.From.Model != "deepseek-v4-pro" {
-		t.Errorf("chain from = %q/%q, want deepseek_magic/deepseek-v4-pro", chain.From.Provider, chain.From.Model)
+	if chain.From.Provider != "acme" || chain.From.Model != "acme-pro" {
+		t.Errorf("chain from = %q/%q, want acme/acme-pro", chain.From.Provider, chain.From.Model)
 	}
-	if len(chain.To) != 2 || chain.To[1].Provider != "openai" || chain.To[1].Model != "gpt-5.6-sol" {
-		t.Errorf("chain to = %+v, want [deepseek_magic/gpt-5.4-mini openai/gpt-5.6-sol]", chain.To)
+	if len(chain.To) != 2 || chain.To[1].Provider != "beta" || chain.To[1].Model != "beta-sol" {
+		t.Errorf("chain to = %+v, want [acme/acme-mini beta/beta-sol]", chain.To)
 	}
 	if len(gotReq.Fallback.FallbackOnCodes) != 2 {
 		t.Errorf("fallbackOnCodes = %v, want [SERVER QUOTA]", gotReq.Fallback.FallbackOnCodes)
@@ -238,7 +210,7 @@ func TestDSHEmbedExecutorOffSkipsEffort(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:           "priority",
-		Model:           "deepseek/deepseek-v4-flash",
+		Model:           "acme/acme-flash",
 		ReasoningEffort: "off",
 		SkillPrompt:     "/obsidian-task-runner-priority /vault/REQ.md",
 		Timeout:         30 * time.Second,
@@ -252,8 +224,8 @@ func TestDSHEmbedExecutorOffSkipsEffort(t *testing.T) {
 	if gotReq.ReasoningEffort != "" {
 		t.Errorf("reasoningEffort = %q, want empty (off skips)", gotReq.ReasoningEffort)
 	}
-	if gotReq.Provider != "deepseek_magic" || gotReq.Model != "deepseek-v4-flash" {
-		t.Errorf("provider/model = %q/%q, want deepseek_magic/deepseek-v4-flash", gotReq.Provider, gotReq.Model)
+	if gotReq.Provider != "acme" || gotReq.Model != "acme-flash" {
+		t.Errorf("provider/model = %q/%q, want acme/acme-flash", gotReq.Provider, gotReq.Model)
 	}
 }
 
@@ -268,7 +240,7 @@ func TestDSHEmbedExecutorErrorOutcome(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:       "planning",
-		Model:       "gateway/deepseek-v4-pro",
+		Model:       "acme/acme-pro",
 		SkillPrompt: "/x /vault/T.md",
 		Timeout:     30 * time.Second,
 	}, TaskSnapshot{})
@@ -299,7 +271,7 @@ func TestDSHEmbedExecutorErrorOutcomeCarriesMessage(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:       "planning",
-		Model:       "gateway/deepseek-v4-pro",
+		Model:       "acme/acme-pro",
 		SkillPrompt: "/x /vault/T.md",
 		Timeout:     30 * time.Second,
 	}, TaskSnapshot{})
@@ -323,7 +295,7 @@ func TestDSHEmbedExecutorUnreachable(t *testing.T) {
 	e := newDSHEmbedExecutor("127.0.0.1:1", t.TempDir()) // 端口 1 不可达
 	handle, err := e.Start(context.Background(), PhaseSpec{
 		Phase:       "planning",
-		Model:       "gateway/deepseek-v4-pro",
+		Model:       "acme/acme-pro",
 		SkillPrompt: "/x /vault/T.md",
 		Timeout:     5 * time.Second,
 	}, TaskSnapshot{})
@@ -363,7 +335,7 @@ func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
 	e := newDSHEmbedExecutor(strings.TrimPrefix(srv.URL, "http://"), t.TempDir())
 	spec := PhaseSpec{
 		Phase:           "planning",
-		Model:           "gateway/deepseek-v4-pro",
+		Model:           "acme/acme-pro",
 		ReasoningEffort: "high",
 		SkillPrompt:     "/obsidian-task-runner-round1 /vault/TASK.md",
 		Timeout:         30 * time.Second,
@@ -383,7 +355,7 @@ func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil {
 		t.Fatalf("ResumeToken must be valid JSON: %v (got %q)", err, res.ResumeToken)
 	}
-	if tok.SessionID != "session-resume-1" || tok.Provider != "deepseek_magic" || tok.Model != "deepseek-v4-pro" || tok.SkillPrompt != spec.SkillPrompt || tok.ReasoningEffort != "high" {
+	if tok.SessionID != "session-resume-1" || tok.Provider != "acme" || tok.Model != "acme-pro" || tok.SkillPrompt != spec.SkillPrompt || tok.ReasoningEffort != "high" {
 		t.Fatalf("resume token fields wrong: %+v", tok)
 	}
 
@@ -401,8 +373,8 @@ func TestDSHEmbedExecutorResumeTokenRoundTrip(t *testing.T) {
 	if gotReqs[1].SessionID != "session-resume-1" {
 		t.Errorf("resume sessionId = %q, want session-resume-1", gotReqs[1].SessionID)
 	}
-	if gotReqs[1].Provider != "deepseek_magic" || gotReqs[1].Model != "deepseek-v4-pro" {
-		t.Errorf("resume provider/model = %q/%q, want deepseek_magic/deepseek-v4-pro", gotReqs[1].Provider, gotReqs[1].Model)
+	if gotReqs[1].Provider != "acme" || gotReqs[1].Model != "acme-pro" {
+		t.Errorf("resume provider/model = %q/%q, want acme/acme-pro", gotReqs[1].Provider, gotReqs[1].Model)
 	}
 }
 
@@ -429,9 +401,9 @@ func TestDSHEmbedExecutorInterruptedPersistsResumeToken(t *testing.T) {
 		ctx:         ctx,
 		cancel:      cancel,
 		phase:       "round2",
-		req:         agentRunRequest{SessionID: "session-daemon-allocated", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
-		provider:    "deepseek_magic",
-		model:       "deepseek-v4-pro",
+		req:         agentRunRequest{SessionID: "session-daemon-allocated", Provider: "acme", Model: "acme-pro"},
+		provider:    "acme",
+		model:       "acme-pro",
 		effort:      "high",
 		skillPrompt: "/obsidian-task-runner-round2 /vault/TASK.md",
 	}
@@ -450,7 +422,7 @@ func TestDSHEmbedExecutorInterruptedPersistsResumeToken(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.ResumeToken), &tok); err != nil {
 		t.Fatalf("ResumeToken 应为合法 JSON: %v", err)
 	}
-	if tok.SessionID != "session-daemon-allocated" || tok.Model != "deepseek-v4-pro" {
+	if tok.SessionID != "session-daemon-allocated" || tok.Model != "acme-pro" {
 		t.Fatalf("resume token 字段错误: %+v", tok)
 	}
 }
@@ -465,9 +437,9 @@ func TestDSHEmbedExecutorTimeoutPersistsResumeToken(t *testing.T) {
 		ctx:         ctx,
 		cancel:      cancel,
 		phase:       "round1",
-		req:         agentRunRequest{SessionID: "session-timeout-case", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
-		provider:    "deepseek_magic",
-		model:       "deepseek-v4-pro",
+		req:         agentRunRequest{SessionID: "session-timeout-case", Provider: "acme", Model: "acme-pro"},
+		provider:    "acme",
+		model:       "acme-pro",
 		effort:      "high",
 		skillPrompt: "/obsidian-task-runner-round1 /vault/TASK.md",
 	}
@@ -527,9 +499,9 @@ func TestDSHEmbedExecutorTimeoutActiveVsWedged(t *testing.T) {
 				client:     &http.Client{},
 				addr:       strings.TrimPrefix(srv.URL, "http://"),
 				phase:      "round2",
-				req:        agentRunRequest{SessionID: "session-065", Provider: "deepseek_magic", Model: "deepseek-v4-pro"},
-				provider:   "deepseek_magic",
-				model:      "deepseek-v4-pro",
+				req:        agentRunRequest{SessionID: "session-065", Provider: "acme", Model: "acme-pro"},
+				provider:   "acme",
+				model:      "acme-pro",
 				idleWindow: 30 * time.Minute,
 			}
 			res, err := h.Wait()

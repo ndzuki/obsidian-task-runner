@@ -58,8 +58,7 @@ otg install \
   ],
   "new_project_root": "/home/you/src",
   "models": {
-    "default": "deepseek_magic/gpt-5.4-mini",
-    "deepseek": "deepseek_magic/deepseek-v4-pro"
+    "default": "your-provider/your-model"
   }
 }
 ```
@@ -114,7 +113,7 @@ tags: [auth]
 
 ```yaml
 project: my-backend
-assignee: deepseek
+assignee: acme
 ```
 
 必填字段齐全且依赖满足后，任务从 `blocked` 自动变为 `ready`，随后进入流水线。

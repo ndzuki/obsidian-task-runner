@@ -22,8 +22,8 @@ func writeTask(t *testing.T, dir, name, frontmatter string) string {
 }
 
 func TestIsValidAssignee(t *testing.T) {
-	if !IsValidAssignee("deepseek") {
-		t.Error("deepseek should be valid")
+	if !IsValidAssignee("acme") {
+		t.Error("acme should be valid")
 	}
 	if !IsValidAssignee("gemini") {
 		t.Error("gemini should be valid (any non-empty)")
@@ -89,7 +89,7 @@ id: "001"
 title: "Test"
 project: my-project
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by: []
 `)
 	data, _ := os.ReadFile(path)
@@ -131,7 +131,7 @@ id: "010"
 title: "Dependency Done"
 project: "001-test"
 status: done
-assignee: deepseek
+assignee: acme
 `)
 
 	blockedPath := writeTask(t, tasksDir, "TASK-020-blocked.md", `
@@ -139,7 +139,7 @@ id: "020"
 title: "Blocked Task"
 project: "001-test"
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by:
   - "TASK-010"
 priority: P0
@@ -182,7 +182,7 @@ id: "011"
 title: "Still Planning"
 project: my-project
 status: plan-review
-assignee: deepseek
+assignee: acme
 `)
 
 	// Create a task blocked by the non-done dependency
@@ -191,7 +191,7 @@ id: "021"
 title: "Still Blocked"
 project: my-project
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by:
   - "TASK-011"
 `)
@@ -253,7 +253,7 @@ id: "001"
 title: "Ready Task"
 project: my-app
 status: ready
-assignee: deepseek
+assignee: acme
 priority: P1
 `)
 
@@ -263,7 +263,7 @@ id: "002"
 title: "Blocked but Fillable"
 project: my-app
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by: []
 priority: P0
 `)
@@ -619,7 +619,7 @@ id: "%s"
 title: "%s"
 project: my-project
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by: []
 blocked_phase: "%s"
 resume_approved: %v
@@ -657,7 +657,7 @@ id: "010"
 title: "Dependency in b"
 project: b
 status: done
-assignee: deepseek
+assignee: acme
 `)
 
 	// Task in project "a" (directory 002-a) blocked by b:TASK-010
@@ -666,7 +666,7 @@ id: "020"
 title: "Cross project blocked"
 project: a
 status: blocked
-assignee: deepseek
+assignee: acme
 blocked_by:
   - b:TASK-010
 `)

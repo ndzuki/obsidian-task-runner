@@ -3,13 +3,8 @@
   "obsidian_vault": "/home/you/Obsidian/MainVault",
   "new_project_root": "/home/you/src",
   "models": {
-    "_comment": "assignee 键 → DSH 模型标识。默认渠道即插即用；ds-official 为自费官方渠道，仅任务 assignee 显式指定时使用；其余渠道需在 ~/.dsh/settings.yaml 配置对应 provider。",
-    "default": "deepseek_magic/gpt-5.4-mini",
-    "deepseek": "deepseek_magic/deepseek-v4-pro",
-    "gpt": "openai/gpt-5.6-sol",
-    "openai": "openai/gpt-5.6-sol",
-    "deepseek_magic": "deepseek_magic/deepseek-v4-pro",
-    "ds-official": "ds-official/deepseek-v4-pro"
+    "_comment": "必填：assignee 键 → 你的 DSH provider/model 路由（无内置默认，参考 ~/.dsh/settings.yaml 的 provider）。default 为兜底路由。",
+    "default": "your-provider/your-model"
   },
   "notifications": {
     "desktop": true

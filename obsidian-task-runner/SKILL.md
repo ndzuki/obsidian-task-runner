@@ -197,19 +197,19 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 | 阶段 | 模型（assignee=default 时） | reasoningEffort |
 |------|------------------------------|-----------------|
-| planning / round2 / merge（重型） | `models.deepseek_magic`（免费旗舰 deepseek-v4-pro；键缺失时硬编码同值） | planning=high / round2=max / merge=low |
-| design（全局设计库修订，daemon 硬编码） | `deepseek_magic/deepseek-v4-pro`（`design_session.go` 写死，不受 assignee 覆盖） | max |
-| refining / priority（规格作者） | `models.default`（gpt-5.4-mini） | refining=medium / priority=medium |
+| planning / round2 / merge（重型） | `models.acme`（免费旗舰 acme-pro；键缺失时硬编码同值） | planning=high / round2=max / merge=low |
+| design（全局设计库修订，daemon 硬编码） | `acme/acme-pro`（`design_session.go` 写死，不受 assignee 覆盖） | max |
+| refining / priority（规格作者） | `models.default`（acme-mini） | refining=medium / priority=medium |
 | pm / audit / conventions（确定性为主） | `models.default` | low |
 
-- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。assignee 是 `vault-map.json` `models` 键，DSH 2.0 模型家族缩写：`ds`/`deepseek`/`ds-official`（DeepSeek）、`gp`（OpenAI GPT，`gpt`/`openai` 为历史别名）、`ge`（谷歌 Gemini）、`cl`（网宿 CL/ClaudeCode）、`qw`（阿里千问 Qwen）、`db`（字节豆包 Seedance）——对应 provider 需在 `~/.dsh/settings.yaml` 配置。
+- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。assignee 是 `vault-map.json` `models` 键，DSH 2.0 模型家族缩写：`ds`/`acme`/`paid`（DeepSeek）、`gp`（OpenAI GPT，`gpt`/`beta` 为历史别名）、`ge`（谷歌 Gemini）、`cl`（网宿 CL/ClaudeCode）、`qw`（阿里千问 Qwen）、`db`（字节豆包 Seedance）——对应 provider 需在 `~/.dsh/settings.yaml` 配置。
 - 教训（2026-08-22 复盘）：旧实现按 assignee 全阶段统一路由，default assignee 让 planning/round2 跑在 V4 Flash 级 mini 上——spec/计划/代码质量与 high/max effort 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。refining 的 effort 从 low 提到 medium 同理（spec 命名推断失误）。
 
 ## Fallback Model（兜底模型）
 
 模型兜底统一由 DSH 的 fallback.mjs 插件处理（配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
 
-- **进程内跨模型降级**：magic 免费 deepseek 失败 / 配额耗尽 → 自动切 magic 免费 openai gpt-5.6（`deepseek-v4-pro → gpt-5.6-terra` / `gpt-5.4-mini → gpt-5.6-luna`）。
+- **进程内跨模型降级**：magic 免费 acme 失败 / 配额耗尽 → 自动切 magic 免费 beta beta-（`acme-pro → beta-terra` / `acme-mini → beta-luna`）。
 - **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
 - daemon 侧无 fallback 层——旧执行器时代的 `fallback_models` / `watchEmptyStops` 已随迁移移除。
 - **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在免费渠道间循环切换。

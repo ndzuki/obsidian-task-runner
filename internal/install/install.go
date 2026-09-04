@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -282,15 +281,12 @@ func generateVaultMap(opts Options) error {
 	// Everything else (tuning, off-peak, KB backends, env cleanup, memory
 	// gate) ships as code defaults and is visible via `otg config show
 	// --effective` / docs/config-reference.md.
-	models := map[string]string{}
-	for k, v := range config.DefaultModels() {
-		models[k] = v
-	}
+	// 无内置模型路由：assignee 键 → provider/model 由用户填写（见 quickstart）。
 	cfg := map[string]interface{}{
 		"obsidian_vault":   opts.ObsidianVault,
 		"new_project_root": opts.NewProjectRoot,
 		"projects":         []interface{}{},
-		"models":           models,
+		"models":           map[string]string{},
 		"notifications":    map[string]interface{}{"desktop": opts.NotifyEnabled},
 		// 0 = no global cap; per-project capacity governs (default 2).
 		"max_concurrent_tasks":             0,

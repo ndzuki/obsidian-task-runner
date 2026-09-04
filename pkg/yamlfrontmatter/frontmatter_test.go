@@ -98,13 +98,13 @@ blocked_by: []
 			assignee string
 			valid    bool
 		}{
-			{"deepseek", true},
+			{"acme", true},
 			{"gpt", true},
 			{"codex", false},
 			{"claude", false},
 			{"", false},
 		}
-		valid := map[string]bool{"deepseek": true, "gpt": true}
+		valid := map[string]bool{"acme": true, "gpt": true}
 		for _, tt := range tests {
 			if valid[tt.assignee] != tt.valid {
 				t.Errorf("assignee %q valid = %v, want %v", tt.assignee, valid[tt.assignee], tt.valid)

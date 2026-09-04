@@ -26,7 +26,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought），不同任务阶段�
 
 - 模型标识不含 `:xhigh` 等后缀，推理强度完全由 `--thinking` 控制
 - fallback 到 Pro 模型时保持相同 thinking 档位
-- `deepseek/deepseek-v4-flash` 与 `deepseek/deepseek-v4-pro` 均支持 `--thinking max`
+- `acme/acme-flash` 与 `acme/acme-pro` 均支持 `--thinking max`
 - 本表外的阶段由 PhaseSpec 显式设定：merge=high、audit/pm/conventions=low、design=max；grilling 由 kitty-grill 单独分级（需求详细化 high、决策清单 low）
 
 ## Updates

@@ -206,7 +206,7 @@ const { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPre
     const fp1 = kbCfgFingerprint()
     assert.ok(fp1.includes("bge-m3"), "fingerprint reflects embedding config")
     const kEmbed = kbHitsCacheKey(vault, db, "部署")
-    writeFileSync(mapFile, JSON.stringify({ kb_embedding: { backend: "openai", model: "text-embedding-3-large", api_key: "x", weight: 0.3 }, kb_rerank: { backend: "llama", model: "r2", top_n: 10 } }))
+    writeFileSync(mapFile, JSON.stringify({ kb_embedding: { backend: "beta", model: "text-embedding-3-large", api_key: "x", weight: 0.3 }, kb_rerank: { backend: "llama", model: "r2", top_n: 10 } }))
     const fp2 = kbCfgFingerprint()
     assert.notStrictEqual(fp1, fp2, "config change → new fingerprint")
     const kEmbed2 = kbHitsCacheKey(vault, db, "部署")
@@ -692,14 +692,14 @@ status: proposed
   // subagentDescriptor 从 subagent/descriptor 事件提取 label/model。
   const desc = subagentDescriptor({
     ownEvents: () => [
-      { type: "subagent/descriptor", data: { mode: "continuable", label: "Rust 代码审查", agentProvider: "deepseek_magic", agentModel: "deepseek-v4-pro" } },
+      { type: "subagent/descriptor", data: { mode: "continuable", label: "Rust 代码审查", agentProvider: "acme", agentModel: "acme-pro" } },
     ],
   })
   assert.deepStrictEqual(desc, {
     label: "Rust 代码审查",
     mode: "continuable",
-    provider: "deepseek_magic",
-    model: "deepseek-v4-pro",
+    provider: "acme",
+    model: "acme-pro",
   }, "subagent descriptor extracted")
   assert.strictEqual(subagentDescriptor({ ownEvents: () => [] }), null, "no descriptor -> null")
   console.log("PASS sessionEvents/firstUserText/labelFromText/sessionCreatedAtMs/subagentDescriptor")

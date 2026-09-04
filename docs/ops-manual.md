@@ -93,10 +93,10 @@ flowchart LR
 
 ```json
 "kb_embedding": {
-  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容 API）
-  "url": "http://127.0.0.1:11434",  // ollama 基址；openai 填 https://api.openai.com/v1
+  "backend": "ollama",              // ollama（默认）或 beta（OpenAI 兼容 API）
+  "url": "http://127.0.0.1:11434",  // ollama 基址；beta 填 https://api.beta.com/v1
   "model": "bge-m3",                // ollama 推荐 bge-m3（中文友好）
-  "api_key": "",                    // 仅 openai 后端需要
+  "api_key": "",                    // 仅 beta 后端需要
   "weight": 0.5,                    // 余弦相似度权重（0.5 = 与 BM25 对半）
   "chunk_chars": 600,               // 每 section 嵌入正文上限（字符；调大捕获更多语义，需重跑 kb index）
   "batch_size": 32,                 // 每次嵌入 API 调用条数（索引构建吞吐）
@@ -128,7 +128,7 @@ flowchart LR
   - **非阻塞**：agent-server 与 kb-preflight 一致——首问不等检索子进程/embedding/rerank；未命中只注入毫秒级 INDEX 摘要，后台异步预热缓存。
   - **可观测**：小时日志 `kb-precompute stats(hourly) hits=… avgMs=…`（命中率/平均耗时）；旧 `kb-injected injected=N consumed=M` 只在命中缓存并注入 top-3 路径时统计（未命中首轮为 INDEX 摘要，不产生该日志）。
   - **常驻检索端点（B2）**：agent-server 预检索与 kb-preflight 后台预热**优先走 daemon 内嵌 vaultweb 的 `GET /api/kb/search?q=…&limit=…&rerank=false`**（进程内 FTS5 BM25 + embedding 混合，hybrid-only 快路径；不传 `rerank=false` 时保持含 rerank 的完整语义）——免去每次 spawn otg 重开 SQLite 的固定开销，也避免预检索为 cross-encoder 付 2-3 秒 CPU 延迟；端点不可用（daemon 未起/未配置 vault_web_addr）自动回退 spawn（`--no-rerank`），两条路径共用同一缓存。
-- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `deepseek_magic/deepseek-v4-pro`）。改 `agent-monitor.html` 后 `make deploy` 由重启后的 daemon 拉起新 agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms；累计跨 agent-server 重启持久化到 `~/.local/state/dsh/agent-server-kb-stats.json`，重启后自动恢复）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
+- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `acme/acme-pro`）。改 `agent-monitor.html` 后 `make deploy` 由重启后的 daemon 拉起新 agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms；累计跨 agent-server 重启持久化到 `~/.local/state/dsh/agent-server-kb-stats.json`，重启后自动恢复）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
 - **dsh web / dsh-tui 原生聊天**（2026-09-02 起，`kb-preflight` 插件）：原生交互会话不经过 agent-server，由 `deploy/dsh-plugins/kb-preflight.mjs` 在 DSH 原生 seam（`agent/pre-step`）对新会话首个用户消息注入同款两块内容——**非阻塞设计，首问只快不慢**：项目上下文为毫秒级文件读（CONTEXT 别名容错/ADR 按 mtime 倒序附 status/决策/规范）；KB 块优先命中缓存（归一化查询词，10min TTL，失败短缓存 30s），未命中时**只注入毫秒级的 INDEX 摘要（按查询词相关性排序）并在后台异步 spawn `otg kb search` 预热缓存**，绝不让首问等检索子进程/embedding。项目识别：会话 cwd 匹配 vault-map `projects[].path`（或其子目录）或 `<vault>/Projects/<dir>`——**仅已注册项目**（map 缺失/不可解析时放行）。防双注入：会话已含 `<knowledge_base>`/`<project_context>` 块则跳过，同 agent 每会话仅一次。挂载方式（仅交互 profile，headless 自动化不加载）：
   ```yaml
   # ~/.dsh/profiles/web/cordis.patch.yml（dsh-tui 同理）
@@ -144,7 +144,7 @@ flowchart LR
 
 ```json
 "kb_rerank": {
-  "backend": "openai",                       // openai（默认，/v1/rerank）或 llamacpp（/rerank）
+  "backend": "beta",                       // beta（默认，/v1/rerank）或 llamacpp（/rerank）
   "url": "http://127.0.0.1:11435",           // llama.cpp server 基址（Ollama 0.32.x 无 rerank 路由）
   "model": "bge-reranker-v2-m3",
   "top_n": 20                                // 精排候选数
@@ -171,7 +171,7 @@ docker run -d --name reranker --restart unless-stopped \
 
 ```json
 "kb_chat": {
-  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容）
+  "backend": "ollama",              // ollama（默认）或 beta（OpenAI 兼容）
   "url": "http://127.0.0.1:11434",
   "model": "qwen3:1.7b",            // 核显甜点；需先 ollama pull
   "temperature": 0.2                // 低温度，检索接地回答
@@ -274,7 +274,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | merge | `high` | 冲突解决需推理 |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
-模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `deepseek_magic`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `openai`（免费）的 gpt-5.6 系列——`deepseek-v4-pro → gpt-5.6-sol`、`gpt-5.4-mini(flash) → gpt-5.6-luna`，再失败继续在免费渠道间重试（如 `gpt-5.6-terra`）。**fallback 链由 daemon 通过 vault-map.json 的 `fallback` 字段全局控制**（operator 改配置文件即可，无需改插件代码）：daemon 在每次 dsh-embed `/agent/run` 时把链随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型——避免长会话被免费模型失败重试一直占用。`ds-official`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `ds-official` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=ds-official`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
+模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `acme`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `beta`（免费）的 beta- 系列——`acme-pro → beta-sol`、`acme-mini(flash) → beta-luna`，再失败继续在免费渠道间重试（如 `beta-terra`）。**fallback 链由 daemon 通过 vault-map.json 的 `fallback` 字段全局控制**（operator 改配置文件即可，无需改插件代码）：daemon 在每次 dsh-embed `/agent/run` 时把链随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型——避免长会话被免费模型失败重试一直占用。`paid`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `paid` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=paid`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
 
 ### 阻塞依赖自动恢复
 
@@ -386,7 +386,7 @@ tags: [auth]
 
 ```yaml
 project: my-backend
-assignee: deepseek
+assignee: acme
 ```
 
 通常不需要手动修改 `status`。当必填字段齐全且没有未完成依赖时，`blocked` 会自动变成 `ready`。

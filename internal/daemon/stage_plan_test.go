@@ -196,7 +196,7 @@ id: "stage-plan"
 		Executor:      "dsh",
 		DSHCmd:        fakeDSH,
 		LogDir:        filepath.Join(dir, "logs"),
-		Models:        config.DefaultModels(),
+		Models:        testModels(),
 	})
 	runner.logger = log.New(io.Discard, "", 0)
 

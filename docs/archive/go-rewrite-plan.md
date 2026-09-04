@@ -295,7 +295,7 @@ jobs:
           otg find-ready $VAULT | grep -q '"id":"001"' || exit 1
 
           # 测试 update-status
-          otg update-status $VAULT/Tasks/TASK-001-test.md assignee=deepseek
+          otg update-status $VAULT/Tasks/TASK-001-test.md assignee=acme
           otg update-status $VAULT/Tasks/TASK-001-test.md status=ready
           otg find-ready $VAULT | grep -q '"id":"001"' || exit 1
 

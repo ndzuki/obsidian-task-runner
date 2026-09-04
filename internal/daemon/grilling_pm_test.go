@@ -473,7 +473,7 @@ grill_continue: true
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -524,7 +524,7 @@ grill_continue: false
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -563,7 +563,7 @@ func TestConsolidateInFlightDedup(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -622,7 +622,7 @@ last_distributed_at: 2026-08-05T10:00:00+08:00
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -729,7 +729,7 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -783,7 +783,7 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -819,7 +819,7 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -847,7 +847,7 @@ func TestParkedTaskIsNotDispatched(t *testing.T) {
 			DSHCmd:             dshCmd,
 			ObsidianVault:      vault,
 			MaxConcurrentTasks: 2,
-			Models:             config.DefaultModels(),
+			Models:             testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -933,7 +933,7 @@ func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
 			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 			PhaseConcurrency:    map[string]int{"pm": 1},
 		},
 		phaseGates: map[string]*phaseGate{"pm": newPhaseGate(1)},

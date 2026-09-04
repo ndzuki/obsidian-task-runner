@@ -8,43 +8,24 @@ import (
 	"testing"
 )
 
-func TestGenerateVaultMapUsesDefaultModelKey(t *testing.T) {
-	skillDir := filepath.Join(t.TempDir(), "skill")
-	opts := Options{
-		ObsidianVault:   "/vault",
-		NewProjectRoot:  "/src",
-		SkillInstallDir: skillDir,
-		NotifyEnabled:   true,
-		PollIntervalMin: 30,
-	}
+func TestGenerateVaultMapShipsNoBuiltInModelRoutes(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{SrcDir: ".", SkillInstallDir: dir, ObsidianVault: "/vault", NewProjectRoot: "/src", PollIntervalMin: 30}
 	if err := generateVaultMap(opts); err != nil {
 		t.Fatalf("generateVaultMap: %v", err)
 	}
-
-	data, err := os.ReadFile(filepath.Join(skillDir, "config", "vault-map.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "config", "vault-map.json"))
 	if err != nil {
 		t.Fatalf("read vault map: %v", err)
 	}
-	var config struct {
+	var cfg struct {
 		Models map[string]string `json:"models"`
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse vault map: %v", err)
 	}
-	if got := config.Models["default"]; got != "deepseek_magic/gpt-5.4-mini" {
-		t.Fatalf("default model = %q, want %q", got, "deepseek_magic/gpt-5.4-mini")
-	}
-	if got := config.Models["deepseek"]; got != "deepseek_magic/deepseek-v4-pro" {
-		t.Fatalf("deepseek model = %q, want %q", got, "deepseek_magic/deepseek-v4-pro")
-	}
-	if got := config.Models["ds-official"]; got != "ds-official/deepseek-v4-pro" {
-		t.Fatalf("ds-official model = %q, want %q", got, "ds-official/deepseek-v4-pro")
-	}
-	if got := config.Models["gpt"]; got != "openai/gpt-5.6-sol" {
-		t.Fatalf("gpt model = %q, want %q", got, "openai/gpt-5.6-sol")
-	}
-	if _, ok := config.Models["flash"]; ok {
-		t.Fatal("legacy flash model must not be generated")
+	if len(cfg.Models) != 0 {
+		t.Fatalf("models must ship empty (operator-configured only), got %v", cfg.Models)
 	}
 }
 

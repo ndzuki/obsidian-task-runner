@@ -68,7 +68,7 @@ func TestExtractJSONUppercaseFence(t *testing.T) {
 }
 
 // TestParseQuestionnaireBareJSON guards the 2026-09-03 regression: the model
-// (deepseek_magic / gpt-5.4-mini → deepseek-v4-flash) answered the
+// (acme / acme-mini → acme-flash) answered the
 // decision-list questionnaire with a bare JSON object and no ```json fence.
 // extractJSON 因此失败，repl 把合法问卷原文倒进 tab 并停在
 // 「✍️ 你的决策 >」纯文本回退——用户看到的是无法作答的原始 JSON。
@@ -447,7 +447,7 @@ func TestResolveTaskFileFallsBackAcrossProjects(t *testing.T) {
 }
 
 func TestWritebackArgs(t *testing.T) {
-	args := writebackArgs("/x/kitty-grill", "127.0.0.1:8799", "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A D2=B", "/tmp/wb-ctx.json")
+	args := writebackArgs("/x/kitty-grill", "127.0.0.1:8799", "acme", "acme-mini", "high", "session-1", "D1=A D2=B", "/tmp/wb-ctx.json")
 	if len(args) != 16 {
 		t.Fatalf("args len=%d, want 16: %v", len(args), args)
 	}
@@ -518,7 +518,7 @@ func TestRunWriteback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "deepseek_magic", "gpt-5.4-mini", "high", "session-1", "D1=A", nil); err != nil {
+	if err := runWriteback(strings.TrimPrefix(srv.URL, "http://"), "acme", "acme-mini", "high", "session-1", "D1=A", nil); err != nil {
 		t.Fatalf("runWriteback: %v", err)
 	}
 	if !sawClose {
@@ -890,7 +890,7 @@ func TestRunWritebackCancelsWhenTaskLeftGrilling(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := &writebackContext{TaskID: "001", VaultPath: dir, ReqDoc: "R.md"}
-	err := runWriteback("127.0.0.1:9", "openai", "gpt-5.6-luna", "low", "session-1", "D1=A", ctx)
+	err := runWriteback("127.0.0.1:9", "beta", "beta-luna", "low", "session-1", "D1=A", ctx)
 	if err == nil || !strings.Contains(err.Error(), "已离开 grilling") {
 		t.Fatalf("runWriteback = %v, want task-left-grilling cancellation", err)
 	}

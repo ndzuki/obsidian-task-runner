@@ -77,7 +77,7 @@ Executor string `json:"executor"` // "早期执行器"(default) | "dsh"
 **refining 阶段 —— 已验证 ✅（2026-08-19）**
 
 隔离 vault（`~/.dsh/tmp/smoke-vault`，含完整十章节 REQ + `status: refining` TASK），
-spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
+spawn `dsh --profile headless`（acme-pro）执行 refining skill：
 
 - ✅ skill 正确加载并遵循 `obsidian-task-runner-refining` 指令
 - ✅ 读取 TASK/REQ、预计算 `refine_req_hash`（零 token 回退）
@@ -122,22 +122,22 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 
 - **fallback 链**（fallback.mjs，配置在 `headless` / `headless-agent-server` 的
   `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
-  - `deepseek_magic/deepseek-v4-pro` → `openai/gpt-5.6-terra`（+ `gpt-5.6-sol` 次级）
-  - `deepseek_magic/gpt-5.4-mini`（=flash）→ `openai/gpt-5.6-luna`
-  - 即 magic 免费 deepseek 失败 → magic 免费 openai gpt-5.6（luna/sol/terra 对应能力映射）。
+  - `acme/acme-pro` → `beta/beta-terra`（+ `beta-sol` 次级）
+  - `acme/acme-mini`（=flash）→ `beta/beta-luna`
+  - 即 magic 免费 acme 失败 → magic 免费 beta beta-（luna/sol/terra 对应能力映射）。
   - 仅 obsidian-task-runner 自动化任务（headless / headless-agent-server）加载；
     dsh web / dsh-tui 交互会话不加载，模型失败直接返回。
-- **settings.yaml**：`agent-default-model` = `magic/deepseek-v4-pro`（magic 免费优先）；
-  官方直连 provider 名 **`ds-official`**（模型 id 小写 `deepseek-v4-pro`/`deepseek-v4-flash`，
+- **settings.yaml**：`agent-default-model` = `magic/acme-pro`（magic 免费优先）；
+  官方直连 provider 名 **`paid`**（模型 id 小写 `acme-pro`/`acme-flash`，
   与 `/models` 实测一致）。
-- **DSH 注册 bug（已绕过）**：provider 名含 `deepseek` 前缀（如 `deepseek-official`）
+- **DSH 注册 bug（已绕过）**：provider 名含 `acme` 前缀（如 `paid-official`）
   且 `agent-default-model` 设为 magic 时，llm-pi-ai 注册冲突 → `NO_ADAPTER`（已实测定位）。
-  官方直连 provider 因此命名 `ds-official`，默认模型可保持 magic 免费优先。
+  官方直连 provider 因此命名 `paid`，默认模型可保持 magic 免费优先。
 - **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
-  `gateway/deepseek-v4-pro`（免费），fallback `deepseek/deepseek-v4-pro`（官方）。
+  `gateway/acme-pro`（免费），fallback `acme/acme-pro`（官方）。
 - **已知：magic 免费额度可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
-  402 Insufficient Balance`）——fallback.mjs 会在免费渠道间切换（deepseek_magic → openai），
-  免费渠道全耗尽时 daemon 通知改 `assignee=ds-official` 使用官方直连。
+  402 Insufficient Balance`）——fallback.mjs 会在免费渠道间切换（acme → beta），
+  免费渠道全耗尽时 daemon 通知改 `assignee=paid` 使用官方直连。
 
 ## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
 

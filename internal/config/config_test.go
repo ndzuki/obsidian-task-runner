@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -34,46 +33,10 @@ func TestLoadReadsConcurrentTaskLimit(t *testing.T) {
 	}
 }
 
-func TestDefaultModelsUsesFreeChannelsFirst(t *testing.T) {
+func TestDefaultModelsHasNoBuiltInRoutes(t *testing.T) {
 	models := DefaultModels()
-	if got := models["default"]; got != "deepseek_magic/gpt-5.4-mini" {
-		t.Fatalf("default model = %q, want %q", got, "deepseek_magic/gpt-5.4-mini")
-	}
-	if got := models["deepseek"]; got != "deepseek_magic/deepseek-v4-pro" {
-		t.Fatalf("deepseek model = %q, want %q", got, "deepseek_magic/deepseek-v4-pro")
-	}
-	if got := models["ds-official"]; got != "ds-official/deepseek-v4-pro" {
-		t.Fatalf("ds-official model = %q, want %q", got, "ds-official/deepseek-v4-pro")
-	}
-	if got := models["gpt"]; got != "openai/gpt-5.6-sol" {
-		t.Fatalf("gpt model = %q, want %q", got, "openai/gpt-5.6-sol")
-	}
-	// DSH 2.0 模型家族缩写（gp/ge/cl/qw/db）。
-	for key, want := range map[string]string{
-		"gp": "openai/gpt-5.6-sol",
-		"ge": "google/gemini-2.5-pro",
-		"cl": "anthropic/claude-sonnet-4-20250514",
-		"qw": "qwen/qwen3-max",
-		"db": "doubao/doubao-seedance-1-0",
-	} {
-		if got := models[key]; got != want {
-			t.Errorf("models[%q] = %q, want %q", key, got, want)
-		}
-	}
-	// 旧执行器时代遗留键全部移除：flash / gemini / claude / minimax。
-	for _, legacy := range []string{"flash", "gemini", "claude", "minimax"} {
-		if _, ok := models[legacy]; ok {
-			t.Errorf("legacy %s assignee key must not be present", legacy)
-		}
-	}
-}
-
-func TestModelReferenceTracksDefaultModels(t *testing.T) {
-	ref := ModelReference()
-	for _, model := range DefaultModels() {
-		if !strings.Contains(ref, model) {
-			t.Fatalf("ModelReference() missing default model %q", model)
-		}
+	if len(models) != 0 {
+		t.Fatalf("DefaultModels must ship no built-in routes (operator-configurable only), got %v", models)
 	}
 }
 
@@ -107,20 +70,20 @@ func TestLoadReadsFallbackConfig(t *testing.T) {
 	dir := t.TempDir()
 	mapFile := filepath.Join(dir, "vault-map.json")
 	data := []byte(`{
-	  "models": {"default": "openai/gpt-5.6-luna"},
+	  "models": {"default": "beta/beta-luna"},
 	  "fallback": {
 	    "chains": [
 	      {
-	        "from": {"provider": "deepseek_magic", "model": "deepseek-v4-pro"},
+	        "from": {"provider": "acme", "model": "acme-pro"},
 	        "to": [
-	          {"provider": "deepseek_magic", "model": "gpt-5.4-mini"},
-	          {"provider": "openai", "model": "gpt-5.6-sol"}
+	          {"provider": "acme", "model": "acme-mini"},
+	          {"provider": "beta", "model": "beta-sol"}
 	        ]
 	      }
 	    ],
 	    "default": [
-	      {"provider": "deepseek_magic", "model": "deepseek-v4-pro"},
-	      {"provider": "openai", "model": "gpt-5.6-terra"}
+	      {"provider": "acme", "model": "acme-pro"},
+	      {"provider": "beta", "model": "beta-terra"}
 	    ],
 	    "fallbackOnCodes": ["SERVER", "QUOTA", "RATE_LIMIT"]
 	  }
@@ -140,16 +103,16 @@ func TestLoadReadsFallbackConfig(t *testing.T) {
 		t.Fatalf("fallback chains = %d, want 1", len(cfg.Fallback.Chains))
 	}
 	chain := cfg.Fallback.Chains[0]
-	if chain.From.Provider != "deepseek_magic" || chain.From.Model != "deepseek-v4-pro" {
-		t.Errorf("chain from = %q/%q, want deepseek_magic/deepseek-v4-pro", chain.From.Provider, chain.From.Model)
+	if chain.From.Provider != "acme" || chain.From.Model != "acme-pro" {
+		t.Errorf("chain from = %q/%q, want acme/acme-pro", chain.From.Provider, chain.From.Model)
 	}
-	if len(chain.To) != 2 || chain.To[1].Provider != "openai" || chain.To[1].Model != "gpt-5.6-sol" {
-		t.Errorf("chain to = %+v, want [deepseek_magic/gpt-5.4-mini openai/gpt-5.6-sol]", chain.To)
+	if len(chain.To) != 2 || chain.To[1].Provider != "beta" || chain.To[1].Model != "beta-sol" {
+		t.Errorf("chain to = %+v, want [acme/acme-mini beta/beta-sol]", chain.To)
 	}
 	// default 链必须透传（fallback.mjs 的 default 键——from 无匹配时的兜底），
 	// 否则用户配了 default 会被 Go 静默丢弃（审查 P1 缺口）。
-	if len(cfg.Fallback.Default) != 2 || cfg.Fallback.Default[1].Provider != "openai" || cfg.Fallback.Default[1].Model != "gpt-5.6-terra" {
-		t.Errorf("fallback default = %+v, want [deepseek_magic/deepseek-v4-pro openai/gpt-5.6-terra]", cfg.Fallback.Default)
+	if len(cfg.Fallback.Default) != 2 || cfg.Fallback.Default[1].Provider != "beta" || cfg.Fallback.Default[1].Model != "beta-terra" {
+		t.Errorf("fallback default = %+v, want [acme/acme-pro beta/beta-terra]", cfg.Fallback.Default)
 	}
 	wantCodes := []string{"SERVER", "QUOTA", "RATE_LIMIT"}
 	if len(cfg.Fallback.FallbackOnCodes) != len(wantCodes) {

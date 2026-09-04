@@ -110,7 +110,7 @@ func StatusNotify(taskPath string, notifyEnabled bool) {
 		case "PHASE_INTERRUPTED":
 			body = "阶段被 daemon 重启中断，重启后自动恢复"
 		case "MODEL_QUOTA_EXHAUSTED":
-			body = "免费模型额度耗尽（magic deepseek + gpt-5.6 均不可用），daemon 已停止自动重试——请改任务 assignee=ds-official 用官方付费渠道，或等免费额度恢复"
+			body = "模型额度耗尽，daemon 已停止自动重试——请检查 vault-map.json 的 models 配置或更换任务 assignee 后 resume_approved=true 恢复"
 		case "MODEL_FAILED", "PHASE_TIMEOUT":
 			body = "阶段执行失败（" + fm.PhaseErrorCode + "），daemon 自动重试中"
 		default:

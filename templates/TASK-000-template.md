@@ -4,13 +4,8 @@ id: ""
 title: ""
 project: ""
 project_id: ""  # 项目内唯一数字 ID，如 "001"
-# 模型选择：assignee = vault-map.json `models` 键；default/留空 = daemon 按阶段自动路由
-#   ds / deepseek / deepseek_magic / ds-official — DeepSeek 系列
-#   gp  — OpenAI GPT 系列（gpt/openai 为历史别名）
-#   ge  — 谷歌 Gemini 系列
-#   cl  — 网宿 CL（ClaudeCode 系列）
-#   qw  — 阿里千问（Qwen 系列）
-#   db  — 字节豆包（Seedance 系列）
+# 模型选择：assignee = vault-map.json `models` 键（你配置的 provider/model 路由）；
+# default/留空 = 使用 models.default。项目不内置任何模型路由。
 assignee: ""
 req_doc: ""
 status: blocked

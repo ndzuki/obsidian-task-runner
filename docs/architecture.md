@@ -26,10 +26,10 @@
         │ 阶段执行（cfg.executor）                              │ 模型路由（免费优先）
         ▼                                                       ▼
 ┌───────────────────────────────────┐        ┌──────────────────────────────────────────────────┐
-│ agent-server（daemon 自管，默认）    │        │ default   → deepseek_magic/gpt-5.4-mini（轻量） │
-│   dsh --profile headless-agent-    │        │ deepseek  → deepseek_magic/deepseek-v4-pro（重度）│
-│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/openai→ openai/gpt-5.6-sol（fallback/手动） │
-│   dsh-embed executor：会话持久化，   │  RPC   │ ds-official→ 自费官方，仅 assignee 手动指定      │
+│ agent-server（daemon 自管，默认）    │        │ default   → acme/acme-mini（轻量） │
+│   dsh --profile headless-agent-    │        │ acme  → acme/acme-pro（重度）│
+│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/beta→ beta/beta-sol（fallback/手动） │
+│   dsh-embed executor：会话持久化，   │  RPC   │ paid→ 自费官方，仅 assignee 手动指定      │
 │   支持 executor_session_id 断点续跑 │        │ gemini/claude/minimax → 显式 assignee 可选      │
 │ （agent_server_managed=false 时     │        │ 失败降级链 = vault-map `fallback` 字段动态下发    │
 │   改为外部 dsh-agent-server.service）│        └──────────────────────────────────────────────────┘
@@ -74,7 +74,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
 
 见 `internal/config/config.go` `DefaultModels()`。daemon 按任务 `assignee`
 （映射 key）选择 DSH route；未知 key 回退 `default`。**免费渠道是默认**，
-`ds-official`（自费）永不自动选用——仅在 assignee 显式指定时使用。
+`paid`（自费）永不自动选用——仅在 assignee 显式指定时使用。
 
 ## 5. 失败恢复层级（从快到慢）
 

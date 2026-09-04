@@ -40,7 +40,7 @@ func newDispatchFixture(t *testing.T, result *ExecutionResult) (*Runner, task.Re
 func TestRunDSHPhaseDispatchSuccess(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeSuccess})
 
-	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/acme-mini", "/skill", "/tmp/task.log")
 	if !handled {
 		t.Fatal("success dispatch must be handled")
 	}
@@ -86,7 +86,7 @@ func TestRunDSHPhaseDispatchRefiningRestampsReqHash(t *testing.T) {
 		PlanReqHash: "sha256:stale", PendingReq: true,
 	}
 
-	handled := r.runDSHPhaseDispatch(candidate, taskPath, dir, "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	handled := r.runDSHPhaseDispatch(candidate, taskPath, dir, "refining", "gateway/acme-mini", "/skill", "/tmp/task.log")
 	if !handled {
 		t.Fatal("success dispatch must be handled")
 	}
@@ -112,7 +112,7 @@ func TestRunDSHPhaseDispatchRefiningRestampsReqHash(t *testing.T) {
 func TestRunDSHPhaseDispatchFailure(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeFailed, Error: "provider down"})
 
-	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/acme-mini", "/skill", "/tmp/task.log")
 	if !handled {
 		t.Fatal("failure dispatch must be handled")
 	}
@@ -130,7 +130,7 @@ func TestRunDSHPhaseDispatchFailure(t *testing.T) {
 func TestRunDSHPhaseDispatchInterrupted(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeInterrupted})
 
-	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/acme-mini", "/skill", "/tmp/task.log")
 	if !handled {
 		t.Fatal("interrupted dispatch must be handled")
 	}
@@ -146,7 +146,7 @@ func TestRunDSHPhaseDispatchInterrupted(t *testing.T) {
 func TestRunDSHPhaseDispatchTimeoutMaps(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeTimedOut})
 
-	r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/skill", "/tmp/task.log")
+	r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/acme-mini", "/skill", "/tmp/task.log")
 	fm, err := yamlfrontmatter.ParseTaskDocument(taskPath)
 	if err != nil {
 		t.Fatal(err)
@@ -176,37 +176,35 @@ func TestExecutorSelectionIsRespected(t *testing.T) {
 	_ = context.Background()
 }
 
-// TestSelectModelPhaseRouting 守护相位感知模型路由：显式 assignee 覆盖一切；
-// default assignee 下重型阶段（planning/round2/merge）用 deepseek_magic 旗舰，
-// 轻量阶段用 default（mini）。背景：config.DefaultModels 注释声称重型阶段用
-// 旗舰，但旧实现按 assignee 全阶段统一路由，planning/round2 一直跑 V4 Flash
-// 级 mini（TASK-058/079 复盘）。
+// TestSelectModelPhaseRouting 守护模型路由契约：显式 assignee 覆盖一切；
+// 其余（default / 空 assignee）统一走操作者配置的 models.default。
+// 项目不内置任何相位偏好（无免费旗舰/轻量模型之分）。
 func TestSelectModelPhaseRouting(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Models = map[string]string{
-		"default":        "deepseek_magic/gpt-5.4-mini",
-		"deepseek_magic": "deepseek_magic/deepseek-v4-pro",
-		"gpt":            "openai/gpt-5.6-sol",
+		"default": "acme/acme-mini",
+		"acme":    "acme/acme-pro",
+		"gpt":     "beta/beta-sol",
 	}
 	r := New(cfg)
 
-	for _, phase := range []string{"planning", "round2", "merge"} {
-		if got := r.selectModel("default", phase); got != "deepseek_magic/deepseek-v4-pro" {
-			t.Fatalf("selectModel(default, %s) = %q, want deepseek_magic/deepseek-v4-pro", phase, got)
+	for _, phase := range []string{"planning", "round2", "merge", "refining", "priority", "pm", "audit", "conventions", "design"} {
+		if got := r.selectModel("default", phase); got != "acme/acme-mini" {
+			t.Fatalf("selectModel(default, %s) = %q, want default route", phase, got)
 		}
 	}
-	for _, phase := range []string{"refining", "priority", "pm", "audit", "conventions", "design"} {
-		if got := r.selectModel("default", phase); got != "deepseek_magic/gpt-5.4-mini" {
-			t.Fatalf("selectModel(default, %s) = %q, want mini default", phase, got)
-		}
-	}
-	// 显式 assignee 覆盖一切（含重型阶段）。
-	if got := r.selectModel("gpt", "round2"); got != "openai/gpt-5.6-sol" {
+	// 显式 assignee 覆盖一切。
+	if got := r.selectModel("gpt", "round2"); got != "beta/beta-sol" {
 		t.Fatalf("explicit assignee not honored: %q", got)
 	}
 	// 空 assignee 视同 default。
-	if got := r.selectModel("", "planning"); got != "deepseek_magic/deepseek-v4-pro" {
-		t.Fatalf("empty assignee planning = %q, want flagship", got)
+	if got := r.selectModel("", "planning"); got != "acme/acme-mini" {
+		t.Fatalf("empty assignee planning = %q, want default route", got)
+	}
+	// 未配置任何 models → 空串（调用方跳过派发）。
+	empty := New(config.Defaults())
+	if got := empty.selectModel("", "round2"); got != "" {
+		t.Fatalf("unconfigured models = %q, want empty", got)
 	}
 }
 
@@ -287,7 +285,7 @@ func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
 	captor := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}
 	r.phaseExecutor = captor
 
-	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "conventions", "gateway/gpt-5.4-mini", "/obsidian-task-runner-conventions "+taskPath, "/tmp/task.log"); !handled {
+	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "conventions", "gateway/acme-mini", "/obsidian-task-runner-conventions "+taskPath, "/tmp/task.log"); !handled {
 		t.Fatal("conventions dispatch must be handled")
 	}
 	if captor.spec.ToolPolicy != conventionsToolPolicy {
@@ -298,7 +296,7 @@ func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
 	// 对照组：普通阶段（refining）无工具限制。
 	captor2 := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}
 	r.phaseExecutor = captor2
-	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/gpt-5.4-mini", "/obsidian-task-runner-refining "+taskPath, "/tmp/task.log"); !handled {
+	if handled := r.runDSHPhaseDispatch(candidate, taskPath, filepath.Dir(taskPath), "refining", "gateway/acme-mini", "/obsidian-task-runner-refining "+taskPath, "/tmp/task.log"); !handled {
 		t.Fatal("refining dispatch must be handled")
 	}
 	if captor2.spec.ToolPolicy != "" {
