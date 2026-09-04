@@ -49,7 +49,7 @@ type Runner struct {
 	daemonCtx          context.Context       // bound to daemon lifecycle; cancelled on shutdown
 	phaseFailures      sync.Map              // taskPath → time.Time (cooldown after phase failure)
 	agedSkipLogged     sync.Map              // taskPath → bool (aged auto-resume skip already logged this daemon run)
-	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (free-tier exhaustion exponential backoff)
+	quotaBackoffs      sync.Map              // taskPath → quotaBackoff (model-quota exhaustion exponential backoff)
 	round2Stalls       sync.Map              // taskPath → round2Stall (no-progress round2 cooldown)
 	modelGapLogged     sync.Map              // taskPath → bool (no-model-configured log once per state)
 	auditRetries       sync.Map              // taskPath → time.Time (audit session failure cooldown)
@@ -3174,8 +3174,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 				}
 				r.phaseFailures.Delete(taskPath)
 			}
-			// 免费额度耗尽指数退避：until 持久化在 frontmatter（重启不清零），
-			// 到期前不重试（减少刷免费网关）；到期后允许重试。
+			// 模型配额耗尽指数退避：until 持久化在 frontmatter（重启不清零），
+			// 到期前不重试（避免反复打网关）；到期后允许重试。
 			if data, err := os.ReadFile(taskPath); err == nil {
 				if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.QuotaBackoffUntil != "" {
 					if until, err := time.Parse(time.RFC3339, fm.QuotaBackoffUntil); err == nil && time.Now().Before(until) {
@@ -3659,9 +3659,9 @@ func (r *Runner) restoreBlockedPhase(taskPath, phase string, resetBudget bool) e
 
 // handlePhaseFailure tracks retry counts for refining/planning phases and
 // transitions the task to blocked after the second consecutive failure.
-// quotaBackoff tracks free-tier exhaustion backoff: level increments per
+// quotaBackoff tracks model-quota exhaustion backoff: level increments per
 // consecutive QUOTA failure; until is the next retry deadline. This keeps the
-// daemon from hammering the free gateways every scan when the quota is gone.
+// daemon from hammering the model gateway every scan when the quota is gone.
 type quotaBackoff struct {
 	level int
 	until time.Time
@@ -3729,7 +3729,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 			r.notifyKeyUnavailable()
 		}
 		if code == ErrModelQuotaExhausted {
-			// 免费额度耗尽：指数退避，别每轮 scan 都刷免费网关。level 持久化到
+			// 模型配额耗尽：指数退避，别每轮 scan 都刷网关。level 持久化到
 			// frontmatter（daemon 重启不清零），冷却 2m→4m→8m→…→4h 上限。
 			level := 0
 			if fm, err := readFrontmatter(taskPath); err == nil && fm != nil {
@@ -3742,7 +3742,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 				"quota_backoff_until": until.Format(time.RFC3339),
 			})
 			r.quotaBackoffs.Store(taskPath, quotaBackoff{level: level, until: until})
-			r.logger.Printf("task %s: free-tier quota exhausted, backoff level %d, retry after %s", taskID, level, until.Format("15:04:05"))
+			r.logger.Printf("task %s: model quota exhausted, backoff level %d, retry after %s", taskID, level, until.Format("15:04:05"))
 		}
 		return
 	}

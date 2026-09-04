@@ -23,7 +23,7 @@
 │ 门禁：阶段并发 / plan_files 重叠串行 / round2 空转冷却 / quota 指数退避 / 入口门禁          │
 │ 交付：git worktree（task/<id>-slug）→ push → PR → CI 轮询 → 合并 → 知识提炼               │
 └───────┬──────────────────────────────────────────────────────┬────────────────────────────┘
-        │ 阶段执行（cfg.executor）                              │ 模型路由（免费优先）
+        │ 阶段执行（cfg.executor）                              │ 模型路由（用户配置）
         ▼                                                       ▼
 ┌───────────────────────────────────┐        ┌──────────────────────────────────────────────────┐
 │ agent-server（daemon 自管，默认）    │        │ default   → acme/acme-mini（轻量） │
@@ -70,11 +70,12 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
 - `dsh`：每阶段临时 spawn `dsh --profile headless`（无持久会话，一次性进程）。
 - ~~`早期执行器`~~：已随早期执行器时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
 
-## 4. 模型路由（免费优先）
+## 4. 模型路由（无内置路由）
 
-见 `internal/config/config.go` `DefaultModels()`。daemon 按任务 `assignee`
-（映射 key）选择 DSH route；未知 key 回退 `default`。**免费渠道是默认**，
-`paid`（自费）永不自动选用——仅在 assignee 显式指定时使用。
+`models` 完全由操作者在 vault-map.json 配置：daemon 按任务 `assignee`
+（`models` 的 key）选择 DSH route，未知 key 回退 `default`；两者都未配置时
+任务不派发（日志提示，每 task+phase 一次）。仓库不内置任何 provider/model 路由，
+也不内置任何「渠道优先」策略——渠道偏好属于部署者。
 
 ## 5. 失败恢复层级（从快到慢）
 

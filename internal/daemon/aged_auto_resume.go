@@ -26,7 +26,7 @@ const autoResumeAgedDefaultAfter = 24 * time.Hour
 // agedAutoResumeCode reports whether a blocked task's error code qualifies
 // for age-based auto-resume. It reuses the transient-error whitelist
 // (isAutoResumableError) plus DESIGN_SESSION_FAILED, whose observed root
-// cause is transient model availability (free gateway 503 mid-session) and
+// cause is transient model availability (gateway 503 mid-session) and
 // whose retry is equally cheap and bounded. Entry gates
 // (PREREQUISITE_SMOKE_FAILED) and human-decision blocks (REQ_MISSING,
 // DOCUMENT_INVALID, API_KEY_UNAVAILABLE, …) are deliberately excluded: they

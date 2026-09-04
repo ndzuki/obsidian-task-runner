@@ -1,6 +1,6 @@
 # Obsidian Task Runner — 目标业务流程
 
-> **架构现状**：当前实现以 DSH 为执行后端（agent-server + 免费优先模型路由），
+> **架构现状**：当前实现以 DSH 为执行后端（agent-server + 操作者配置的模型路由），
 > 见 [docs/architecture.md](architecture.md)。本文为规范性设计；文中早期执行器描述为历史
 > 规划残留，执行器相关以 architecture.md 为准。
 >
@@ -819,21 +819,21 @@ flowchart TD
 
 判定顺序：**先每项目门、后全局门**——`max_concurrent_tasks_per_project` 保证项目间公平（满负荷项目不占他人槽位），`max_concurrent_tasks` 兜底资源总量。
 
-### 10.7 模型兜底与免费渠道不可用
+### 10.7 模型兜底与渠道不可用
 
 （早期执行器时代的 `fallback_models` / `watchEmptyStops` 已随执行器迁移移除；当前机制见 [architecture.md](architecture.md)。）
 
 | 层 | 失效形态 | 机制 | 归属 |
 | --- | --- | --- | --- |
-| 会话内 | API 错误/限流/超时/5xx（HTTP 层） | DSH `fallback.mjs` 插件：magic 免费 acme 失败/配额耗尽 → 自动切 magic 免费 beta beta-（`acme-pro → beta-terra` / `acme-mini → beta-luna`），失败码白名单触发。链由 daemon 经 **vault-map.json 的 `fallback` 字段**随 `/agent/run` 动态下发给 headless-agent-server（该 profile 只加载动态配置、无静态链） | DSH（daemon 动态下发，仅自动化阶段；**不在** `~/.dsh/cordis.patch.yml`） |
+| 会话内 | API 错误/限流/超时/5xx（HTTP 层） | DSH `fallback.mjs` 插件：按能力映射切换渠道（失败码白名单触发）。链由 daemon 经 **vault-map.json 的 `fallback` 字段**随 `/agent/run` 动态下发给 headless-agent-server（该 profile 只加载动态配置、无静态链） | DSH（daemon 动态下发，仅自动化阶段；**不在** `~/.dsh/cordis.patch.yml`） |
 | 会话级 | 会话整体失败（网关 5xx → MODEL_FAILED） | daemon `handlePhaseFailure` 按阶段策略；blocked 后由**老化兜底**（`autoResumeAgedBlocks`，窗口 `auto_resume_aged_after_hours` 默认 24h，基线 `blocked_at`）自动重试，预算 `auto_resume_count < 2` | daemon |
 | 配额级 | `MODEL_QUOTA_EXHAUSTED` | `quota_backoff_until` 指数退避（2m→4m→…→4h），重启不清零 | daemon |
 
 关键边界：
 
-- **免费优先是默认**：`default`/`acme`/`gpt`/`beta` 全走免费网关；`paid`（自费官方）永不自动选用，仅 assignee 显式指定。
-- 免费渠道持续不可用时 daemon 不盲目重试：quota 有指数退避、MODEL_FAILED 阻断后按 `auto_resume_aged_after_hours`（默认 24h）节奏自动恢复，连续失败 2 次（预算耗尽）转人工 `resume_approved`。
-- 交互会话（dsh web / dsh-tui）不循环切换免费渠道——失败即返回，且**不受 vault-map fallback 影响**（用户自选模型，失败不自动切换）；兜底仅对 headless-agent-server 的自动化阶段会话生效。
+- **渠道偏好属于部署者**：模型路由与 fallback 链完全由 vault-map.json 的 `models`/`fallback` 字段定义，仓库无内置渠道优先级。
+- 渠道持续不可用时 daemon 不盲目重试：quota 有指数退避、MODEL_FAILED 阻断后按 `auto_resume_aged_after_hours`（默认 24h）节奏自动恢复，连续失败 2 次（预算耗尽）转人工 `resume_approved`。
+- 交互会话（dsh web / dsh-tui）不自动切换渠道——失败即返回，且**不受 vault-map fallback 影响**（用户自选模型，失败不自动切换）；兜底仅对 headless-agent-server 的自动化阶段会话生效。
 
 ## 11. TASK 流程控制字段
 

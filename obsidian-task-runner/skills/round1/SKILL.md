@@ -10,7 +10,7 @@ disable-model-invocation: true
 ## 输入
 
 - TASK `status: planning`
-- daemon 按 TASK `assignee` 路由模型调用本 Skill：显式 `assignee`（非空且非 `default`）覆盖一切；默认/空 assignee 的 planning 走 `models.acme` 免费旗舰（v4-pro，见 daemon 权威模型路由表）
+- daemon 按 TASK `assignee` 路由模型调用本 Skill：显式 `assignee`（非空且非 `default`）覆盖一切；默认/空 assignee 统一走 `models.default`（模型路由由操作者在 vault-map.json 配置，无内置相位偏好）
 - **Daemon 已将项目上下文（Constraints + Anti-patterns + Domain Terms + ADR 摘要）注入到 prompt 顶部 `[Project Context]` 块中。以此为基线；仅在需要完整决策上下文时读取 `Notes/adr/` 中的完整 ADR 文件。**
 - `Notes/CONTEXT.md` 的完整术语表仅在注入摘要不覆盖所需术语时补充读取。
 - **必须在出计划前加载 `skill://knowledge-base`**：执行 Step -1（项目知识图谱）合成 CONTEXT + ADR + References 三源交叉引用，输出技术全景表。计划涉及的技术栈（Go、K8s、Helm、Docker 等），检索 core/ 文档的关键约束和版本要求纳入计划。发现知识缺口（ADR 引用了未入库的技术）标注在计划的"风险"或"前序契约"中。

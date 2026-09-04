@@ -278,7 +278,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | merge | `high` | 冲突解决需推理 |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
-模型声明 `low/medium/high/xhigh`（DeepSeek 的 wire 值 `xhigh→max`）。**模型渠道免费优先**：默认全部走 `acme`（免费网关），失败由 DSH 的 fallback.mjs 插件按能力映射切换到 `beta`（免费）的 beta- 系列——`acme-pro → beta-sol`、`acme-mini(flash) → beta-luna`，再失败继续在免费渠道间重试（如 `beta-terra`）。**fallback 链由 daemon 通过 vault-map.json 的 `fallback` 字段全局控制**（operator 改配置文件即可，无需改插件代码）：daemon 在每次 dsh-embed `/agent/run` 时把链随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型——避免长会话被免费模型失败重试一直占用。`paid`（自费官方 DeepSeek）不在任何自动 fallback 链里：仅当你把任务文档的 `assignee` 改为 `paid` 时才使用；免费渠道全部不可用时 daemon 会发通知提醒你改 `assignee=paid`。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
+模型声明 `low/medium/high/xhigh`（DSH 的 wire 值 `xhigh→max`）。**模型渠道由 vault-map.json 的 `models` 与 `fallback` 字段配置**（仓库无内置渠道偏好）：`fallback` 链由 daemon 在每次 dsh-embed `/agent/run` 时随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型。配额耗尽与渠道不可用时 daemon 按指数退避不盲目重试，并通知你更换 assignee 或调整 models 配置。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
 
 ### 阻塞依赖自动恢复
 

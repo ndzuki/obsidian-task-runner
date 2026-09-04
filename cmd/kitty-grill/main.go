@@ -599,7 +599,7 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 const writebackTimeout = 10 * time.Minute
 
 // writebackMaxAttempts bounds model-level retries for the write-back turn.
-// 免费渠道偶发 SERVER/outcome error 时（观测：TASK-058 决策写回一次失败即
+// 模型渠道偶发 SERVER/outcome error 时（历史观测：决策写回一次失败即
 // 丢弃答案），重试同一会话同一答案（幂等）显著提高写回成功率。
 const writebackMaxAttempts = 3
 

@@ -1,6 +1,6 @@
 ---
 name: obsidian-task-runner
-description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon (otg-task-watcher.service) runs phase skills via the DSH headless agent-server (dsh-agent-server.service, default dsh-embed executor, free-channel-first model routing) and drives stage-based delivery with per-phase concurrency limits, aged auto-resume fallback, and decision-list pause/reactivate. Trigger: task runner, 自动执行 Obsidian 任务, 阶段化交付, 任务并发."
+description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon (otg-task-watcher.service) runs phase skills via the DSH headless agent-server (dsh-agent-server.service, default dsh-embed executor, operator-configured model routing) and drives stage-based delivery with per-phase concurrency limits, aged auto-resume fallback, and decision-list pause/reactivate. Trigger: task runner, 自动执行 Obsidian 任务, 阶段化交付, 任务并发."
 ---
 
 # Obsidian Task Runner — Core Contract
@@ -195,24 +195,21 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 `selectModel(assignee, phase)`（`internal/daemon/daemon.go`）与 `phaseThinking(phase)`（`executor.go`）：
 
-| 阶段 | 模型（assignee=default 时） | reasoningEffort |
-|------|------------------------------|-----------------|
-| planning / round2 / merge（重型） | `models.acme`（免费旗舰 acme-pro；键缺失时硬编码同值） | planning=high / round2=max / merge=low |
-| design（全局设计库修订，daemon 硬编码） | `acme/acme-pro`（`design_session.go` 写死，不受 assignee 覆盖） | max |
-| refining / priority（规格作者） | `models.default`（acme-mini） | refining=medium / priority=medium |
-| pm / audit / conventions（确定性为主） | `models.default` | low |
+| 阶段 | 模型（assignee 非空且非 default 时） | reasoningEffort |
+|------|----------------------------------------|-----------------|
+| 全部阶段 | 该 assignee 在 vault-map.json `models` 中配置的路由 | planning=high / round2=max / merge=high / design=max / refining=medium / priority=medium / pm=low / audit=low / conventions=low |
 
-- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。assignee 是 `vault-map.json` `models` 键，DSH 2.0 模型家族缩写：`ds`/`acme`/`paid`（DeepSeek）、`gp`（OpenAI GPT，`gpt`/`beta` 为历史别名）、`ge`（谷歌 Gemini）、`cl`（网宿 CL/ClaudeCode）、`qw`（阿里千问 Qwen）、`db`（字节豆包 Seedance）——对应 provider 需在 `~/.dsh/settings.yaml` 配置。
-- 教训（2026-08-22 复盘）：旧实现按 assignee 全阶段统一路由，default assignee 让 planning/round2 跑在 V4 Flash 级 mini 上——spec/计划/代码质量与 high/max effort 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。refining 的 effort 从 low 提到 medium 同理（spec 命名推断失误）。
+- **路由规则**：显式 `assignee`（非空且非 `default`）覆盖一切；`default` 与空 assignee 统一走 `models.default`；两者均未配置时任务不派发（daemon 日志提示，每 task+phase 一次）。无内置模型路由、无相位偏好——渠道选择完全由操作者配置。
+- assignee 是 `vault-map.json` `models` 的任意 key；provider 需在 `~/.dsh/settings.yaml` 配置。
 
 ## Fallback Model（兜底模型）
 
-模型兜底统一由 DSH 的 fallback.mjs 插件处理（配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
+模型兜底统一由 DSH 的 fallback.mjs 插件处理：链由 daemon 经 vault-map.json 的 `fallback` 字段随 `/agent/run` 动态下发（**不在** `~/.dsh/cordis.patch.yml`）：
 
-- **进程内跨模型降级**：magic 免费 acme 失败 / 配额耗尽 → 自动切 magic 免费 beta beta-（`acme-pro → beta-terra` / `acme-mini → beta-luna`）。
+- **进程内跨模型降级**：按 daemon 随 `/agent/run` 下发的 vault-map `fallback` 链切换（链完全由操作者配置）。
 - **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
 - daemon 侧无 fallback 层——旧执行器时代的 `fallback_models` / `watchEmptyStops` 已随迁移移除。
-- **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在免费渠道间循环切换。
+- **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在渠道间循环切换。
 
 ## Frontmatter 字段规范
 

@@ -284,8 +284,8 @@ low/medium/high/xhigh 四档）：
 
 ### 配置与持久化
 
-- agent-default-model 修复为 `acme/acme-pro`（magic 免费优先），
-  fallback 只在免费渠道间切换：`acme → beta beta-`（能力映射），
+- agent-default-model 修复为操作者配置的路由，
+  fallback 只在操作者配置的渠道间切换（能力映射），
   `paid` 官方付费渠道仅由任务 `assignee=paid` 显式启用。
 - `早期执行器-commands` 插件改名 `dsh-commands`。
 - daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，

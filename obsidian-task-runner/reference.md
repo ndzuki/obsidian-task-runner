@@ -408,7 +408,7 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 | `merge_retry_not_before` | string | "" | lifecycle | 合并修复冷却截止 |
 | `task_schema_version` | int | 1 | lifecycle | schema 版本（1） |
 | `req_refine_count` | int | — | lifecycle | 需求缺口循环计数（≥3 主动交互） |
-| `quota_backoff_level` | int | — | lifecycle | 免费额度退避等级 |
+| `quota_backoff_level` | int | — | lifecycle | 模型配额退避等级 |
 | `quota_backoff_until` | string | — | lifecycle | 下次可重试时间 |
 | `round2_stall_until` | string | "" | lifecycle | Round 2 无进展冷却截止（持久化） |
 | `round2_stall_level` | int | 0 | lifecycle | 无进展熔断计数（连续 3 转 blocked） |

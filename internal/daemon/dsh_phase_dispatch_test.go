@@ -178,7 +178,7 @@ func TestExecutorSelectionIsRespected(t *testing.T) {
 
 // TestSelectModelPhaseRouting 守护模型路由契约：显式 assignee 覆盖一切；
 // 其余（default / 空 assignee）统一走操作者配置的 models.default。
-// 项目不内置任何相位偏好（无免费旗舰/轻量模型之分）。
+// 项目不内置任何相位偏好（模型路由完全由操作者配置）。
 func TestSelectModelPhaseRouting(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Models = map[string]string{

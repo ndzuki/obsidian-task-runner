@@ -98,7 +98,7 @@ spawn `dsh --profile headless`（acme-pro）执行 refining skill：
   - 修复 1（已提交 63bf9b0）：phase skills 带 `disable-model-invocation: true`
     被 DSH 从模型目录排除，dsh 会话无法加载 → dshExecutor 改为直接注入
     `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐早期执行器「daemon 注入正文」机制）。
-  - 修复 2：fallback 白名单加 `QUOTA`（magic 免费额度耗尽 402 也切官方）。
+  - 修复 2：fallback 白名单加 `QUOTA`（网关配额耗尽 402 也切下一渠道）。
   - **真实项目（obsidian-task-runner，10 ADR + 178 行 CONTEXT + git）复测**：
     - ✅ 聚焦改善：模型正确读 ADR×15、CONTEXT.md、References/INDEX、
       daemon-stuck-task-patterns（round1 Step 0/-1 要求的步骤），**不再像空
@@ -124,20 +124,20 @@ spawn `dsh --profile headless`（acme-pro）执行 refining skill：
   `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
   - `acme/acme-pro` → `beta/beta-terra`（+ `beta-sol` 次级）
   - `acme/acme-mini`（=flash）→ `beta/beta-luna`
-  - 即 magic 免费 acme 失败 → magic 免费 beta beta-（luna/sol/terra 对应能力映射）。
+  - 即网关渠道失败 → 下一配置渠道（能力映射）。
   - 仅 obsidian-task-runner 自动化任务（headless / headless-agent-server）加载；
     dsh web / dsh-tui 交互会话不加载，模型失败直接返回。
-- **settings.yaml**：`agent-default-model` = `magic/acme-pro`（magic 免费优先）；
+- **settings.yaml**：`agent-default-model` = 操作者配置的路由；
   官方直连 provider 名 **`paid`**（模型 id 小写 `acme-pro`/`acme-flash`，
   与 `/models` 实测一致）。
 - **DSH 注册 bug（已绕过）**：provider 名含 `acme` 前缀（如 `paid-official`）
   且 `agent-default-model` 设为 magic 时，llm-pi-ai 注册冲突 → `NO_ADAPTER`（已实测定位）。
-  官方直连 provider 因此命名 `paid`，默认模型可保持 magic 免费优先。
+  官方直连 provider 因此命名 `paid`，默认模型路由由操作者配置。
 - **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
-  `gateway/acme-pro`（免费），fallback `acme/acme-pro`（官方）。
-- **已知：magic 免费额度可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
-  402 Insufficient Balance`）——fallback.mjs 会在免费渠道间切换（acme → beta），
-  免费渠道全耗尽时 daemon 通知改 `assignee=paid` 使用官方直连。
+  `gateway/acme-pro`（网关渠道），fallback `acme/acme-pro`（官方渠道）。
+- **已知：网关配额可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
+  402 Insufficient Balance`）——fallback.mjs 会在配置的渠道间切换，
+  渠道全耗尽时 daemon 通知调整 assignee 或 models 配置。
 
 ## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
 
