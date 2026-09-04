@@ -62,8 +62,12 @@ func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
 	}
 
 	// 新字段已补齐（空 kb_vault 也可见，便于用户填写）。
-	if _, ok := got["kb_vault"]; !ok {
-		t.Fatalf("kb_vault missing after migrate: %v", got)
+	// 零值默认（空字符串）不落盘：kb_vault/dsh_profile 留待用户显式设置。
+	if _, ok := got["kb_vault"]; ok {
+		t.Fatalf("kb_vault empty default must not be written by migrate, got %v", got["kb_vault"])
+	}
+	if _, ok := got["dsh_profile"]; ok {
+		t.Fatalf("dsh_profile empty default must not be written by migrate, got %v", got["dsh_profile"])
 	}
 	if _, ok := got["env_cleanup"]; ok {
 		t.Fatalf("env_cleanup must be opt-in and not auto-added by migrate, got %v", got["env_cleanup"])

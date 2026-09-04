@@ -459,11 +459,14 @@ func Defaults() *Config {
 		// EnvCleanup 默认不启用（nil）：删除 k3d 集群/registry/网络是有损操作，
 		// 开源默认不做任何自动删除；需要时在 vault-map.json 显式配置并声明
 		// Exclude 白名单。
-		EnvCleanup:          nil,
-		SkillInstallDir:     filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
-		Models:              DefaultModels(),
-		DSHCmd:              "dsh",
-		DSHProfile:          "headless",
+		EnvCleanup:      nil,
+		SkillInstallDir: filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
+		Models:          DefaultModels(),
+		DSHCmd:          "dsh",
+		// DSHProfile 默认空：仅 executor=dsh（spawn 路径）使用，空值时
+		// newDSHExecutorWithProfile 回退内置 "headless"。默认空保证
+		// `config migrate --write` 不会把该字段写回用户文件。
+		DSHProfile:          "",
 		AgentServerAddr:     "127.0.0.1:8799",
 		AgentServerManaged:  true,
 		VaultWebAddr:        "127.0.0.1:8787",

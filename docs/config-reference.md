@@ -39,7 +39,7 @@ vault-map.json 也只包含最小键；示例文件
 | `agent_server_managed` | bool | true | true=daemon 拉起子进程；false=外部 systemd 管理 |
 | `executor` | string | `dsh-embed` | 阶段执行后端；`dsh` 为旧 spawn 路径 |
 | `dsh_cmd` | string | `dsh` | DSH 可执行文件 |
-| `dsh_profile` | string | `headless` | 仅 `executor="dsh"`（spawn 路径）使用；默认 `dsh-embed` 下忽略 |
+| `dsh_profile` | string | `""`（空） | 仅 `executor="dsh"`（spawn 路径）使用；空值时内置回退 `headless`；默认 `dsh-embed` 下忽略 |
 | `vault_web_addr` | string | `127.0.0.1:8787` | 只读看板 HTTP API 地址 |
 | `default_assignee` | string | `""` | 新 TASK 预写 assignee；空=等人工 |
 | `auto_resume_aged_after_hours` | int | 24 | 瞬态错误 blocked 任务的老化自动恢复窗口 |

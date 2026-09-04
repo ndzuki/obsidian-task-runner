@@ -155,6 +155,14 @@ func mergeRawConfig(path string, cfg *config.Config) (map[string]interface{}, er
 	// 的完整配置（含默认），缺失的 schema 字段在此补齐。
 	for key, value := range effective {
 		if _, exists := raw[key]; !exists {
+			// 零值默认（空字符串/nil）不落盘：dsh_profile=""/kb_vault=""/nil
+			// 子块由 mergeDefaults 在内存补齐即可，写回只会制造噪音键。
+			if s, ok := value.(string); ok && s == "" {
+				continue
+			}
+			if value == nil {
+				continue
+			}
 			raw[key] = value
 		}
 	}
