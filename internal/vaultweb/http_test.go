@@ -16,11 +16,12 @@ func TestHTTPReadOnlyEndpoints(t *testing.T) {
 	h := s.Handler()
 
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		wantStatus int
-		wantBody   string
+		name          string
+		method        string
+		path          string
+		wantStatus    int
+		wantStatusAny []int
+		wantBody      string
 	}{
 		{name: "projects", method: "GET", path: "/api/vault/projects", wantStatus: 200, wantBody: `"task_count":3`},
 		{name: "tasks", method: "GET", path: "/api/vault/projects/demo/tasks", wantStatus: 200, wantBody: `"id":"002"`},
@@ -33,7 +34,7 @@ func TestHTTPReadOnlyEndpoints(t *testing.T) {
 		// ServeMux cleans ".." before routing (301/307 redirect), so traversal
 		// never reaches the handler; safeBasename defends the service layer
 		// (covered by TestDesignArtifact). Here we only assert it never 200s.
-		{name: "traversal artifact", method: "GET", path: "/api/vault/projects/demo/design/contract/../../glossary.md", wantStatus: 307, wantBody: ""},
+		{name: "traversal artifact", method: "GET", path: "/api/vault/projects/demo/design/contract/../../glossary.md", wantStatusAny: []int{301, 307}, wantBody: ""},
 		{name: "post not allowed", method: "POST", path: "/api/vault/projects", wantStatus: 405, wantBody: ""},
 	}
 	for _, tt := range tests {
@@ -41,8 +42,20 @@ func TestHTTPReadOnlyEndpoints(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
-			if rec.Code != tt.wantStatus {
+			if tt.wantStatus != 0 && rec.Code != tt.wantStatus {
 				t.Fatalf("%s %s status=%d, want %d (body=%s)", tt.method, tt.path, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if len(tt.wantStatusAny) > 0 {
+				ok := false
+				for _, c := range tt.wantStatusAny {
+					if rec.Code == c {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					t.Fatalf("%s %s status=%d, want one of %v (body=%s)", tt.method, tt.path, rec.Code, tt.wantStatusAny, rec.Body.String())
+				}
 			}
 			if tt.wantBody != "" && !strings.Contains(rec.Body.String(), tt.wantBody) {
 				t.Fatalf("%s body missing %q: %s", tt.path, tt.wantBody, rec.Body.String())

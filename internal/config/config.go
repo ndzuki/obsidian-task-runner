@@ -716,8 +716,8 @@ func mergeDefaults(cfg *Config, present map[string]bool) {
 			cfg.Audit.MaxFixes = defaults.Audit.MaxFixes
 		}
 		if cfg.Audit.TimeoutMinutes == 0 {
+			cfg.Audit.TimeoutMinutes = defaults.Audit.TimeoutMinutes
 		}
-		cfg.Audit.TimeoutMinutes = defaults.Audit.TimeoutMinutes
 	}
 }
 

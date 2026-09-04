@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("create test cache dir: " + err.Error())
 	}
-	os.Setenv("XDG_CACHE_HOME", cacheDir)
+	_ = os.Setenv("XDG_CACHE_HOME", cacheDir)
 	os.Exit(m.Run())
 }
 
@@ -805,8 +805,8 @@ func TestProcessBatchNonPositiveGlobalLimitMeansUnlimited(t *testing.T) {
 func TestProcessBatchPerProjectConcurrency(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
-	os.MkdirAll(filepath.Join(dir, "one"), 0755)
-	os.MkdirAll(filepath.Join(dir, "two"), 0755)
+	_ = os.MkdirAll(filepath.Join(dir, "one"), 0755)
+	_ = os.MkdirAll(filepath.Join(dir, "two"), 0755)
 	projectOne := createRepository(t, filepath.Join(dir, "one"))
 	projectTwo := createRepository(t, filepath.Join(dir, "two"))
 
@@ -1209,7 +1209,21 @@ if [ -n "$ACTIVE_DIR" ]; then
   cleanup() { (flock 9; rm -f "$ACTIVE_DIR/active-$$") 9>"$ACTIVE_DIR/lock"; }
   trap cleanup EXIT
 fi
-for i in $(seq 3000); do [ -f "$RELEASE_FILE" ] && exit 0; sleep 0.01; done
+for i in $(seq 3000); do
+  if [ -f "$RELEASE_FILE" ]; then
+    # Optional task-state advance: a planning task that never leaves
+    # "planning" stays ready forever and re-dispatches every scan, so the
+    # scan-cycle test can never observe the gate settle (TASK: flaky
+    # TestRunScanCycleCoalescesRequestsDuringScan on CI). When the test pins
+    # the task path via OMP_TASK_PATH, the barrier exit advances it to
+    # plan-review first, terminating the dispatch loop deterministically.
+    if [ -n "$OMP_TASK_PATH" ] && [ -f "$OMP_TASK_PATH" ]; then
+      sed -i 's/^status: planning$/status: plan-review/' "$OMP_TASK_PATH"
+    fi
+    exit 0
+  fi
+  sleep 0.01
+done
 exit 1
 `
 	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
@@ -1617,6 +1631,10 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	// stage set so the unstaged-task scan does not dispatch a PM
 	// consolidate session through the fake DSH (corrupts start counts).
 	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
+	// The fake OMP advances this planning task to plan-review on barrier
+	// release; otherwise it stays ready forever and every completed dispatch
+	// triggers another scan, so the gate never settles (flaky on CI).
+	t.Setenv("OMP_TASK_PATH", taskPath)
 	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}

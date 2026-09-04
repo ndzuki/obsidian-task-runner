@@ -186,7 +186,7 @@ func (e *dshEmbedExecutor) listAgents(ctx context.Context) ([]agentListEntry, er
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, err
@@ -218,7 +218,7 @@ func (e *dshEmbedExecutor) cancelSession(ctx context.Context, sessionID string) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("agent-server cancel HTTP %d", resp.StatusCode)
@@ -441,7 +441,7 @@ func (h *embedHandle) sessionActive() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return false
@@ -498,7 +498,7 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server unreachable: " + err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: err.Error()}

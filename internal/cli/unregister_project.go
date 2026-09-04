@@ -34,16 +34,16 @@ repository are left untouched.`,
 		}
 		// 注册了但未记录 path（配置异常）：条目已删，无法定位 worktree，提示即可。
 		if removedPath == "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (no path recorded; worktree cleanup skipped)\n", name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (no path recorded; worktree cleanup skipped)\n", name)
 			return nil
 		}
 		if err := daemon.RemoveProjectWorktrees(cfg.WorktreeBase, removedPath); err != nil {
 			// 清理失败必须返回非零退出码：此时条目已删、无法重跑，静默会让
 			// 残留 worktree 重新落入永久孤儿状态。
-			fmt.Fprintf(cmd.ErrOrStderr(), "unregistered project %q (checkout %s left in place), but worktree cleanup reported: %v\n", name, removedPath, err)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "unregistered project %q (checkout %s left in place), but worktree cleanup reported: %v\n", name, removedPath, err)
 			return fmt.Errorf("unregistered project %q but worktree cleanup failed: %w", name, err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (checkout %s left in place, worktrees removed)\n", name, removedPath)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (checkout %s left in place, worktrees removed)\n", name, removedPath)
 		return nil
 	},
 }
