@@ -564,13 +564,20 @@ func sectionAfter(content, heading string) string {
 	return content[idx+len(heading):]
 }
 
-// decisionBlockRE matches a decision point block heading in the list.
+// decisionBlockRE matches a decision-point heading. It deliberately anchors
+// on `### D-<n>` and does NOT require a specific separator after the
+// number: PM revisions have written `### D-8: …`, `### D-110 · …` and
+// `### D-110：…`. Requiring `:` made the alternate forms entirely invisible
+// — total=0, pending=0, answers-hash==empty-hash — so the daemon neither
+// opened the decision tab nor auto-distributed (TASK-085).
 // decisionLineRE matches the answer line ("决策: <用户填写>").
 // splitLineRE matches the split-confirmation line ("拆分: <确认 / …>").
 var (
-	decisionBlockRE = regexp.MustCompile(`(?m)^### D-\d+:`)
-	decisionLineRE  = regexp.MustCompile(`(?m)^- 决策:\s*(.*)$`)
-	splitLineRE     = regexp.MustCompile(`(?m)^- 拆分:\s*(.*)$`)
+	decisionBlockRE = regexp.MustCompile(`(?m)^### D-\d+`)
+	// decisionLineRE / splitLineRE accept both ASCII and full-width colons,
+	// so a `- 决策：…` answer line cannot silently vanish either.
+	decisionLineRE = regexp.MustCompile(`(?m)^- 决策[：:]\s*(.*)$`)
+	splitLineRE    = regexp.MustCompile(`(?m)^- 拆分[：:]\s*(.*)$`)
 )
 
 // grillingDecisionCounts parses the decision list and counts total and
@@ -604,6 +611,11 @@ func grillingDecisionCountsContent(content string) (total, pending int) {
 			if !decisionAnswered(m[1]) {
 				pending++
 			}
+		} else {
+			// A heading without any answer line is a malformed block the user
+			// can never see or answer; count it pending instead of silently
+			// treating it as answered (TASK-085: missing `- 决策:` line).
+			pending++
 		}
 	}
 	if m := splitLineRE.FindStringSubmatch(content); m != nil {
@@ -692,6 +704,10 @@ func grillingDecisionPendingForTask(path, taskID string) int {
 			if !decisionAnswered(m[1]) {
 				pending++
 			}
+		} else {
+			// Malformed block without an answer line must stay pending for
+			// its source task, matching grillingDecisionCountsContent.
+			pending++
 		}
 	}
 	return pending
