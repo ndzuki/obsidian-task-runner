@@ -65,12 +65,8 @@ func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
 	if _, ok := got["kb_vault"]; !ok {
 		t.Fatalf("kb_vault missing after migrate: %v", got)
 	}
-	ec, ok := got["env_cleanup"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("env_cleanup missing/not object after migrate: %v", got["env_cleanup"])
-	}
-	if on, _ := ec["on_block"].(bool); !on {
-		t.Fatalf("env_cleanup.on_block should default true, got %v", ec["on_block"])
+	if _, ok := got["env_cleanup"]; ok {
+		t.Fatalf("env_cleanup must be opt-in and not auto-added by migrate, got %v", got["env_cleanup"])
 	}
 
 	// 用户已有值必须原样保留。

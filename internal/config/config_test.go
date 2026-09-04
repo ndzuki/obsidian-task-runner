@@ -164,14 +164,53 @@ func TestLoadReadsFallbackConfig(t *testing.T) {
 
 func TestDefaultsSetsWorkflowConfiguration(t *testing.T) {
 	cfg := Defaults()
-	if cfg.OffPeakTimezone != "Asia/Shanghai" {
-		t.Fatalf("defaults = %+v", cfg)
+	if cfg.OffPeakTimezone != "" || len(cfg.OffPeakWindows) != 0 {
+		t.Fatalf("off-peak must be opt-in (empty defaults), got tz=%q windows=%v", cfg.OffPeakTimezone, cfg.OffPeakWindows)
 	}
 	if got := cfg.PhaseTimeout("round2"); got.String() != "2h0m0s" {
 		t.Fatalf("round2 timeout = %v, want 2h", got)
 	}
-	if len(cfg.OffPeakWindows) != 3 {
-		t.Fatalf("workflow defaults = %+v", cfg)
+	if cfg.MergePollWaitTicks != 20 {
+		t.Fatalf("merge_poll_wait_ticks default = %d, want 20", cfg.MergePollWaitTicks)
+	}
+	if cfg.EnvCleanup != nil {
+		t.Fatalf("env_cleanup must be opt-in (nil default), got %+v", cfg.EnvCleanup)
+	}
+	if cfg.MemoryGate.AutoRecovery {
+		t.Fatal("memory_gate.auto_recovery must default off")
+	}
+	if len(cfg.MemoryGate.Exclude) != 0 {
+		t.Fatalf("memory_gate.exclude must default empty, got %v", cfg.MemoryGate.Exclude)
+	}
+}
+
+func TestExplicitZeroUpstreamStallDaysDisables(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"upstream_stall_days":0}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UpstreamStallDays != 0 {
+		t.Fatalf("explicit upstream_stall_days=0 must stay 0 (disable), got %d", cfg.UpstreamStallDays)
+	}
+}
+
+func TestMissingUpstreamStallDaysGetsDefault(t *testing.T) {
+	dir := t.TempDir()
+	mapFile := filepath.Join(dir, "vault-map.json")
+	if err := os.WriteFile(mapFile, []byte(`{"obsidian_vault":"/v"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(mapFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UpstreamStallDays != 3 {
+		t.Fatalf("missing upstream_stall_days = %d, want default 3", cfg.UpstreamStallDays)
 	}
 }
 

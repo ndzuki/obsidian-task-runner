@@ -412,31 +412,25 @@ func isPermanentMergeDefect(phaseErrorCode string) bool {
 }
 
 // OffPeakFn is the off-peak evaluator used by readiness checks. The daemon
-// sets it from vault-map off_peak_windows/off_peak_timezone at startup;
-// defaults to the legacy fixed Beijing window so tests and standalone uses
-// keep working.
+// sets it from vault-map off_peak_windows/off_peak_timezone at startup.
+// Unconfigured = opt-in disabled: off_peak_only tasks are always eligible.
 var OffPeakFn = IsOffPeak
 
-// IsOffPeak returns true during Beijing off-peak hours (cheaper DeepSeek pricing).
-// Peak: 09:00-12:00 and 14:00-18:00 CST (UTC+8).
+// IsOffPeak returns true when off-peak scheduling is unconfigured —
+// no windows means no restriction (opt-in feature).
 func IsOffPeak() bool {
 	return IsOffPeakWith(nil, "")
 }
 
 // IsOffPeakWith evaluates off-peak from configured windows in the configured
-// timezone; nil/empty falls back to the legacy fixed Beijing window
-// (00-09, 12-14, 18-24 CST).
+// timezone. Empty windows = opt-in not configured = always eligible.
 func IsOffPeakWith(windows []config.TimeWindow, tz string) bool {
 	if len(windows) == 0 {
-		windows = []config.TimeWindow{
-			{Start: "00:00", End: "09:00"},
-			{Start: "12:00", End: "14:00"},
-			{Start: "18:00", End: "24:00"},
-		}
+		return true
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		loc = time.FixedZone("CST", 8*3600)
+		loc = time.Local
 	}
 	now := time.Now().In(loc)
 	hm := now.Hour()*60 + now.Minute()

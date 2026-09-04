@@ -31,15 +31,16 @@ import (
 // This gate moves the check daemon-side, before dispatching round2:
 //   1. detect  MemAvailable < 门禁 (REQ 声明或配置全局下限);
 //   2. auto    stop restartable k3d staging clusters to free memory
-//              (never user services: kb-reranker / ollama-sycl / desktop);
+//              (never user services: local inference/vector services, desktop);
 //   3. escalate 仍不足 → 写入项目级 Grilling-Decisions.md 决策 + 任务 park，
 //              用户一次性裁决（A 自动停 / B 等待重试 / C 忽略门禁继续）。
 // ---------------------------------------------------------------------------
 
 // memoryGateExcludeDefault are name substrings that auto-recovery must never
-// stop (red line: 不得停止用户常驻服务换取门禁通过). The config may append
-// to this, never remove.
-var memoryGateExcludeDefault = []string{"kb-reranker", "ollama-sycl"}
+// memoryGateExcludeDefault are name substrings that auto-recovery must never
+// stop (red line: 不得停止用户常驻服务换取门禁通过). Empty by default:
+// the operator declares their own persistent services via vault-map config.
+var memoryGateExcludeDefault = []string{}
 
 // memoryRecoveryDebounce bounds how often auto-recovery re-runs per task.
 const memoryRecoveryDebounce = 5 * time.Minute

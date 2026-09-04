@@ -1,120 +1,23 @@
 {
-  "_comment": "复制为 vault-map.json 后修改。vault-map.json 不会被 git 跟踪。字段顺序可自由调整（daemon 保序维护、只追加缺失字段）；建议 projects 置末——追加新项目是最频繁的手工编辑。",
-  "_comment_deprecated": "2026-09-02 移除的零消费字段：config_version、shutdown_grace_seconds、starvation_warning_days（解析后无任何代码消费；上游停滞告警实际用 upstream_stall_days）。旧文件中的这些键按「未知键保留」容忍、不影响运行；otg config migrate 只追加缺失字段、绝不删除——已删除的不会恢复，仍在的也不会自动移除（手动删除即可，delete 一次即净）。dsh_profile 标注 deprecated：默认 executor=dsh-embed 下全部阶段（含 design）经 agent-server（profile 硬编码 headless-agent-server），该字段仅影响旧 executor=\"dsh\" spawn 路径。",
-  "kb_chat": {
-    "_comment": "知识库问答（可选，otg kb ask 的生成模型）。需 kb_embedding（检索是 RAG 的 R）；ollama 需 ollama pull qwen3:1.7b。",
-    "backend": "ollama",
-    "url": "http://127.0.0.1:11434",
-    "model": "qwen3:1.7b",
-    "temperature": 0.2
-  },
-  "kb_db": "/home/you/.local/share/otg/kb.sqlite",
-  "kb_vault": "/home/you/Obsidian/MainVault",
-  "_comment_kb_vault": "全局共享知识库根（可选）：普通交互会话（/agent/chat：grilling / web 聊天 / 临时需求解决）做 KB-first 服务端预检索的语料来源。缺省回退 obsidian_vault；两者皆空则交互会话跳过 KB 注入（agent-server 仍可独立运行）。设独立全局知识库后，已注册项目工作区的提问仍会从 obsidian_vault 的 Projects/ 查项目自身 CONTEXT/ADR/规范。",
-  "kb_embedding": {
-    "_comment": "知识库语义检索（可选）。配置后 otg kb search 混合 BM25 + 余弦；缺省此项则纯 BM25。ollama 需先运行并 ollama pull bge-m3。",
-    "backend": "ollama",
-    "url": "http://127.0.0.1:11434",
-    "model": "bge-m3",
-    "api_key": "",
-    "weight": 0.5,
-    "chunk_chars": 600,
-    "batch_size": 32,
-    "knn_candidates": 100
-  },
-  "kb_rerank": {
-    "_comment": "检索精排（可选，cross-encoder）。Ollama 0.32.x 无 rerank 路由，需独立 llama.cpp server（如 bge-reranker-v2-m3，端口 11435）；后端不可用自动降级为混合序。",
-    "backend": "openai",
-    "url": "http://127.0.0.1:11435",
-    "model": "bge-reranker-v2-m3",
-    "top_n": 20
-  },
-  "max_concurrent_tasks": 0,
-  "max_concurrent_tasks_per_project": 2,
-  "_comment_agent_server": "agent_server_managed=false 表示由独立 systemd 服务 dsh-agent-server.service 管理 headless-agent-server，daemon 不再自己拉起/关闭子进程；默认 true 保持 daemon 内嵌管理。",
-  "agent_server_managed": false,
+  "_comment": "复制为 vault-map.json 后修改（vault-map.json 不入 git）。本示例只含「新用户必须决定」的最小键；其余调优字段（phase_concurrency / KB / env_cleanup / memory_gate / off_peak 等）由代码提供默认值，完整清单见仓库 docs/config-reference.md 或 `otg config show --effective`。",
+  "obsidian_vault": "/home/you/Obsidian/MainVault",
+  "new_project_root": "/home/you/src",
   "models": {
-    "_comment": "assignee → DSH 模型标识。免费渠道优先：default/deepseek 走 deepseek_magic，gp/gpt/openai 走 openai gpt-5.6；ds-official 是自费官方渠道，仅在任务 assignee 显式指定时使用。模型家族缩写：gp=OpenAI GPT、ge=谷歌 Gemini、cl=网宿 CL(ClaudeCode)、qw=阿里千问(Qwen)、db=字节豆包(Seedance)——对应 provider 需在 ~/.dsh/settings.yaml 配置。通过 dev/null 禁用模型。",
+    "_comment": "assignee 键 → DSH 模型标识。默认渠道即插即用；ds-official 为自费官方渠道，仅任务 assignee 显式指定时使用；其余渠道需在 ~/.dsh/settings.yaml 配置对应 provider。",
     "default": "deepseek_magic/gpt-5.4-mini",
     "deepseek": "deepseek_magic/deepseek-v4-pro",
     "gpt": "openai/gpt-5.6-sol",
     "openai": "openai/gpt-5.6-sol",
     "deepseek_magic": "deepseek_magic/deepseek-v4-pro",
-    "ds-official": "ds-official/deepseek-v4-pro",
-    "gp": "openai/gpt-5.6-sol",
-    "ge": "google/gemini-2.5-pro",
-    "cl": "anthropic/claude-sonnet-4-20250514",
-    "qw": "qwen/qwen3-max",
-    "db": "doubao/doubao-seedance-1-0"
+    "ds-official": "ds-official/deepseek-v4-pro"
   },
-  "fallback": {
-    "_comment": "DSH 跨模型兜底链（可选）：仅 daemon 自动化阶段（dsh-embed /agent/run）生效——daemon 每次会话随请求下发给 headless-agent-server，fallback.mjs 按 agent.fallbackConfig 动态兜底（该 profile 只加载动态配置、无静态链）。dsh web / dsh-tui 交互会话不受影响：用户自选模型（或 settings.yaml 的 agent-default-model），失败不自动切换。chains 按 from 主模型精确匹配；default（可省略）是 from 无匹配时的兜底链。fallbackOnCodes 留空则用插件默认（SERVER/RATE_LIMIT/TIMEOUT/TRANSPORT/EMPTY_RESPONSE/STREAM_CLOSED/MALFORMED_RESPONSE/UNKNOWN + HTTP_5xx）；本示例显式加 QUOTA 是特例——免费网关间切换可绕过单渠道配额（插件默认不含 QUOTA，因其对官方直连无效）。⚠ ds-official（自费官方）绝不出现在任何链里——2026-08-25 教训：magic 偶发故障时自动兜底官方付费直连会在长会话静默烧钱直到 402 Insufficient Balance；官方直连仅任务 assignee=ds-official 显式启用。",
-    "chains": [
-      {
-        "from": {
-          "provider": "deepseek_magic",
-          "model": "deepseek-v4-pro"
-        },
-        "to": [
-          {
-            "provider": "deepseek_magic",
-            "model": "gpt-5.4-mini"
-          },
-          {
-            "provider": "openai",
-            "model": "gpt-5.6-sol"
-          }
-        ]
-      }
-    ],
-    "default": [
-      {
-        "provider": "deepseek_magic",
-        "model": "deepseek-v4-pro"
-      }
-    ],
-    "fallbackOnCodes": [
-      "SERVER",
-      "RATE_LIMIT",
-      "TIMEOUT",
-      "QUOTA"
-    ]
-  },
-  "new_project_root": "/home/you/src",
   "notifications": {
-    "desktop": true,
-    "sound": false
+    "desktop": true
   },
-  "obsidian_vault": "/home/you/Obsidian/MainVault",
-  "phase_concurrency": {
-    "_comment": "非 implementing 阶段的 DSH 阶段会话并发上限（0/缺省 = 不限）；round2 由 max_concurrent_tasks_per_project（每项目上限，默认 2）+ max_concurrent_tasks（可选全局总封顶，0=不限）控制。限制同时运行的 DSH 会话，保护 API 限速/token 消耗与本地资源。",
-    "refining": 3,
-    "planning": 2,
-    "merge": 1,
-    "priority": 1,
-    "pm": 1,
-    "audit": 1
-  },
-  "audit": {
-    "_comment": "完成审计（独立验证）：auto_merge 的 review 任务在合并授权前，由受限只读 DSH 会话（read/grep/bash，无写工具）逐条 AC 复核原始证据；implementation 类失败带审计报告转回 implementing 自动修复（连续 max_fixes 次升级 grilling 决策），requirement 类失败直接转 grilling 决策，均不硬性阻塞。enabled=false 可关闭。",
-    "enabled": true,
-    "max_fixes": 2,
-    "timeout_minutes": 15,
-    "concurrency": 1,
-    "model": ""
-  },
-  "auto_resume_aged_after_hours": 24,
-  "env_cleanup": {
-    "_comment": "环境收尾（默认开）：实现会话自建的 k3d 集群/registry/网络在任务 merge 完成（on_merge）或阻塞/暂停终态（on_block：blocked / needs-grilling / closed，TASK-066）时由 daemon 自动删除。exclude 是名称子串白名单，永不删除用户常驻服务（kb-reranker、ollama-sycl 等）；dry_run=true 只审计不删除。",
-    "on_merge": true,
-    "on_block": true,
-    "exclude": [
-      "kb-reranker",
-      "ollama-sycl"
-    ],
-    "dry_run": false
-  },
+  "max_concurrent_tasks": 0,
+  "max_concurrent_tasks_per_project": 2,
   "poll_interval_minutes": 30,
+  "agent_server_managed": true,
   "projects": [
     {
       "name": "example-project",
@@ -122,7 +25,7 @@
       "git_remote": "github.com/you/example-project"
     },
     {
-      "_comment": "团队已有项目（如私有 Gitea）：手动注册即可。project_type=team 禁止自动建仓/提升/gh 操作。merge_mode 二选一：manual=只推分支、由人工在仓库 UI 合并（远端合入后任务自动 done）；fork-merge=fork 开发，自动 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。首个任务自动做一次只读规范审查，生成 Notes/PROJECT-CONVENTIONS.md，后续任务按该项目规范执行。",
+      "_comment": "团队已有项目（如私有 Gitea）：project_type=team 禁止自动建仓/gh 操作；merge_mode 二选一：manual=只推分支人工合并；fork-merge=fork 开发后自动合并进 fork 默认分支。",
       "name": "team-app-fork",
       "path": "/work/team-app-fork",
       "git_remote": "git@gitea.internal.example.com:yourname/team-app-fork.git",

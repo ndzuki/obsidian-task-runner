@@ -31,7 +31,7 @@ import (
 // also runs on those dead-end transitions (EnvCleanup.OnBlock).
 //
 // The operation is bounded by EnvCleanup.Exclude (user red line: never touch
-// kb-reranker / ollama-sycl / anything excluded) and EnvCleanup.DryRun
+// anything excluded) and EnvCleanup.DryRun
 // (audit-only mode).
 // ---------------------------------------------------------------------------
 

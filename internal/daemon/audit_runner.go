@@ -101,7 +101,7 @@ const auditPromptTemplate = `你是独立完成审计员（independent completio
      * "requirement" = AC 本身歧义/矛盾/无法验证，或实现与需求意图冲突需用户裁决
    - verdict=fail 时 summary 必须列出最关键失败点与建议修复方向（供 round2 会话直接使用）
 5. 诚实原则：证据不足的 AC 判 fail，禁止推断为 pass。
-6. 核验环境清理证据：实现会话必须已清理自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）并在阶段记录留下清理快照（` + "`k3d cluster list`" + `/` + "`docker ps`" + ` 输出）。存在自建资源残留、或发现会话曾停用用户常驻服务（kb-reranker、ollama-sycl、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
+6. 核验环境清理证据：实现会话必须已清理自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）并在阶段记录留下清理快照（` + "`k3d cluster list`" + `/` + "`docker ps`" + ` 输出）。存在自建资源残留、或发现会话曾停用用户常驻服务（本地推理/向量检索常驻服务、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
 7. 失败场景复核（防"测试全绿、生产爆炸"）：本次实现涉及**可失败路径**时，必须复核负向场景有测试且行为正确，禁止只验证主成功路径：
    - 可失败路径清单：权限/认证拒绝（401/403）、并发/排队/竞态、重试耗尽、吊销/删除/幂等拒绝、非法输入校验、序列化/契约形状（null vs []）、跨引擎方言差异（如 dev SQLite vs prod MySQL 严格模式零日期/TEXT 默认值）、失败被容错掩盖（假成功输出）。
    - 并发/排队/竞态类测试用 ` + "`-count=3`" + `（或更多）重跑以暴露 flaky——只跑一次通过不算证据。

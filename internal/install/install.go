@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -277,60 +278,33 @@ func installTaskVerifier(opts Options) error {
 func generateVaultMap(opts Options) error {
 	mapFile := filepath.Join(opts.SkillInstallDir, "config", "vault-map.json")
 
-	config := map[string]interface{}{
+	// Minimal fresh-install config: only what a new operator must decide.
+	// Everything else (tuning, off-peak, KB backends, env cleanup, memory
+	// gate) ships as code defaults and is visible via `otg config show
+	// --effective` / docs/config-reference.md.
+	models := map[string]string{}
+	for k, v := range config.DefaultModels() {
+		models[k] = v
+	}
+	cfg := map[string]interface{}{
 		"obsidian_vault":   opts.ObsidianVault,
 		"new_project_root": opts.NewProjectRoot,
 		"projects":         []interface{}{},
-		"models": map[string]string{
-			"default":        "deepseek_magic/gpt-5.4-mini",
-			"deepseek":       "deepseek_magic/deepseek-v4-pro",
-			"gpt":            "openai/gpt-5.6-sol",
-			"openai":         "openai/gpt-5.6-sol",
-			"deepseek_magic": "deepseek_magic/deepseek-v4-pro",
-			"ds-official":    "ds-official/deepseek-v4-pro",
-		},
-		"notifications":         map[string]interface{}{"desktop": opts.NotifyEnabled},
-		"poll_interval_minutes": opts.PollIntervalMin,
-		// max_concurrent_tasks: 0 = no global cap (per-project governs);
-		// legacy values are preserved on upgrade via the merge below.
+		"models":           models,
+		"notifications":    map[string]interface{}{"desktop": opts.NotifyEnabled},
+		// 0 = no global cap; per-project capacity governs (default 2).
 		"max_concurrent_tasks":             0,
 		"max_concurrent_tasks_per_project": 2,
-		"off_peak_timezone":                "Asia/Shanghai",
-		"off_peak_windows":                 []map[string]string{{"start": "00:00", "end": "09:00"}, {"start": "12:00", "end": "14:00"}, {"start": "18:00", "end": "24:00"}},
-		// 全局共享知识库根：交互会话 KB-first 预检索的语料来源；为空回退
-		// obsidian_vault（缺省行为），交互注入自动关闭。
-		"kb_vault": "",
-		// 环境收尾（daemon 兜底删除实现会话自建的 k3d 集群/registry/网络）：
-		// on_merge 在 merge 完成时清，on_block 在 blocked/needs-grilling/closed
-		// 时清（TASK-066）；exclude 永不触碰用户常驻服务。
-		"env_cleanup": map[string]interface{}{
-			"on_merge": true,
-			"on_block": true,
-			"exclude":  []string{"kb-reranker", "ollama-sycl"},
-			"dry_run":  false,
-		},
-		"auto_resume_aged_after_hours": 24,
-		"agent_server_managed":         true,
-		"phase_concurrency": map[string]interface{}{
-			"refining": 3, "planning": 2, "merge": 1, "priority": 1, "pm": 1, "audit": 1,
-		},
-		"memory_gate": map[string]interface{}{
-			"mem_available_mib": 0, "auto_recovery": true, "max_stops": 2,
-			"exclude": []string{"kb-reranker", "ollama-sycl"},
-		},
+		"poll_interval_minutes":            opts.PollIntervalMin,
+		"agent_server_managed":             true,
 	}
-	// Field order is deliberate: alphabetical (the natural sort users see in
-	// most editors) with "projects" pinned last — appending a new project is
-	// the most frequent manual edit, so the array stays at the bottom.
+	// Field order is deliberate: essentials first, "projects" pinned last —
+	// appending a new project is the most frequent manual edit.
 	orderedKeys := []string{
-		"agent_server_managed", "auto_resume_aged_after_hours",
-		"env_cleanup", "kb_vault", "max_concurrent_tasks",
-		"max_concurrent_tasks_per_project", "memory_gate", "models",
-		"new_project_root", "notifications", "obsidian_vault", "off_peak_timezone",
-		"off_peak_windows", "phase_concurrency", "phase_timeouts_minutes",
-		"poll_interval_minutes", "projects",
+		"agent_server_managed", "max_concurrent_tasks",
+		"max_concurrent_tasks_per_project", "models", "new_project_root",
+		"notifications", "obsidian_vault", "poll_interval_minutes", "projects",
 	}
-
 	// Merge new defaults into existing config — never overwrite user values,
 	// and never reshuffle the user's hand-curated field order.
 	if existing, err := os.ReadFile(mapFile); err == nil {
@@ -338,7 +312,7 @@ func generateVaultMap(opts Options) error {
 		if err == nil {
 			for _, k := range orderedKeys {
 				if _, exists := obj.Get(k); !exists {
-					obj.Set(k, config[k])
+					obj.Set(k, cfg[k])
 				}
 			}
 			// Back up raw bytes before writing to prevent data loss on crash.
@@ -364,7 +338,7 @@ func generateVaultMap(opts Options) error {
 	// No existing file — create fresh atomically with the ordered layout.
 	obj := &jsonorder.OrderedJSON{}
 	for _, k := range orderedKeys {
-		obj.Set(k, config[k])
+		obj.Set(k, cfg[k])
 	}
 	if opts.DryRun {
 		data, _ := jsonorder.Marshal(obj)

@@ -58,7 +58,9 @@ func writeMemTaskFile(t *testing.T, vault, project, body string) string {
 // floor is configured.
 func TestMemNeedFromReq(t *testing.T) {
 	vault := t.TempDir()
-	r := newMemGateTestRunner(t, vault, config.Defaults().MemoryGate) // global floor 0
+	mg := config.Defaults().MemoryGate
+	mg.AutoRecovery = true
+	r := newMemGateTestRunner(t, vault, mg)
 
 	cases := []struct {
 		name string
@@ -126,7 +128,7 @@ func TestRecoverMemoryStopsUntilNeed(t *testing.T) {
 	vault := t.TempDir()
 	r := newMemGateTestRunner(t, vault, config.MemoryGateConfig{
 		MemAvailableMiB: 0, AutoRecovery: true, MaxStops: 3,
-		Exclude: []string{"kb-reranker", "ollama-sycl"},
+		Exclude: []string{"keep-cluster"},
 	})
 	freed, gotStopped := r.recoverMemory(12288)
 	if freed != 6000 || len(gotStopped) != 1 || gotStopped[0] != "deployd-customer" {
@@ -161,7 +163,9 @@ func TestEnforceMemoryGateEscalatesAndParks(t *testing.T) {
 		stopK3dCluster = func(name string) error { return nil }
 	}()
 
-	r := newMemGateTestRunner(t, vault, config.Defaults().MemoryGate)
+	mg := config.Defaults().MemoryGate
+	mg.AutoRecovery = true
+	r := newMemGateTestRunner(t, vault, mg)
 	taskPath := writeMemTaskFile(t, vault, "001-test", `---
 id: "065"
 project: test
@@ -228,7 +232,9 @@ func TestEnforceMemoryGateAutoRecoveryPasses(t *testing.T) {
 		stopK3dCluster = func(name string) error { return nil }
 	}()
 
-	r := newMemGateTestRunner(t, vault, config.Defaults().MemoryGate)
+	mg := config.Defaults().MemoryGate
+	mg.AutoRecovery = true
+	r := newMemGateTestRunner(t, vault, mg)
 	taskPath := writeMemTaskFile(t, vault, "001-test", `---
 id: "065"
 project: test
@@ -255,7 +261,9 @@ req_doc: Projects/001-test/Requirements/REQ-065.md
 func TestMemoryGateOverrideDetection(t *testing.T) {
 	vault := t.TempDir()
 	writeReq(t, vault, "001-test", "MemAvailable ≥12 GiB。")
-	r := newMemGateTestRunner(t, vault, config.Defaults().MemoryGate)
+	mg := config.Defaults().MemoryGate
+	mg.AutoRecovery = true
+	r := newMemGateTestRunner(t, vault, mg)
 	notes := filepath.Join(vault, "Projects", "001-test", "Notes")
 	if err := os.MkdirAll(notes, 0o755); err != nil {
 		t.Fatal(err)

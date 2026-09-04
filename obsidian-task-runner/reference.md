@@ -74,7 +74,7 @@ closed -- [终态，不可恢复]
 | `scaffold` | object | 新项目脚手架意图（`kind`/`capabilities`/`preferences`/`notes`），供 Round 1 / project-scaffold 消费 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 默认 true（缺失即 true）；plan-review 由 daemon 自动批准转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划（完整语义见上表 Gate 字段） |
-| `off_peak_only` | bool | Round 2 只在北京时间低峰执行 |
+| `off_peak_only` | bool | Round 2 只在低峰时段执行（`off_peak_windows` 未配置 = 不限制，恒可运行） |
 | `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
 
 顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `deepseek_magic/gpt-5.4-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
@@ -286,7 +286,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 - **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`；人工已授权或 `audit.enabled=false` 跳过。
 - **会话**：assignee 模型（`audit.model` 覆盖）、`reasoningEffort=low`（DSH 无 `off` 级，low 是最省显式推理）、超时 `audit.timeout_minutes`（默认 15）；在**任务 worktree** 内运行（与 round2 同分支），逐条 AC 复核原始证据，输出 strict JSON 判定。
-- **环境清理核验（强制）**：审计同时复核实现会话的清理证据——自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）残留，或发现会话曾停用用户常驻服务（kb-reranker、ollama-sycl、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
+- **环境清理核验（强制）**：审计同时复核实现会话的清理证据——自建临时资源（k3d 集群、docker 容器/网络、临时凭据、冒烟日志与构建产物）残留，或发现会话曾停用用户常驻服务（本地推理/向量检索服务、桌面进程等）换取门禁通过 → verdict=fail（failure_type=implementation）。
 - **pass** → `audit_status=passed`、清 `audit_fail_count`，继续合并授权流程。
 - **fail + implementation** → `phase_error_code=AUDIT_FAILED` + 审计摘要，转 implementing 自动修复（round2 加载 `skill://diagnosing-bugs` 消费 `phase_error`/`audit_log`）；连续 `audit.max_fixes` 次 → 升级 **needs-grilling 决策**（`grill_prev_status=implementing`；resume 回 implementing 重置预算 / replan 回 refining），非 blocked。
 - **fail + requirement**（AC 歧义/矛盾/不可验证）→ 直接转 needs-grilling 决策，不消耗修复预算。
@@ -437,7 +437,10 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。**运行期即时校验**：daemon 每轮 scan 对 vault-map.json 做语法/配置校验（`checkVaultMapHealth`）——日常改坏会在**下次 scan** 弹「⚠️ 配置文件语法错误」通知（按文件版本去重、只报告不改文件），而不是等重启才炸出 `CONFIG_INVALID`。`make deploy` 会用 `otg config migrate --write`（原子写）自动补齐新版本缺失字段。
 
-**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 标注 deprecated：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段仅影响旧 `executor="dsh"` spawn 路径。完整契约见 REQ-003「配置契约」。
+**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 标注 deprecated：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段仅影响旧 `executor="dsh"` spawn 路径。 完整契约见 REQ-003「配置契约」。
+
+**2026-09-04 开源化收敛**：`env_cleanup` 默认 **nil（禁用）**（删除 k3d 资源是有损操作，显式配置并声明 exclude 白名单才生效）；`memory_gate.auto_recovery` 默认 **false**、`exclude` 默认空（不再内置任何服务名）；`off_peak_windows`/`off_peak_timezone` 默认空 = **不限制**（opt-in，`off_peak_only` 恒可运行）；`merge_poll_wait_ticks` 默认 **20**（约 10min CI 轮询预算）；`upstream_stall_days` **显式 0 = 关闭告警**（缺省 3）；`notifications.sound` 从 schema 删除。完整字段与默认值以 **`docs/config-reference.md`** 为单一事实源（`otg config show --effective` 可看生效值）。
+
 
 **知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
 

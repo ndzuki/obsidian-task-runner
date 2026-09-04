@@ -211,27 +211,26 @@ otg install \
 }
 ```
 
-### 环境收尾（`env_cleanup`，默认开）
+### 环境收尾（`env_cleanup`，opt-in，默认关闭）
 
-实现会话（round2）常为冒烟测试自建 k3d 集群 / k3d registry / docker 网络，偶尔忘记拆除：任务合并后（TASK-065）或任务因需求/门禁阻塞、暂停（TASK-066）后这些临时环境会一直残留。daemon 在任务 merge 完成或进入阻塞/暂停终态时自动兜底删除这些可丢弃资源：
+实现会话（round2）常为冒烟测试自建 k3d 集群 / k3d registry / docker 网络，偶尔忘记拆除。daemon 提供兜底清理，但**默认不启用**（删除集群是有损操作，必须由运维显式声明）：
 
 ```json
 "env_cleanup": {
   "on_merge": true,
   "on_block": true,
-  "exclude": ["kb-reranker", "ollama-sycl", "deployd-customer"],
+  "exclude": ["my-persistent-cluster"],
   "dry_run": false
 }
 ```
 
-- `on_merge`（默认 `true`）：任务进入 merged/done 终态时自动删除 k3d 集群、k3d registry 及其残留网络。先删 registry（断开与集群网络的连接）再删集群，最后兜底删 `k3d-<cluster>` 网络。
-- `on_block`（默认 `true`）：任务停止实现但未合并时自动删除同样的可丢弃资源——`blocked`（阶段失败 / 需求变更 / pending_req 重规划）、`needs-grilling`（等待 grilling 或 parked）、`closed`。每段阻塞只清理一次（按 `blocked_at` 等状态签名去重），任务恢复后再阻塞会再次清理。
-- `exclude`：名称子串白名单，永不删除（用户常驻服务、想保留的持久集群）。
+- `on_merge`：任务进入 merged/done 终态时自动删除 k3d 集群、k3d registry 及其残留网络。先删 registry（断开与集群网络的连接）再删集群，最后兜底删 `k3d-<cluster>` 网络。
+- `on_block`：任务停止实现但未合并时自动删除同样的可丢弃资源——`blocked`（阶段失败 / 需求变更 / pending_req 重规划）、`needs-grilling`、`closed`。每段阻塞只清理一次（按 `blocked_at` 等状态签名去重）。
+- `exclude`：名称子串白名单，永不删除（常驻服务、想保留的持久集群）。**务必把你机器上的非任务集群写进去**。
 - `dry_run`：只记录和通知"将清理什么"，不实际删除，用于先审计再信任。
-- 该清理只针对 k3d 集群 / k3d registry / k3d 网络，不触碰任意 docker 容器（kb-reranker、ollama-sycl 等常驻服务天然不在 k3d 列表内）。
-- 想保留冒烟环境人工检查就设 `"on_merge": false` / `"on_block": false`。
+- 该清理只针对 k3d 集群 / k3d registry / k3d 网络，不触碰任意 docker 容器。
 
-`project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`obsidian-task-runner/config/vault-map.example.json`](obsidian-task-runner/config/vault-map.example.json)。
+`project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`docs/config-reference.md`](docs/config-reference.md)（示例文件只含最小键，`otg config show --effective` 查看生效值）。
 
 **团队已有项目（私有 Gitea 等）**：手动注册并标记 `project_type: team`（daemon 禁止自动建仓/提升/gh 操作，首个任务自动过只读规范审查门禁）。`merge_mode` 按开发方式选择——`manual`：直接在团队仓库上开发，交付停在推分支、你在仓库 UI 人工合并；`fork-merge`（推荐）：`git_remote` 指向你自己的 fork，自动化 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。详见 `docs/workflow.md` §6.5.1。
 
@@ -301,7 +300,7 @@ flowchart LR
 
 配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；**注意**：配置 `kb_db` 覆盖路径后，`otg kb hit` 的 hits 同步仍走默认库（该命令无配置上下文）——保持默认路径则实时生效，覆盖路径下 hits 在下次内容变更同步时从 frontmatter 补入。
 
-**Intel Arc 显卡方案**：Ollama 官方镜像不带 Intel GPU 后端。Intel Arc 独显请用社区 SYCL 构建 `eleiton/ollama-intel-arc`（本机副本 `~/src/repos/github.com/ndzuki/ollama-intel-arc`，`docker compose -f docker-compose.ollama-sycl.yml up -d --build`，端口仍为 11434，`kb_embedding` 配置无需改动）。完整部署、验证与排障见知识库 `core/containers/ollama-intel-arc.md`。
+**GPU/特殊硬件**：Ollama 官方镜像不含 Intel GPU 后端；Intel Arc 等设备请使用社区 SYCL 构建镜像，端口保持 11434 即可，`kb_embedding` 配置无需改动。
 
 ### 交互会话本地优先（`kb_vault`，KB-first）
 
@@ -346,17 +345,16 @@ flowchart LR
 }
 ```
 
-llama.cpp 部署示例（Intel 核显，与 ollama-sycl 同源）：`llama-server -m bge-reranker-v2-m3-f16.gguf --port 11435`（SYCL/OpenVINO 编译版可加 `--device` 参数）。**后端不可用时自动降级**：保持混合检索原序，不影响搜索结果。精排文本 = 标题 + 摘要 + 最佳 section 嵌入文本（索引时落库，无需重读 vault）。
+llama.cpp 部署示例：`llama-server -m bge-reranker-v2-m3-f16.gguf --port 11435`（GPU 编译版可加 `--device` 参数）。**后端不可用时自动降级**：保持混合检索原序，不影响搜索结果。精排文本 = 标题 + 摘要 + 最佳 section 嵌入文本（索引时落库，无需重读 vault）。
 
-本机已验证的容器化部署（`ghcr.io/ggml-org/llama.cpp:server`，模型 GGUF 取自 ollama-sycl 容器 blob——`docker cp ollama-sycl:/root/.ollama/models/blobs/<sha256-4bf5…>`，607MB，仓库 `models/` 目录已 gitignore）：
+容器化部署示例（`ghcr.io/ggml-org/llama.cpp:server`，GGUF 模型放本地目录）：
 
 ```bash
-docker run -d --name kb-reranker --restart unless-stopped \
+docker run -d --name reranker --restart unless-stopped \
   -p 127.0.0.1:11435:8080 \
   -v "$(pwd)/models:/models:ro" \
   ghcr.io/ggml-org/llama.cpp:server \
-  -m /models/bge-reranker-v2-m3.gguf --reranking --host 0.0.0.0 --port 8080 \
-  --threads 4 -b 1024 -ub 1024
+  -m /models/bge-reranker-v2-m3.gguf --reranking --host 0.0.0.0 --port 8080
 ```
 
 两个实测注意点：① 默认 `-ub 512` 放不下 query+600 字 chunk（会报 `input (530 tokens) is too large` → 该次精排静默跳过），必须 `-ub 1024`；② 容器健康检查通过前 `/v1/rerank` 可能未就绪，RerankClient 的降级兜底不受影响。
@@ -673,6 +671,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 
 ## 文档索引
 
+- [`docs/config-reference.md`](docs/config-reference.md)：vault-map.json 配置单一事实源（字段表 + 默认值）。
 - [`docs/dataview.md`](docs/dataview.md)：Dataview 安装和看板配置（推荐先读）。
 - [`docs/workflow.md`](docs/workflow.md)：架构和完整业务流程（含 §12 知识库知识流）。
 - [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md)：Agent 执行规则（含 KB v2 格式规范）。

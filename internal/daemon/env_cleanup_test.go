@@ -50,7 +50,7 @@ func TestCleanupMergeEnvDeletesRegistriesThenClustersThenNetworks(t *testing.T) 
 		removeDockerNetwork = func(string) error { return nil }
 	})
 
-	r := newEnvCleanupTestRunner(t, &config.EnvCleanupConfig{OnMerge: true, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+	r := newEnvCleanupTestRunner(t, &config.EnvCleanupConfig{OnMerge: true, Exclude: []string{"keep-service"}})
 	r.cleanupMergeEnv("065", "一键开发环境")
 
 	// Registries detach first, then clusters in deterministic sorted order,
@@ -227,7 +227,7 @@ func newCleanupSpy(t *testing.T, cleanup *config.EnvCleanupConfig) (*Runner, *in
 }
 
 func TestCleanupBlockedEnvDeletesK3dOnBlock(t *testing.T) {
-	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"keep-service"}})
 	path := writeCleanupTask(t, "blocked", "2026-08-28T10:00:00+08:00")
 
 	r.cleanupBlockedEnv(path, "066", "T")
@@ -239,7 +239,7 @@ func TestCleanupBlockedEnvDeletesK3dOnBlock(t *testing.T) {
 }
 
 func TestCleanupBlockedEnvRunsOncePerBlockedEpisode(t *testing.T) {
-	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"keep-service"}})
 	path := writeCleanupTask(t, "blocked", "2026-08-28T10:00:00+08:00")
 
 	r.cleanupBlockedEnv(path, "066", "T")
@@ -251,7 +251,7 @@ func TestCleanupBlockedEnvRunsOncePerBlockedEpisode(t *testing.T) {
 }
 
 func TestCleanupBlockedEnvRerunsOnNewBlockedEpisode(t *testing.T) {
-	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"keep-service"}})
 	path := writeCleanupTask(t, "blocked", "2026-08-28T10:00:00+08:00")
 
 	r.cleanupBlockedEnv(path, "066", "T")
@@ -269,7 +269,7 @@ func TestCleanupBlockedEnvRerunsOnNewBlockedEpisode(t *testing.T) {
 
 func TestCleanupBlockedEnvCoversNeedsGrillingAndClosed(t *testing.T) {
 	for _, status := range []string{"needs-grilling", "closed"} {
-		r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+		r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: true, Exclude: []string{"keep-service"}})
 		path := writeCleanupTask(t, status, "")
 
 		r.cleanupBlockedEnv(path, "066", "T")
@@ -280,7 +280,7 @@ func TestCleanupBlockedEnvCoversNeedsGrillingAndClosed(t *testing.T) {
 }
 
 func TestCleanupBlockedEnvDisabledSkipsEverything(t *testing.T) {
-	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: false, Exclude: []string{"kb-reranker", "ollama-sycl"}})
+	r, deletes, _ := newCleanupSpy(t, &config.EnvCleanupConfig{OnMerge: true, OnBlock: false, Exclude: []string{"keep-service"}})
 	path := writeCleanupTask(t, "blocked", "2026-08-28T10:00:00+08:00")
 
 	r.cleanupBlockedEnv(path, "066", "T")
@@ -315,7 +315,8 @@ func TestProcessBatchSequentialCleansK3dOnBlockedTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Defaults() // EnvCleanup.OnBlock defaults true
+	cfg := config.Defaults()
+	cfg.EnvCleanup = &config.EnvCleanupConfig{OnMerge: true, OnBlock: true}
 	cfg.Notifications.Desktop = false
 	r := New(cfg)
 	r.logger = log.New(io.Discard, "", 0)
@@ -365,7 +366,8 @@ func TestCleanupDeadEndTaskEnvsCoversBlockedNeedsGrillingClosed(t *testing.T) {
 	write("TASK-066-grill.md", "needs-grilling")
 	write("TASK-066-closed.md", "closed")
 
-	cfg := config.Defaults() // EnvCleanup.OnBlock defaults true
+	cfg := config.Defaults()
+	cfg.EnvCleanup = &config.EnvCleanupConfig{OnMerge: true, OnBlock: true}
 	cfg.Notifications.Desktop = false
 	cfg.ObsidianVault = vault
 	r := New(cfg)

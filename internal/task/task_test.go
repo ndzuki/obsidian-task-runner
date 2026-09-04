@@ -215,8 +215,7 @@ blocked_by:
 
 func TestIsOffPeakWith(t *testing.T) {
 	windows := []config.TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}}
-	// These assertions depend on the current time; verify window parsing and
-	// cross-midnight handling structurally instead.
+	// 结构性检查：窗口解析与跨午夜处理。
 	if _, ok := parseHM("09:30"); !ok {
 		t.Fatal("parseHM must accept HH:MM")
 	}
@@ -226,18 +225,18 @@ func TestIsOffPeakWith(t *testing.T) {
 	if _, ok := parseHM("9:30"); !ok {
 		t.Fatal("parseHM must accept single-digit hour")
 	}
-	// Cross-midnight window: 22:00-02:00.
 	cross := []config.TimeWindow{{Start: "22:00", End: "02:00"}}
-	// Structural check: the helper evaluates without panic for any tz.
-	_ = IsOffPeakWith(cross, "Asia/Shanghai")
-	_ = IsOffPeakWith(windows, "invalid/tz") // falls back to CST
-	// Default fn remains the legacy window, and the nil-window path must
-	// agree with IsOffPeak() (regression: it used to return false always).
+	_ = IsOffPeakWith(cross, "Etc/GMT-8")
+	_ = IsOffPeakWith(windows, "invalid/tz") // 无效时区回退本地
+	// Off-peak 是 opt-in：未配置窗口 = 不限制，恒 true。
 	if OffPeakFn == nil {
 		t.Fatal("OffPeakFn must default to IsOffPeak")
 	}
-	if got := IsOffPeakWith(nil, ""); got != IsOffPeak() {
-		t.Fatalf("IsOffPeakWith(nil) = %v, IsOffPeak() = %v — nil must fall back to legacy window", got, IsOffPeak())
+	if got := IsOffPeakWith(nil, ""); !got {
+		t.Fatal("IsOffPeakWith(nil) must return true when off-peak is unconfigured")
+	}
+	if !IsOffPeak() {
+		t.Fatal("IsOffPeak() must return true when off-peak is unconfigured")
 	}
 }
 

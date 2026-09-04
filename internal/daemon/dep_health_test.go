@@ -320,57 +320,57 @@ func TestCheckVaultMapHealth(t *testing.T) {
 // 004/005 blocked by a paused needs-grilling upstream produced a blocked_by
 // reminder every daemon restart because diagNotifyAt is in-memory).
 func TestValidateDependencyRefsSkipsPausedProject(t *testing.T) {
-dir := t.TempDir()
-vault := filepath.Join(dir, "vault")
-projDir := filepath.Join(vault, "Projects", "001-test")
-tasksDir := filepath.Join(projDir, "Tasks")
-// Paused decision list (status=closed) — the user's pause switch.
-if err := os.MkdirAll(filepath.Join(projDir, "Notes"), 0o755); err != nil {
-t.Fatal(err)
-}
-if err := os.WriteFile(filepath.Join(projDir, "Notes", grillingDecisionListName),
-[]byte("---\nid: grilling-decisions\nstatus: closed\n---\n"), 0o644); err != nil {
-t.Fatal(err)
-}
-// Both a broken ref (999 missing) and a stale-upstream ref (002 idle 6d).
-writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"999\"\n---\n# A\n")
-writeHealthTask(t, tasksDir, "TASK-002-b.md", "---\nid: \"002\"\nstatus: blocked\n---\n# B\n")
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	// Paused decision list (status=closed) — the user's pause switch.
+	if err := os.MkdirAll(filepath.Join(projDir, "Notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "Notes", grillingDecisionListName),
+		[]byte("---\nid: grilling-decisions\nstatus: closed\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Both a broken ref (999 missing) and a stale-upstream ref (002 idle 6d).
+	writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"999\"\n---\n# A\n")
+	writeHealthTask(t, tasksDir, "TASK-002-b.md", "---\nid: \"002\"\nstatus: blocked\n---\n# B\n")
 
-runner := healthRunner(t, vault)
-runner.validateDependencyRefs()
+	runner := healthRunner(t, vault)
+	runner.validateDependencyRefs()
 
-notified := false
-runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
-if strings.Contains(key.(string), "blocked_by") {
-notified = true
-}
-return true
-})
-if notified {
-t.Fatal("paused project must suppress all dependency-health reminders")
-}
+	notified := false
+	runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
+		if strings.Contains(key.(string), "blocked_by") {
+			notified = true
+		}
+		return true
+	})
+	if notified {
+		t.Fatal("paused project must suppress all dependency-health reminders")
+	}
 }
 
 // TestValidateDependencyRefsActiveProjectStillNotifies guards the flip side:
 // an ACTIVE project (no paused decision list) still surfaces broken refs —
 // the pause suppression must not leak into projects the user has not paused.
 func TestValidateDependencyRefsActiveProjectStillNotifies(t *testing.T) {
-dir := t.TempDir()
-vault := filepath.Join(dir, "vault")
-tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
-writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"999\"\n---\n# A\n")
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"999\"\n---\n# A\n")
 
-runner := healthRunner(t, vault)
-runner.validateDependencyRefs()
+	runner := healthRunner(t, vault)
+	runner.validateDependencyRefs()
 
-notified := false
-runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
-if strings.Contains(key.(string), "blocked_by|001->999") {
-notified = true
-}
-return true
-})
-if !notified {
-t.Fatal("active project must still surface broken refs")
-}
+	notified := false
+	runner.diagNotifyAt.Range(func(key, _ interface{}) bool {
+		if strings.Contains(key.(string), "blocked_by|001->999") {
+			notified = true
+		}
+		return true
+	})
+	if !notified {
+		t.Fatal("active project must still surface broken refs")
+	}
 }

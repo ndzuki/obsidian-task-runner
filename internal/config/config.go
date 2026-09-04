@@ -225,12 +225,6 @@ type TimeWindow struct {
 	End   string `json:"end"`
 }
 
-// OffPeakWindow defines a time window for off-peak scheduling.
-type OffPeakWindow struct {
-	Start string `json:"start"` // "00:00"
-	End   string `json:"end"`   // "09:00"
-}
-
 // MemoryGateConfig drives the daemon-side host-memory gate for
 // implementing/round2 dispatch (see Config.MemoryGate).
 type MemoryGateConfig struct {
@@ -241,7 +235,7 @@ type MemoryGateConfig struct {
 	MemAvailableMiB int `json:"mem_available_mib"`
 	// AutoRecovery stops restartable k3d staging clusters (recoverable via
 	// `k3d cluster start`) to free memory before escalating. It never touches
-	// user services (kb-reranker, ollama-sycl, desktop processes) or anything
+	// user services (local inference/vector services, desktop processes) or anything
 	// in Exclude.
 	AutoRecovery bool `json:"auto_recovery"`
 	// MaxStops caps how many clusters a single auto-recovery pass may stop.
@@ -254,7 +248,7 @@ type MemoryGateConfig struct {
 // Config.EnvCleanup). It deletes disposable k3d clusters, k3d registries,
 // and their leftover docker networks — resources that an implementing
 // session built for smoke tests and forgot to remove. It never touches user
-// services (kb-reranker, ollama-sycl, desktop processes) or anything in
+// services (local inference/vector services, desktop processes) or anything in
 // Exclude.
 type EnvCleanupConfig struct {
 	// OnMerge enables teardown when a task reaches the merged/done terminal
@@ -486,13 +480,14 @@ func Defaults() *Config {
 		// planning 45m：2026-09-02 planning→max 后思维链会话更长，大 REQ 的
 		// plan 生成需要余量（30m 会在活跃会话下误判 wedged 的风险升高）。
 		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 45, "round2": 120, "merge": 15, "design": 90},
-		OffPeakTimezone:        "Asia/Shanghai",
-		OffPeakWindows:         []TimeWindow{{Start: "00:00", End: "09:00"}, {Start: "12:00", End: "14:00"}, {Start: "18:00", End: "24:00"}},
+		OffPeakTimezone:        "",
+		OffPeakWindows:         nil,
 		ScanMinIntervalSeconds: 10,
 		// Overlap deferral cap: 12h exceeds the round2 no-progress cooldown
 		// ceiling (~10.7h), so a stalled upstream stops being re-dispatched
 		// before the deferred task is released to run concurrently.
 		MaxOverlapWaitMinutes:      720,
+		MergePollWaitTicks:         20, // 20 × 30s = 10min CI polling budget per merge attempt
 		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
@@ -500,26 +495,21 @@ func Defaults() *Config {
 		UpstreamStallDays:          3,  // upstream idle warning (TASK-067: month-long silent blockage)
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
+		GrillingConsolidationBatch: 1,
 		AutoResumeAgedAfterHours:   24,
 		MemoryGate: MemoryGateConfig{
-			// 0 = 无全局下限：仅 REQ 显式声明 "MemAvailable ≥ N GiB" 的门禁生效
-			//（TASK-065 AC-065-20 12GiB）。不想让非 smoke 的普通实现任务也被
-			// 12GiB 卡住，所以默认不设全局 floor。
+			// 0 = 无全局下限：仅 REQ 显式声明 "MemAvailable ≥ N GiB" 的门禁生效。
+			// AutoRecovery 默认关闭：自动停 k3d 集群是有损运维决策，必须显式
+			// 开启，并用 Exclude 声明永不触碰的常驻服务。
 			MemAvailableMiB: 0,
-			AutoRecovery:    true, // 自发现 + 自动回收可停 k3d 集群
+			AutoRecovery:    false,
 			MaxStops:        2,
-			Exclude:         []string{"kb-reranker", "ollama-sycl"},
+			Exclude:         []string{},
 		},
-		EnvCleanup: &EnvCleanupConfig{
-			// merge/blocked 后自动删除任务自建的可丢弃 k3d 集群/registry/网络，
-			// 兜底实现会话忘删的冒烟环境（TASK-065 merge 收尾缺口、TASK-066
-			// blocked 收尾缺口）。Exclude 与 memory_gate 同款红线，永不触碰
-			// 用户常驻服务。
-			OnMerge: true,
-			OnBlock: true,
-			Exclude: []string{"kb-reranker", "ollama-sycl"},
-			DryRun:  false,
-		},
+		// EnvCleanup 默认不启用（nil）：删除 k3d 集群/registry/网络是有损操作，
+		// 开源默认不做任何自动删除；需要时在 vault-map.json 显式配置并声明
+		// Exclude 白名单。
+		EnvCleanup:          nil,
 		SkillInstallDir:     filepath.Join(home, ".dsh", "skills", "obsidian-task-runner"),
 		Models:              DefaultModels(),
 		DSHCmd:              "dsh",
@@ -548,10 +538,21 @@ func Load(mapPath string) (*Config, error) {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("read %s: %w", mapPath, err)
 		}
-	} else if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", mapPath, err)
+		mergeDefaults(cfg, map[string]bool{})
+	} else {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", mapPath, err)
+		}
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", mapPath, err)
+		}
+		present := make(map[string]bool, len(raw))
+		for k := range raw {
+			present[k] = true
+		}
+		mergeDefaults(cfg, present)
 	}
-	mergeDefaults(cfg)
 	applyEnvironment(cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -559,7 +560,10 @@ func Load(mapPath string) (*Config, error) {
 	return cfg, nil
 }
 
-func mergeDefaults(cfg *Config) {
+// mergeDefaults fills defaults for fields the operator did not set. `present`
+// holds the top-level keys that appeared in the raw vault-map.json, so an
+// explicit 0 can disable a feature whose default is non-zero (upstream_stall_days).
+func mergeDefaults(cfg *Config, present map[string]bool) {
 	defaults := Defaults()
 	// MaxConcurrentTasks: 0 is a valid value (no global cap) — missing and
 	// explicit 0 are identical, so no fallback. Per-project capacity: 0
@@ -688,7 +692,9 @@ func mergeDefaults(cfg *Config) {
 	if cfg.MaxAutoFixConflicts == 0 {
 		cfg.MaxAutoFixConflicts = defaults.MaxAutoFixConflicts
 	}
-	if cfg.UpstreamStallDays == 0 {
+	// Explicit upstream_stall_days=0 means "disable the idle warning" (the
+	// field documents 0 = disabled). Only backfill when the key is absent.
+	if !present["upstream_stall_days"] && cfg.UpstreamStallDays <= 0 {
 		cfg.UpstreamStallDays = defaults.UpstreamStallDays
 	}
 	if cfg.StageMinPerPhase <= 0 {
@@ -700,24 +706,11 @@ func mergeDefaults(cfg *Config) {
 	if cfg.AutoResumeAgedAfterHours <= 0 {
 		cfg.AutoResumeAgedAfterHours = defaults.AutoResumeAgedAfterHours
 	}
-	if cfg.MemoryGate.MemAvailableMiB == 0 && !cfg.MemoryGate.AutoRecovery {
-		// 完全未配置 → 用默认（REQ 声明驱动、自动回收开、排除用户服务）。
-		cfg.MemoryGate = defaults.MemoryGate
-	} else {
-		if cfg.MemoryGate.MaxStops == 0 {
-			cfg.MemoryGate.MaxStops = defaults.MemoryGate.MaxStops
-		}
-		if len(cfg.MemoryGate.Exclude) == 0 {
-			cfg.MemoryGate.Exclude = defaults.MemoryGate.Exclude
-		}
+	if cfg.MemoryGate.MaxStops == 0 {
+		cfg.MemoryGate.MaxStops = defaults.MemoryGate.MaxStops
 	}
-	if cfg.EnvCleanup == nil {
-		cfg.EnvCleanup = defaults.EnvCleanup
-	} else {
-		if len(cfg.EnvCleanup.Exclude) == 0 {
-			cfg.EnvCleanup.Exclude = defaults.EnvCleanup.Exclude
-		}
-	}
+	// EnvCleanup is opt-in (nil default): an explicit block keeps its own
+	// Exclude verbatim — code never injects personal service names.
 	if cfg.Audit == nil {
 		cfg.Audit = defaults.Audit
 	} else {
