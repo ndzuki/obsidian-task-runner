@@ -270,6 +270,17 @@ function kbHitsCacheSet(key, entry) {
   lruCacheSet(kbHitsCache, key, entry, kbHitsEntryTTL, KB_HITS_CACHE_MAX)
 }
 
+/** 读命中缓存：命中（含 err/empty 短缓存）→ 条目；未命中/过期 → null。 */
+function kbHitsCacheGet(key) {
+  const cached = kbHitsCache.get(key)
+  if (cached === undefined) return null
+  if (Date.now() - cached.at >= kbHitsEntryTTL(cached.value)) {
+    kbHitsCache.delete(key)
+    return null
+  }
+  return cached.value
+}
+
 /** 预检索命中率计量（A0）：hit/miss/empty/err/skipped 分类计数，每小时一条
  * 日志——没有它，后续缓存调优与阈值校准无从量化收益。F1：附带耗时直方图
  * （桶边界 KB_DURATION_BOUNDARIES，校准 B1 快/全预算阈值的分布证据）。 */
@@ -474,23 +485,24 @@ function kbHitsCacheKey(vault, db, q) {
 /* ────────────────────────── B2：常驻检索端点 ────────────────────────────── */
 
 /** 常驻 KB 检索端点基址（daemon vaultweb /api/kb/search）；空 → 只走 spawn。 */
-const KB_HTTP_TIMEOUT_MS = 1200
+const KB_HTTP_TIMEOUT_MS = 5000
 
 function kbHttpBase() {
   return (process.env.OTR_KB_HTTP || "").trim()
 }
 
 /** 组装检索 URL（纯函数，可单测）：base 去尾斜杠 + 编码查询词。 */
-function kbHttpUrl(base, q, limit) {
-  return `${String(base || "").replace(/\/+$/, "")}/api/kb/search?q=${encodeURIComponent(q)}&limit=${limit}`
+function kbHttpUrl(base, q, limit, noRerank = false) {
+  const rerank = noRerank ? "&rerank=false" : ""
+  return `${String(base || "").replace(/\/+$/, "")}/api/kb/search?q=${encodeURIComponent(q)}&limit=${limit}${rerank}`
 }
 
 /** HTTP 检索：成功 → 命中数组（含空数组 = 真无命中）；失败/超时/非数组 → null
- * （调用方回退 spawn）。1.2s 超时——比 spawn+embedding 冷启动快一个量级，
- * 且 daemon 不可用时立即 ECONNREFUSED 落到 spawn，不增加首问延迟。 */
-async function kbHttpSearch(base, q, limit) {
+ * （调用方回退 spawn）。5s 超时——daemon 的 hybrid-only 快路径约 0.25-0.35s，
+ * 带 rerank 的完整路径也能在预算内完成，避免每次 miss 又 spawn 重复检索。 */
+async function kbHttpSearch(base, q, limit, noRerank = false) {
   try {
-    const res = await fetch(kbHttpUrl(base, q, limit), { signal: AbortSignal.timeout(KB_HTTP_TIMEOUT_MS) })
+    const res = await fetch(kbHttpUrl(base, q, limit, noRerank), { signal: AbortSignal.timeout(KB_HTTP_TIMEOUT_MS) })
     if (!res.ok) return null
     const hits = await res.json()
     return Array.isArray(hits) ? hits : null
@@ -672,20 +684,31 @@ function deriveQuery(message) {
   return t
 }
 
-/** 服务端预检索：spawn `otg kb search --json` 复用 Go 检索栈。返回命中数组
- * （[{path,title,summary,score,chunk}]）或 null（KB 未配置 / otg 不可用 /
- * 检索失败——调用方回退索引摘要）。带 TTL 缓存 + 子进程超时。
- * 缓存键含配置指纹 + 归一化查询词（A1/A5）；失败短缓存 30s（A2）；命中率计量（A0）。 */
-function kbPrecompute(query) {
+/** 新会话首问可立即使用的缓存命中：只读缓存，绝不同步检索。
+ * 返回命中数组或 null（无缓存/空/错误缓存一律回退 INDEX 摘要）。 */
+function kbCachedHits(query) {
   const vault = kbVaultRoot()
   const q = String(query || "").trim()
   if (!vault || !q) return null
+  const cached = kbHitsCacheGet(kbHitsCacheKey(vault, kbDbPath(), q))
+  if (!cached) return null
+  return cached.kind === "hits" && Array.isArray(cached.hits) ? cached.hits : null
+}
+
+/** 后台预热预检索（非阻塞）：默认走 hybrid-only 快路径（--no-rerank /
+ * rerank=false），避免首问被 reranker 拖慢，也避免 daemon 端超过老 1.2s
+ * HTTP 超时而重复 spawn。命中后写缓存，下次同域问题直接命中。
+ * 缓存键含配置指纹 + 归一化查询词（A1/A5）；失败短缓存 30s（A2）；命中率计量（A0）。 */
+function warmKbPrecompute(query) {
+  const vault = kbVaultRoot()
+  const q = String(query || "").trim()
+  if (!vault || !q) return
 
   const cacheKey = kbHitsCacheKey(vault, kbDbPath(), q)
-  const cached = kbHitsCache.get(cacheKey)
-  if (cached !== undefined && Date.now() - cached.at < kbHitsEntryTTL(cached.value)) {
+  const cached = kbHitsCacheGet(cacheKey)
+  if (cached) {
     kbStatsNote("hits")
-    return cached.value.kind === "hits" ? cached.value.hits : null
+    return
   }
 
   kbStatsNote("misses")
@@ -697,67 +720,61 @@ function kbPrecompute(query) {
     settled = true
     noteSearchFinished(durationMs, timedOut)
   }
-  return new Promise((resolve) => {
-    /** 检索结果落缓存并结束：数组（含空）= 正常结果。 */
-    const storeHits = (hits, durationMs) => {
-      finish(durationMs, false)
-      if (!Array.isArray(hits) || hits.length === 0) {
-        kbStatsNote("empty")
-        kbHitsCacheSet(cacheKey, { kind: "empty" })
-        resolve(null)
+  /** 检索结果落缓存：数组（含空）= 正常结果。 */
+  const storeHits = (hits, durationMs) => {
+    finish(durationMs, false)
+    if (!Array.isArray(hits) || hits.length === 0) {
+      kbStatsNote("empty")
+      kbHitsCacheSet(cacheKey, { kind: "empty" })
+      return
+    }
+    kbHitsCacheSet(cacheKey, { kind: "hits", hits })
+  }
+  /** spawn 兜底（B2）：常驻端点不可用/未配置时的既有路径。 */
+  const spawnSearch = () => {
+    const otg = (process.env.OTR_OTG_PATH || "").trim() || "otg"
+    const args = ["kb", "search", "--json", "--no-rerank", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
+    if (kbDbPath()) args.push("--db", kbDbPath())
+    // 带上 daemon 的 map 路径：让 otg 读到 kb_embedding/kb_rerank 配置，
+    // 否则 spawn 的 otg 会读默认 vault-map.json（用户配置在别处时丢失 embedding）。
+    const mapFile = (process.env.OTR_MAP_FILE || "").trim()
+    if (mapFile) args.push("--map-file", mapFile)
+    args.push(q)
+    const child = execFile(otg, args, {
+      timeout: budget,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: "utf8",
+    }, (err, stdout) => {
+      if (err) {
+        console.error(`agent-server: KB precompute failed for ${q.slice(0, 40)}: ${err?.message ?? err}`)
+        // execFile 超时 kill（killed/signal）才算 timedOut；ENOENT 等立即失败不算。
+        const timedOut = Boolean(err && (err.killed || err.code === "ETIMEDOUT"))
+        finish(Date.now() - startedAt, timedOut)
+        kbStatsNote("errs")
+        kbHitsCacheSet(cacheKey, { kind: "err" })
         return
       }
-      kbHitsCacheSet(cacheKey, { kind: "hits", hits })
-      resolve(hits)
-    }
-    /** spawn 兜底（B2）：常驻端点不可用/未配置时的既有路径。 */
-    const spawnSearch = () => {
-      const otg = (process.env.OTR_OTG_PATH || "").trim() || "otg"
-      const args = ["kb", "search", "--json", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
-      if (kbDbPath()) args.push("--db", kbDbPath())
-      // 带上 daemon 的 map 路径：让 otg 读到 kb_embedding/kb_rerank 配置，
-      // 否则 spawn 的 otg 会读默认 vault-map.json（用户配置在别处时丢失 embedding）。
-      const mapFile = (process.env.OTR_MAP_FILE || "").trim()
-      if (mapFile) args.push("--map-file", mapFile)
-      args.push(q)
-      const child = execFile(otg, args, {
-        timeout: budget,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: "utf8",
-      }, (err, stdout) => {
-        if (err) {
-          console.error(`agent-server: KB precompute failed for ${q.slice(0, 40)}: ${err?.message ?? err}`)
-          // execFile 超时 kill（killed/signal）才算 timedOut；ENOENT 等立即失败不算。
-          const timedOut = Boolean(err && (err.killed || err.code === "ETIMEDOUT"))
-          finish(Date.now() - startedAt, timedOut)
-          kbStatsNote("errs")
-          kbHitsCacheSet(cacheKey, { kind: "err" })
-          resolve(null)
-          return
-        }
-        let hits
-        try { hits = JSON.parse(stdout) } catch { hits = null }
-        storeHits(hits, Date.now() - startedAt)
-      })
-      // 进程级兜底：execFile 的 timeout 只杀子进程，这里再防万一卡住不 resolve。
-      // 兜底触发 = 预算耗尽，记为 timedOut（下次回全预算）。
-      setTimeout(() => {
-        finish(Date.now() - startedAt, true)
-        resolve(null)
-        try { child.kill("SIGKILL") } catch { /* noop */ }
-      }, budget + 1000)
-    }
-    // B2：优先走 daemon 常驻端点（免 spawn/重开 SQLite），失败回退 spawn。
-    const httpBase = kbHttpBase()
-    if (httpBase) {
-      kbHttpSearch(httpBase, q, KB_PRECOMPUTE_LIMIT).then((hits) => {
-        if (hits === null) { spawnSearch(); return }
-        storeHits(hits, Date.now() - startedAt)
-      })
-    } else {
-      spawnSearch()
-    }
-  })
+      let hits
+      try { hits = JSON.parse(stdout) } catch { hits = null }
+      storeHits(hits, Date.now() - startedAt)
+    })
+    // 进程级兜底：execFile 的 timeout 只杀子进程，这里再防万一卡住不 finish。
+    // 兜底触发 = 预算耗尽，记为 timedOut（下次回全预算）。
+    setTimeout(() => {
+      finish(Date.now() - startedAt, true)
+      try { child.kill("SIGKILL") } catch { /* noop */ }
+    }, budget + 1000)
+  }
+  // B2：优先走 daemon 常驻端点（免 spawn/重开 SQLite），失败回退 spawn。
+  const httpBase = kbHttpBase()
+  if (httpBase) {
+    kbHttpSearch(httpBase, q, KB_PRECOMPUTE_LIMIT, true).then((hits) => {
+      if (hits === null) { spawnSearch(); return }
+      storeHits(hits, Date.now() - startedAt)
+    }).catch(() => { spawnSearch() })
+  } else {
+    spawnSearch()
+  }
 }
 
 /** 组装「服务端预检索命中」前置块：确定性注入 top-N 命中 + 深检索规则。 */
@@ -1068,7 +1085,7 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, kbCachedHits, kbHitsCacheGet, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)
@@ -1506,8 +1523,11 @@ export function apply(ctx, config = {}) {
       // 无效/问候类查询跳过预检索（A4）：不 spawn otg、不注入 INDEX 摘要，
       // 避免无谓子进程与 token 开销；项目上下文块不受影响。
       const trivial = isTrivialQuery(query)
-      hits = trivial ? null : await kbPrecompute(query)
       if (trivial) kbStatsNote("skipped")
+      // 非阻塞 KB-first：首问先用缓存命中，未命中则立即注入毫秒级 INDEX
+      // 摘要，后台异步预热完整检索（hybrid-only，绕开 reranker）。
+      hits = trivial ? null : kbCachedHits(query)
+      if (!trivial) warmKbPrecompute(query)
       kbBlock = projectBlock + (trivial ? "" : kbFirstPreamble(query, hits))
     }
     agent.followup(userMessage(kbBlock + message))

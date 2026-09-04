@@ -39,7 +39,10 @@ func (r *Runner) startVaultWeb() error {
 // mismatch falls back to BM25) + optional cross-encoder rerank. Consumers
 // (agent-server / kb-preflight) hit this instead of spawning the otg binary;
 // when the daemon or endpoint is unavailable they fall back to spawn.
-func (r *Runner) kbSearchForHTTP(query string, limit int) ([]knowledge.SearchResult, error) {
+// rerank=false lets the interactive precompute path stay fast: the hybrid
+// result is already good enough for top-N injection, and the cross-encoder
+// remains enabled for `otg kb ask` / explicit deep search.
+func (r *Runner) kbSearchForHTTP(query string, limit int, rerank bool) ([]knowledge.SearchResult, error) {
 	dbPath := knowledge.KBPath(r.cfg.ObsidianVault, r.cfg.KBDb)
 	var client *knowledge.EmbeddingClient
 	weight := 0.0
@@ -59,7 +62,7 @@ func (r *Runner) kbSearchForHTTP(query string, limit int) ([]knowledge.SearchRes
 	if err != nil {
 		return nil, err
 	}
-	if r.cfg.KBRerank != nil && len(hits) > 0 {
+	if rerank && r.cfg.KBRerank != nil && len(hits) > 0 {
 		rc := knowledge.NewRerankClient(r.cfg.KBRerank)
 		if len(hits) > r.cfg.KBRerank.TopN {
 			hits = hits[:r.cfg.KBRerank.TopN]

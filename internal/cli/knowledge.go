@@ -130,8 +130,10 @@ var kbSearchCmd = &cobra.Command{
 		}
 		// Optional cross-encoder rerank: hybrid top-N → rerank → final
 		// limit. RerankResults degrades silently when the backend is
-		// unreachable — the hybrid order stands.
-		if cfg.KBRerank != nil && len(hits) > 0 {
+		// unreachable — the hybrid order stands. Interactive KB-first
+		// precompute uses --no-rerank so the warm path is fast; `otg kb ask`
+		// keeps the full rerank path.
+		if cfg.KBRerank != nil && len(hits) > 0 && !kbSearchNoRerank {
 			rc := knowledge.NewRerankClient(cfg.KBRerank)
 			if len(hits) > cfg.KBRerank.TopN {
 				hits = hits[:cfg.KBRerank.TopN]
@@ -451,6 +453,7 @@ var (
 	kbSearchVault    string
 	kbSearchDB       string
 	kbSearchJSON     bool
+	kbSearchNoRerank bool
 )
 
 func init() {
@@ -462,6 +465,7 @@ func init() {
 	kbSearchCmd.Flags().StringVar(&kbSearchVault, "vault", "", "explicit knowledge vault root (overrides map-file obsidian_vault)")
 	kbSearchCmd.Flags().StringVar(&kbSearchDB, "db", "", "explicit kb store path (overrides map-file kb_db)")
 	kbSearchCmd.Flags().BoolVar(&kbSearchJSON, "json", false, "emit machine-readable JSON array (for interactive KB-first precompute)")
+	kbSearchCmd.Flags().BoolVar(&kbSearchNoRerank, "no-rerank", false, "skip cross-encoder rerank (fast precompute/hybrid path)")
 	kbAskCmd.Flags().StringVar(&kbMapFile, "map-file", "", "path to vault-map.json")
 	kbAskCmd.Flags().IntVar(&kbAskLimit, "limit", 5, "max retrieved references")
 	kbAskCmd.Flags().StringVar(&kbAskModel, "model", "", "chat model override (default: kb_chat.model)")

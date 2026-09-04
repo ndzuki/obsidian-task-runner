@@ -582,6 +582,8 @@ status: proposed
     "http://127.0.0.1:8787/api/kb/search?q=" + encodeURIComponent("部署 k8s") + "&limit=3", "url assembled with encoded query")
   assert.strictEqual(kbHttpUrl("http://127.0.0.1:8787/", "x", 1),
     "http://127.0.0.1:8787/api/kb/search?q=x&limit=1", "trailing slash normalized")
+  assert.strictEqual(kbHttpUrl("http://127.0.0.1:8787", "x", 3, true),
+    "http://127.0.0.1:8787/api/kb/search?q=x&limit=3&rerank=false", "no-rerank URL assembled")
   const old = process.env.OTR_KB_HTTP
   try {
     delete process.env.OTR_KB_HTTP

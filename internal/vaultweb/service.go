@@ -30,7 +30,9 @@ type Service struct {
 	// kbSearch answers in-process KB retrieval for /api/kb/search (B2):
 	// consumers (agent-server / kb-preflight) call it instead of spawning
 	// `otg kb search`, falling back to spawn when nil / endpoint absent.
-	kbSearch func(query string, limit int) ([]knowledge.SearchResult, error)
+	// The bool is `rerank`: false skips the cross-encoder (hybrid-only
+	// fast path used by interactive precompute).
+	kbSearch func(query string, limit int, rerank bool) ([]knowledge.SearchResult, error)
 }
 
 // New builds a Service rooted at the vault path. The agent-server proxy is
@@ -44,8 +46,10 @@ func NewWithAgentServer(vault, agentServerAddr string) *Service {
 }
 
 // WithKBSearch wires the in-process KB retrieval backend (B2); nil disables
-// the /api/kb/search endpoint (clients fall back to spawning otg).
-func (s *Service) WithKBSearch(fn func(query string, limit int) ([]knowledge.SearchResult, error)) *Service {
+// the /api/kb/search endpoint (clients fall back to spawning otg). The
+// backend receives a `rerank` flag so clients can request the hybrid-only
+// fast path (cross-encoder is expensive and unnecessary for precompute).
+func (s *Service) WithKBSearch(fn func(query string, limit int, rerank bool) ([]knowledge.SearchResult, error)) *Service {
 	s.kbSearch = fn
 	return s
 }

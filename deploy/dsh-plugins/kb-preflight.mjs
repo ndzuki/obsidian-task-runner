@@ -571,17 +571,18 @@ function buildKBBlock(query, hitsEntry, vault) {
 
 /** 常驻检索端点基址（B2，默认 daemon vaultweb；配置 kbHttp: "" 关闭 HTTP 直走 spawn）。 */
 const DEFAULT_KB_HTTP = "http://127.0.0.1:8787"
-const KB_HTTP_TIMEOUT_MS = 1200
+const KB_HTTP_TIMEOUT_MS = 5000
 
-/** 组装检索 URL（纯函数，可单测）：base 去尾斜杠 + 编码查询词。 */
-function kbHttpUrl(base, q, limit) {
-  return `${String(base || "").replace(/\/+$/, "")}/api/kb/search?q=${encodeURIComponent(q)}&limit=${limit}`
+/** 组装检索 URL（纯函数，可单测）：base 去尾斜杠 + 编码查询词 + 可选 no-rerank。 */
+function kbHttpUrl(base, q, limit, noRerank = false) {
+  const rerank = noRerank ? "&rerank=false" : ""
+  return `${String(base || "").replace(/\/+$/, "")}/api/kb/search?q=${encodeURIComponent(q)}&limit=${limit}${rerank}`
 }
 
 /** HTTP 检索：成功 → 命中数组（空数组 = 真无命中）；失败/超时 → null（回退 spawn）。 */
-async function kbHttpSearch(base, q, limit) {
+async function kbHttpSearch(base, q, limit, noRerank = false) {
   try {
-    const res = await fetch(kbHttpUrl(base, q, limit), { signal: AbortSignal.timeout(KB_HTTP_TIMEOUT_MS) })
+    const res = await fetch(kbHttpUrl(base, q, limit, noRerank), { signal: AbortSignal.timeout(KB_HTTP_TIMEOUT_MS) })
     if (!res.ok) return null
     const hits = await res.json()
     return Array.isArray(hits) ? hits : null
@@ -591,13 +592,15 @@ async function kbHttpSearch(base, q, limit) {
 }
 
 /** 后台异步检索：只为预热缓存，绝不阻塞首问。B2：优先 daemon 常驻端点
- * （免 spawn/重开 SQLite），失败回退 spawn；两者都静默降级。 */
+ * （免 spawn/重开 SQLite），失败回退 spawn；两者都静默降级。
+ * 总是走 hybrid-only 快路径（no-rerank）：预检索只需要 top-N 排序，
+ * 不需要 cross-encoder，且能避开 reranker CPU 延迟。 */
 function warmSearch(config, vault, q) {
   const cacheKey = hitsCacheKey(vault, config.db, q)
   const store = (hits) => kbHitsCacheSet(cacheKey, Array.isArray(hits) && hits.length === 0 ? { kind: "empty" } : { kind: "hits", hits })
   const spawnFallback = () => {
     const otg = config.otgPath || "otg"
-    const args = ["kb", "search", "--json", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
+    const args = ["kb", "search", "--json", "--no-rerank", "--limit", String(KB_PRECOMPUTE_LIMIT), "--vault", vault]
     if (config.db) args.push("--db", config.db)
     if (config.mapFile) args.push("--map-file", config.mapFile)
     args.push(q)
@@ -622,10 +625,10 @@ function warmSearch(config, vault, q) {
     setTimeout(() => { try { child.kill("SIGKILL") } catch { /* noop */ } }, KB_SEARCH_TIMEOUT_MS + 1000)
   }
   if (config.kbHttp) {
-    kbHttpSearch(config.kbHttp, q, KB_PRECOMPUTE_LIMIT).then((hits) => {
+    kbHttpSearch(config.kbHttp, q, KB_PRECOMPUTE_LIMIT, true).then((hits) => {
       if (hits === null) { spawnFallback(); return }
       store(hits)
-    })
+    }).catch(() => { spawnFallback() })
     return
   }
   spawnFallback()

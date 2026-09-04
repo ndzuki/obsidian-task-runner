@@ -125,6 +125,8 @@ func (s *Service) handleTasks(w http.ResponseWriter, r *http.Request) {
 // (agent-server / kb-preflight) call it instead of spawning the otg binary;
 // when kbSearch is nil the endpoint returns 501 so clients fall back to
 // spawn. q is required; limit defaults to 3 and is capped at 20.
+// rerank=false skips the cross-encoder so interactive precompute warms the
+// cache without paying the expensive reranker on the first-turn path.
 func (s *Service) handleKBSearch(w http.ResponseWriter, r *http.Request) {
 	if s.kbSearch == nil {
 		writeError(w, http.StatusNotImplemented, errors.New("kb search backend not wired"))
@@ -147,7 +149,11 @@ func (s *Service) handleKBSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	hits, err := s.kbSearch(q, limit)
+	// Default keeps the historical rerank behavior; explicit rerank=false
+	// is the fast hybrid-only path used by KB-first precompute.
+	rerank := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("rerank"))) != "false" &&
+		strings.ToLower(strings.TrimSpace(r.URL.Query().Get("rerank"))) != "0"
+	hits, err := s.kbSearch(q, limit, rerank)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
