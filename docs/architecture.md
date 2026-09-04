@@ -81,7 +81,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
 | 层 | 触发 | 行为 |
 |----|------|------|
 | 阶段内重试 | refining/planning 首次失败 | 记 `refine_retry_count`/`planning_retry_count`，下一轮 scan 自动重试一次 |
-| **活动会话续期（2026-08 TASK-065）** | 阶段 HTTP 等待超过 phase timeout，但 agent-server 会话近期仍有事件（模型还在推 step/工具调用） | 判 `timeout_active`：不 cancel、不计失败、不转 blocked；保留 `executor_session_id`，下一轮 scan 继续等待同一会话。只有长时间无事件的会话才按 wedged cancel |
+| **活动会话续期** | 阶段 HTTP 等待超过 phase timeout，但 agent-server 会话近期仍有事件（模型还在推 step/工具调用） | 判 `timeout_active`：不 cancel、不计失败、不转 blocked；保留 `executor_session_id`，下一轮 scan 继续等待同一会话。只有长时间无事件的会话才按 wedged cancel |
 | quota 退避 | `MODEL_QUOTA_EXHAUSTED` | `quota_backoff_until` 指数退避（2m→4m→…→4h），到期前不重派；重启不清零 |
 | API key 探测 | `API_KEY_UNAVAILABLE` | 每轮 scan 探测，恢复即自动 resume |
 | 重启中断自愈 | `PHASE_INTERRUPTED` | 重启后自动重派（daemon 优雅停机路径） |
@@ -102,7 +102,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
 4. 独立审计会话逐条复核 AC → `auto_merge` 授权 → push/PR/CI/merge → `done` → 知识提炼入库（SQLite FTS5 + 向量）。
 5. 任何阶段失败按 §5 层级恢复；人为决策块（REQ_MISSING/DOCUMENT_INVALID 等）不自动恢复。
 
-### 全局设计会话（replan gate）契约（2026-08-24 TASK-065 修复后）
+### 全局设计会话（replan gate）契约
 
 - 会话 `WorkingDir` = Vault 的 `Design/` 目录（workspace-write 沙箱范围即制品树）；
   `repo_dir` 作为只读证据路径经 prompt 传入，不再把仓库当工作目录。
@@ -138,3 +138,21 @@ ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jso
 | `~/.dsh/config/` | 配置（vault-map.json 在 skill 包 `config/` 下） |
 | `~/.config/systemd/user/` | 三个 user 单元 |
 | `<repo>/.otg-worktrees/` 或 `~/.otg-worktrees/` | 任务 worktree（按配置） |
+
+## 9. 迁移历史（归档）
+
+架构经历三代表演进：Python 脚本（Claude Code 时代）→ Go 单二进制 + OMP/DSH spawn → DSH 2.0 embed。
+以下迁移文档仅作历史资料，按需查阅，**不作为现势实现依据**：
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/archive/go-rewrite-plan.md`](archive/go-rewrite-plan.md) | Python → Go 重写方案与迁移对照 |
+| [`docs/archive/refactor-architecture.md`](archive/refactor-architecture.md) | DSH 目标架构与重构方案（数据层/执行层切分） |
+| [`docs/archive/phase5-executor-migration.md`](archive/phase5-executor-migration.md) | 执行路径迁移：spawn → DSH（Phase 5） |
+| [`docs/archive/embed-migration-plan.md`](archive/embed-migration-plan.md) | DSH 2.0 融合方案（agent-server 长驻运行时） |
+| [`docs/archive/phase6-skill-audit.md`](archive/phase6-skill-audit.md) | 技能包一次性审计记录 |
+| [`docs/archive/phase6-skill-value-audit.md`](archive/phase6-skill-value-audit.md) | 技能价值审计记录 |
+| [`docs/archive/workflow-full-v49.md`](archive/workflow-full-v49.md) | 工作流历史全量版（含逐条实现验收清单） |
+| [`docs/archive/superpowers/`](archive/superpowers/) | 首版设计与计划（2026-07） |
+
+现势口径以本文与 [`docs/workflow.md`](workflow.md) 为准。

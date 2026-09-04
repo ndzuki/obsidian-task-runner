@@ -17,8 +17,7 @@
         "obsidian-task-runner-pm",
         "obsidian-task-runner-split",
         "obsidian-task-runner-design",
-        "knowledge-base",
-        "kulala-http"
+        "knowledge-base"
       ]
     },
     "obsidian-task-runner (external required)": {

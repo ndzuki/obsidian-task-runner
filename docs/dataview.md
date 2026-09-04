@@ -31,7 +31,7 @@
 
 运行 `otg install --vault <Vault路径>` 时，如果 Vault 根目录还没有 `Tasks-Dashboard.md`，安装器会自动部署一份。若文件已存在，安装器不会覆盖它。
 
-手动部署时，将仓库根目录的 [`Tasks-Dashboard.md`](../Tasks-Dashboard.md) 复制到 Vault 根目录。
+手动部署时，直接运行 `otg install`——安装器会从内嵌模板生成 `Tasks-Dashboard.md` 到 Vault 根目录（已存在时不覆盖）。
 
 ## 3. 检查任务 frontmatter
 
@@ -78,9 +78,9 @@ updated: 2026-07-15T10:30:00+08:00
 
 ### 状态配色（可选）
 
-看板顶部的状态缩写对照图例默认是纯文字；启用仓库根目录的 [`task-status-colors.css`](../task-status-colors.css) 后，每个状态词会带语义底色（阻塞红 / 就绪绿 / 进行中蓝等，深浅主题自动适配）：
+看板顶部的状态缩写对照图例默认是纯文字；启用仓库的 [`task-status-colors.css`](task-status-colors.css) 后，每个状态词会带语义底色（阻塞红 / 就绪绿 / 进行中蓝等，深浅主题自动适配）：
 
-1. 复制 `task-status-colors.css` 到 Vault 的 `.obsidian/snippets/`。
+1. 复制 [`task-status-colors.css`](task-status-colors.css) 到 Vault 的 `.obsidian/snippets/`。
 2. 设置 → 外观 → CSS 代码片段 → 启用 `task-status-colors`（或直接把文件名写入 `appearance.json` 的 `enabledCssSnippets`）。
 3. 若未立即生效，重启 Obsidian 或在外观设置中关闭再开启该片段。
 

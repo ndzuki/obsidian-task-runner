@@ -85,9 +85,12 @@ otg install --vault "$HOME/Documents/Obsidian/MainVault" --new-project-root "$HO
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/quickstart.md`](docs/quickstart.md) | 安装、配置、第一个需求、状态表 |
-| [`docs/architecture.md`](docs/architecture.md) | 架构总览（数据流、状态机、插件生态） |
+| [`docs/ops-manual.md`](docs/ops-manual.md) | 运维调优：并发、知识库、门禁、故障排查 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构总览（数据流、状态机、插件生态、迁移史） |
+| [`docs/workflow.md`](docs/workflow.md) | 规范性工作流：状态机、双门禁、阶段模型、知识流 |
 | [`docs/config-reference.md`](docs/config-reference.md) | vault-map.json 配置单一事实源 |
 | [`docs/agent-town-design-spec.md`](docs/agent-town-design-spec.md) | Agent Town 监控面板视觉规范 |
+| [`docs/adr/`](docs/adr/) | 架构决策记录（13 篇） |
 | [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md) | Agent 执行规则（含知识库格式规范） |
 | [`obsidian-task-runner/reference.md`](obsidian-task-runner/reference.md) | 状态、字段（含全量字段附录）、故障排查 |
 | [`templates/`](templates/) | REQ / TASK / ADR 模板 |

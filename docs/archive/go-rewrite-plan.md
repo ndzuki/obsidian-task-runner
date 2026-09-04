@@ -1,5 +1,5 @@
 > ⚠️ **历史规划文档**：本文件是 DSH 重构期间的规划记录，已由当前实现的
-> 权威架构说明 [docs/architecture.md](architecture.md) 取代。执行器现状：
+> 权威架构说明 [docs/architecture.md](../architecture.md) 取代。执行器现状：
 > `dsh-embed`（默认，agent-server RPC + durable resume），`dsh`（spawn），
 > `早期执行器`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
 

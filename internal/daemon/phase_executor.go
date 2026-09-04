@@ -15,7 +15,7 @@ import (
 // newPhaseExecutor selects the phase-dispatch backend from cfg.Executor.
 //   - "dsh"       — spawn-headless DSH adapter.
 //   - "dsh-embed" — long-lived agent-server RPC (per-phase reasoning effort +
-//     durable resume; docs/embed-migration-plan.md). The terminal form.
+//     durable resume; docs/archive/embed-migration-plan.md). The terminal form.
 //
 // Default is dsh-embed (config.Defaults.Executor).
 func newPhaseExecutor(cfg *config.Config) PhaseExecutor {

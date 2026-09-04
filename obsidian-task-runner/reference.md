@@ -578,7 +578,7 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 - **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
 - **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回均走知识库检索（能力主题文档承担描述/冲突元数据）；存量 registries.json 文件不再被读取，可手动删除。
 
-**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 与 `kulala-http` 到 `~/.dsh/skills/`。
+**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 到 `~/.dsh/skills/`（`kulala-http` 已移出：通用 HTTP 调试技能，独立维护）。
 
 外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
 

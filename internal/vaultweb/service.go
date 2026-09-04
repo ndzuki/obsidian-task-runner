@@ -1,5 +1,5 @@
 // Package vaultweb serves whitelisted read-only DTOs over an Obsidian vault for
-// the DSH Web dashboard (docs/refactor-architecture.md §3.7 / Phase 4). It is
+// the DSH Web dashboard (docs/archive/refactor-architecture.md §3.7 / Phase 4). It is
 // the Go control plane's read model: parsing and path safety live here, so the
 // DSH web plugin renders structured data instead of re-reading the vault.
 //

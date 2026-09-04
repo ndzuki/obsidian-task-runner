@@ -7,8 +7,8 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 文档门面 | README 重写、quickstart/CHANGELOG/ROADMAP/CONTRIBUTING 补齐（本次） |
-| 历史文档归档 | 五篇迁移期架构文档合并为单一现势 `docs/architecture.md`，旧文入 `docs/archive/` |
+| 文档门面 | ✅ 已完成：README 重写、quickstart/ops-manual/CHANGELOG/ROADMAP/CONTRIBUTING/ADR 目录 |
+| 历史文档归档 | ✅ 已完成：迁移期文档合并为单一现势 `docs/architecture.md`，旧文入 `docs/archive/` |
 
 ## 计划（欢迎认领）
 

@@ -227,7 +227,7 @@ func (e *dshEmbedExecutor) cancelSession(ctx context.Context, sessionID string) 
 }
 
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract
-// (docs/embed-migration-plan.md §3).
+// (docs/archive/embed-migration-plan.md §3).
 type agentRunRequest struct {
 	Task            string `json:"task"`
 	Provider        string `json:"provider"`
@@ -559,7 +559,7 @@ func (h *embedHandle) buildResumeToken(sessionID string) string {
 }
 
 // mapEmbedOutcome maps the agent-server outcome string to the closed ExecOutcome
-// set (docs/embed-migration-plan.md §3).
+// set (docs/archive/embed-migration-plan.md §3).
 func mapEmbedOutcome(outcome, errorCode string) ExecOutcome {
 	switch outcome {
 	case "completed":

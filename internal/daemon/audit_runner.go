@@ -387,7 +387,7 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 // phase executor. DSH headless returns the STRICT-JSON verdict as free text;
 // parseAuditResult already isolates the object from surrounding prose/fences.
 // auditToolPolicy is carried in the spec; exact enforcement on the DSH side is
-// verified in the audit smoke pass (docs/phase5-executor-migration.md §5.5).
+// verified in the audit smoke pass (docs/archive/phase5-executor-migration.md §5.5).
 func (r *Runner) runAuditSessionDSH(ctx context.Context, t task.ReadyTask, repoDir, workDir, model, prompt string) (*auditResult, string, error) {
 	spec := PhaseSpec{
 		Phase:           "audit",

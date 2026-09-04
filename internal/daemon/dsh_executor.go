@@ -15,7 +15,7 @@ import (
 // `dsh --profile headless` per phase — the minimal, drop-in migration path
 // that keeps the Go control plane untouched while executing on DSH.
 //
-// Migration notes (target architecture docs/refactor-architecture.md §4):
+// Migration notes (target architecture docs/archive/refactor-architecture.md §4):
 //   - The skill prompt is translated into a DSH task text that loads the same
 //     slash skill. The DSH session's own skill routing (dsh-tool-skill +
 //     skill catalog) resolves it; no daemon-side prompt string assembly.
@@ -167,7 +167,7 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 	// writes `dsh: <code>: <message>` on stderr and the final assistant message
 	// on stdout; its exit code is only 0/1, so the failure class and any JSON
 	// output contract must be recovered from the streams
-	// (docs/phase5-executor-migration.md §5.6). *os.File avoids the pipe that
+	// (docs/archive/phase5-executor-migration.md §5.6). *os.File avoids the pipe that
 	// a bytes.Buffer would introduce — a killed child keeps a pipe's write end
 	// open and hangs Wait() on timeout.
 	stderrFile, err := os.CreateTemp("", "dsh-stderr-*.log")

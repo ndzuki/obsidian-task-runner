@@ -106,10 +106,6 @@ sync-docs:
 	@# knowledge-base is an external skill; repo copy is the versioned source
 	@# for rollback. Only the installed file is overwritten, never vault data.
 	cp obsidian-task-runner/skills/knowledge-base/SKILL.md $(HOME)/.dsh/skills/knowledge-base/SKILL.md
-	@# kulala-http is a self-authored general skill; repo copy is the versioned
-	@# source for rollback, synced like knowledge-base.
-	mkdir -p $(HOME)/.dsh/skills/kulala-http
-	cp obsidian-task-runner/skills/kulala-http/SKILL.md $(HOME)/.dsh/skills/kulala-http/SKILL.md
 	@for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
 		mkdir -p $(HOME)/.dsh/skills/obsidian-task-runner-$$s; \
 		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md; \
