@@ -663,7 +663,7 @@ daemon 在阶段会话成功后调用 `validateChangedDocs`：
 4. **fail + `implementation`**（代码/测试缺陷，修复方向明确）→ 清合并授权，写 `phase_error_code=AUDIT_FAILED` + 审计摘要（`audit_log` 存完整会话），任务转 `implementing`——round2 会话加载 `skill://diagnosing-bugs` 按审计报告自动修复，修复后 re-review 再审计（自动修复循环）。连续失败达 `audit.max_fixes`（默认 2）→ **升级为 grilling 决策**（非 blocked）：`grill_context` 附审计报告，用户 resume → 回 implementing 继续修复并重置预算，replan → 回 refining。
 5. **fail + `requirement`**（AC 歧义/矛盾/不可验证，实现与需求理解冲突）→ 直接转 `needs-grilling` 决策，`grill_context` 附审计报告与两个方向（resume 按审计修正 / replan 调整需求），**不消耗实现修复预算**。
 6. **会话失败/中断**（模型崩溃、API key 不可用、daemon 重启）→ 保持 `review` + `audit_status=pending`，下一轮 scan 自动重试，不惩罚实现；进程级失败有 2 分钟冷却防烧 token。
-7. **配置**：`audit.enabled/max_fixes/timeout_minutes/model`（vault-map.json，默认开启）；并发由 `phase_concurrency["audit"]`（默认 1）控制，`audit.concurrency` 字段无代码消费者（遗留死字段）。
+7. **配置**：`audit.enabled/max_fixes/timeout_minutes/model`（vault-map.json，默认开启）；并发由 `phase_concurrency["audit"]`（默认 1）控制（`audit.concurrency` 已随 2026-09-04 字段清理移除）。
 
 `audit_status` 取值：`""`（未审计 / 失败路由后清空待重审）、`pending`（审计中或会话失败待重试）、`passed`（已通过）。fail 路由时清空——实现修复后重新进入 review 会触发新一轮审计；merge 失败回退（CI 失败/冲突修复后）保持 `passed`，不重复审计。
 

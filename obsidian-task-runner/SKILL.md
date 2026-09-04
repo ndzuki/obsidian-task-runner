@@ -237,4 +237,4 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 
 - **自动化主路径（agent）**：`otg kb search`（BM25 + 可选 embedding 混合，语义命中优先）→ `read` 原文 → 引用路径；未命中才 web_search/Context7。检索链路与 skill 指令见 `skill://knowledge-base` Step 1（§12 知识流细节见仓库 `docs/workflow.md`）。
 - **交互问答（人类/会话入口）**：`otg kb ask "<问题>"`（vault-map 配 `kb_chat`）——混合检索 + chat 流式生成，附确定性「参考资料」列表；`kb_rerank` 可选 cross-encoder 精排。**定位边界**：ask 用于用户提问与交互会话，agent 计划引用禁止用 ask 替代原文检索（转述有信息损耗）。
-- **配置**：`kb_embedding`（后端/模型/混合权重/chunk 截断/批量/KNN 候选）、`kb_rerank`（精排）、`kb_chat`（生成）——字段说明与部署见 README「知识库语义检索」「检索精排」「知识库问答」及 `obsidian-task-runner/config/vault-map.example.json`。
+- **配置**：`kb_embedding`（后端/模型/混合权重/chunk 截断/批量/KNN 候选）、`kb_rerank`（精排）、`kb_chat`（生成）——字段说明与部署见 README「知识库语义检索」「检索精排」「知识库问答」；完整字段表见 `docs/config-reference.md`（KB 三后端为可选配置，最小示例文件不再展开）。

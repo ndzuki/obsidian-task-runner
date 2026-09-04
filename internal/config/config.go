@@ -213,8 +213,6 @@ type AuditConfig struct {
 	MaxFixes int `json:"max_fixes"`
 	// TimeoutMinutes bounds one audit session (default 15).
 	TimeoutMinutes int `json:"timeout_minutes"`
-	// Concurrency caps simultaneous audit sessions (default 1).
-	Concurrency int `json:"concurrency"`
 	// Model overrides the audit session model; empty uses the task assignee's
 	// model (same model as the implementation session for verification parity).
 	Model string `json:"model"`
@@ -488,7 +486,7 @@ func Defaults() *Config {
 		// before the deferred task is released to run concurrently.
 		MaxOverlapWaitMinutes:      720,
 		MergePollWaitTicks:         20, // 20 × 30s = 10min CI polling budget per merge attempt
-		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
+		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
 		MaxAutoFixConflicts:        40, // TASK-067: 90+ conflicting files doomed the 15min AI session
@@ -718,11 +716,8 @@ func mergeDefaults(cfg *Config, present map[string]bool) {
 			cfg.Audit.MaxFixes = defaults.Audit.MaxFixes
 		}
 		if cfg.Audit.TimeoutMinutes == 0 {
-			cfg.Audit.TimeoutMinutes = defaults.Audit.TimeoutMinutes
 		}
-		if cfg.Audit.Concurrency == 0 {
-			cfg.Audit.Concurrency = defaults.Audit.Concurrency
-		}
+		cfg.Audit.TimeoutMinutes = defaults.Audit.TimeoutMinutes
 	}
 }
 

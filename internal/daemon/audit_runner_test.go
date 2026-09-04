@@ -106,7 +106,7 @@ func newAuditRunner(t *testing.T, skillDir, omp, logDir string) *Runner {
 		MaxConcurrentTasks: 1,
 		Models:             config.DefaultModels(),
 		PhaseConcurrency:   config.DefaultPhaseConcurrency(),
-		Audit:              &config.AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15, Concurrency: 1},
+		Audit:              &config.AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15},
 	})
 	runner.logger = log.New(io.Discard, "", 0)
 	return runner
