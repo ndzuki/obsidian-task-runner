@@ -211,7 +211,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 - **进程内跨模型降级**：magic 免费 deepseek 失败 / 配额耗尽 → 自动切 magic 免费 openai gpt-5.6（`deepseek-v4-pro → gpt-5.6-terra` / `gpt-5.4-mini → gpt-5.6-luna`）。
 - **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
-- daemon 侧无 fallback 层——OMP 时代的 `fallback_models` / `watchEmptyStops` 已随 OMP 退役移除。
+- daemon 侧无 fallback 层——旧执行器时代的 `fallback_models` / `watchEmptyStops` 已随迁移移除。
 - **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在免费渠道间循环切换。
 
 ## Frontmatter 字段规范

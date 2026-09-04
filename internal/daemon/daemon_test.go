@@ -23,7 +23,7 @@ import (
 )
 
 // TestMain pins the API-key probe to "available" for the whole package. The
-// OMP-launch preflight now consults apiKeyAvailable(); the default probe
+// DSH-launch preflight now consults apiKeyAvailable(); the default probe
 // shells out to secret-tool, which is slow/flaky under parallel test load
 // and absent in CI — every dispatch test would otherwise depend on the host
 // keyring. Tests that need a specific probe value override it explicitly
@@ -45,14 +45,14 @@ func TestMain(m *testing.M) {
 func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	argsDir := filepath.Join(dir, "args")
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 	t.Setenv("ARGS_DIR", argsDir)
 
 	taskPath := writeTaskFile(t, dir, "TASK-000.md", "ready")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	done := runBatch(runner, []task.ReadyTask{{
 		ID:       "000",
 		Title:    "Ready task",
@@ -62,7 +62,7 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 	}})
 
 	waitForStartCount(t, startDir, 1)
-	// The fake OMP writes START_DIR before ARGS_DIR; wait for the args file
+	// The fake DSH writes START_DIR before ARGS_DIR; wait for the args file
 	// so the read below cannot race the script (flaky under -count>1).
 	waitForArgsFile(t, argsDir)
 	releaseBarrier(t, releaseFile)
@@ -84,18 +84,18 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 
 	entries, err := os.ReadDir(argsDir)
 	if err != nil {
-		t.Fatalf("read OMP args directory: %v", err)
+		t.Fatalf("read DSH args directory: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("OMP invocation count = %d, want 1", len(entries))
+		t.Fatalf("DSH invocation count = %d, want 1", len(entries))
 	}
 	args, err := os.ReadFile(filepath.Join(argsDir, entries[0].Name()))
 	if err != nil {
-		t.Fatalf("read OMP args: %v", err)
+		t.Fatalf("read DSH args: %v", err)
 	}
 	wantPrompt := "obsidian-task-runner-refining"
 	if !strings.Contains(string(args), wantPrompt) {
-		t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
+		t.Fatalf("DSH args = %q, want prompt %q", args, wantPrompt)
 	}
 }
 
@@ -107,13 +107,13 @@ func TestProcessBatchDispatchesReadyTaskAfterTransition(t *testing.T) {
 func TestRefiningDispatchWritesPhaseSpecificLogFile(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, map[string]string{})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	logDir := filepath.Join(dir, "logs")
 	taskPath := writeTaskFile(t, dir, "TASK-075-refining.md", "ready")
-	runner := newTestRunner(skillDir, omp, logDir, 1)
+	runner := newTestRunner(skillDir, dshCmd, logDir, 1)
 	done := runBatch(runner, []task.ReadyTask{{
 		ID: "075", Title: "Refining", FilePath: taskPath, Status: "ready", Assignee: "default",
 	}})
@@ -153,7 +153,7 @@ func TestRefiningDispatchWritesPhaseSpecificLogFile(t *testing.T) {
 func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, _, _ := writeBarrierOMP(t, dir)
+	dshCmd, _, _ := writeBarrierDSH(t, dir)
 
 	reqPath := filepath.Join(dir, "REQ-067.md")
 	reqContent := "## 目标\nchanged requirement\n"
@@ -196,7 +196,7 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 			t.Cleanup(func() { _ = os.WriteFile(rel, nil, 0o644) })
 
 			taskPath := writeTaskFile(t, sub, "TASK-067.md", "refining")
-			runner := newTestRunner(skillDir, omp, filepath.Join(sub, "logs"), 1)
+			runner := newTestRunner(skillDir, dshCmd, filepath.Join(sub, "logs"), 1)
 			done := runBatch(runner, []task.ReadyTask{{
 				ID: "067", Title: "Operation creation workflow",
 				FilePath: taskPath, Status: "refining", Assignee: "default",
@@ -208,24 +208,24 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 			waitForArgsFile(t, argsDir)
 			entries, err := os.ReadDir(argsDir)
 			if err != nil {
-				t.Fatalf("read OMP args directory: %v", err)
+				t.Fatalf("read DSH args directory: %v", err)
 			}
 			if len(entries) != 1 {
-				t.Fatalf("OMP invocation count = %d, want 1", len(entries))
+				t.Fatalf("DSH invocation count = %d, want 1", len(entries))
 			}
 			args, err := os.ReadFile(filepath.Join(argsDir, entries[0].Name()))
 			if err != nil {
-				t.Fatalf("read OMP args: %v", err)
+				t.Fatalf("read DSH args: %v", err)
 			}
 			wantPrompt := tt.wantPhase
 			if !strings.Contains(string(args), wantPrompt) {
-				t.Fatalf("OMP args = %q, want prompt %q", args, wantPrompt)
+				t.Fatalf("DSH args = %q, want prompt %q", args, wantPrompt)
 			}
 
 			releaseBarrier(t, rel)
 			// processBatch is dispatch-only: runTask goroutines may still be
-			// starting OMP (writing start files) when it returns. Wait for
-			// them before the test ends, or TempDir cleanup races the OMP
+			// starting DSH (writing start files) when it returns. Wait for
+			// them before the test ends, or TempDir cleanup races the DSH
 			// start write (observed on slow CI: "directory not empty").
 			waitForTasksIdle(t, runner)
 			waitForBatch(t, done)
@@ -240,7 +240,7 @@ func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 func TestGrillContinueResetReleasesParkedState(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, map[string]string{})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -257,7 +257,7 @@ func TestGrillContinueResetReleasesParkedState(t *testing.T) {
 		t.Fatalf("write task: %v", err)
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	done := runBatch(runner, []task.ReadyTask{{
 		ID: "076", Title: "T076", FilePath: taskPath, Status: "needs-grilling",
 		GrillContinue: true, GrillParked: true, Assignee: "default",
@@ -299,13 +299,13 @@ func TestProcessBatchRunsIndependentTasksConcurrently(t *testing.T) {
 		"project-one": projectOne,
 		"project-two": projectTwo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, dir, "TASK-001.md", "planning")
 	taskTwo := writeTaskFile(t, dir, "TASK-002.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
@@ -332,7 +332,7 @@ func TestProcessBatchUsesTaskPathForDuplicateIDs(t *testing.T) {
 		"project-one": projectOne,
 		"project-two": projectTwo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -342,7 +342,7 @@ func TestProcessBatchUsesTaskPathForDuplicateIDs(t *testing.T) {
 		t.Fatal("different task files must have distinct run keys")
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "001", Title: "One", Project: "project-one", FilePath: taskOne, Status: "planning", Assignee: "default"},
 		{ID: "001", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "planning", Assignee: "default"},
@@ -396,13 +396,13 @@ func TestProcessBatchRunsSameRepositoryRoundTwoTasksConcurrently(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, dir, "TASK-011.md", "plan-review")
 	taskTwo := writeTaskFile(t, dir, "TASK-012.md", "plan-review")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "plan-review", PlanApproved: true, Assignee: "default"},
 		{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "plan-review", PlanApproved: true, Assignee: "default"},
@@ -442,7 +442,7 @@ func TestProcessBatchLimitsImplementingTasksAcrossConcurrentBatches(t *testing.T
 	}
 
 	skillDir := writeVaultMap(t, dir, projects)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 	activeDir := filepath.Join(dir, "active")
@@ -459,7 +459,7 @@ func TestProcessBatchLimitsImplementingTasksAcrossConcurrentBatches(t *testing.T
 		})
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	// Serial batches for determinism: concurrent runBatch goroutines race the
 	// shared implementation gate, and whichever schedules first takes the
 	// capacity slots.
@@ -503,13 +503,13 @@ func TestProcessBatchSerializesOverlappingPlanFiles(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
 	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	files := []string{"internal/foo.go"}
 	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: files, Assignee: "default"}
 	two := task.ReadyTask{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "implementing", PlanFiles: files, Assignee: "default"}
@@ -550,13 +550,13 @@ func TestProcessBatchOverlapWaitLimitExceeded(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
 	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	runner.cfg.MaxOverlapWaitMinutes = 120
 	files := []string{"internal/foo.go"}
 	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: files, Assignee: "default"}
@@ -588,13 +588,13 @@ func TestProcessBatchDifferentPlanFilesNotSerialized(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(dir, "home"))
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-011.md", "implementing")
 	taskTwo := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-012.md", "implementing")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	one := task.ReadyTask{ID: "011", Title: "One", Project: "shared", FilePath: taskOne, Status: "implementing", PlanFiles: []string{"internal/foo.go"}, Assignee: "default"}
 	two := task.ReadyTask{ID: "012", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "implementing", PlanFiles: []string{"internal/bar.go"}, Assignee: "default"}
 
@@ -621,13 +621,13 @@ func TestPlanningTaskDoesNotConsumeImplementationSlot(t *testing.T) {
 		"implementation": implementationRepo,
 		"planning":       planningRepo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	implementationPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-051.md", "implementing")
 	planningPath := writeTaskFile(t, filepath.Join(dir, "tasks"), "TASK-052.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	implementationDone := runBatch(runner, []task.ReadyTask{{
 		ID: "051", Title: "Implementation", Project: "implementation",
 		FilePath: implementationPath, Status: "implementing", NewProject: true, Assignee: "default",
@@ -658,7 +658,7 @@ func TestResumedBlockedImplementationUsesImplementationSlot(t *testing.T) {
 		"first":   firstRepo,
 		"resumed": resumedRepo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -678,7 +678,7 @@ assignee: default
 		t.Fatalf("write resumed task: %v", err)
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	firstDone := runBatch(runner, []task.ReadyTask{{
 		ID: "061", Title: "First", Project: "first",
 		FilePath: firstPath, Status: "implementing", NewProject: true, Assignee: "default",
@@ -744,13 +744,13 @@ func TestProcessBatchRunsSameRepositoryPlanningTasksConcurrently(t *testing.T) {
 	dir := t.TempDir()
 	repo := createRepository(t, dir)
 	skillDir := writeVaultMap(t, dir, map[string]string{"shared": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskOne := writeTaskFile(t, filepath.Join(dir, "one"), "TASK-031.md", "planning")
 	taskTwo := writeTaskFile(t, filepath.Join(dir, "two"), "TASK-032.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "031", Title: "One", Project: "shared", FilePath: taskOne, Status: "planning", Assignee: "default"},
 		{ID: "032", Title: "Two", Project: "shared", FilePath: taskTwo, Status: "planning", Assignee: "default"},
@@ -776,7 +776,7 @@ func TestProcessBatchNonPositiveGlobalLimitMeansUnlimited(t *testing.T) {
 		"project-one": projectOne,
 		"project-two": projectTwo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -784,7 +784,7 @@ func TestProcessBatchNonPositiveGlobalLimitMeansUnlimited(t *testing.T) {
 	taskTwo := writeTaskFile(t, dir, "TASK-022.md", "implementing")
 	// global limit 0 = no total cap; the per-project default (2) allows both
 	// projects' tasks to run at once.
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 0)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 0)
 	done := runBatch(runner, []task.ReadyTask{
 		{ID: "021", Title: "One", Project: "project-one", FilePath: taskOne, Status: "implementing", NewProject: true, Assignee: "default"},
 		{ID: "022", Title: "Two", Project: "project-two", FilePath: taskTwo, Status: "implementing", NewProject: true, Assignee: "default"},
@@ -814,7 +814,7 @@ func TestProcessBatchPerProjectConcurrency(t *testing.T) {
 		"project-one": projectOne,
 		"project-two": projectTwo,
 	})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -832,7 +832,7 @@ func TestProcessBatchPerProjectConcurrency(t *testing.T) {
 	}
 	// Four slots (2 per project) across two projects; the fifth task (third
 	// of project-two) must wait for capacity.
-	runner := newTestRunnerLimits(skillDir, omp, filepath.Join(dir, "logs"), 0, 2)
+	runner := newTestRunnerLimits(skillDir, dshCmd, filepath.Join(dir, "logs"), 0, 2)
 	done := runBatch(runner, tasks)
 	waitForStartCount(t, startDir, 4)
 	assertStartCount(t, startDir, 4)
@@ -1182,11 +1182,11 @@ func writeVaultMap(t *testing.T, dir string, projects map[string]string) string 
 	return skillDir
 }
 
-func writeBarrierOMP(t *testing.T, dir string) (string, string, string) {
+func writeBarrierDSH(t *testing.T, dir string) (string, string, string) {
 	t.Helper()
 	startDir := filepath.Join(dir, "starts")
 	releaseFile := filepath.Join(dir, "release")
-	omp := filepath.Join(dir, "fake-omp")
+	dshCmd := filepath.Join(dir, "fake-dsh")
 	t.Cleanup(func() {
 		if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
 			t.Errorf("release barrier during cleanup: %v", err)
@@ -1212,10 +1212,10 @@ fi
 for i in $(seq 3000); do [ -f "$RELEASE_FILE" ] && exit 0; sleep 0.01; done
 exit 1
 `
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake omp: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake dshCmd: %v", err)
 	}
-	return omp, startDir, releaseFile
+	return dshCmd, startDir, releaseFile
 }
 
 func writeTaskFile(t *testing.T, dir, name, status string) string {
@@ -1231,15 +1231,15 @@ func writeTaskFile(t *testing.T, dir, name, status string) string {
 	return path
 }
 
-func newTestRunner(skillDir, omp, logDir string, limit int) *Runner {
-	return newTestRunnerLimits(skillDir, omp, logDir, limit, 2)
+func newTestRunner(skillDir, dshCmd, logDir string, limit int) *Runner {
+	return newTestRunnerLimits(skillDir, dshCmd, logDir, limit, 2)
 }
 
-func newTestRunnerLimits(skillDir, omp, logDir string, limit, perProject int) *Runner {
+func newTestRunnerLimits(skillDir, dshCmd, logDir string, limit, perProject int) *Runner {
 	runner := New(&config.Config{
 		SkillInstallDir:              skillDir,
 		Executor:                     "dsh",
-		DSHCmd:                       omp,
+		DSHCmd:                       dshCmd,
 		LogDir:                       logDir,
 		MaxConcurrentTasks:           limit,
 		MaxConcurrentTasksPerProject: perProject,
@@ -1257,7 +1257,7 @@ func runBatch(runner *Runner, tasks []task.ReadyTask) <-chan int {
 	return done
 }
 
-// waitForArgsFile polls until the fake OMP has written its argv capture.
+// waitForArgsFile polls until the fake DSH has written its argv capture.
 // The barrier script writes START_DIR before ARGS_DIR, so start-count alone
 // does not guarantee the args file exists.
 func waitForArgsFile(t *testing.T, dir string) {
@@ -1270,7 +1270,7 @@ func waitForArgsFile(t *testing.T, dir string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("no OMP args file appeared in %s", dir)
+	t.Fatalf("no DSH args file appeared in %s", dir)
 }
 
 func waitForStartCount(t *testing.T, dir string, want int) {
@@ -1437,12 +1437,12 @@ func TestBlockedPhaseValidation(t *testing.T) {
 func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
 	taskPath := writeTaskFile(t, dir, "TASK-000.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	runner.daemonCtx = ctx
 
@@ -1450,13 +1450,13 @@ func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
 		ID: "000", Title: "Plan", FilePath: taskPath,
 		Status: "planning", Assignee: "default",
 	}})
-	waitForStartCount(t, startDir, 1) // OMP launched and blocked on the barrier
+	waitForStartCount(t, startDir, 1) // DSH launched and blocked on the barrier
 
 	cancel()
 	select {
 	case <-done:
 		// processBatch is dispatch-only: it returns promptly on cancel; the
-		// SIGTERMed OMP's PHASE_INTERRUPTED write-back lands in runTask.
+		// SIGTERMed DSH's PHASE_INTERRUPTED write-back lands in runTask.
 	case <-time.After(3 * time.Second):
 		t.Fatal("processBatch did not return after daemon context cancel")
 	}
@@ -1477,27 +1477,27 @@ func TestProcessBatchReturnsOnDaemonCancel(t *testing.T) {
 		t.Fatalf("phase_error_code = %q, want %q landed before processBatch returned", fm.PhaseErrorCode, ErrPhaseInterrupted)
 	}
 
-	releaseBarrier(t, releaseFile) // let the interrupted OMP exit cleanly
+	releaseBarrier(t, releaseFile) // let the interrupted DSH exit cleanly
 }
 
 // TestOMPFailureNotMisroutedAsInterrupted guards the interrupted-path check:
-// a genuine OMP failure (non-zero exit) while the daemon is alive must route
+// a genuine DSH failure (non-zero exit) while the daemon is alive must route
 // through failure recovery (MODEL_FAILED + retry-in-place), NOT the
 // PHASE_INTERRUPTED auto-resume path. Regression: cancel() ran before the
-// ctx.Err()==Canceled check, making it always true — every OMP failure was
+// ctx.Err()==Canceled check, making it always true — every DSH failure was
 // silently converted into "interrupted by daemon shutdown", skipping
 // fallback/retry/blocked entirely (tasks stuck in refining/planning with
 // PHASE_INTERRUPTED, scan deadlock via leaked repo locks).
 func TestOMPFailureNotMisroutedAsInterrupted(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp := filepath.Join(dir, "failing-omp")
-	if err := os.WriteFile(omp, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write failing omp: %v", err)
+	dshCmd := filepath.Join(dir, "failing-dshCmd")
+	if err := os.WriteFile(dshCmd, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing dshCmd: %v", err)
 	}
 
 	taskPath := writeTaskFile(t, dir, "TASK-000.md", "planning")
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.daemonCtx = ctx
@@ -1520,7 +1520,7 @@ func TestOMPFailureNotMisroutedAsInterrupted(t *testing.T) {
 
 	fm := mustParse(t, taskPath)
 	if fm.PhaseErrorCode == string(ErrPhaseInterrupted) {
-		t.Fatalf("phase_error_code = %q: OMP failure misrouted as shutdown interruption", fm.PhaseErrorCode)
+		t.Fatalf("phase_error_code = %q: DSH failure misrouted as shutdown interruption", fm.PhaseErrorCode)
 	}
 	if fm.PhaseErrorCode == "" {
 		t.Fatal("phase_error_code empty: failure recovery did not record an error")
@@ -1537,7 +1537,7 @@ func TestOMPFailureNotMisroutedAsInterrupted(t *testing.T) {
 func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1555,7 +1555,7 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	cfg := &config.Config{
 		SkillInstallDir:    skillDir,
 		Executor:           "dsh",
-		DSHCmd:             omp,
+		DSHCmd:             dshCmd,
 		LogDir:             filepath.Join(dir, "logs"),
 		MaxConcurrentTasks: 4,
 		PhaseConcurrency:   map[string]int{"refining": 2},
@@ -1567,7 +1567,7 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 	defer cancel()
 	runner.daemonCtx = ctx
 
-	// First round: all 3 tasks dispatch (gate lives at the OMP launch
+	// First round: all 3 tasks dispatch (gate lives at the DSH launch
 	// point), but only 2 execution sessions actually start — the third hits the
 	// full refining gate inside processBatchSequential and defers.
 	done := runBatch(runner, tasks)
@@ -1586,9 +1586,9 @@ func TestPhaseConcurrencyGateLimitsDispatch(t *testing.T) {
 		t.Fatalf("second round dispatched = %d, want 1", got)
 	}
 	waitForStartCount(t, startDir, 3)
-	// The release file already exists from the first round, so the third OMP
+	// The release file already exists from the first round, so the third DSH
 	// exits immediately; still wait for its runTask goroutine to fully unwind
-	// before the test returns — otherwise TempDir cleanup races the OMP's
+	// before the test returns — otherwise TempDir cleanup races the DSH's
 	// startDir writes and flakes with "directory not empty".
 	waitForTasksIdle(t, runner)
 }
@@ -1603,7 +1603,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 		t.Fatalf("create project directory: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"project-one": projectDir})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1615,12 +1615,12 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	}
 	taskPath := filepath.Join(tasksDir, "TASK-000.md")
 	// stage set so the unstaged-task scan does not dispatch a PM
-	// consolidate session through the fake OMP (corrupts start counts).
+	// consolidate session through the fake DSH (corrupts start counts).
 	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
 	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	// The coalescing contract is about overlapping scans, not the watcher
 	// throttle; disable the min-interval so the follow-up schedules at once.
@@ -1633,7 +1633,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	// requestScan goroutine parks on the mutex while scanActive is already
 	// set synchronously. This makes the coalescing contract observable
 	// without racing the dispatch-only cycle (which completes in
-	// milliseconds once OMP launch returns).
+	// milliseconds once DSH launch returns).
 	runner.scanMu.Lock()
 	runner.requestScan()
 	deadline := time.Now().Add(2 * time.Second)
@@ -1662,7 +1662,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 		t.Fatal("requests during an active scan should be marked pending")
 	}
 
-	// Let the blocked scan proceed: it dispatches the planning task (OMP
+	// Let the blocked scan proceed: it dispatches the planning task (DSH
 	// starts and parks on the barrier), then unwinds.
 	runner.scanMu.Unlock()
 	waitForStartCount(t, startDir, 1)
@@ -1675,7 +1675,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 	releaseBarrier(t, releaseFile)
 	var active bool
 	// 30s matches the barrier script's poll ceiling (3000 × 10ms): on a
-	// loaded CI runner the OMP exit + coalesced follow-up scan can take
+	// loaded CI runner the DSH exit + coalesced follow-up scan can take
 	// longer than the old 10s window (observed: 10.11s timeout).
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1698,7 +1698,7 @@ func TestRunScanCycleCoalescesRequestsDuringScan(t *testing.T) {
 
 // TestRunOnceExitsOnSigterm verifies that a --once instance (systemd timer)
 // binds SIGTERM: stopping it cancels the in-flight batch promptly and routes
-// the interrupted OMP through the auto-resume path instead of orphaning it.
+// the interrupted DSH through the auto-resume path instead of orphaning it.
 func TestRunOnceExitsOnSigterm(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "project-one")
@@ -1706,7 +1706,7 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 		t.Fatalf("create project directory: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"project-one": projectDir})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1719,12 +1719,12 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 	}
 	taskPath := filepath.Join(tasksDir, "TASK-000.md")
 	// stage set so the unstaged-task scan does not dispatch a PM
-	// consolidate session through the fake OMP (corrupts start counts).
+	// consolidate session through the fake DSH (corrupts start counts).
 	content := "---\nid: \"000\"\nstatus: planning\nproject: project-one\nassignee: default\nstage: \"P1\"\n---\n# Task\n"
 	if err := os.WriteFile(taskPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 
 	done := make(chan error, 1)
@@ -1743,7 +1743,7 @@ func TestRunOnceExitsOnSigterm(t *testing.T) {
 		t.Fatal("RunOnce did not return after SIGTERM")
 	}
 
-	// The interrupted OMP must be routed through the auto-resume path, not
+	// The interrupted DSH must be routed through the auto-resume path, not
 	// treated as a phase failure: status stays planning with
 	// PHASE_INTERRUPTED, no blocked_phase. The shutdown drain makes the
 	// write-back land before RunOnce returns; the poll is a safety net.
@@ -1825,7 +1825,7 @@ func TestQuotaCooldownExponentialBackoff(t *testing.T) {
 func TestPrematurePlanApprovalResetAppendsAuditRecord(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1839,7 +1839,7 @@ func TestPrematurePlanApprovalResetAppendsAuditRecord(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	done := runBatch(runner, []task.ReadyTask{{
 		ID: "001", Title: "T", FilePath: taskPath,

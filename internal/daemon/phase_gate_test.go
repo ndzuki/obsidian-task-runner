@@ -65,7 +65,7 @@ func TestPhaseGateZeroLimitCoercedToOne(t *testing.T) {
 func TestNotifyKeyUnavailableDebounced(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	runner := newTestRunner(skillDir, "omp", filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, "dsh", filepath.Join(dir, "logs"), 1)
 	runner.cfg.Notifications.Desktop = false // SendTaskAction becomes a no-op
 
 	runner.notifyKeyUnavailable()

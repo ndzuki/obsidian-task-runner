@@ -37,7 +37,7 @@ func Run(opts Options) error {
 		stopDaemon()
 	}
 
-	// 1. Check dependencies（omp 已移除：executor 默认 dsh，不再需要 omp 二进制）
+	// 1. Check dependencies（executor 默认 dsh，无其他执行器依赖）
 	for _, bin := range []string{"git"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("missing dependency: %s", bin)
@@ -488,9 +488,9 @@ func ConfigureSystemd(opts Options) error {
 	}
 
 	// Build PATH for the units. Conventional user dirs first, then mise
-	// shims: omp is installed under ~/.local/share/mise/installs/... and
-	// exposed via the shims dir, so without it the daemon cannot exec omp
-	// (observed: "exec: omp: executable file not found in $PATH" every scan,
+	// shims: dsh is installed under ~/.local/share/mise/installs/... and
+	// exposed via the shims dir, so without it the daemon cannot exec dsh
+	// (observed: "exec: dsh: executable file not found in $PATH" every scan,
 	// starving every implementing task behind the failed slots).
 	path := buildSystemdPath(home)
 

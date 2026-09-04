@@ -19,8 +19,8 @@ import (
 // `dsh --profile headless-agent-server` process over HTTP RPC (POST /agent/run)
 // instead of spawning a short-lived headless process per phase. Two
 // capabilities the spawn adapter cannot express are restored here:
-//   - reasoningEffort is a native per-request field, restoring omp --thinking
-//     per-phase semantics (priority=off, planning=high, round2=max).
+//   - reasoningEffort is a native per-request field, restoring per-phase
+//     reasoning-level semantics (priority=off, planning=high, round2=max).
 //   - durable resume via the sessionId the agent-server returns (E4).
 //
 // It embeds dshExecutor only to reuse the SKILL.md body injection (dshTaskText);
@@ -350,8 +350,8 @@ func dshModelLabel(model string) string {
 	return provider + "/" + m
 }
 
-// mapDSHEffort maps omp --thinking to the DSH reasoningEffort the model profile
-// declares. off and empty mean "no explicit effort" (model default) — the
+// mapDSHEffort maps the former --thinking levels to the DSH reasoningEffort
+// the model profile declares. off and empty mean "no explicit effort" (model default) — the
 // agent-server rejects "off" as UNSUPPORTED_REASONING_EFFORT because the profile
 // declares only low/high/xhigh. max maps to xhigh (whose wire value is "max").
 func mapDSHEffort(ompEffort string) string {

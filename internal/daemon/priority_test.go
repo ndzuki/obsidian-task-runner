@@ -24,14 +24,14 @@ func TestRunPriorityAssessmentWritesNormalizedResult(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte("---\nid: \"001\"\nstatus: blocked\npriority: \"\"\npriority_assessment_status: pending\npriority_assessment_attempts: 0\n---\n# Task\n"), 0o644); err != nil {
 		t.Fatalf("write TASK: %v", err)
 	}
-	omp := filepath.Join(dir, "omp")
+	dshCmd := filepath.Join(dir, "dsh")
 	script := "#!/bin/sh\nprintf '%s' '{\"priority\":\"P1\",\"impact\":\"high\",\"urgency\":\"near_term\",\"workaround\":\"partial\",\"score\":999,\"confidence\":\"high\",\"reason\":\"core path\",\"recommendation\":\"\"}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write OMP: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write DSH: %v", err)
 	}
 
 	runner := &Runner{cfg: &config.Config{Executor: "dsh",
-		DSHCmd: omp, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
+		DSHCmd: dshCmd, Models: config.DefaultModels()}, logger: log.New(os.Stderr, "", 0)}
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)
 	apiKeyProbe.Store(func() bool { return true })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
@@ -86,16 +86,16 @@ req_doc: %s
 	}
 
 	calls := filepath.Join(dir, "calls")
-	omp := filepath.Join(dir, "omp")
+	dshCmd := filepath.Join(dir, "dsh")
 	script := "#!/bin/sh\nprintf 'call\\n' >> \"$CALLS\"\nprintf '%s' '{\"priority\":\"P1\",\"impact\":\"high\",\"urgency\":\"near_term\",\"workaround\":\"partial\",\"score\":6,\"confidence\":\"high\",\"reason\":\"core path\",\"recommendation\":\"\"}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write OMP: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write DSH: %v", err)
 	}
 	t.Setenv("CALLS", calls)
 	runner := New(&config.Config{
 		ObsidianVault: vault,
 		Executor:      "dsh",
-		DSHCmd:        omp,
+		DSHCmd:        dshCmd,
 		Models:        config.DefaultModels(),
 	})
 	runner.logger = log.New(os.Stderr, "", 0)
@@ -111,7 +111,7 @@ req_doc: %s
 		t.Fatalf("read calls: %v", err)
 	}
 	if got := strings.Count(string(data), "call\n"); got != priorityAssessmentBatchLimit {
-		t.Fatalf("OMP calls = %d, want %d", got, priorityAssessmentBatchLimit)
+		t.Fatalf("DSH calls = %d, want %d", got, priorityAssessmentBatchLimit)
 	}
 
 	thirdData, err := os.ReadFile(filepath.Join(tasksDir, "TASK-003.md"))

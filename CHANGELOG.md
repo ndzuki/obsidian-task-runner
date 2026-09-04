@@ -59,18 +59,18 @@
 - **[v0.17.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.5)**（2026-07-31）— 17.5: phase-aware thinking mode
 - **[v0.17.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.4)**（2026-07-31）— 17.4: Flash→Pro fallback + model ref update
 - **[v0.17.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.3)**（2026-07-31）— 17.3: knowledge-base cross-reference hint in context
-- **[v0.17.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.2)**（2026-07-31）— 17.2: fix context actually reaching OMP process
+- **[v0.17.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.2)**（2026-07-31）— 17.2: fix context actually reaching 早期执行器 process
 - **[v0.17.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.1)**（2026-07-31）— 17.1: context injection logging
 - **[v0.17.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.17.0)**（2026-07-31）— 17.0: selective knowledge extraction timing
 - **[v0.16.9](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.9)**（2026-07-31）— 16.9: knowledge extraction on Round 2 completion
 - **[v0.16.8](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.8)**（2026-07-31）— 16.8: structured context injection format
 - **[v0.16.7](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.7)**（2026-07-31）— 16.7: CONTEXT+ADR injection + 30s adaptive re-scan
-- **[v0.16.6](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.6)**（2026-07-31）— 16.6: preserve plan_approved for Round 2 OMP
+- **[v0.16.6](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.6)**（2026-07-31）— 16.6: preserve plan_approved for Round 2 早期执行器
 - **[v0.16.5](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.5)**（2026-07-31）— 16.5: fix gh pr commands working directory
 - **[v0.16.4](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.4)**（2026-07-31）— 16.4: git_remote resolution + target_branch write-back
 - **[v0.16.3](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.3)**（2026-07-31）— 16.3: daemon-wide implementing concurrency gate with restart-survivor tracking
 - **[v0.16.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.2)**（2026-07-30）— 16.2: fix Round 2 concurrency — isRound2 no longer requires PlanApproved
-- **[v0.16.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.1)**（2026-07-30）— fix: scanMu blocking concurrent scans during OMP execution
+- **[v0.16.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.1)**（2026-07-30）— fix: scanMu blocking concurrent scans during 早期执行器 execution
 - **[v0.16.0](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.16.0)**（2026-07-30）— 16.0 — wayfinder status, efficiency pipeline, v10 state machine, priority assessment
 - **[v0.15.2](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.15.2)**（2026-07-28）— 15.2 — docs: sync skill structure changes (symlink→copies, diagnose→diagnosing-bugs, 6-skill install)
 - **[v0.15.1](https://github.com/ndzuki/obsidian-task-runner/releases/tag/v0.15.1)**（2026-07-28）— 15.1 — config review: merge diagnose/diagnosing-bugs, merge review/code-review, fix obsidian-task-runner symlinks to real file copies

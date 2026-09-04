@@ -64,13 +64,13 @@ type urlError string
 
 func (e urlError) Error() string { return string(e) }
 
-// writeAuditOMP writes a fake OMP that records argv and emits a verdict JSON
+// writeAuditDSH writes a fake DSH that records argv and emits a verdict JSON
 // selected by the AUDIT_VERDICT env var: pass / fail / invalid, anything else
 // exits non-zero (simulating a crashed session).
-func writeAuditOMP(t *testing.T, dir string) (string, string) {
+func writeAuditDSH(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	argsFile := filepath.Join(dir, "audit-args")
-	omp := filepath.Join(dir, "fake-audit-omp")
+	dshCmd := filepath.Join(dir, "fake-audit-dsh")
 	script := `#!/bin/sh
 printf '%s\n' "$*" > "$AUDIT_ARGS_FILE"
 case "$AUDIT_VERDICT" in
@@ -89,19 +89,19 @@ case "$AUDIT_VERDICT" in
 esac
 exit 0
 `
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake audit omp: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake audit dshCmd: %v", err)
 	}
-	return omp, argsFile
+	return dshCmd, argsFile
 }
 
 // newAuditRunner builds a Runner with the completion audit enabled.
-func newAuditRunner(t *testing.T, skillDir, omp, logDir string) *Runner {
+func newAuditRunner(t *testing.T, skillDir, dshCmd, logDir string) *Runner {
 	t.Helper()
 	runner := New(&config.Config{
 		SkillInstallDir:    skillDir,
 		Executor:           "dsh",
-		DSHCmd:             omp,
+		DSHCmd:             dshCmd,
 		LogDir:             logDir,
 		MaxConcurrentTasks: 1,
 		Models:             config.DefaultModels(),
@@ -158,10 +158,10 @@ func TestParseAuditResult(t *testing.T) {
 func TestReviewAuditPassProceedsToMergeAuthorization(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "pass")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 
 	handled, err := runner.processReviewAudit(cand, dir)
@@ -202,10 +202,10 @@ func TestReviewAuditPassProceedsToMergeAuthorization(t *testing.T) {
 func TestReviewAuditFailRoutesBackToImplementing(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "fail")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 
 	handled, err := runner.processReviewAudit(cand, dir)
@@ -236,11 +236,11 @@ func TestReviewAuditFailRoutesBackToImplementing(t *testing.T) {
 func TestReviewAuditFailExhaustsBudgetGoesGrilling(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "fail")
 	t.Setenv("AUDIT_FAILURE_TYPE", "implementation")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 	cand.AuditFailCount = 1 // already failed once; max_fixes=2 → escalation, not a hard block
 
@@ -275,11 +275,11 @@ func TestReviewAuditFailExhaustsBudgetGoesGrilling(t *testing.T) {
 func TestReviewAuditRequirementFailureGoesGrilling(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "fail")
 	t.Setenv("AUDIT_FAILURE_TYPE", "requirement")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 
 	if _, err := runner.processReviewAudit(cand, dir); err != nil {
@@ -304,11 +304,11 @@ func TestReviewAuditRequirementFailureGoesGrilling(t *testing.T) {
 func TestReviewAuditImplementationFailureDoesNotGrillOnFirstTry(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "fail")
 	t.Setenv("AUDIT_FAILURE_TYPE", "implementation")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 
 	if _, err := runner.processReviewAudit(cand, dir); err != nil {
@@ -329,10 +329,10 @@ func TestReviewAuditImplementationFailureDoesNotGrillOnFirstTry(t *testing.T) {
 func TestReviewAuditSessionFailureKeepsReviewPending(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "crash") // fake exits 1
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 
 	handled, err := runner.processReviewAudit(cand, dir)
@@ -354,16 +354,16 @@ func TestReviewAuditSessionFailureKeepsReviewPending(t *testing.T) {
 		t.Fatalf("second processReviewAudit: %v", err)
 	}
 	entries, _ := os.ReadDir(filepath.Join(dir, "starts"))
-	_ = entries // no second OMP start observable; the cooldown path returns early
+	_ = entries // no second DSH start observable; the cooldown path returns early
 }
 
 func TestReviewAuditSkipsHumanApprovedMerge(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "pass")
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, taskPath := auditTask(t, dir, "review", true)
 	cand.MergeApproved = true // human authorized — audit must not run
 
@@ -375,16 +375,16 @@ func TestReviewAuditSkipsHumanApprovedMerge(t *testing.T) {
 		t.Fatal("handled = true, want false (human-approved merges skip the audit)")
 	}
 	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-		t.Fatal("audit OMP must not run for a human-approved merge")
+		t.Fatal("audit DSH must not run for a human-approved merge")
 	}
 }
 
 func TestReviewAuditSkipsNonAutoMerge(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	cand, _ := auditTask(t, dir, "review", false) // auto_merge=false
 
 	handled, err := runner.processReviewAudit(cand, dir)
@@ -395,16 +395,16 @@ func TestReviewAuditSkipsNonAutoMerge(t *testing.T) {
 		t.Fatal("handled = true, want false for a non-auto-merge task")
 	}
 	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-		t.Fatal("audit OMP must not run for a non-auto-merge task")
+		t.Fatal("audit DSH must not run for a non-auto-merge task")
 	}
 }
 
 func TestReviewAuditDisabled(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := writeVaultMap(t, dir, nil)
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	runner.cfg.Audit.Enabled = false
 	cand, _ := auditTask(t, dir, "review", true)
 
@@ -416,7 +416,7 @@ func TestReviewAuditDisabled(t *testing.T) {
 		t.Fatal("handled = true, want false when audit is disabled")
 	}
 	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-		t.Fatal("audit OMP must not run when disabled")
+		t.Fatal("audit DSH must not run when disabled")
 	}
 }
 
@@ -429,14 +429,14 @@ func TestReviewAuditDisabled(t *testing.T) {
 func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 	dir := t.TempDir()
 	repoDir := filepath.Join(dir, "repo")
-	omp, argsFile := writeAuditOMP(t, dir)
+	dshCmd, argsFile := writeAuditDSH(t, dir)
 	t.Setenv("AUDIT_ARGS_FILE", argsFile)
 	t.Setenv("AUDIT_VERDICT", "pass")
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatalf("create repo dir: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"demo": repoDir})
-	runner := newAuditRunner(t, skillDir, omp, filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, dshCmd, filepath.Join(dir, "logs"))
 	taskPath := writeTaskFile(t, dir, "TASK-BATCH.md", "review")
 	// Merge Phase will fail (dir is not a git repo, no gh) — that is fine:
 	// the assertion target is the audit-before-authorization ordering, and
@@ -452,7 +452,7 @@ func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 		TargetBranch: "task/batch",
 	}})
 	// The audit gate runs synchronously inside the batch goroutine; wait for
-	// the fake OMP to actually start (it writes its argv) before asserting.
+	// the fake DSH to actually start (it writes its argv) before asserting.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(argsFile); err == nil {
@@ -461,7 +461,7 @@ func TestBatchReviewAuditBeforeAutoApprove(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if _, err := os.Stat(argsFile); err != nil {
-		t.Fatalf("audit OMP never started: %v", err)
+		t.Fatalf("audit DSH never started: %v", err)
 	}
 	if processed := waitForBatch(t, done); processed != 1 {
 		t.Fatalf("processed = %d, want 1", processed)

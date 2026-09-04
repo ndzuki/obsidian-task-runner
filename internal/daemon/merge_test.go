@@ -295,7 +295,7 @@ target_branch: %s
 	}
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
-	runner := newTestRunner(dir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(dir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	return &mergeFixture{
 		repo:     repo,

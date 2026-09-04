@@ -25,8 +25,8 @@ import (
 //   - Reasoning effort maps to DSH's effort enum (off/low/high/max → the
 //     DSH adapter default set). DSH's own cross-model fallback plugin
 //     (fallback.mjs) covers provider failure; there is no daemon-side fallback
-//     layer — that OMP-era mechanism was removed with OMP itself
-//     (DSH 2.0 era; no OMP code path remains).
+//     layer — that pre-DSH mechanism was removed in the DSH 2.0 migration
+//     (no legacy code path remains).
 //   - Future: replace spawn-per-phase with ctx.agents.create/resume for
 //     durable, resumable sessions (Phase 3+). Until then, resume is
 //     unsupported and daemon restart re-dispatches from frontmatter state,

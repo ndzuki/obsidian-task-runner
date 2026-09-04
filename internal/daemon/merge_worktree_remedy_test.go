@@ -79,7 +79,7 @@ func TestBatchMergeCoolingSkipsMergeDispatch(t *testing.T) {
 		t.Fatalf("create repo dir: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"demo": repoDir})
-	runner := newAuditRunner(t, skillDir, filepath.Join(dir, "no-such-omp"), filepath.Join(dir, "logs"))
+	runner := newAuditRunner(t, skillDir, filepath.Join(dir, "no-such-dsh"), filepath.Join(dir, "logs"))
 	taskPath := writeTaskFile(t, dir, "TASK-COOL.md", "review")
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 		"merge_retry_not_before": time.Now().Add(time.Hour).Format(time.RFC3339),

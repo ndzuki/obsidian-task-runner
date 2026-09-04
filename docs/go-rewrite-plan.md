@@ -1,7 +1,7 @@
 > ⚠️ **历史规划文档**：本文件是 DSH 重构期间的规划记录，已由当前实现的
 > 权威架构说明 [docs/architecture.md](architecture.md) 取代。执行器现状：
 > `dsh-embed`（默认，agent-server RPC + durable resume），`dsh`（spawn），
-> `omp`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
+> `早期执行器`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
 
 # Go 重写方案
 
@@ -24,7 +24,7 @@ flowchart TD
         Daemon --> Watcher[fsnotify 监听]
         Daemon --> Scheduler[任务调度器]
         Scheduler --> Pool[goroutine 池]
-        Pool --> Exec[OMP 执行]
+        Pool --> Exec[早期执行器执行]
         Watcher --> Debounce[per-dir debounce]
         Debounce --> Scheduler
     end
@@ -61,7 +61,7 @@ obsidian-task-runner/
 │   ├── daemon/
 │   │   ├── daemon.go            # 常驻循环
 │   │   ├── scheduler.go         # 任务调度
-│   │   ├── executor.go          # OMP 调用
+│   │   ├── executor.go          # 早期执行器调用
 │   │   └── scanner.go           # 扫描循环
 │   ├── watch/
 │   │   ├── watcher.go           # fsnotify 封装
@@ -163,7 +163,7 @@ func (w *Watcher) Start(ctx context.Context, events chan<- Event)
 - 临时文件过滤：使用文件扩展名 + 编辑器模式，不再依赖 `sed??????` hack
 - 事件合并：同文件多次修改在 debounce 窗口内合并为一次
 
-### 4. OMP 执行器 (`internal/daemon/executor.go`)
+### 4. 早期执行器执行器 (`internal/daemon/executor.go`)
 
 ```go
 func (e *Executor) RunRound1(ctx context.Context, task *task.Task) error
@@ -171,7 +171,7 @@ func (e *Executor) RunRound2(ctx context.Context, task *task.Task) error
 func (e *Executor) RunMerge(ctx context.Context, task *task.Task) error
 ```
 
-- 直接 `os/exec` 调 `omp` 命令，不再经过 Bash 管道
+- 直接 `os/exec` 调 `早期执行器` 命令，不再经过 Bash 管道
 - `io.Pipe` 捕获 stdout/stderr 结构化日志
 - 超时控制：`context.WithTimeout`
 - 返回码 + 日志提取 → 精确判断执行结果
@@ -197,7 +197,7 @@ type Config struct {
     OMPModelDeepseek string `mapstructure:"omp_model_deepseek"`
     OMPModelGPT      string `mapstructure:"omp_model_gpt"`
     OMPModelDefault  string `mapstructure:"omp_model_default"`
-    OMPCmd           string `mapstructure:"omp_cmd"`
+    OMPCmd           string `mapstructure:"dsh_cmd"`
 }
 ```
 

@@ -124,7 +124,7 @@ target_branch: task/001-fork
 	}
 
 	skillDir := writeTeamVaultMapMode(t, dir, "team-app", repo, mergeMode)
-	runner := newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	candidate := task.ReadyTask{
 		ID: "001", Title: "Fork Task", Project: "team-app",
@@ -205,7 +205,7 @@ func TestProcessMergeTaskForkMergeHappyPath(t *testing.T) {
 }
 
 // TestForkMergeConflictAutoResolved: a conflicting feature branch goes
-// through the AI conflict-resolution session (fake OMP commits the resolved
+// through the AI conflict-resolution session (fake DSH commits the resolved
 // merge), then the fork default branch is pushed and the task completes.
 func TestForkMergeConflictAutoResolved(t *testing.T) {
 	repo, origin, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")

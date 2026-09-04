@@ -60,7 +60,7 @@ func TestDefaultModelsUsesFreeChannelsFirst(t *testing.T) {
 			t.Errorf("models[%q] = %q, want %q", key, got, want)
 		}
 	}
-	// OMP 时代遗留键全部移除：flash / gemini / claude / minimax。
+	// 旧执行器时代遗留键全部移除：flash / gemini / claude / minimax。
 	for _, legacy := range []string{"flash", "gemini", "claude", "minimax"} {
 		if _, ok := models[legacy]; ok {
 			t.Errorf("legacy %s assignee key must not be present", legacy)

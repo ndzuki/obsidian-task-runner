@@ -1,7 +1,7 @@
 # Obsidian Task Runner — 目标业务流程
 
 > **架构现状**：当前实现以 DSH 为执行后端（agent-server + 免费优先模型路由），
-> 见 [docs/architecture.md](architecture.md)。本文为规范性设计；文中 OMP 描述为历史
+> 见 [docs/architecture.md](architecture.md)。本文为规范性设计；文中早期执行器描述为历史
 > 规划残留，执行器相关以 architecture.md 为准。
 >
 > 本文是规范性设计。Go 实现必须满足本文状态不变量和验收标准。
@@ -839,7 +839,7 @@ flowchart TD
 
 ### 10.7 模型兜底与免费渠道不可用
 
-（OMP 时代的 `fallback_models` / `watchEmptyStops` 已随执行器迁移移除；当前机制见 [architecture.md](architecture.md)。）
+（早期执行器时代的 `fallback_models` / `watchEmptyStops` 已随执行器迁移移除；当前机制见 [architecture.md](architecture.md)。）
 
 | 层 | 失效形态 | 机制 | 归属 |
 | --- | --- | --- | --- |
@@ -1319,9 +1319,7 @@ flowchart LR
 
 **目标文件**：
 
-- `test/e2e/full-lifecycle.sh`
-- `test/e2e/grilling-flow.sh`
-- 新增 phase/merge/concurrency E2E
+- E2E 脚本（阶段生命周期 / merge / 并发覆盖，随执行器迁移重构）
 - `README.md`、`reference.md`、Dataview 查询
 
 **变更**：

@@ -110,11 +110,11 @@ func TestGrillingPMHoldsDistributeWhenListPaused(t *testing.T) {
 	writePausedDecisionList(t, listPath)
 
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),
@@ -145,11 +145,11 @@ func TestGrillingPMHoldsConsolidateWhenListPaused(t *testing.T) {
 	writePausedDecisionList(t, listPath)
 
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
 			Models:              config.DefaultModels(),

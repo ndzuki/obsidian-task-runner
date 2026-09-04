@@ -63,8 +63,8 @@ type Config struct {
 	// Executor selects the phase-execution backend: "dsh-embed" (default,
 	// long-lived agent-server RPC with per-phase reasoningEffort) or "dsh"
 	// (spawn `dsh --profile headless`). Any other value resolves to
-	// dsh-embed (newPhaseExecutor). The OMP executor is retired with the
-	// OMP era — no "omp" value is honored anymore.
+	// dsh-embed (newPhaseExecutor). The pre-DSH executor is retired — no
+	// legacy value is honored anymore.
 	Executor        string `json:"executor"`
 	DefaultAssignee string `json:"default_assignee"`
 	LogDir          string `json:"log_dir,omitempty"`

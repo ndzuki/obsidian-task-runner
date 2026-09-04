@@ -2,7 +2,7 @@
 
 > 本文是当前实现的权威架构说明（2026-08 起，`refactor/dsh-architecture`）。
 > 早期规划文档（`phase5-executor-migration.md` / `embed-migration-plan.md` /
-> `go-rewrite-plan.md` / `refactor-architecture.md`）为历史资料，其中 OMP
+> `go-rewrite-plan.md` / `refactor-architecture.md`）为历史资料，其中早期执行器
 > 执行器描述已被本文取代。运行时契约见 `obsidian-task-runner/SKILL.md`
 > 与 `reference.md`；完整流程见 `workflow.md`。
 
@@ -68,7 +68,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
   持久化到任务 frontmatter，恢复时先 resume，失败再 fresh start
   （`internal/daemon/phase_executor.go`）。
 - `dsh`：每阶段临时 spawn `dsh --profile headless`（无持久会话，一次性进程）。
-- ~~`omp`~~：已随 OMP 时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
+- ~~`早期执行器`~~：已随早期执行器时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
 
 ## 4. 模型路由（免费优先）
 

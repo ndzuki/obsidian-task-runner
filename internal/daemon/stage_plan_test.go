@@ -185,16 +185,16 @@ id: "stage-plan"
 	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-001-a.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ompLog := filepath.Join(dir, "omp.log")
-	fakeOMP := filepath.Join(dir, "fake-omp")
+	ompLog := filepath.Join(dir, "dsh.log")
+	fakeDSH := filepath.Join(dir, "fake-dsh")
 	script := "#!/bin/bash\necho \"ARGS=$@\" >> " + ompLog + "\nexit 0\n"
-	if err := os.WriteFile(fakeOMP, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(fakeDSH, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runner := New(&config.Config{
 		ObsidianVault: vault,
 		Executor:      "dsh",
-		DSHCmd:        fakeOMP,
+		DSHCmd:        fakeDSH,
 		LogDir:        filepath.Join(dir, "logs"),
 		Models:        config.DefaultModels(),
 	})
@@ -204,7 +204,7 @@ id: "stage-plan"
 		t.Fatal("stage-review must not dispatch while a task is unmerged")
 	}
 	if _, err := os.Stat(ompLog); !os.IsNotExist(err) {
-		t.Fatal("OMP must not run before stage completion")
+		t.Fatal("DSH must not run before stage completion")
 	}
 
 	// Task merges: dispatch fires with the stage-plan path argument.
@@ -217,9 +217,9 @@ id: "stage-plan"
 	}
 	data := waitForPmArgs(t, ompLog)
 	if !strings.Contains(data, "stage-review") {
-		t.Fatalf("OMP args = %q, want stage-review mode", data)
+		t.Fatalf("DSH args = %q, want stage-review mode", data)
 	}
 	if !strings.Contains(data, "Stage-Plan.md") {
-		t.Fatalf("OMP args = %q, want Stage-Plan.md path", data)
+		t.Fatalf("DSH args = %q, want Stage-Plan.md path", data)
 	}
 }

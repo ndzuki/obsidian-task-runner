@@ -1,7 +1,7 @@
 > ⚠️ **历史规划文档**：本文件是 DSH 重构期间的规划记录，已由当前实现的
 > 权威架构说明 [docs/architecture.md](architecture.md) 取代。执行器现状：
 > `dsh-embed`（默认，agent-server RPC + durable resume），`dsh`（spawn），
-> `omp`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
+> `早期执行器`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
 
 # obsidian-task-runner × DSH 完整融合（embed）方案
 
@@ -20,7 +20,7 @@ spawn 模式（`dsh --profile headless <task>`）的问题：
 
 调研确认（rc.7 源码）：`agents.create({sessionId, agentOptions:{provider,model,reasoningEffort}, setup})`
 与 `agents.resume({resumeSessionId})` 是 DSH 原生 API；`assertAgentOptions` 仅校验
-`maxTokens`，`reasoningEffort` 透传——所以 embed 能完整还原 omp 的 `--thinking` per-阶段语义。
+`maxTokens`，`reasoningEffort` 透传——所以 embed 能完整还原早期执行器的 `--thinking` per-阶段语义。
 
 ## 2. 架构
 
@@ -46,7 +46,7 @@ POST /agent/run
   body: {
     task: string,                 // 已注入 SKILL.md 正文的任务文本
     provider: string, model: string,
-    reasoningEffort: string,      // off/low/high/max（omp 语义）
+    reasoningEffort: string,      // off/low/high/max（早期执行器语义）
     sessionId?: string,           // 首次为空（新建）；resume 时传 durable id
     status?: string               // 任务 frontmatter 状态（供 /agents 监控面板按
                                   // 真实状态动画：refining/plan-review/implementing/
@@ -121,8 +121,8 @@ fully_mature）经 agent-server `/agent/run` 跑 round1，`reasoningEffort=high`
 - 耗时约 90s（high 推理强度下模型深度探索：读 otg 源码理解 update-status 写回机制）。
 
 **结论**：推理强度失效是 planning 收敛失败（§5.4/§5.6）的**根因**；embed 的
-`agentOptions.reasoningEffort` 完整还原 omp `--thinking` per-阶段语义，planning
-在 dsh-embed 下可靠收敛。可以推进「默认切 dsh-embed + 替换 omp」。
+`agentOptions.reasoningEffort` 完整还原早期执行器`--thinking` per-阶段语义，planning
+在 dsh-embed 下可靠收敛。可以推进「默认切 dsh-embed + 替换早期执行器」。
 
 ### round2 冒烟记录（2026-08-20，dsh-embed 全阶段验证闭环）
 
@@ -172,14 +172,14 @@ dsh-embed 具备生产可用性。
 - reasoningEffort 传递链路（agent/request prepend → llm-pi-ai）实测生效：
   - 前提：settings.yaml 的模型须配 `reasoningEfforts`（THINKING_LEVELS → wire），
     否则 llm-pi-ai 报 `UNSUPPORTED_REASONING_EFFORT`（模型 `reasoning: false`）。
-  - 已配 `low/medium/high/xhigh` → wire `low/medium/high/max`（对齐 omp
+  - 已配 `low/medium/high/xhigh` → wire `low/medium/high/max`（对齐早期执行器
     `reasoningEffortMap`）。`off` 不支持（未声明），Go 侧映射为「不传 effort」。
 - 实测：`low`/`high`/`xhigh` 均 `completed`；`off` 需 Go 侧跳过。
-- **omp → DSH effort 映射**（E2 实现）：`off→不传`、`low→low`、`high→high`、`max→xhigh`。
+- **早期执行器 → DSH effort 映射**（E2 实现）：`off→不传`、`low→low`、`high→high`、`max→xhigh`。
 
 ## 6. 风险与对策
 
-1. **rc.7 agents API 稳定性**——之前 defer 的主因。E1 用最小插件验证，出错即回退 spawn（OMP/dsh spawn 分支保留）。
+1. **rc.7 agents API 稳定性**——之前 defer 的主因。E1 用最小插件验证，出错即回退 spawn（早期执行器/dsh spawn 分支保留）。
 2. **agent-server 进程故障**——daemon 需健康检查 + 自动重启（同 systemd 语义）。
 3. **并发**——agent-server 需支持并发 agent（agents service 天然多 agent；Go 侧连接池）。
 4. **内存**——长驻 agent-server ≈ 单次 spawn 峰值（227MB）+ 会话残留；相比 spawn 每阶段峰值相同，但长驻不释放。可接受（对比 web 653MB）。
@@ -188,7 +188,7 @@ dsh-embed 具备生产可用性。
 
 把 dsh-embed 部署到真实 daemon（release-manager 73 任务 vault），观察真实工作：
 
-- ✅ **接替 omp**：新 otg（dsh-embed 默认）安装 + daemon 重启，agent-server 正常
+- ✅ **接替早期执行器**：新 otg（dsh-embed 默认）安装 + daemon 重启，agent-server 正常
   拉起，真实任务走 dsh 派发。
 - ✅ **TASK-057 真实流程**：audit 会话通过（`audit_status=passed`）→ merge 会话
   深度执行（`auto-fix-ci`，CI 修复诊断中，正常耗时）。
@@ -204,10 +204,10 @@ dsh-embed 具备生产可用性。
 参考 `sandbaseai/deepseek-harness-handbook` 的 headless-reasoning-effort 指南，
 审查 otg 各阶段映射：
 
-| 阶段 | omp --thinking | mapDSHEffort | 审查结论 |
+| 阶段 | 早期执行器 --thinking | mapDSHEffort | 审查结论 |
 |---|---|---|---|
 | priority | medium | `medium` | ✅（DSH 无 off 选择；low 不够，TASK-079 后上调） |
-| round2 | max | `xhigh` | ✅ xhigh wire=max，对齐 omp |
+| round2 | max | `xhigh` | ✅ xhigh wire=max，对齐早期执行器 |
 | planning | max | `xhigh` | ✅ 2026-09-02 high→max（plan 高杠杆，见 ADR-008 Updates） |
 | refining | medium | `medium` | ✅（同上 TASK-079 上调） |
 | merge（冲突解决） | high（PhaseSpec 显式） | `high` | ✅ |
@@ -226,21 +226,21 @@ dsh-embed 具备生产可用性。
   近似**（不传用默认），但语义是「用默认」而非「关闭推理」——priority/audit
   若需真正关闭推理省 token，需 provider 级 `reasoning` 配置（后续 backlog）。
 
-## 10. systemd 服务名 + 日志路径去 omp 化（2026-08-20）
+## 10. systemd 服务名 + 日志路径去早期执行器化（2026-08-20）
 
-- **systemd**：停用 + 禁用 + 删除 `omp-task-runner.service/timer` 与
-  `omp-task-watcher.service`（旧名，5.8 已改 install.go 的 unit 名为 otg-*，
-  但运行时旧 unit 仍在）。daemon 重启后发现 `omp-task-runner.service` 被
+- **systemd**：停用 + 禁用 + 删除 `otg-task-runner.service/timer` 与
+  `早期执行器-task-watcher.service`（旧名，5.8 已改 install.go 的 unit 名为 otg-*，
+  但运行时旧 unit 仍在）。daemon 重启后发现 `otg-task-runner.service` 被
   systemd 自动拉起（activating），与手动 dsh-embed daemon 冲突——已彻底清除。
-- **日志路径**：`~/.omp/logs` → `~/.dsh/logs`（daemon/merge/audit/cli 共 7 处）。
-- **注释**：`~/.omp/get-api-key.sh` 历史引用移除。
-- 代码层 `~/.omp` 引用清零。
+- **日志路径**：`~/.dsh/logs` → `~/.dsh/logs`（daemon/merge/audit/cli 共 7 处）。
+- **注释**：`~/.dsh/get-api-key.sh` 历史引用移除。
+- 代码层 `~/.dsh` 引用清零。
 
 ## 11. grilling 交互平替 + effort 分级（2026-08-20）
 
 ### grilling 交互（kitty tab 光标问卷）
 
-omp 的 grilling 交互（`exec "omp" <prompt>` 逐问 TUI）替换为自研 kitty-grill：
+早期执行器的 grilling 交互（`exec "早期执行器" <prompt>` 逐问 TUI）替换为自研 kitty-grill：
 
 - **agent-server `/agent/chat`**：多轮交互端点（sessionId 命中 liveAgents 复用
   同一 agent 保持上下文，否则 create/resume），与 `/agent/run` 共用 acquireAgent。
@@ -253,7 +253,7 @@ omp 的 grilling 交互（`exec "omp" <prompt>` 逐问 TUI）替换为自研 kit
   作为上下文注入 prompt——勘察从 10-20 轮 read 降到 0 轮，省 60-70% 时间。
 - **prompt-env**：决策清单 prompt 经环境变量传（避免 bash 反引号转义）。
 - daemon 集成：tryKittyTab（需求详细化）/TryKittyDecisionTab（决策清单）从
-  `exec omp` 改为 `exec kitty-grill`；ompExecPath → grillExecPath。
+  `exec 早期执行器` 改为 `exec kitty-grill`；ompExecPath → grillExecPath。
 - **提交后异步写回 + 自动关 tab**（2026-08-22，TASK-058 对齐体验修复）：
   回答提交后 spawn detached 子进程（setsid，`--writeback` 模式）重新挂接
   session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，写回请求
@@ -287,7 +287,7 @@ low/medium/high/xhigh 四档）：
 - agent-default-model 修复为 `deepseek_magic/deepseek-v4-pro`（magic 免费优先），
   fallback 只在免费渠道间切换：`deepseek_magic → openai gpt-5.6`（能力映射），
   `ds-official` 官方付费渠道仅由任务 `assignee=ds-official` 显式启用。
-- `omp-commands` 插件改名 `dsh-commands`。
+- `早期执行器-commands` 插件改名 `dsh-commands`。
 - daemon 持久化为 systemd user service `otg-task-watcher.service`（真实环境，
   完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描
   /tmp/kitty-*）。

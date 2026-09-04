@@ -16,7 +16,7 @@
  * reasoningEffort 传递：AgentOptions 只含 provider/model（buildRequest 只读
  * options.provider/model），reasoningEffort 只从 persistedConfig 或
  * agent/request waterfall 注入——本插件用后者的 prepend 监听，把 per-请求
- * 的 effort 写进 request config，完整还原 omp 的 --thinking per-阶段语义。
+ * 的 effort 写进 request config，完整还原按阶段的 reasoning effort 语义。
  *
  * config（profile cordis.patch.yml 的 agent-server 行）：
  *   port: 8799        # 监听端口

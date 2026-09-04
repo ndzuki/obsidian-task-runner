@@ -120,7 +120,7 @@ func TestAutoResolveMergeConflictCircuitBreakerSkipsHugeConflicts(t *testing.T) 
 		t.Fatalf("parse task: %v", err)
 	}
 
-	runner := newTestRunner(t.TempDir(), filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(t.TempDir(), filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.MaxAutoFixConflicts = 5 // 7 conflicted files exceed the breaker
 	candidate := task.ReadyTask{ID: "067", Title: "Op", FilePath: taskPath, Status: "review", MergeApproved: true}
 
@@ -229,7 +229,7 @@ exit 0
 	}
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
-	runner := newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.MaxAutoMergeFixes = 3
 	ctx, cancel := context.WithCancel(context.Background())

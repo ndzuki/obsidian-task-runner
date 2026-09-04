@@ -1,19 +1,19 @@
 > ⚠️ **历史规划文档**：本文件是 DSH 重构期间的规划记录，已由当前实现的
 > 权威架构说明 [docs/architecture.md](architecture.md) 取代。执行器现状：
 > `dsh-embed`（默认，agent-server RPC + durable resume），`dsh`（spawn），
-> `omp`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
+> `早期执行器`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
 
-# Phase 5 执行路径迁移：OMP → DSH
+# Phase 5 执行路径迁移：早期执行器 → DSH
 
-> 状态：**设计已定，实施待进行**。本文档是 daemon 执行循环从 `spawn omp`
+> 状态：**设计已定，实施待进行**。本文档是 daemon 执行循环从 `spawn 早期执行器`
 > 切换到 `spawn dsh --profile headless` 的完整蓝图。低风险清理（skill-doctor
-> omp 引用、skills manifest 单一来源）已完成；核心的执行循环切换按本文档
+> 早期执行器引用、skills manifest 单一来源）已完成；核心的执行循环切换按本文档
 > 分步实施，每步可独立回滚。
 
-## 1. 现状：OMP 执行路径的 OMP 特有逻辑
+## 1. 现状：早期执行器执行路径的早期执行器特有逻辑
 
 `internal/daemon/daemon.go` 的 `processBatchSequential` 内联了 ~400 行执行
-代码，其中大量逻辑是 OMP 特有的，切换到 DSH 时不能简单搬运：
+代码，其中大量逻辑是早期执行器特有的，切换到 DSH 时不能简单搬运：
 
 | 逻辑 | 位置 | DSH 对应 | 迁移动作 |
 |---|---|---|---|
@@ -48,13 +48,13 @@ result, err := handle.Wait()
 
 ## 3. 切换策略：config 开关 + 渐进迁移
 
-引入 `executor` 配置（`"omp"` 默认 / `"dsh"` 可选），`processBatchSequential`
-按配置分流。默认 `omp` 保持现状零风险；`dsh` 作为 opt-in 逐阶段验证；
-全部 8 阶段验证通过后默认切 `dsh`，最终删除 omp 分支。
+引入 `executor` 配置（`"早期执行器"` 默认 / `"dsh"` 可选），`processBatchSequential`
+按配置分流。默认 `早期执行器` 保持现状零风险；`dsh` 作为 opt-in 逐阶段验证；
+全部 8 阶段验证通过后默认切 `dsh`，最终删除早期执行器分支。
 
 ```go
 // config.go
-Executor string `json:"executor"` // "omp"(default) | "dsh"
+Executor string `json:"executor"` // "早期执行器"(default) | "dsh"
 ```
 
 ## 4. 分步实施（每步独立 commit + 全量 race + 逐阶段冒烟）
@@ -62,15 +62,15 @@ Executor string `json:"executor"` // "omp"(default) | "dsh"
 | 步 | 内容 | 验证 |
 |---|---|---|
 | 5.0 | config `executor` 开关 + 校验 + 默认值 | config 测试 |
-| 5.1 | 提取 OMP 内联执行段为 `runOMPPhase`（行为不变纯重构） | 现有 daemon 测试全绿 |
+| 5.1 | 提取早期执行器内联执行段为 `runOMPPhase`（行为不变纯重构） | 现有 daemon 测试全绿 |
 | 5.2 | 新增 `runDSHPhase`：PhaseSpec 构造 + dshExecutor + ExecutionResult→ErrorCode 映射 | 单测（fake executor） |
-| 5.3 | `processBatchSequential` 按 `executor` 分流；默认 omp | 双路径测试 |
+| 5.3 | `processBatchSequential` 按 `executor` 分流；默认早期执行器 | 双路径测试 |
 | 5.4 | **逐阶段**验证 dsh 路径：refining → planning → round2 → priority（先 4 个无 git 侧效的阶段） | 每阶段一个真实 vault 冒烟 |
 | 5.5 | 验证 merge/pm/audit/conventions（4 个 git/审核阶段） | 同上 |
 | 5.6 | 调研并实现 DSH 退出码→ quota/key-unavailable 检测（替代日志解析） | 错误码映射测试 |
-| 5.7 | 移除 OMP 特有逻辑（PID 文件、tailOMPLog、empty-stop、fallback 循环） | 删除后全量回归 |
-| 5.8 | install.go 移除 omp 检查/symlink；skill 目录 ~/.omp → ~/.dsh；systemd unit 改名 | install 测试 + 全新安装冒烟 |
-| 5.9 | 默认 `executor: "dsh"`；删除 omp 分支与 `OMPCmd` | 全链路 DSH 跑通 |
+| 5.7 | 移除早期执行器特有逻辑（PID 文件、tailOMPLog、empty-stop、fallback 循环） | 删除后全量回归 |
+| 5.8 | install.go 移除早期执行器检查/symlink；skill 目录 ~/.dsh → ~/.dsh；systemd unit 改名 | install 测试 + 全新安装冒烟 |
+| 5.9 | 默认 `executor: "dsh"`；删除早期执行器分支与 `OMPCmd` | 全链路 DSH 跑通 |
 
 ## 5.4 冒烟验证记录
 
@@ -97,7 +97,7 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 - **planning —— 冒烟未通过 ⚠️（2026-08-19，两次）**：
   - 修复 1（已提交 63bf9b0）：phase skills 带 `disable-model-invocation: true`
     被 DSH 从模型目录排除，dsh 会话无法加载 → dshExecutor 改为直接注入
-    `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐 omp「daemon 注入正文」机制）。
+    `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐早期执行器「daemon 注入正文」机制）。
   - 修复 2：fallback 白名单加 `QUOTA`（magic 免费额度耗尽 402 也切官方）。
   - **真实项目（obsidian-task-runner，10 ADR + 178 行 CONTEXT + git）复测**：
     - ✅ 聚焦改善：模型正确读 ADR×15、CONTEXT.md、References/INDEX、
@@ -108,7 +108,7 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
       planning，plan_version=0）；最后一请求 output 仅 491 tokens，stop 在
       探索阶段。
     - ✅ 无污染：真实 TASK 仅 daemon 的 `updated` 时间戳变化，无 plan 字段写入。
-  - **根因（推测）**：planning 需要 omp 的 `--thinking high`，而 spawn 模式推理
+  - **根因（推测）**：planning 需要早期执行器的 `--thinking high`，而 spawn 模式推理
     强度失效（§5.6）→ 复杂多步 planning 推理不足，无法收敛到写回。round1 的
     多步指令（读 ADR/知识库/生成计划/写回）在无 high 推理 + 无 strict 输出机制
     的 dsh headless 下不稳定。
@@ -141,7 +141,7 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 
 ## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
 
-omp 的 `--thinking low|high|max` 是 **per-阶段 CLI 参数**，DSH headless 无等价物：
+早期执行器的 `--thinking low|high|max` 是 **per-阶段 CLI 参数**，DSH headless 无等价物：
 
 1. **CLI 层**：`dsh --profile headless` 仅 `--profile` + task 文本，无 thinking/reasoning 参数。
 2. **插件 Config 层**：`agent-default-model` 的 Config schema 只有 `{provider, model}`，
@@ -153,17 +153,17 @@ omp 的 `--thinking low|high|max` 是 **per-阶段 CLI 参数**，DSH headless �
    到 request。
 
 **结论**：spawn 模式（rc.7）下推理强度无法有效传递（既不能 per-阶段，全局设置也
-疑似失效）。omp 的 per-阶段映射（priority=off / planning=high / round2=max / 默认=low）
+疑似失效）。早期执行器的 per-阶段映射（priority=off / planning=high / round2=max / 默认=low）
 在 dsh 路径丢失。
 
 **唯一完整方案**：embed 模式（方案 C）——`ctx.agents.create({agentOptions:{...,
 reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc 稳定后）一并解决。
-本限制可能是 planning 冒烟跑偏的促成因素之一（planning 失去 omp 的 high 推理）。
+本限制可能是 planning 冒烟跑偏的促成因素之一（planning 失去早期执行器的 high 推理）。
 
 ## 5. 关键风险与对策
 
 1. **DSH headless 失败语义未知**：quota/key-unavailable 如何从 `dsh` 进程
-   反映（退出码 vs 输出）需在 5.6 实测，不可假设与 omp 相同。
+   反映（退出码 vs 输出）需在 5.6 实测，不可假设与早期执行器相同。
 2. **fallback 语义变化**：daemon 侧 fallback（换模型 + stale-guard）vs DSH
    插件 fallback（`agent/request-error` → retry）。迁移后 stale-guard 仍须
    保留（防旧会话写回错误阶段）。
@@ -176,14 +176,14 @@ reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc �
 ## 6. 完成判据
 
 - `executor: "dsh"` 下 8 阶段全链路冒烟通过；
-- `OMPCmd`、`FallbackModels`、`tailOMPLog`、PID 文件、omp 日志解析全部移除；
-- `otg install` 不再检查/安装 omp；skills 落 `~/.dsh/skills`；
+- `OMPCmd`、`FallbackModels`、`tailOMPLog`、PID 文件、早期执行器日志解析全部移除；
+- `otg install` 不再检查/安装早期执行器；skills 落 `~/.dsh/skills`；
 - `make test` 全绿 + 真实 vault 端到端（release-manager 73 任务）无回归。
 
 ## 7. DSH rc.8 升级（2026-08-19）
 
 - **升级**：dsh `0.1.0-rc.7 → 0.1.0-rc.8`（npm `next` tag）+ dsh-tui `0.8.1 → 0.8.5`。
-- **验证**：`dsh-upgrade-check --full` 全绿——5 个插件（fallback/omp-commands/
+- **验证**：`dsh-upgrade-check --full` 全绿——5 个插件（fallback/早期执行器-commands/
   kb-distill/mcp-context7/vault）+ agent-server 语法 OK，headless 冒烟通过。
 - **rc.8 关键变更（与 dsh 路径相关）**：
   - 修复「自定义 OpenAI 兼容网关请求格式差异无法调用 + 推理内容回传可能缺失」——

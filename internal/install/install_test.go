@@ -91,7 +91,7 @@ func TestBuildSystemdPath(t *testing.T) {
 }
 
 // TestConfigureSystemdWritesMiseShimsPath 验证生成的 unit 携带 mise shims PATH：
-// 缺少它时 daemon 无法 exec omp（"exec: omp: executable file not found"），
+// 缺少它时 daemon 无法 exec dsh（"exec: dsh: executable file not found"），
 // 所有 implementing 任务会在 failed 槽位后饿死。空 PATH 跳过 systemctl 调用。
 func TestConfigureSystemdWritesMiseShimsPath(t *testing.T) {
 	home := t.TempDir()

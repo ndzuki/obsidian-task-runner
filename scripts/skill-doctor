@@ -250,7 +250,7 @@ cmd_install() {
   skill_src=$(clone_skill_source "$name" "$tmpdir") || return 1
 
   # DSH 时代：技能安装到 ~/.dsh/skills/<name>（DSH 的 skill 搜索根）。
-  # 旧 OMP 路径（~/.agents/skills + agent skills 符号链接）已随 OMP 退役。
+  # 旧路径（~/.agents/skills + agent skills 符号链接）已随旧执行器退役。
   local dest="$HOME/.dsh/skills/$name"
   echo "   Copying to $dest..."
   mkdir -p "$(dirname "$dest")"

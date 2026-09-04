@@ -1583,7 +1583,7 @@ assignee: default
 
 func TestScanAndProcessResumesAndDispatchesResolvedUpstream(t *testing.T) {
 	dir := t.TempDir()
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1619,8 +1619,8 @@ req_doc: Projects/001-test/Requirements/REQ-080.md
 	}
 	downstream := filepath.Join(tasksDir, "TASK-081-downstream.md")
 	// priority: P2 keeps the task out of FindPriorityTasks: the unblock in
-	// processBatch turns it "ready" mid-scan, and a priority assessment OMP
-	// would race this test's barrier-OMP start-count assertion (observed
+	// processBatch turns it "ready" mid-scan, and a priority assessment DSH
+	// would race this test's barrier-DSH start-count assertion (observed
 	// flake: "start count did not reach 1; got 2").
 	if err := os.WriteFile(downstream, []byte(`---
 id: "081"
@@ -1636,12 +1636,12 @@ assignee: default
 		t.Fatal(err)
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.SkillInstallDir = skillDir
 
 	// resolveBlockedDependencies auto-resumes upstream; scanAndProcess restores
-	// it to implementing and dispatches OMP (runs async: barrier OMP blocks until
+	// it to implementing and dispatches DSH (runs async: barrier DSH blocks until
 	// release, so scanAndProcess won't return until then).
 	runner.resolveBlockedDependencies()
 	done := make(chan error, 1)
@@ -1661,7 +1661,7 @@ assignee: default
 	}
 
 	releaseBarrier(t, releaseFile)
-	// Async dispatch: scanAndProcess returned long ago; wait for the OMP
+	// Async dispatch: scanAndProcess returned long ago; wait for the DSH
 	// task AND its follow-up scan to unwind, or the leaked goroutines race
 	// the next test's global state (apiKeyProbe).
 	waitForScanIdle(t, runner)
@@ -1685,7 +1685,7 @@ func mustParse(t *testing.T, path string) *yamlfrontmatter.Frontmatter {
 // scan round once the key probe succeeds (fall-through, no extra round wait).
 func TestScanAndProcessAutoResumesKeyBlockedTask(t *testing.T) {
 	dir := t.TempDir()
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1708,7 +1708,7 @@ project: test
 status: blocked
 blocked_phase: implementing
 phase_error_code: API_KEY_UNAVAILABLE
-phase_error: OMP 无法获取模型 API Key
+phase_error: DSH 无法获取模型 API Key
 resume_approved: false
 priority: P2
 assignee: default
@@ -1724,7 +1724,7 @@ stage: "P1"
 	apiKeyProbe.Store(func() bool { return true })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.SkillInstallDir = skillDir
 
@@ -1751,7 +1751,7 @@ stage: "P1"
 	if err := <-done; err != nil {
 		t.Fatalf("scanAndProcess: %v", err)
 	}
-	// Async dispatch: scanAndProcess returned before the OMP task finished;
+	// Async dispatch: scanAndProcess returned before the DSH task finished;
 	// wait for the task and its follow-up scan to unwind before ending.
 	waitForScanIdle(t, runner)
 }
@@ -1764,7 +1764,7 @@ stage: "P1"
 // like the API-key probe does.
 func TestScanAndProcessAutoResumesInterruptedBlockedTask(t *testing.T) {
 	dir := t.TempDir()
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1799,7 +1799,7 @@ stage: "P1"
 		t.Fatal(err)
 	}
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.SkillInstallDir = skillDir
 
@@ -1822,7 +1822,7 @@ stage: "P1"
 		t.Fatal("resume_approved = true, want false (self-heal, not manual resume)")
 	}
 
-	// Stop the re-dispatch loop before releasing the barrier: the fake OMP
+	// Stop the re-dispatch loop before releasing the barrier: the fake DSH
 	// leaves status=refining, so the follow-up scan would re-dispatch it
 	// forever. A done marker ends the loop so waitForScanIdle can unwind.
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{"status": "done"}); err != nil {
@@ -1836,10 +1836,10 @@ stage: "P1"
 }
 
 // TestScanAndProcessKeepsKeyBlockedWhenUnavailable verifies that a key-blocked
-// task stays blocked and OMP is NOT launched while the key probe fails.
+// task stays blocked and DSH is NOT launched while the key probe fails.
 func TestScanAndProcessKeepsKeyBlockedWhenUnavailable(t *testing.T) {
 	dir := t.TempDir()
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -1862,7 +1862,7 @@ project: test
 status: blocked
 blocked_phase: implementing
 phase_error_code: API_KEY_UNAVAILABLE
-phase_error: OMP 无法获取模型 API Key
+phase_error: DSH 无法获取模型 API Key
 resume_approved: false
 priority: P2
 assignee: default
@@ -1877,7 +1877,7 @@ req_doc: Projects/001-test/Requirements/REQ-083.md
 	apiKeyProbe.Store(func() bool { return false })
 	t.Cleanup(func() { apiKeyProbe.Store(oldProbe) })
 
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 2)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.SkillInstallDir = skillDir
 
@@ -1886,7 +1886,7 @@ req_doc: Projects/001-test/Requirements/REQ-083.md
 	}
 
 	if n := countStartFiles(t, startDir); n != 0 {
-		t.Fatalf("OMP launched %d time(s) while key unavailable, want 0", n)
+		t.Fatalf("DSH launched %d time(s) while key unavailable, want 0", n)
 	}
 	fm := mustParse(t, taskPath)
 	if fm.Status != "blocked" {
@@ -1904,14 +1904,14 @@ func TestDaemonShutdownSignalsRunningOMP(t *testing.T) {
 	dir := t.TempDir()
 	startDir := filepath.Join(dir, "starts")
 	releaseFile := filepath.Join(dir, "release")
-	omp := filepath.Join(dir, "fake-omp")
+	dshCmd := filepath.Join(dir, "fake-dsh")
 	script := `#!/bin/sh
 mkdir -p "$START_DIR"
 printf '%s\n' "$$" > "$START_DIR/started"
 trap 'echo term > "$START_DIR/term"; exit 143' TERM
 while [ ! -e "$RELEASE_FILE" ]; do sleep 0.2; done
 `
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("START_DIR", startDir)
@@ -1935,7 +1935,7 @@ req_doc: Projects/001-test/Requirements/REQ-090.md
 		t.Fatal(err)
 	}
 
-	runner := newTestRunner(filepath.Join(dir, "skill"), omp, filepath.Join(dir, "logs"), 2)
+	runner := newTestRunner(filepath.Join(dir, "skill"), dshCmd, filepath.Join(dir, "logs"), 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	runner.daemonCtx = ctx
 
@@ -1949,14 +1949,14 @@ req_doc: Projects/001-test/Requirements/REQ-090.md
 		done <- runner.processBatchSequential([]task.ReadyTask{*tasks}, repo)
 	}()
 
-	// Wait for OMP to start, then cancel the daemon context.
+	// Wait for DSH to start, then cancel the daemon context.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(filepath.Join(startDir, "started")); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("OMP did not start")
+			t.Fatal("DSH did not start")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -1972,7 +1972,7 @@ req_doc: Projects/001-test/Requirements/REQ-090.md
 		t.Fatal("processBatchSequential did not return after daemon cancel")
 	}
 	if _, err := os.Stat(filepath.Join(startDir, "term")); err != nil {
-		t.Fatalf("OMP did not receive SIGTERM on daemon shutdown: %v", err)
+		t.Fatalf("DSH did not receive SIGTERM on daemon shutdown: %v", err)
 	}
 
 	// Shutdown interruption must NOT be treated as a failure: task stays in

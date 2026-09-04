@@ -299,7 +299,7 @@ deploy: build test
 	else \
 		echo "  kb-preflight unchanged — dsh-web 无需重启"; \
 	fi
-	@echo "=== [5d/6] omp 会话提炼扩展：已退役（omp 时代结束，~/.omp 不再存在） ==="
+	@echo "=== [5d/6] 会话提炼扩展：已退役（旧执行器时代结束） ==="
 	@echo "  会话蒸馏现由独立工作区维护的 dsh 插件 kb-distill.mjs 承载"
 	@echo "  （~/.dsh/plugins/，非本仓库部署——deploy 只同步仓库自有插件，不触碰它）"
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="

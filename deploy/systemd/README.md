@@ -11,5 +11,4 @@
 | `otg-task-watcher.service` | `otg daemon`（watcher + 扫描 + 状态机 + git 交付 + 知识库），`Requires+After=dsh-agent-server` |
 
 DSH 时代无轮询 timer：daemon 是纯 watcher 服务（fsnotify + 每 10s scan）。
-旧 OMP 模板（omp-task-runner.timer / omp-task-runner.service /
-omp-task-watcher.service）已删除；升级路径统一为 `make install-force`。
+旧执行器时代的模板（timer / service / watcher 单元）已删除；升级路径统一为 `make deploy`。

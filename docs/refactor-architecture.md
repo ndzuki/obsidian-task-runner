@@ -1,7 +1,7 @@
 > ⚠️ **历史规划文档**：本文件是 DSH 重构期间的规划记录，已由当前实现的
 > 权威架构说明 [docs/architecture.md](architecture.md) 取代。执行器现状：
 > `dsh-embed`（默认，agent-server RPC + durable resume），`dsh`（spawn），
-> `omp`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
+> `早期执行器`（冻结兼容）。阅读本文请对照 architecture.md，勿按旧内容实施。
 
 # Obsidian Task Runner → DeepSeek Harness：目标架构与重构方案
 
@@ -13,13 +13,13 @@
 
 ## 0. 摘要（TL;DR）
 
-`obsidian-task-runner`（otr）当前是「Go daemon 状态机 + 外部 OMP 进程执行」的架构。审查两项目（otr 工具本身 + 被它开发的 release-manager）后，确认：
+`obsidian-task-runner`（otr）当前是「Go daemon 状态机 + 外部早期执行器进程执行」的架构。审查两项目（otr 工具本身 + 被它开发的 release-manager）后，确认：
 
 1. **otr 的 Go 调度/状态机设计是扎实的**（34.8MB 常驻、1.2% CPU、flock 原子写、82 个测试全绿）——**这部分保留，不重写成 TS**。
 2. **真正的债在执行层与决策层**：
-   - 执行层深度耦合 OMP CLI/日志/PID 协议，无法平滑迁到 DSH；
+   - 执行层深度耦合早期执行器 CLI/日志/PID 协议，无法平滑迁到 DSH；
    - 决策层把「需求理解/设计推理」散落到 73 个任务各自的会话里，反复重规划、互相冲突——这是 release-manager 交付慢、返工多的根因。
-3. **目标架构**：Go 确定性控制面 + PhaseExecutor seam（OMP/DSH 双 adapter）+ **一次性全局设计库**（单一事实源）+ DSH Web 看板插件。性能只升不降（实测 dsh headless 峰值 227MB / 启动 0.04s，优于 omp 的 830MB / 3.92s）。
+3. **目标架构**：Go 确定性控制面 + PhaseExecutor seam（早期执行器/DSH 双 adapter）+ **一次性全局设计库**（单一事实源）+ DSH Web 看板插件。性能只升不降（实测 dsh headless 峰值 227MB / 启动 0.04s，优于早期执行器的 830MB / 3.92s）。
 
 ---
 
@@ -27,14 +27,14 @@
 
 ### 1.1 现状
 
-- `otr` 把 Obsidian Vault 当需求入口，由 `otg daemon`（Go，约 2.4 万行）调度多阶段任务（refining → planning → implementing → review → merge → done），每阶段 spawn 一个外部 OMP headless 进程执行。
+- `otr` 把 Obsidian Vault 当需求入口，由 `otg daemon`（Go，约 2.4 万行）调度多阶段任务（refining → planning → implementing → review → merge → done），每阶段 spawn 一个外部早期执行器 headless 进程执行。
 - release-manager 是它的旗舰案例：**67 个 REQ / 73 个 TASK / 23 个 ADR / 12.6 万行 Go 代码 / 514 commits**。
 
 ### 1.2 目标
 
-1. **执行引擎从 OMP 平滑迁到 DeepSeek Harness**（`dsh --profile headless`，或未来 DSH 原生 agent），拿到 DSH 的模型路由/fallback、工具过滤、结构化输出、skill 集成能力。
+1. **执行引擎从早期执行器平滑迁到 DeepSeek Harness**（`dsh --profile headless`，或未来 DSH 原生 agent），拿到 DSH 的模型路由/fallback、工具过滤、结构化输出、skill 集成能力。
 2. **解决 release-manager 暴露的决策层问题**：需求理解从「每任务反复会话」上移到「一次性全局设计库」。
-3. **性能不降反升**：并发调度继续由 Go 控制面负责（34.8MB），执行进程比 OMP 更轻。
+3. **性能不降反升**：并发调度继续由 Go 控制面负责（34.8MB），执行进程比早期执行器更轻。
 4. **Vault 项目管理/看板以 DSH Web 插件呈现**，逐步取代打开 Obsidian。
 5. 全程**非 main 分支**推进、每步可验证、失败可回滚。
 
@@ -50,7 +50,7 @@
 
 | # | 问题 | 证据 | 影响 |
 |---|---|---|---|
-| P0-1 | **状态写入无 generation/fencing** | 所有写都经 `yamlfrontmatter.Update`（flock+读改写），只有互斥、无 revision/CAS；旧 OMP/DSH 会话晚到的写回可覆盖新代状态 | 挂死的旧会话写回会污染新计划字段 |
+| P0-1 | **状态写入无 generation/fencing** | 所有写都经 `yamlfrontmatter.Update`（flock+读改写），只有互斥、无 revision/CAS；旧早期执行器/DSH 会话晚到的写回可覆盖新代状态 | 挂死的旧会话写回会污染新计划字段 |
 | P0-2 | **watcher 丢弃 Remove/Rename** | `watcher.go:146` 只处理 Create/Write；REQ 删除分支是运行期死代码 | REQ 被删后 TASK 不转 blocked，无感知 |
 | P0-3 | **compact 折叠绕过 flock** | `compact.go` 自实现 rename，不取锁 | 与并发状态写回 lost update |
 
@@ -58,7 +58,7 @@
 
 | # | 问题 | 影响 |
 |---|---|---|
-| P1-1 | **OMP 契约深耦合**：CLI 参数（`--model --thinking --tools -p`）、日志尾随、`empty-stop-handled` 字符串、SIGTERM 行为、PID 文件全被 daemon 硬编码 | 无法局部替换为 DSH，必须抽 seam |
+| P1-1 | **早期执行器契约深耦合**：CLI 参数（`--model --thinking --tools -p`）、日志尾随、`empty-stop-handled` 字符串、SIGTERM 行为、PID 文件全被 daemon 硬编码 | 无法局部替换为 DSH，必须抽 seam |
 | P1-2 | **daemon 巨类 + 状态机分散**：`daemon.go` 4503 行；状态转移散在 state_machine/on_req_changed/merge_runner/stage_flip/dep_health 多处；可调度判定在 task.go 与 daemon 双份 | 加一个字段要同步多处，已有语义漂移 |
 | P1-3 | **校验失败只记日志**：`validatePhaseCompletion`/`validateChangedDocs` 失败仅 log，仍推进 | 文档损坏被固化，可能"假成功" |
 | P1-4 | **merge/pm 并发门禁不可达**：`phaseGates["merge"/"pm"]` 无获取点 | 配置项是死配置 |
@@ -99,7 +99,7 @@ watcher 通道溢出、新目录不递归 watch、debounce map 无界、`Index.f
 
 ### 2.3 根本原因（两项目合并）
 
-- **执行层**：OMP 协议硬编码（P1-1）→ 无法平滑换执行引擎。
+- **执行层**：早期执行器协议硬编码（P1-1）→ 无法平滑换执行引擎。
 - **状态层**：无 fencing + 状态机分散（P0-1、P1-2）→ 并发写回不可靠、语义漂移。
 - **决策层**：需求理解/设计推理被「每任务会话」化，无一次性全局设计、无持久设计库 → 反复重规划、跨任务冲突、返工爆炸。
 - **校验层**：校验失败不阻断（P1-3）→ 损坏被固化。
@@ -117,7 +117,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 
 - 接口：`Start(ctx, PhaseSpec, TaskSnapshot, Workspace) → ExecutionHandle`；`Resume/Cancel/Wait/Collect → ExecutionResult`。
 - `PhaseSpec` 数据化：`{phase, model, reasoningEffort, toolsPolicy, promptBuilder, timeout, recoveryPolicy}`——把 daemon.go 里 8 个阶段分支全部迁入 spec 工厂。
-- OMP adapter 冻结现有 CLI/日志/SIGTERM 契约；DSH adapter 用 `dsh --profile headless`，未来升级到 `ctx.agents.create/resume`。
+- 早期执行器 adapter 冻结现有 CLI/日志/SIGTERM 契约；DSH adapter 用 `dsh --profile headless`，未来升级到 `ctx.agents.create/resume`。
 - daemon 侧只消费稳定事件（Started/Progress/Completed/Failed/Interrupted/Quota/KeyUnavailable），不再解析日志字符串。
 
 ### 3.2 状态层：fencing + 状态机收敛（P0-1、P1-2）
@@ -193,7 +193,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      DSH Web（插件层，独立交付线）                     │
 │  Vault 看板插件（白名单 viewId DTO + 读写分层 + 安全边界）            │
-│  context7 MCP / omp-commands / kb-distill / fallback（已有）        │
+│  context7 MCP / 早期执行器-commands / kb-distill / fallback（已有）        │
 └───────────────┬─────────────────────────────────────────────────────┘
                 │
 ┌───────────────▼─────────────────────────────────────────────────────┐
@@ -224,7 +224,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 
 ### 关键性能数据（实测）
 
-| 指标 | otg daemon | omp headless | dsh headless | otg web serve（Vault 看板） |
+| 指标 | otg daemon | 早期执行器 headless | dsh headless | otg web serve（Vault 看板） |
 |---|---|---|---|---|
 | 常驻/峰值内存 | 34.8MB | 830MB | **227MB** | **≈21–23MB**（50+100 次请求后 GC 稳定，无泄漏） |
 | 纯启动 | 0.01s | 3.92s | **0.04s** | — |
@@ -247,8 +247,8 @@ Vault 看板内存验收（Phase 4d）：`otg web serve` 作为独立 Go 进程�
 | **Phase 2** | TaskStore.Apply + generation/attempt fencing；watcher Remove/Rename；compact 走锁；校验失败阻断 | fencing 测试（旧会话晚到写回被拒）+ P0 修复测试 | 同上 |
 | **Phase 3** | 设计库（contracts/decisions/waves/glossary）+ v4-pro 全局设计会话 + 重规划门禁 | 设计库 schema 测试 + 全局设计会话产物验证 | 同上 |
 | **Phase 4** | Vault Web 看板插件（白名单 viewId DTO + 读写分层） | DSH Web 启动 + 视图数据正确性 + 安全测试 | 独立插件仓库或本仓库 dsh.client 包 |
-| **Phase 5** | 移除 omp 依赖（install 检查、fallback、日志尾随、skill-doctor） | 全链路用 dsh headless 跑通 | 同上 |
-| **Phase 6（最后）** | 审查从 omp 迁移到 DSH 的所有 skill，评估描述是否需要优化并给出方案（含 phase skills、knowledge-base、grilling、wayfinder、codebase-design、omp-tools 等；优化方向：去除 omp 专属工具引用、对齐 DSH 触发词、skill 描述单一事实源、结构化输出契约） | skill 描述清单审查报告 + 优化方案；改动后 `dsh-upgrade-check --full` + skill catalog 校验 | 同上 |
+| **Phase 5** | 移除早期执行器依赖（install 检查、fallback、日志尾随、skill-doctor） | 全链路用 dsh headless 跑通 | 同上 |
+| **Phase 6（最后）** | 审查从早期执行器迁移到 DSH 的所有 skill，评估描述是否需要优化并给出方案（含 phase skills、knowledge-base、grilling、wayfinder、codebase-design、legacy-tools 等；优化方向：去除早期执行器专属工具引用、对齐 DSH 触发词、skill 描述单一事实源、结构化输出契约） | skill 描述清单审查报告 + 优化方案；改动后 `dsh-upgrade-check --full` + skill catalog 校验 | 同上 |
 
 每阶段独立可验证、可回滚；先 Phase 1（seam）再决策层（Phase 3）——seam 是地基，设计库是价值。Phase 6（skill 审查）按用户要求排到最后做。
 
