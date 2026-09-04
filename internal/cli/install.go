@@ -25,7 +25,8 @@ var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install skill to ~/.dsh/skills/ and configure systemd",
 	Long: `Installs the obsidian-task-runner skill to ~/.dsh/skills/,
-generates vault-map.json, configures the shell environment, and
+generates vault-map.json, optionally configures the shell environment
+(--configure-shell, opt-in), and
 optionally registers the DSH systemd units (dsh-agent-server,
 dsh-web, otg-task-watcher).
 

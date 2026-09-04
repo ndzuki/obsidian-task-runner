@@ -233,7 +233,7 @@ deploy: build test
 		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
 		rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
 		if [ "$$managed" = "true" ]; then \
-			if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+			if grep -qE '^(After|Requires)=dsh-agent-server\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
 				echo "  ⚠ legacy watcher unit pins dsh-agent-server (older install). deploy NEVER edits your systemd unit files."; \
 				echo "    → run: otg install-systemd   (regenerates managed-aware units), then make deploy again."; \
 			else \
@@ -243,7 +243,7 @@ deploy: build test
 			echo "  agent_server_managed=false → systemd 管理 agent-server，deploy 不干预其生命周期"; \
 		fi
 	@echo "=== [5/6] daemon-reload + restart watcher ==="
-	@if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+	@if grep -qE '^(After|Requires)=dsh-agent-server\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
 		echo "  ⚠ skipping watcher restart: legacy unit pins dsh-agent-server (never modify user units)."; \
 		echo "    → run: otg install-systemd, then make deploy again."; \
 	else \
@@ -358,7 +358,7 @@ daemon-recover:
 			echo "  agent_server_managed=true → 停 systemd 实例（本项目的 dsh-agent-server）"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
 			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+			if grep -qE '^(After|Requires)=dsh-agent-server\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
 				echo "  ⚠ legacy watcher unit pins dsh-agent-server — recover never edits unit files."; \
 				echo "    → run: otg install-systemd, then make daemon-recover again."; \
 				legacy=1; \
