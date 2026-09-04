@@ -87,7 +87,7 @@ spawn `dsh --profile headless`（deepseek-v4-pro）执行 refining skill：
 - ✅ 退出码 0，输出为结构化执行摘要
 
 **关键依赖确认**：skill 内部调用 `otg update-status` / `otg validate-doc`，
-依赖 `otg` 在 PATH（`/home/user/go/bin/otg`，dsh headless 继承 daemon 环境，可达）。
+依赖 `otg` 在 PATH（`~/go/bin/otg`，dsh headless 继承 daemon 环境，可达）。
 
 **其余阶段**：
 - **priority —— 已验证 ✅（2026-08-19）**：dsh headless 输出 ```json fenced block，

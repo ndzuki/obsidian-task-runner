@@ -313,7 +313,7 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, task
 
 // mapDSHModel translates a vault-map model identity into DSH's provider/model
 // route form. Legacy identities are normalized to the free channels:
-//   - "gateway/<model>"  → deepseek_magic (same gateway.internal.example baseURL)
+//   - "gateway/<model>"  → deepseek_magic (same private gateway baseURL)
 //   - "deepseek/<model>" → deepseek_magic (free magic channel; the paid
 //     official channel is only reachable via the explicit "ds-official" key)
 //

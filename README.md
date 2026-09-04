@@ -329,7 +329,7 @@ flowchart LR
   # ~/.dsh/profiles/web/cordis.patch.yml（dsh-tui 同理）
   - insert:
       - id: kb-preflight
-        name: /home/user/.dsh/plugins/kb-preflight.mjs
+        name: ~/.dsh/plugins/kb-preflight.mjs
         config: {}   # mapFile/vault/db/otgPath 缺省自动读 vault-map.json
   ```
 

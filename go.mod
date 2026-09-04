@@ -35,5 +35,3 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
-
-replace github.com/charmbracelet/bubbletea => /home/user/go/pkg/mod/github.com/charmbracelet/bubbletea@v1.3.10
