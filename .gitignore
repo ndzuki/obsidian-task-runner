@@ -34,3 +34,4 @@ models/
 
 # local scratch / test reference assets (never commit)
 tmp/
+tools/
