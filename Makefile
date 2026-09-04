@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover sync-docs sync-plugins sync-registry verify-install
+.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover wait-grilling-writebacks sync-docs sync-plugins sync-registry verify-install
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -231,6 +231,8 @@ deploy: build test
 	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
 	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
 	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
+	@echo "=== [4a/6] wait for in-flight grilling writebacks ==="
+	@$(MAKE) --no-print-directory wait-grilling-writebacks
 	@echo "=== [4/6] agent-server ownership reconcile (before daemon restart) ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
@@ -352,12 +354,33 @@ rollback:
 	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
 	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
 
+# wait-grilling-writebacks — deploy/daemon-recover 重启 daemon 与 agent-server
+# 之前，给 kitty-grill 异步决策写回一个排空窗口。写回子进程（detached setsid）
+# 连本地 agent-server 的 /agent/chat；重启会 pkill agent-server 硬切断请求，
+# 用户刚提交的决策写回失败并弹「Grilling 决策写回失败」（观测：2026-08-22
+# 08:04 / 2026-09-01 11:45 写回 EOF/TIMEOUT，均撞上 make deploy 的重启窗口）。
+# pgrep 模式用 [k] 防自匹配：配方 shell 自身命令行含 "kitty-grill --writeback"
+# 字面量，但正则 [k] 只匹配 "k" 不匹配 "[k]"，故不会把 shell 自己算作在途写回。
+wait-grilling-writebacks:
+	@i=0; \
+	while pgrep -f '$(GRILL) --writebac[k]' >/dev/null 2>&1 && [ "$$i" -lt 300 ]; do \
+		if [ $$((i % 10)) -eq 0 ]; then echo "  在途 grilling 写回（已等 $$i/300s）…"; fi; \
+		sleep 1; i=$$((i+1)); \
+	done; \
+	if pgrep -f '$(GRILL) --writebac[k]' >/dev/null 2>&1; then \
+		echo "  ⚠ 在途 grilling 写回 300s 后仍未结束，继续重启（该写回可能被打断，失败会弹提醒可重试）"; \
+	else \
+		echo "  无在途 grilling 写回"; \
+	fi
+
 # daemon-recover: 流水线停摆恢复。停掉 systemd 版 agent-server（收回 8799，
 # 避免与 daemon 自管实例冲突）、清孤儿进程（括号断匹配防自误杀）、等端口释放，
 # 再拉起 otg-task-watcher。仅在有 agent_server_managed=true 时执行——daemon
 # 重启后自己拉起全新 agent-server。2026-08-31 事故现场：旧 Makefile 的
 # pkill 把 daemon 连带杀掉、systemd agent-server 残留占 8799。
 daemon-recover:
+	@echo "=== daemon-recover: 等待在途 grilling 写回 ==="
+	@$(MAKE) --no-print-directory wait-grilling-writebacks
 	@echo "=== daemon-recover: agent-server 所有权收敛 ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
