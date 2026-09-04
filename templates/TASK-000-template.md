@@ -44,21 +44,14 @@ tags: []
 epic: ""
 blocked_by: []  # 同项目 TASK-010；跨项目 project-key:TASK-010
 blocks: []
-target_env: staging
 stage: ""  # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；由 REQ 继承或 PM 拆分时写入
 stage_source: ""  # req=继承 REQ（跟随 REQ 变更）/ 空=auto-staging 或 PM 手动（不跟随）
 plan_files: []  # 当前计划要修改的仓库内文件（daemon 按重叠串行化调度）
 new_project: false
 
 # 🟢 高级（按需取消注释）
-# due_date: ""
-# estimated_hours: 0
-# actual_hours: 0
-# component: ""
-# parent: ""
 # reviewer: ""
 # author: ""
-# template: ""  # 旧脚手架提示字段，已由 scaffold 取代；保留向后兼容
 # off_peak_only: false
 auto_approve: true  # 默认自动批准：grilling 后全自动（计划直接进入实现）；设 false 恢复人工审计划
 

@@ -43,7 +43,6 @@ type Frontmatter struct {
 	AutoApprove    bool     `yaml:"auto_approve"`
 	AutoMerge      bool     `yaml:"auto_merge"`
 	OffPeakOnly    bool     `yaml:"off_peak_only"`
-	DueDate        string   `yaml:"due_date"`
 	PlanApproved   bool     `yaml:"plan_approved"`
 	MergeApproved  bool     `yaml:"merge_approved"`
 	ResumeApproved bool     `yaml:"resume_approved"`
@@ -141,7 +140,6 @@ type Frontmatter struct {
 
 	// Declarative project scaffold intent.
 	Scaffold ScaffoldIntent `yaml:"scaffold"`
-	Template string         `yaml:"template"`
 
 	// GitHub remote creation and merge authorization.
 	RemoteCreate           bool   `yaml:"remote_create"`
@@ -156,20 +154,16 @@ type Frontmatter struct {
 	MergePreconditionFails int    `yaml:"merge_precondition_fails"`
 	MergeRetryNotBefore    string `yaml:"merge_retry_not_before"`
 
-	// General task metadata retained by templates and dashboards.
-	Created        string   `yaml:"created"`
-	Updated        string   `yaml:"updated"`
-	EstimatedHours float64  `yaml:"estimated_hours"`
-	ActualHours    float64  `yaml:"actual_hours"`
-	Reviewer       string   `yaml:"reviewer"`
-	Author         string   `yaml:"author"`
-	Component      string   `yaml:"component"`
-	Tags           []string `yaml:"tags"`
-	Epic           string   `yaml:"epic"`
-	Parent         string   `yaml:"parent"`
-	Blocks         []string `yaml:"blocks"`
-	TargetEnv      string   `yaml:"target_env"`
-	Stage          string   `yaml:"stage"`
+	// General task metadata (display/audit; unused fields were removed in the
+	// 2026-09-04 schema cleanup — legacy docs keep them in Extra without loss).
+	Created  string   `yaml:"created"`
+	Updated  string   `yaml:"updated"`
+	Reviewer string   `yaml:"reviewer"`
+	Author   string   `yaml:"author"`
+	Tags     []string `yaml:"tags"`
+	Epic     string   `yaml:"epic"`
+	Blocks   []string `yaml:"blocks"`
+	Stage    string   `yaml:"stage"`
 	// StageSource records where the stage came from: "req" = inherited from
 	// the REQ frontmatter (follows REQ stage changes), empty = daemon
 	// auto-staging or PM manual assignment (does NOT follow REQ changes).
@@ -202,9 +196,6 @@ func applyCompatibilityDefaults(fm *Frontmatter) {
 	fm.PriorityAssessmentStatus = "completed"
 }
 
-// normalizeNumericStrings converts quoted numeric values for known numeric
-// fields to YAML numeric scalars before strict decoding. Obsidian and other
-// frontmatter editors may serialize a number such as 42 as "42".
 func normalizeNumericStrings(doc *yaml.Node) error {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil
@@ -327,9 +318,9 @@ var taskFieldOrder = []string{
 	"plan_approved", "auto_merge", "merge_approved", "adr_approved",
 	"resume_approved", "close_approved", "pending_req",
 	// Metadata (template 🟡/🟢 sections).
-	"tags", "epic", "blocked_by", "blocks", "target_env", "stage", "stage_source", "plan_files", "new_project",
-	"due_date", "estimated_hours", "actual_hours", "component", "parent",
-	"reviewer", "author", "template", "off_peak_only", "auto_approve",
+	"tags", "epic", "blocked_by", "blocks", "stage", "stage_source", "plan_files", "new_project",
+	"parent",
+	"reviewer", "author", "off_peak_only", "auto_approve",
 	// Timestamps.
 	"created", "updated",
 	// Lifecycle (daemon-maintained).

@@ -31,7 +31,6 @@ type ReadyTask struct {
 	MergeApproved            bool     `json:"merge_approved"`
 	CloseApproved            bool     `json:"close_approved,omitempty"`
 	ReqDoc                   string   `json:"req_doc"`
-	Template                 string   `json:"template"`
 	Assignee                 string   `json:"assignee"`
 	AutoApprove              bool     `json:"auto_approve"`
 	AutoMerge                bool     `json:"auto_merge"`
@@ -493,7 +492,6 @@ func FindReadyTaskForFile(vaultPath, changedFile string) (*ReadyTask, error) {
 		PlanApproved:             fm.PlanApproved,
 		MergeApproved:            fm.MergeApproved,
 		ReqDoc:                   fm.ReqDoc,
-		Template:                 fm.Template,
 		Assignee:                 fm.Assignee,
 		AutoApprove:              fm.AutoApprove,
 		AutoMerge:                fm.AutoMerge,

@@ -19,7 +19,6 @@ var writableFields = map[string]bool{
 	// Human-owned.
 	"priority":      true,
 	"assignee":      true,
-	"due_date":      true,
 	"title":         true,
 	"off_peak_only": true,
 	"auto_approve":  true,

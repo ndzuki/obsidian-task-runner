@@ -70,7 +70,6 @@ closed -- [终态，不可恢复]
 | `assignee` | string | vault-map.json 顶层 `models` 的 key（如 `default`） |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
-| `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
 | `scaffold` | object | 新项目脚手架意图（`kind`/`capabilities`/`preferences`/`notes`），供 Round 1 / project-scaffold 消费 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 默认 true（缺失即 true）；plan-review 由 daemon 自动批准转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划（完整语义见上表 Gate 字段） |
@@ -250,7 +249,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 |------|------|--------|------|
 | `scaffold` | object | `{}` | 新项目脚手架意图：`kind`（类型）、`capabilities`（能力列表）、`preferences`（键值偏好）、`notes`（自然语言说明） |
 
-`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段保留向后兼容。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
+`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段已移除（2026-09-04 字段清理；旧文档中的值保留在 Extra，不丢失）。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
 
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
@@ -437,7 +436,9 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。**运行期即时校验**：daemon 每轮 scan 对 vault-map.json 做语法/配置校验（`checkVaultMapHealth`）——日常改坏会在**下次 scan** 弹「⚠️ 配置文件语法错误」通知（按文件版本去重、只报告不改文件），而不是等重启才炸出 `CONFIG_INVALID`。`make deploy` 会用 `otg config migrate --write`（原子写）自动补齐新版本缺失字段。
 
-**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 标注 deprecated：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段仅影响旧 `executor="dsh"` spawn 路径。 完整契约见 REQ-003「配置契约」。
+**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 仅影响 `executor="dsh"`（spawn 路径）：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段被忽略。 完整契约见 REQ-003「配置契约」。
+
+**已移除 frontmatter 字段（2026-09-04 字段清理，DSH 2.0）**：`template`（由 `scaffold` 取代）、`estimated_hours`、`actual_hours`、`component`、`parent`、`target_env`、`due_date`——七者代码零消费（daemon/dashboard/skill 均不读）。已从 schema/规范序/backfill/模板删除；旧文档中的这些键按「未知键保留」进入 `Extra`，**不丢数据、不影响运行**，手工删除后不会恢复。
 
 **2026-09-04 开源化收敛**：`env_cleanup` 默认 **nil（禁用）**（删除 k3d 资源是有损操作，显式配置并声明 exclude 白名单才生效）；`memory_gate.auto_recovery` 默认 **false**、`exclude` 默认空（不再内置任何服务名）；`off_peak_windows`/`off_peak_timezone` 默认空 = **不限制**（opt-in，`off_peak_only` 恒可运行）；`merge_poll_wait_ticks` 默认 **20**（约 10min CI 轮询预算）；`upstream_stall_days` **显式 0 = 关闭告警**（缺省 3）；`notifications.sound` 从 schema 删除。完整字段与默认值以 **`docs/config-reference.md`** 为单一事实源（`otg config show --effective` 可看生效值）。
 

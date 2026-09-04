@@ -47,30 +47,19 @@ blocked_by: []
 		}
 	})
 
-	t.Run("quoted numeric hours", func(t *testing.T) {
-		fm, err := Parse([]byte(`---
-estimated_hours: "40"
-actual_hours: "42"
----
-`))
+	t.Run("removed legacy fields tolerated in Extra", func(t *testing.T) {
+		fm, err := Parse([]byte("---\nestimated_hours: \"40\"\ntarget_env: staging\ntemplate: go-service\n---\n"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if fm.EstimatedHours != 40 {
-			t.Errorf("estimated_hours = %v, want 40", fm.EstimatedHours)
+		if _, ok := fm.Extra["estimated_hours"]; !ok {
+			t.Error("removed key estimated_hours must be retained in Extra")
 		}
-		if fm.ActualHours != 42 {
-			t.Errorf("actual_hours = %v, want 42", fm.ActualHours)
+		if _, ok := fm.Extra["target_env"]; !ok {
+			t.Error("removed key target_env must be retained in Extra")
 		}
-	})
-
-	t.Run("non-numeric quoted hours", func(t *testing.T) {
-		_, err := Parse([]byte(`---
-actual_hours: "forty-two"
----
-`))
-		if err == nil {
-			t.Error("expected error for non-numeric actual_hours")
+		if _, ok := fm.Extra["template"]; !ok {
+			t.Error("removed key template must be retained in Extra")
 		}
 	})
 
@@ -1021,10 +1010,9 @@ func TestNormalizeTaskFrontmatterRejectsCorrupt(t *testing.T) {
 	}
 }
 
-// TestNormalizeTaskFrontmatterNumericStrings pins the Parse-consistent
-// numeric normalization: editors may serialize estimated_hours/actual_hours
-// as quoted strings, which must not block normalization (regression for
-// "cannot unmarshal !!str '42' into float64").
+// TestNormalizeTaskFrontmatterNumericStrings pins the 2026-09-04 cleanup
+// behavior: schema-removed keys are tolerated in Extra and must not block
+// normalization.
 func TestNormalizeTaskFrontmatterNumericStrings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "TASK-067-numeric.md")
@@ -1054,8 +1042,8 @@ estimated_hours: "42"
 	if err != nil {
 		t.Fatalf("Parse after normalize: %v", err)
 	}
-	if fm.EstimatedHours != 42 {
-		t.Fatalf("estimated_hours = %v, want 42 (normalized from quoted string)", fm.EstimatedHours)
+	if _, ok := fm.Extra["estimated_hours"]; !ok {
+		t.Fatal("removed key estimated_hours must survive normalization in Extra")
 	}
 }
 

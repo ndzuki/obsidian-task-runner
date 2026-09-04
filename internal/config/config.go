@@ -37,12 +37,12 @@ type Config struct {
 	// keeps full control of model selection and failures never auto-switch.
 	Fallback *FallbackConfig `json:"fallback,omitempty"`
 	// DSHCmd / DSHProfile drive the spawn-headless DSH adapter. DSHCmd is also
-	// the binary used to launch the agent-server child. DSHProfile is
-	// DEPRECATED (2026-09-02): under the default executor dsh-embed every
-	// phase (design included) runs through the agent-server whose profile is
-	// hardcoded `headless-agent-server`; DSHProfile now only affects the
-	// legacy executor="dsh" spawn path. The headless app has no per-invocation
-	// --model flag, so the profile owns model routing there.
+	// the binary used to launch the agent-server child. DSHProfile only
+	// affects executor="dsh" (spawn path): under the default executor
+	// dsh-embed every phase (design included) runs through the agent-server
+	// whose profile is hardcoded `headless-agent-server`, so the field is
+	// ignored there. The headless app has no per-invocation --model flag,
+	// so the profile owns model routing on the spawn path.
 	DSHCmd     string `json:"dsh_cmd"`
 	DSHProfile string `json:"dsh_profile"`
 	// AgentServerAddr is the long-lived `dsh --profile headless-agent-server`
