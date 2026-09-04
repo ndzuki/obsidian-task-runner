@@ -1,5 +1,9 @@
 # 运维手册（Ops Manual）
 
+> 强制约束：**自动化命令绝不覆盖你的配置与环境**（资产分级与行为表见
+> [`CONTRIBUTING.md`](../CONTRIBUTING.md)「用户资产所有权」）。本文所有命令都遵守：
+> vault-map.json 只补缺失键、systemd 主单元与 shell 配置绝不自动改写。
+>
 > 从旧 README 抽离的调优与排障内容。基础安装见
 > [`docs/quickstart.md`](quickstart.md)，配置字段总表见
 > [`docs/config-reference.md`](config-reference.md)。

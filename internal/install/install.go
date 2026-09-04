@@ -2,6 +2,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,11 +22,15 @@ type Options struct {
 	SkillInstallDir string
 	NotifyEnabled   bool
 	PollIntervalMin int
-	SystemdEnabled  bool
-	Force           bool
-	DryRun          bool
-	SrcDir          string // source directory with skill files
-	RestartSystemd  bool   // stop daemon before install, restart after
+	// ConfigureShell opts the install into appending OBSIDIAN_VAULT to the
+	// user shell rc (~/.zshrc / ~/.bashrc / fish). Default false: install
+	// never touches user shell config unless explicitly asked.
+	ConfigureShell bool
+	SystemdEnabled bool
+	Force          bool
+	DryRun         bool
+	SrcDir         string // source directory with skill files
+	RestartSystemd bool   // stop daemon before install, restart after
 }
 
 // Run performs the installation.
@@ -87,11 +92,15 @@ func Run(opts Options) error {
 				strings.Join(missing, ", "), strings.Join(missing, " "))
 		}
 	}
-	// 6. Configure shell environment
-	if err := configureShell(opts); err != nil && !d {
-		return fmt.Errorf("shell config: %w", err)
+	// 6. Shell environment: opt-in only. Default install never writes to
+	// the user shell rc — print the export line for manual setup instead.
+	if opts.ConfigureShell {
+		if err := configureShell(opts); err != nil && !d {
+			return fmt.Errorf("shell config: %w", err)
+		}
+	} else if !d {
+		fmt.Println("  shell env not modified (opt-in). Enable with: export OBSIDIAN_VAULT=" + opts.ObsidianVault + "  (or re-run install with --configure-shell)")
 	}
-
 	// 7. Create required directories
 	if !d {
 		if err := os.MkdirAll(filepath.Join(opts.ObsidianVault, "Projects"), 0755); err != nil {
@@ -430,6 +439,10 @@ func configureShell(opts Options) error {
 
 	// Check if already configured
 	existing, _ := os.ReadFile(rcFile)
+	// 幂等：marker 行已存在（无论 vault 路径是否相同）→ 不重复追加。
+	if bytes.Contains(existing, []byte("# Obsidian Task Runner")) {
+		return nil
+	}
 	for _, line := range strings.Split(string(existing), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "export OBSIDIAN_VAULT="+opts.ObsidianVault {

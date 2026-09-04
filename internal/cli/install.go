@@ -11,13 +11,14 @@ import (
 )
 
 var (
-	installForce   bool
-	installDryRun  bool
-	installVault   string
-	installNewRoot string
-	installNotif   bool
-	installPoll    int
-	installSystemd bool
+	installForce          bool
+	installDryRun         bool
+	installVault          string
+	installNewRoot        string
+	installNotif          bool
+	installPoll           int
+	installSystemd        bool
+	installConfigureShell bool
 )
 
 var installCmd = &cobra.Command{
@@ -69,6 +70,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		NotifyEnabled:   installNotif,
 		PollIntervalMin: installPoll,
 		SystemdEnabled:  installSystemd,
+		ConfigureShell:  installConfigureShell,
 		Force:           installForce,
 		DryRun:          installDryRun,
 		RestartSystemd:  installSystemd,
@@ -122,5 +124,6 @@ func init() {
 	installCmd.Flags().BoolVar(&installNotif, "notifications", true, "Enable desktop notifications")
 	installCmd.Flags().IntVar(&installPoll, "poll-interval", 30, "Polling interval in minutes")
 	installCmd.Flags().BoolVar(&installSystemd, "systemd", true, "Register systemd units")
+	installCmd.Flags().BoolVar(&installConfigureShell, "configure-shell", false, "Opt-in: append OBSIDIAN_VAULT to shell rc (default never touches shell config)")
 	rootCmd.AddCommand(installCmd)
 }

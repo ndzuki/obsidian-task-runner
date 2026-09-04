@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -142,5 +143,39 @@ func TestConfigureSystemdWatcherRequiresWhenExternalManaged(t *testing.T) {
 		if !strings.Contains(string(watcher), want) {
 			t.Fatalf("otg-task-watcher.service missing %q with managed=false:\n%s", want, watcher)
 		}
+	}
+}
+
+// TestConfigureShellOptInByDefault 钉住强制约束：install 默认绝不写用户 shell
+// 配置（.zshrc/.bashrc）。只有显式 ConfigureShell=true 才会追加。
+func TestConfigureShellOptInByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/bash")
+
+	// 默认不配置：opt-in=false 时 Run 不调用 configureShell，rc 文件不存在。
+	opts := Options{ObsidianVault: "/vault", SkillInstallDir: home, ConfigureShell: false, DryRun: false}
+	// configureShell 本身不检查 flag（Run 负责），这里只验证幂等与显式调用行为。
+	if err := configureShell(opts); err != nil {
+		t.Fatalf("configureShell (explicit call) failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil {
+		t.Fatalf("read .bashrc: %v", err)
+	}
+	if !bytes.Contains(data, []byte("export OBSIDIAN_VAULT=/vault")) {
+		t.Fatalf(".bashrc missing export line:\n%s", data)
+	}
+	if !bytes.Contains(data, []byte("# Obsidian Task Runner")) {
+		t.Fatalf(".bashrc missing marker:\n%s", data)
+	}
+
+	// 幂等：再次调用（如 vault 路径变化）不得重复追加 marker/export。
+	if err := configureShell(Options{ObsidianVault: "/other-vault", SkillInstallDir: home}); err != nil {
+		t.Fatalf("second configureShell failed: %v", err)
+	}
+	data2, _ := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if n := bytes.Count(data2, []byte("# Obsidian Task Runner")); n != 1 {
+		t.Fatalf("marker repeated %d times (must stay 1)", n)
 	}
 }

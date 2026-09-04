@@ -227,39 +227,35 @@ deploy: build test
 	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
 	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
 	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
-	@echo "=== [4/6] agent-server ownership reconcile (before daemon restart) ==="
+	@echo "=== [4/6] agent-server ownership reconcile (detect-only) ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
 		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
+		rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
 		if [ "$$managed" = "true" ]; then \
-			echo "  agent_server_managed=true → daemon 自管 agent-server；移除 watcher 对 dsh-agent-server 的 Requires/After 依赖 + 停 systemd 实例，根治 8799 冲突"; \
-			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server（bus 或服务状态异常），8799 可能仍被占用，请检查 systemctl --user status dsh-agent-server"; fi; \
-			# 关键：systemd 的 drop-in 用空 After=/Requires= 不会清除依赖（追加语义）， \
-			# 必须改基础 unit。旧 install 生成的 otg-task-watcher.service 无条件 \
-			# Requires=dsh-agent-server（为 managed=false 设计），导致每次 restart watcher \
-			# 都强制拉起 dsh-agent-server 抢占 8799（2026-08-31 死锁）。用 sed 移除 \
-			# 这两行（保留 PATH/env/其余配置），再 daemon-reload。 \
-			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			sed -i -e '/^After=dsh-agent-server.service$$/d' -e '/^Requires=dsh-agent-server.service$$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
-			$(SCTL) daemon-reload; \
-			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
-			i=0; \
-			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
-			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出，daemon 可能误连旧实例，建议手动 $(SCTL) restart dsh-agent-server"; \
-			if ss -tln | grep -q ':8799 '; then echo "  ⚠ 8799 仍被占用，daemon 启动可能误连旧实例"; else echo "  8799 已释放"; fi; \
-			echo "  (重启 daemon 后由其拉起全新 agent-server，插件/技能变更即生效)"; \
+			if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+				echo "  ⚠ legacy watcher unit pins dsh-agent-server (older install). deploy NEVER edits your systemd unit files."; \
+				echo "    → run: otg install-systemd   (regenerates managed-aware units), then make deploy again."; \
+			else \
+				echo "  agent_server_managed=true — watcher unit is managed-aware, nothing to reconcile."; \
+			fi; \
 		else \
-			echo "  agent_server_managed=false → 由 systemd 管理 agent-server，deploy 不干预其生命周期"; \
+			echo "  agent_server_managed=false → systemd 管理 agent-server，deploy 不干预其生命周期"; \
 		fi
 	@echo "=== [5/6] daemon-reload + restart watcher ==="
-	$(SCTL) daemon-reload
-	-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true
-	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
-	@sleep 2
-	@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
-		echo "  Watcher didn't start — retrying..."; \
-		$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
-		$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
+	@if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+		echo "  ⚠ skipping watcher restart: legacy unit pins dsh-agent-server (never modify user units)."; \
+		echo "    → run: otg install-systemd, then make deploy again."; \
+	else \
+		$(SCTL) daemon-reload; \
+		-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
+		-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true; \
+		@sleep 2; \
+		@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
+			echo "  Watcher didn't start — retrying..."; \
+			$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
+			$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
+		fi; \
 	fi
 	@echo "=== [5b/6] externally-managed agent-server: restart if plugin changed ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
@@ -348,29 +344,29 @@ rollback:
 	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
 	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
 
-# daemon-recover: 流水线停摆恢复。停掉 systemd 版 agent-server（收回 8799，
-# 避免与 daemon 自管实例冲突）、清孤儿进程（括号断匹配防自误杀）、等端口释放，
-# 再拉起 otg-task-watcher。仅在有 agent_server_managed=true 时执行——daemon
-# 重启后自己拉起全新 agent-server。2026-08-31 事故现场：旧 Makefile 的
-# pkill 把 daemon 连带杀掉、systemd agent-server 残留占 8799。
+# daemon-recover: 流水线停摆恢复（显式手动命令）。停止 systemd 版
+# agent-server 收回 8799，再拉起 otg-task-watcher。恢复命令同样**绝不编辑
+# 用户 systemd 单元、绝不 pkill 无关进程**：发现遗留单元把 dsh-agent-server
+# 钉进 watcher 依赖时，打印显式指引并退出（run: otg install-systemd）。
 daemon-recover:
 	@echo "=== daemon-recover: agent-server 所有权收敛 ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
 		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
+		legacy=""; \
 		if [ "$$managed" = "true" ]; then \
-			echo "  agent_server_managed=true → 停 systemd 实例 + 移除 watcher Requires + 清孤儿 + 等端口释放"; \
+			echo "  agent_server_managed=true → 停 systemd 实例（本项目的 dsh-agent-server）"; \
 			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
 			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			sed -i -e '/^After=dsh-agent-server.service$$/d' -e '/^Requires=dsh-agent-server.service$$/d' $(HOME)/.config/systemd/user/otg-task-watcher.service; \
-			$(SCTL) daemon-reload; \
-			pkill -f "headless-agent[-]server" 2>/dev/null || true; \
-			i=0; \
-			while pgrep -f "headless-agent[-]server" >/dev/null 2>&1 && [ "$$i" -lt 30 ]; do sleep 0.5; i=$$((i+1)); done; \
-			[ "$$i" -lt 30 ] && echo "  旧 agent-server 已退出（等待 $$i × 0.5s）" || echo "  ⚠ 旧 agent-server 30s 内未退出"; \
+			if grep -qE '^(After|Requires)=dsh-agent-server\\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
+				echo "  ⚠ legacy watcher unit pins dsh-agent-server — recover never edits unit files."; \
+				echo "    → run: otg install-systemd, then make daemon-recover again."; \
+				legacy=1; \
+			fi; \
 		else \
 			echo "  agent_server_managed=false → 由 systemd 管理，跳过所有权收敛"; \
-		fi
+		fi; \
+		if [ -n "$$legacy" ]; then exit 2; fi
 	@echo "=== 拉起 otg-task-watcher ==="
 	@$(SCTL) daemon-reload
 	@-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true
