@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -196,26 +195,6 @@ func applyCompatibilityDefaults(fm *Frontmatter) {
 	fm.PriorityAssessmentStatus = "completed"
 }
 
-func normalizeNumericStrings(doc *yaml.Node) error {
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil
-	}
-
-	for i := 0; i+1 < len(doc.Content[0].Content); i += 2 {
-		key := doc.Content[0].Content[i]
-		value := doc.Content[0].Content[i+1]
-		if (key.Value != "estimated_hours" && key.Value != "actual_hours") || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
-			continue
-		}
-		if _, err := strconv.ParseFloat(value.Value, 64); err != nil {
-			return fmt.Errorf("%s must be a number: %w", key.Value, err)
-		}
-		value.Tag = "!!float"
-	}
-
-	return nil
-}
-
 // extractFrontmatterBlock returns the raw YAML block between the leading
 // "---" delimiters, trimmed of surrounding whitespace. ok=false when the
 // document has no frontmatter at all; err non-nil when the block is opened
@@ -254,9 +233,6 @@ func Parse(data []byte) (*Frontmatter, error) {
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
-		return nil, fmt.Errorf("parse frontmatter: %w", err)
-	}
-	if err := normalizeNumericStrings(&doc); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
@@ -319,7 +295,6 @@ var taskFieldOrder = []string{
 	"resume_approved", "close_approved", "pending_req",
 	// Metadata (template 🟡/🟢 sections).
 	"tags", "epic", "blocked_by", "blocks", "stage", "stage_source", "plan_files", "new_project",
-	"parent",
 	"reviewer", "author", "off_peak_only", "auto_approve",
 	// Timestamps.
 	"created", "updated",
@@ -465,7 +440,6 @@ var taskFieldDefaults = map[string]interface{}{
 	"priority_reason":                "",
 	"priority_recommendation":        "",
 	"new_project":                    false,
-	"target_env":                     "staging",
 	"adr_proposed":                   []interface{}{},
 	"adr_written":                    []interface{}{},
 	"knowledge_extracted":            false,
@@ -534,9 +508,6 @@ func MissingDefaults(data []byte) ([]FieldDefault, error) {
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
-		return nil, fmt.Errorf("parse frontmatter: %w", err)
-	}
-	if err := normalizeNumericStrings(&doc); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
@@ -679,9 +650,6 @@ func normalizeFrontmatter(path string, order []string, defaults map[string]inter
 	// Same numeric normalization as Parse: frontmatter editors may serialize
 	// estimated_hours/actual_hours as quoted strings ("42"), which would
 	// otherwise fail the Decode below and block normalization entirely.
-	if err := normalizeNumericStrings(&doc); err != nil {
-		return false, fmt.Errorf("parse frontmatter: %w", err)
-	}
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return false, fmt.Errorf("frontmatter is not a mapping")
 	}

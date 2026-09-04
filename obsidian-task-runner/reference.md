@@ -339,6 +339,127 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 
 **PM 语义层职责**（机械分组已由 daemon 承担）：补充阶段目标描述、按用户意图调整阶段边界（`stage-plan init --force` 或改 stage 字段）、新需求到达时评估归入现有阶段或建议追加新阶段（写清单「阶段规划确认」区，用户拍板）。
 
+### 4.9 完整字段附录（与代码 `taskFieldOrder` 1:1，漂移由 `frontmatter_alignment_test.go` 钉住）
+
+| 字段 | 类型 | 默认 | 组 | 说明 |
+|------|------|------|----|------|
+| `id` | string | — | identity | 任务编号（项目内唯一；不同项目可重复） |
+| `title` | string | — | identity | 任务标题 |
+| `project` | string | — | identity | vault-map project key |
+| `project_id` | string | — | identity | 项目内唯一数字 ID（如 "001"） |
+| `assignee` | string | — | identity | vault-map models 键（default/留空按阶段路由） |
+| `req_doc` | string | — | identity | Vault 相对需求路径，必须精确匹配 |
+| `status` | string | "blocked" | identity | 主状态（状态机，daemon 权威推进） |
+| `priority` | string | "" | priority | P0–P4；人工可覆盖，Manual Priority Override 终裁 |
+| `priority_assessment_status` | string | — | priority | pending/running/completed/failed（daemon 维护） |
+| `priority_assessment_attempts` | int | 0 | priority | 评估尝试计数（≥2 转 fallback） |
+| `priority_assessment_started_at` | string | "" | priority | 评估会话开始时间（超时接管基准） |
+| `priority_assessed_at` | string | "" | priority | 评估完成时间 |
+| `priority_assessed_value` | string | "" | priority | 评估得到的 P 值 |
+| `priority_impact` | string | "" | priority | 影响面维度（评估输入输出） |
+| `priority_urgency` | string | "" | priority | 紧急性维度 |
+| `priority_workaround` | string | "" | priority | 替代方案维度 |
+| `priority_score` | int | 0 | priority | 三维加权分 |
+| `priority_confidence` | string | 0 | priority | 评估置信度 |
+| `priority_reason` | string | "" | priority | 评估理由 |
+| `priority_recommendation` | string | "" | priority | 疑似 P0 只写建议不落 P0 |
+| `plan_approved` | bool | false | gate | Round 2 计划批准门禁（plan-review 有效） |
+| `auto_merge` | bool | true | gate | 自动合并开关（默认 true） |
+| `merge_approved` | bool | false | gate | Merge 人工门禁 |
+| `adr_approved` | bool | false | gate | ADR 自动授权标记 |
+| `resume_approved` | bool | false | gate | 阻塞恢复授权 |
+| `close_approved` | bool | false | gate | Closed 确认 |
+| `pending_req` | bool | false | gate | 需求变更标记（daemon 维护） |
+| `tags` | list | []interface{}{} | metadata | 标签 |
+| `epic` | string | "" | metadata | 史诗 |
+| `blocked_by` | list | []interface{}{} | metadata | 依赖上游（同项目 TASK-N；跨项目 project-key:TASK-N） |
+| `blocks` | list | []interface{}{} | metadata | 下游任务（阻塞者） |
+| `stage` | string | — | metadata | 阶段归属 P{N}（权威判定） |
+| `stage_source` | string | — | metadata | req=继承 REQ / 空=auto-staging 或 PM 手动 |
+| `plan_files` | list | — | metadata | 计划将改的仓库文件（重叠串行化调度） |
+| `new_project` | bool | false | metadata | 新项目脚手架标记 |
+| `reviewer` | string | — | metadata | 审阅人 |
+| `author` | string | — | metadata | 作者 |
+| `off_peak_only` | bool | — | metadata | 仅低峰执行（未配置窗口=不限制） |
+| `auto_approve` | bool | true | metadata | plan-review 自动批准（默认 true；Grilling 是唯一人工关卡） |
+| `created` | string | — | timestamps | 创建时间（系统维护） |
+| `updated` | string | — | timestamps | 更新时间（系统维护） |
+| `maturity` | string | "" | lifecycle | fully_mature/mostly_mature/immature |
+| `refine_version` | int | 0 | lifecycle | 需求成熟度审计版本 |
+| `refine_req_hash` | string | "" | lifecycle | refining 生效的 REQ hash（daemon 兜底重写） |
+| `refine_retry_count` | int | 0 | lifecycle | refining 自动恢复次数 |
+| `refine_error` | string | "" | lifecycle | 最近 refining 错误 |
+| `plan_req_hash` | string | "" | lifecycle | planning 使用的 REQ hash |
+| `plan_version` | int | 0 | lifecycle | 计划版本（每次 planning +1） |
+| `design_replan_version` | int | 0 | lifecycle | 设计库修订号门槛（replan gate） |
+| `planning_retry_count` | int | 0 | lifecycle | planning 自动恢复次数 |
+| `checkpoint_commit` | string | "" | lifecycle | pending_req 前 WIP 检查点 commit |
+| `target_branch` | string | "" | lifecycle | 任务分支 |
+| `pr_url` | string | "" | lifecycle | PR 链接 |
+| `completed` | string | "" | lifecycle | merge 完成时间戳 |
+| `reopen_count` | int | 0 | lifecycle | 交付轮次（breaking 重开 +1） |
+| `generation` | int | 1 | lifecycle | 任务世代（fencing，跨会话写回校验） |
+| `attempt_id` | string | "" | lifecycle | 当前 attempt 标识（32 hex） |
+| `executor_session_id` | string | "" | lifecycle | DSH 持久会话 token（durable resume） |
+| `merge_status` | string | "" | lifecycle | merged/pushed 等合并状态 |
+| `approved_head` | string | "" | lifecycle | 合并授权时的 head |
+| `merge_retry_count` | int | 0 | lifecycle | AI 合并修复预算消耗 |
+| `merge_precondition_fails` | int | 0 | lifecycle | 合并前置失败计数 |
+| `merge_retry_not_before` | string | "" | lifecycle | 合并修复冷却截止 |
+| `task_schema_version` | int | 1 | lifecycle | schema 版本（1） |
+| `req_refine_count` | int | — | lifecycle | 需求缺口循环计数（≥3 主动交互） |
+| `quota_backoff_level` | int | — | lifecycle | 免费额度退避等级 |
+| `quota_backoff_until` | string | — | lifecycle | 下次可重试时间 |
+| `round2_stall_until` | string | "" | lifecycle | Round 2 无进展冷却截止（持久化） |
+| `round2_stall_level` | int | 0 | lifecycle | 无进展熔断计数（连续 3 转 blocked） |
+| `audit_status` | string | — | lifecycle | pending/passed/failed（完成审计） |
+| `audit_fail_count` | int | — | lifecycle | 连续审计失败计数 |
+| `audit_log` | string | — | lifecycle | 最近审计会话日志路径 |
+| `blocked_phase` | string | "" | failure | 阻塞前阶段 |
+| `blocked_at` | string | — | failure | 最近进 blocked 时间（老化恢复基准） |
+| `phase_error` | string | "" | failure | 阶段失败人类可读摘要 |
+| `phase_error_code` | string | "" | failure | 稳定错误码（ADR-004） |
+| `phase_log` | string | "" | failure | 阶段日志路径 |
+| `auto_resume_pending` | bool | false | failure | 本次失败由自动 resume 发起 |
+| `auto_resume_count` | int | 0 | failure | 自动 resume 连续失败累计（≥2 停） |
+| `grill_owner` | string | "" | grilling | Grilling 当前 owner |
+| `grill_started_at` | string | "" | grilling | Grilling 开始时间 |
+| `grill_heartbeat_at` | string | "" | grilling | Grilling 心跳（续租） |
+| `grill_timeout_minutes` | int | 30 | grilling | 租约超时阈值（默认 30） |
+| `grill_done` | bool | false | grilling | Grilling 完成标记 |
+| `grill_resolution` | string | "" | grilling | resume/replan |
+| `grill_context` | string | "" | grilling | Triage 分类结果 + 领域术语（结构化 YAML） |
+| `grill_continue` | bool | false | grilling | 决策清单分发触发 |
+| `grill_prev_status` | string | "" | grilling | Grilling 前状态 |
+| `grill_parked` | bool | false | grilling | 争议搁置（项目级清单统筹） |
+| `grill_repeat` | int | 0 | grilling | 重复争议计数（≥2 park） |
+| `auto_accepted` | string | "" | grilling | refining 自动采纳审计记录 |
+| `review_feedback` | string | "" | review | 评审反馈 |
+| `rework_resolution` | string | "" | review | resume/replan/close |
+| `closure_reason` | string | "" | review | already_implemented/duplicate/cancelled/wont_fix/not-bet |
+| `closure_note` | string | "" | review | Closed 说明 |
+| `replacement_task` | string | "" | review | duplicate 替代任务 |
+| `scaffold` | object | — | scaffold | 新项目脚手架意图（kind/capabilities/preferences/notes） |
+| `remote_create` | bool | — | scaffold | GitHub 建仓开关（team 禁止） |
+| `github_owner` | string | — | scaffold | 仓库 owner |
+| `repository_name` | string | — | scaffold | 仓库名 |
+| `repository_visibility` | string | — | scaffold | private 等 |
+| `repository_description` | string | — | scaffold | 仓库描述 |
+| `repository_url` | string | — | scaffold | 仓库 URL |
+| `adr_proposed` | json | []interface{}{} | adr-kb | Round 1 提议 ADR |
+| `adr_written` | json | []interface{}{} | adr-kb | 已写 ADR |
+| `knowledge_extracted` | bool | false | adr-kb | merge 后知识提取完成标记 |
+| `knowledge_extract_error` | string | "" | adr-kb | 提取/同步失败摘要 |
+| `knowledge_extract_retry_count` | int | 0 | adr-kb | 提取重试计数 |
+| `knowledge_extract_retry_until` | string | "" | adr-kb | 重试退避截止 |
+| `knowledge_refs` | list | []interface{}{} | adr-kb | 计划引用的知识文档路径 |
+| `knowledge_applied` | string | "" | adr-kb | merge 时命中/总数（如 2/3） |
+
+分组含义：identity=身份与必填、priority=优先级评估、gate=人工/自动门禁、metadata=推荐元数据、
+timestamps=时间戳、lifecycle=生命周期与合并、failure=失败与恢复、grilling=Grilling 租约、
+review=评审与终态、scaffold=脚手架与远程仓库、adr-kb=ADR 与知识库记账。
+默认值 "—" 表示必填（人工）或纯 daemon/skill 写入、无 backfill 默认。
+
 ## 5. 需求变更行为
 
 ### implementing
