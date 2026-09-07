@@ -299,6 +299,12 @@ deploy: build test
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"
 	@echo "  rollback: make rollback"
+	@echo ""
+	@echo "=== 需要用户手动操作（deploy 不代替你完成） ==="
+	@echo "  • 若 daemon 未自动重启：systemctl --user restart otg-task-watcher.service"
+	@echo "  • 若提示 legacy unit pins dsh-agent-server：先 otg install-systemd，再重启"
+	@echo "  • 验证：systemctl --user status otg-task-watcher.service"
+	@echo "  • 查看 daemon 日志：tail -f ~/.dsh/logs/otg-daemon.log"
 
 # deploy-status: 展示仓库 → 运行时的同步差异（代码 / skill / 插件），
 # 一眼看出“改了但没同步”的东西。
