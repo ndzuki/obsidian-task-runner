@@ -252,8 +252,8 @@ deploy: build test
 		$(SCTL) daemon-reload; \
 		-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
 		-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true; \
-		@sleep 2; \
-		@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
+		sleep 2; \
+		if ! $(SCTL) -q is-active otg-task-watcher.service; then \
 			echo "  Watcher didn't start — retrying..."; \
 			$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
 			$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
