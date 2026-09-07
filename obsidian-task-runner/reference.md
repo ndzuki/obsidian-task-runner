@@ -70,14 +70,13 @@ closed -- [终态，不可恢复]
 | `assignee` | string | vault-map.json 顶层 `models` 的 key（如 `default`） |
 | `req_doc` | string | Vault 相对规范路径，必须完整精确匹配 |
 | `new_project` | bool | 新项目标记 |
-| `template` | string | 新项目脚手架提示（已弃用，见 `scaffold`） |
 | `scaffold` | object | 新项目脚手架意图（`kind`/`capabilities`/`preferences`/`notes`），供 Round 1 / project-scaffold 消费 |
 | `blocked_by` | list | 同项目 `TASK-010`；跨项目 `project-key:TASK-010` |
 | `auto_approve` | bool | 默认 true（缺失即 true）；plan-review 由 daemon 自动批准转 implementing，Grilling 是唯一人工关卡；设 false 恢复人工审计划（完整语义见上表 Gate 字段） |
 | `off_peak_only` | bool | Round 2 只在低峰时段执行（`off_peak_windows` 未配置 = 不限制，恒可运行） |
 | `stage` | string | 阶段归属 `P{N}`（如 `P1`）；创建 TASK 时从 REQ 继承，PM 拆分落地时写入；daemon 阶段完成检测与 auto-staging 以此为**权威判定**（见 §4.8） |
 
-顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `deepseek_magic/gpt-5.4-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
+顶层配置 `default_assignee`（vault-map.json）：新 REQ 自动创建 TASK 时预写 `assignee`（`models` 的 key，如 `default` → `acme/acme-mini`），任务直接可调度。**空值/缺省恢复旧行为**：`assignee` 留空、任务停在 `blocked` 等人工补填（`IsReady` 要求 `assignee` 非空）。
 
 ### 4.2 Maturity Gate
 
@@ -250,7 +249,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 |------|------|--------|------|
 | `scaffold` | object | `{}` | 新项目脚手架意图：`kind`（类型）、`capabilities`（能力列表）、`preferences`（键值偏好）、`notes`（自然语言说明） |
 
-`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段保留向后兼容。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
+`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段已移除（2026-09-04 字段清理；旧文档中的值保留在 Extra，不丢失）。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
 
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
@@ -339,6 +338,127 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 **阶段完成与评审**：daemon 检测某 in-progress 阶段全部任务 done+merged（`merge_status=merged`，stale PR 不算）→ 调 PM `stage-review` 评分写 Stage-Review.md → 用户填「评审决策:」→ daemon 检测到后调 PM `distribute`：`continue`（下一阶段 in-progress）/ `supplement:{建议}`（追加到下一阶段）/ `end`（后续阶段任务 close，功能满足即结束，不维护积压）。
 
 **PM 语义层职责**（机械分组已由 daemon 承担）：补充阶段目标描述、按用户意图调整阶段边界（`stage-plan init --force` 或改 stage 字段）、新需求到达时评估归入现有阶段或建议追加新阶段（写清单「阶段规划确认」区，用户拍板）。
+
+### 4.9 完整字段附录（与代码 `taskFieldOrder` 1:1，漂移由 `frontmatter_alignment_test.go` 钉住）
+
+| 字段 | 类型 | 默认 | 组 | 说明 |
+|------|------|------|----|------|
+| `id` | string | — | identity | 任务编号（项目内唯一；不同项目可重复） |
+| `title` | string | — | identity | 任务标题 |
+| `project` | string | — | identity | vault-map project key |
+| `project_id` | string | — | identity | 项目内唯一数字 ID（如 "001"） |
+| `assignee` | string | — | identity | vault-map models 键（default/留空按阶段路由） |
+| `req_doc` | string | — | identity | Vault 相对需求路径，必须精确匹配 |
+| `status` | string | "blocked" | identity | 主状态（状态机，daemon 权威推进） |
+| `priority` | string | "" | priority | P0–P4；人工可覆盖，Manual Priority Override 终裁 |
+| `priority_assessment_status` | string | — | priority | pending/running/completed/failed（daemon 维护） |
+| `priority_assessment_attempts` | int | 0 | priority | 评估尝试计数（≥2 转 fallback） |
+| `priority_assessment_started_at` | string | "" | priority | 评估会话开始时间（超时接管基准） |
+| `priority_assessed_at` | string | "" | priority | 评估完成时间 |
+| `priority_assessed_value` | string | "" | priority | 评估得到的 P 值 |
+| `priority_impact` | string | "" | priority | 影响面维度（评估输入输出） |
+| `priority_urgency` | string | "" | priority | 紧急性维度 |
+| `priority_workaround` | string | "" | priority | 替代方案维度 |
+| `priority_score` | int | 0 | priority | 三维加权分 |
+| `priority_confidence` | string | 0 | priority | 评估置信度 |
+| `priority_reason` | string | "" | priority | 评估理由 |
+| `priority_recommendation` | string | "" | priority | 疑似 P0 只写建议不落 P0 |
+| `plan_approved` | bool | false | gate | Round 2 计划批准门禁（plan-review 有效） |
+| `auto_merge` | bool | true | gate | 自动合并开关（默认 true） |
+| `merge_approved` | bool | false | gate | Merge 人工门禁 |
+| `adr_approved` | bool | false | gate | ADR 自动授权标记 |
+| `resume_approved` | bool | false | gate | 阻塞恢复授权 |
+| `close_approved` | bool | false | gate | Closed 确认 |
+| `pending_req` | bool | false | gate | 需求变更标记（daemon 维护） |
+| `tags` | list | []interface{}{} | metadata | 标签 |
+| `epic` | string | "" | metadata | 史诗 |
+| `blocked_by` | list | []interface{}{} | metadata | 依赖上游（同项目 TASK-N；跨项目 project-key:TASK-N） |
+| `blocks` | list | []interface{}{} | metadata | 下游任务（阻塞者） |
+| `stage` | string | — | metadata | 阶段归属 P{N}（权威判定） |
+| `stage_source` | string | — | metadata | req=继承 REQ / 空=auto-staging 或 PM 手动 |
+| `plan_files` | list | — | metadata | 计划将改的仓库文件（重叠串行化调度） |
+| `new_project` | bool | false | metadata | 新项目脚手架标记 |
+| `reviewer` | string | — | metadata | 审阅人 |
+| `author` | string | — | metadata | 作者 |
+| `off_peak_only` | bool | — | metadata | 仅低峰执行（未配置窗口=不限制） |
+| `auto_approve` | bool | true | metadata | plan-review 自动批准（默认 true；Grilling 是唯一人工关卡） |
+| `created` | string | — | timestamps | 创建时间（系统维护） |
+| `updated` | string | — | timestamps | 更新时间（系统维护） |
+| `maturity` | string | "" | lifecycle | fully_mature/mostly_mature/immature |
+| `refine_version` | int | 0 | lifecycle | 需求成熟度审计版本 |
+| `refine_req_hash` | string | "" | lifecycle | refining 生效的 REQ hash（daemon 兜底重写） |
+| `refine_retry_count` | int | 0 | lifecycle | refining 自动恢复次数 |
+| `refine_error` | string | "" | lifecycle | 最近 refining 错误 |
+| `plan_req_hash` | string | "" | lifecycle | planning 使用的 REQ hash |
+| `plan_version` | int | 0 | lifecycle | 计划版本（每次 planning +1） |
+| `design_replan_version` | int | 0 | lifecycle | 设计库修订号门槛（replan gate） |
+| `planning_retry_count` | int | 0 | lifecycle | planning 自动恢复次数 |
+| `checkpoint_commit` | string | "" | lifecycle | pending_req 前 WIP 检查点 commit |
+| `target_branch` | string | "" | lifecycle | 任务分支 |
+| `pr_url` | string | "" | lifecycle | PR 链接 |
+| `completed` | string | "" | lifecycle | merge 完成时间戳 |
+| `reopen_count` | int | 0 | lifecycle | 交付轮次（breaking 重开 +1） |
+| `generation` | int | 1 | lifecycle | 任务世代（fencing，跨会话写回校验） |
+| `attempt_id` | string | "" | lifecycle | 当前 attempt 标识（32 hex） |
+| `executor_session_id` | string | "" | lifecycle | DSH 持久会话 token（durable resume） |
+| `merge_status` | string | "" | lifecycle | merged/pushed 等合并状态 |
+| `approved_head` | string | "" | lifecycle | 合并授权时的 head |
+| `merge_retry_count` | int | 0 | lifecycle | AI 合并修复预算消耗 |
+| `merge_precondition_fails` | int | 0 | lifecycle | 合并前置失败计数 |
+| `merge_retry_not_before` | string | "" | lifecycle | 合并修复冷却截止 |
+| `task_schema_version` | int | 1 | lifecycle | schema 版本（1） |
+| `req_refine_count` | int | — | lifecycle | 需求缺口循环计数（≥3 主动交互） |
+| `quota_backoff_level` | int | — | lifecycle | 模型配额退避等级 |
+| `quota_backoff_until` | string | — | lifecycle | 下次可重试时间 |
+| `round2_stall_until` | string | "" | lifecycle | Round 2 无进展冷却截止（持久化） |
+| `round2_stall_level` | int | 0 | lifecycle | 无进展熔断计数（连续 3 转 blocked） |
+| `audit_status` | string | — | lifecycle | pending/passed/failed（完成审计） |
+| `audit_fail_count` | int | — | lifecycle | 连续审计失败计数 |
+| `audit_log` | string | — | lifecycle | 最近审计会话日志路径 |
+| `blocked_phase` | string | "" | failure | 阻塞前阶段 |
+| `blocked_at` | string | — | failure | 最近进 blocked 时间（老化恢复基准） |
+| `phase_error` | string | "" | failure | 阶段失败人类可读摘要 |
+| `phase_error_code` | string | "" | failure | 稳定错误码（ADR-004） |
+| `phase_log` | string | "" | failure | 阶段日志路径 |
+| `auto_resume_pending` | bool | false | failure | 本次失败由自动 resume 发起 |
+| `auto_resume_count` | int | 0 | failure | 自动 resume 连续失败累计（≥2 停） |
+| `grill_owner` | string | "" | grilling | Grilling 当前 owner |
+| `grill_started_at` | string | "" | grilling | Grilling 开始时间 |
+| `grill_heartbeat_at` | string | "" | grilling | Grilling 心跳（续租） |
+| `grill_timeout_minutes` | int | 30 | grilling | 租约超时阈值（默认 30） |
+| `grill_done` | bool | false | grilling | Grilling 完成标记 |
+| `grill_resolution` | string | "" | grilling | resume/replan |
+| `grill_context` | string | "" | grilling | Triage 分类结果 + 领域术语（结构化 YAML） |
+| `grill_continue` | bool | false | grilling | 决策清单分发触发 |
+| `grill_prev_status` | string | "" | grilling | Grilling 前状态 |
+| `grill_parked` | bool | false | grilling | 争议搁置（项目级清单统筹） |
+| `grill_repeat` | int | 0 | grilling | 重复争议计数（≥2 park） |
+| `auto_accepted` | string | "" | grilling | refining 自动采纳审计记录 |
+| `review_feedback` | string | "" | review | 评审反馈 |
+| `rework_resolution` | string | "" | review | resume/replan/close |
+| `closure_reason` | string | "" | review | already_implemented/duplicate/cancelled/wont_fix/not-bet |
+| `closure_note` | string | "" | review | Closed 说明 |
+| `replacement_task` | string | "" | review | duplicate 替代任务 |
+| `scaffold` | object | — | scaffold | 新项目脚手架意图（kind/capabilities/preferences/notes） |
+| `remote_create` | bool | — | scaffold | GitHub 建仓开关（team 禁止） |
+| `github_owner` | string | — | scaffold | 仓库 owner |
+| `repository_name` | string | — | scaffold | 仓库名 |
+| `repository_visibility` | string | — | scaffold | private 等 |
+| `repository_description` | string | — | scaffold | 仓库描述 |
+| `repository_url` | string | — | scaffold | 仓库 URL |
+| `adr_proposed` | json | []interface{}{} | adr-kb | Round 1 提议 ADR |
+| `adr_written` | json | []interface{}{} | adr-kb | 已写 ADR |
+| `knowledge_extracted` | bool | false | adr-kb | merge 后知识提取完成标记 |
+| `knowledge_extract_error` | string | "" | adr-kb | 提取/同步失败摘要 |
+| `knowledge_extract_retry_count` | int | 0 | adr-kb | 提取重试计数 |
+| `knowledge_extract_retry_until` | string | "" | adr-kb | 重试退避截止 |
+| `knowledge_refs` | list | []interface{}{} | adr-kb | 计划引用的知识文档路径 |
+| `knowledge_applied` | string | "" | adr-kb | merge 时命中/总数（如 2/3） |
+
+分组含义：identity=身份与必填、priority=优先级评估、gate=人工/自动门禁、metadata=推荐元数据、
+timestamps=时间戳、lifecycle=生命周期与合并、failure=失败与恢复、grilling=Grilling 租约、
+review=评审与终态、scaffold=脚手架与远程仓库、adr-kb=ADR 与知识库记账。
+默认值 "—" 表示必填（人工）或纯 daemon/skill 写入、无 backfill 默认。
 
 ## 5. 需求变更行为
 
@@ -437,12 +557,14 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 
 **`vault-map.json` 保护**：`otg install --force` 不会覆盖用户的项目映射和模型配置。安装前备份 `config/vault-map.json`，拷贝后恢复。`generateVaultMap` 对已有文件只追加缺失的默认字段，不覆盖已设置的 `projects`、`models` 等用户值。**运行期即时校验**：daemon 每轮 scan 对 vault-map.json 做语法/配置校验（`checkVaultMapHealth`）——日常改坏会在**下次 scan** 弹「⚠️ 配置文件语法错误」通知（按文件版本去重、只报告不改文件），而不是等重启才炸出 `CONFIG_INVALID`。`make deploy` 会用 `otg config migrate --write`（原子写）自动补齐新版本缺失字段。
 
-**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 标注 deprecated：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段仅影响旧 `executor="dsh"` spawn 路径。 完整契约见 REQ-003「配置契约」。
+**已移除字段（2026-09-02，DSH 2.0 审计）**：`config_version`、`shutdown_grace_seconds`、`starvation_warning_days` 已从配置 schema 删除——三者解析后零消费（关闭宽限硬编码 SIGTERM→10s→SIGKILL；上游停滞告警实际用 `upstream_stall_days`）。migrate 只追加缺失字段、绝不删除：旧文件中残留的这些键按「未知键保留」规则容忍、不影响运行；手工删除后 `make deploy`/migrate **不会**恢复它们（新 schema 已不含）。`dsh_profile` 仅影响 `executor="dsh"`（spawn 路径）：默认 `executor: dsh-embed` 下全部阶段（含 design）经 agent-server（profile 硬编码 `headless-agent-server`），该字段被忽略。 完整契约见 REQ-003「配置契约」。
+
+**已移除 frontmatter 字段（2026-09-04 字段清理，DSH 2.0）**：`template`（由 `scaffold` 取代）、`estimated_hours`、`actual_hours`、`component`、`parent`、`target_env`、`due_date`——七者代码零消费（daemon/dashboard/skill 均不读）。已从 schema/规范序/backfill/模板删除；旧文档中的这些键按「未知键保留」进入 `Extra`，**不丢数据、不影响运行**，手工删除后不会恢复。
 
 **2026-09-04 开源化收敛**：`env_cleanup` 默认 **nil（禁用）**（删除 k3d 资源是有损操作，显式配置并声明 exclude 白名单才生效）；`memory_gate.auto_recovery` 默认 **false**、`exclude` 默认空（不再内置任何服务名）；`off_peak_windows`/`off_peak_timezone` 默认空 = **不限制**（opt-in，`off_peak_only` 恒可运行）；`merge_poll_wait_ticks` 默认 **20**（约 10min CI 轮询预算）；`upstream_stall_days` **显式 0 = 关闭告警**（缺省 3）；`notifications.sound` 从 schema 删除。完整字段与默认值以 **`docs/config-reference.md`** 为单一事实源（`otg config show --effective` 可看生效值）。
 
 
-**知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」与 `obsidian-task-runner/config/vault-map.example.json`。
+**知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」；完整字段表见 `docs/config-reference.md`（KB 三后端为可选配置，最小示例文件不再展开）。
 
 
 **团队项目字段（`projects[].project_type` / `projects[].merge_mode`）**：`project_type: team` 标记已存在的组织仓库（如私有 Gitea）——daemon 禁止自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`，仓库归团队所有。`merge_mode` 三选一：缺省/`auto`（个人项目 gh 全自动）、`manual`（直接在团队仓库上开发：推分支 → `merge_status=pushed` → 人工在仓库 UI 合并 → daemon 远端探测自动 done）、`fork-merge`（fork 开发，`git_remote` 指向自己的 fork：本地 merge 进 fork 默认分支（冲突 AI 解决）→ push → done → 用户手动向团队项目发 PR）。两字段均由用户手工填写，daemon 注册/更新时**保留**（不覆盖）。**team 终态保护（2026-08-25 补全）**：`detectStaleDoneReopens` 与 done→review 自动重开（`DoneReopensMerge`）对 team 均跳过——done+merged 是权威交付证据，forge 生命周期完全人工；用户手动置 done 而 `merge_status=pushed`/残留 PR URL 的 team 任务不会再被拽回 review。
@@ -456,7 +578,7 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 - **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
 - **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回均走知识库检索（能力主题文档承担描述/冲突元数据）；存量 registries.json 文件不再被读取，可手动删除。
 
-**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 与 `kulala-http` 到 `~/.dsh/skills/`。
+**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 到 `~/.dsh/skills/`（`kulala-http` 已移出：通用 HTTP 调试技能，独立维护）。
 
 外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
 

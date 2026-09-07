@@ -1,5 +1,5 @@
 // Package designlib implements the persistent one-shot global design library
-// (docs/refactor-architecture.md §3.3): Projects/{project}/Design/ holding
+// (docs/archive/refactor-architecture.md §3.3): Projects/{project}/Design/ holding
 // contracts/, decisions/, waves/ and glossary.md. It is the single source of
 // truth for interface contracts, ADRs, delivery waves and domain vocabulary;
 // per-task sessions read only their relevant slice instead of re-deriving

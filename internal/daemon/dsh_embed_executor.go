@@ -19,8 +19,8 @@ import (
 // `dsh --profile headless-agent-server` process over HTTP RPC (POST /agent/run)
 // instead of spawning a short-lived headless process per phase. Two
 // capabilities the spawn adapter cannot express are restored here:
-//   - reasoningEffort is a native per-request field, restoring omp --thinking
-//     per-phase semantics (priority=off, planning=high, round2=max).
+//   - reasoningEffort is a native per-request field, restoring per-phase
+//     reasoning-level semantics (priority=off, planning=high, round2=max).
 //   - durable resume via the sessionId the agent-server returns (E4).
 //
 // It embeds dshExecutor only to reuse the SKILL.md body injection (dshTaskText);
@@ -186,7 +186,7 @@ func (e *dshEmbedExecutor) listAgents(ctx context.Context) ([]agentListEntry, er
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, err
@@ -218,7 +218,7 @@ func (e *dshEmbedExecutor) cancelSession(ctx context.Context, sessionID string) 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("agent-server cancel HTTP %d", resp.StatusCode)
@@ -227,7 +227,7 @@ func (e *dshEmbedExecutor) cancelSession(ctx context.Context, sessionID string) 
 }
 
 // agentRunRequest/agentRunResponse mirror the agent-server RPC contract
-// (docs/embed-migration-plan.md §3).
+// (docs/archive/embed-migration-plan.md §3).
 type agentRunRequest struct {
 	Task            string `json:"task"`
 	Provider        string `json:"provider"`
@@ -311,36 +311,16 @@ func (e *dshEmbedExecutor) startRequest(ctx context.Context, phase, status, task
 	return h, nil
 }
 
-// mapDSHModel translates a vault-map model identity into DSH's provider/model
-// route form. Legacy identities are normalized to the free channels:
-//   - "gateway/<model>"  → deepseek_magic (same private gateway baseURL)
-//   - "deepseek/<model>" → deepseek_magic (free magic channel; the paid
-//     official channel is only reachable via the explicit "ds-official" key)
-//
-// Identities already in DSH route form ("deepseek_magic/<model>",
-// "openai/<model>", "ds-official/<model>") pass through unchanged.
-func mapDSHModel(ompModel string) (provider, model string) {
-	if ompModel == "" {
-		return "deepseek_magic", "deepseek-v4-pro"
+// mapDSHModel splits a vault-map model identity into DSH provider/model
+// route form. Empty input means "not configured" (no built-in routes).
+func mapDSHModel(identity string) (provider, model string) {
+	if identity == "" {
+		return "", ""
 	}
-	if idx := strings.IndexByte(ompModel, '/'); idx > 0 {
-		p, m := ompModel[:idx], ompModel[idx+1:]
-		switch p {
-		case "gateway", "deepseek":
-			return "deepseek_magic", m
-		default:
-			return p, m
-		}
+	if idx := strings.IndexByte(identity, '/'); idx > 0 {
+		return identity[:idx], identity[idx+1:]
 	}
-	return "deepseek_magic", ompModel
-}
-
-// isFreeModelRoute reports whether a vault-map model identity resolves to a
-// free channel (deepseek_magic or openai). It is used for the "free models
-// exhausted — consider assignee=ds-official" reminder.
-func isFreeModelRoute(ompModel string) bool {
-	provider, _ := mapDSHModel(ompModel)
-	return provider == "deepseek_magic" || provider == "openai"
+	return identity, ""
 }
 
 // dshModelLabel renders a vault-map model identity in DSH route form
@@ -350,8 +330,8 @@ func dshModelLabel(model string) string {
 	return provider + "/" + m
 }
 
-// mapDSHEffort maps omp --thinking to the DSH reasoningEffort the model profile
-// declares. off and empty mean "no explicit effort" (model default) — the
+// mapDSHEffort maps the former --thinking levels to the DSH reasoningEffort
+// the model profile declares. off and empty mean "no explicit effort" (model default) — the
 // agent-server rejects "off" as UNSUPPORTED_REASONING_EFFORT because the profile
 // declares only low/high/xhigh. max maps to xhigh (whose wire value is "max").
 func mapDSHEffort(ompEffort string) string {
@@ -441,7 +421,7 @@ func (h *embedHandle) sessionActive() bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return false
@@ -498,7 +478,7 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 			return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server unreachable: " + err.Error(), ResumeToken: h.buildResumeToken(h.req.SessionID)}
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: err.Error()}
@@ -559,7 +539,7 @@ func (h *embedHandle) buildResumeToken(sessionID string) string {
 }
 
 // mapEmbedOutcome maps the agent-server outcome string to the closed ExecOutcome
-// set (docs/embed-migration-plan.md §3).
+// set (docs/archive/embed-migration-plan.md §3).
 func mapEmbedOutcome(outcome, errorCode string) ExecOutcome {
 	switch outcome {
 	case "completed":

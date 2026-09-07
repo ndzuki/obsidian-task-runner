@@ -16,28 +16,28 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
-// writeArgsOMP writes a fake OMP that dumps its argv into argsPath and exits 0.
-func writeArgsOMP(t *testing.T, argsPath string) string {
+// writeArgsDSH writes a fake DSH that dumps its argv into argsPath and exits 0.
+func writeArgsDSH(t *testing.T, argsPath string) string {
 	t.Helper()
-	omp := filepath.Join(filepath.Dir(argsPath), "fake-omp")
+	dshCmd := filepath.Join(filepath.Dir(argsPath), "fake-dsh")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > '" + argsPath + "'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake omp: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake dshCmd: %v", err)
 	}
-	return omp
+	return dshCmd
 }
 
-// writeSlowArgsOMP writes a fake OMP that sleeps before dumping its argv —
+// writeSlowArgsOMP writes a fake DSH that sleeps before dumping its argv —
 // enough to hold the PM session in flight across the next scan, mimicking
 // the real 3-10 minute distribute sessions.
 func writeSlowArgsOMP(t *testing.T, argsPath string) string {
 	t.Helper()
-	omp := filepath.Join(filepath.Dir(argsPath), "fake-omp-slow")
+	dshCmd := filepath.Join(filepath.Dir(argsPath), "fake-dsh-slow")
 	script := "#!/bin/sh\nsleep 2\nprintf '%s\\n' \"$*\" > '" + argsPath + "'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake omp: %v", err)
+	if err := os.WriteFile(dshCmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake dshCmd: %v", err)
 	}
-	return omp
+	return dshCmd
 }
 
 func withAPIKey(t *testing.T) {
@@ -48,7 +48,7 @@ func withAPIKey(t *testing.T) {
 // withAPIKeyValue pins the apiKeyProbe for the test. Tests that must NOT
 // dispatch PM sessions (consolidate/stage-review fire on unstaged tasks
 // even without a Stage-Plan now) pin false so the scan loop short-circuits
-// instead of invoking the fake OMP as a PM session.
+// instead of invoking the fake DSH as a PM session.
 func withAPIKeyValue(t *testing.T, value bool) {
 	t.Helper()
 	oldProbe, _ := apiKeyProbe.Load().(func() bool)
@@ -387,6 +387,76 @@ grill_continue: true
 	}
 }
 
+// TestDecisionBlockMalformedFormsStayVisible guards the TASK-085 dead-end:
+// a heading using a non-":" separator, or a block missing its `- 决策:`
+// answer line entirely, used to parse as total=0/pending=0 (answers-hash
+// equals the empty-string hash), so the daemon neither opened the decision
+// tab nor auto-distributed — the task stayed parked forever with no user-
+// visible question.
+func TestDecisionBlockMalformedFormsStayVisible(t *testing.T) {
+	t.Run("separator variants all parse as one pending block", func(t *testing.T) {
+		content := `### D-1: REQ-001
+- 决策: <用户填写>
+
+### D-2 · REQ-002
+- 决策: <用户填写>
+
+### D-3：REQ-003
+- 决策: <用户填写>
+
+### D-4 REQ-004
+- 决策: <用户填写>
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 4 || pending != 4 {
+			t.Fatalf("total=%d pending=%d, want 4/4", total, pending)
+		}
+	})
+
+	t.Run("missing answer line stays pending", func(t *testing.T) {
+		content := `### D-110: TASK-085 Emergency workload identity
+- **来源任务**：TASK-085 / REQ-085
+- **建议**：优先由 Operator 回传 identity。
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 1 || pending != 1 {
+			t.Fatalf("total=%d pending=%d, want 1/1", total, pending)
+		}
+	})
+
+	t.Run("fullwidth colon answer line recognized", func(t *testing.T) {
+		content := `### D-1: REQ-001
+- 决策：采纳方案 A
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 1 || pending != 0 {
+			t.Fatalf("total=%d pending=%d, want 1/0", total, pending)
+		}
+	})
+
+	t.Run("pendingForTask counts malformed block for its source task", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "Grilling-Decisions.md")
+		content := `### D-110: TASK-085 Emergency workload identity
+- 来源任务: TASK-085
+- **建议**：优先由 Operator 回传 identity。
+
+### D-111: TASK-066
+- 来源任务: TASK-066
+- 决策: 采纳方案 A
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := grillingDecisionPendingForTask(path, "085"); got != 1 {
+			t.Fatalf("pendingForTask(085) = %d, want 1", got)
+		}
+		if got := grillingDecisionPendingForTask(path, "066"); got != 0 {
+			t.Fatalf("pendingForTask(066) = %d, want 0", got)
+		}
+	})
+}
+
 // TestDecisionAnsweredPlaceholderVariants guards placeholder-lenient
 // matching: PM templates write `{用户填写}`, older revisions `<用户填写>`,
 // and field copies render `（用户填写）` — all must count as UNANSWERED.
@@ -466,14 +536,14 @@ grill_continue: true
 		t.Fatal(err)
 	}
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -517,14 +587,14 @@ grill_continue: false
 		t.Fatal(err)
 	}
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeSlowArgsOMP(t, argsPath)
+	dshCmd := writeSlowArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -556,14 +626,14 @@ func TestConsolidateInFlightDedup(t *testing.T) {
 	// fresh dispute → needsConsolidation without relying on a shared req_doc.
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-030.md"), "030", "Projects/001-test/Requirements/REQ-030.md", "test", false, 3)
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeSlowArgsOMP(t, argsPath)
+	dshCmd := writeSlowArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -615,14 +685,14 @@ last_distributed_at: 2026-08-05T10:00:00+08:00
 		t.Fatal(err)
 	}
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -722,14 +792,14 @@ func TestProcessGrillingConsolidationDispatchesConsolidate(t *testing.T) {
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-074.md"), "074", "Projects/001-test/Requirements/REQ-012.md", "test", false, 1)
 
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -776,14 +846,14 @@ func TestProcessGrillingConsolidationDistributesAnsweredList(t *testing.T) {
 	writeDecisionList(t, filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md"), true)
 
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -812,14 +882,14 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-074.md"), "074", "Projects/001-test/Requirements/REQ-012.md", "test", true, 2)
 
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeArgsOMP(t, argsPath)
+	dshCmd := writeArgsDSH(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -835,7 +905,7 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 
 func TestParkedTaskIsNotDispatched(t *testing.T) {
 	dir := t.TempDir()
-	omp, _, _ := writeBarrierOMP(t, dir)
+	dshCmd, _, _ := writeBarrierDSH(t, dir)
 
 	vault := filepath.Join(dir, "vault")
 	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
@@ -844,10 +914,10 @@ func TestParkedTaskIsNotDispatched(t *testing.T) {
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:           "dsh",
-			DSHCmd:             omp,
+			DSHCmd:             dshCmd,
 			ObsidianVault:      vault,
 			MaxConcurrentTasks: 2,
-			Models:             config.DefaultModels(),
+			Models:             testModels(),
 		},
 		logger: log.New(io.Discard, "", 0),
 	}
@@ -926,14 +996,14 @@ func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
 	withAPIKey(t)
 	vault := filepath.Join(dir, "vault")
 	argsPath := filepath.Join(dir, "pm-args")
-	omp := writeSlowArgsOMP(t, argsPath)
+	dshCmd := writeSlowArgsOMP(t, argsPath)
 	runner := &Runner{
 		cfg: &config.Config{
 			Executor:            "dsh",
-			DSHCmd:              omp,
+			DSHCmd:              dshCmd,
 			ObsidianVault:       vault,
 			PhaseTimeoutMinutes: map[string]int{"refining": 1},
-			Models:              config.DefaultModels(),
+			Models:              testModels(),
 			PhaseConcurrency:    map[string]int{"pm": 1},
 		},
 		phaseGates: map[string]*phaseGate{"pm": newPhaseGate(1)},
@@ -949,7 +1019,7 @@ func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
 	if !errors.Is(err, errPMGateFull) {
 		t.Fatalf("second pm dispatch err = %v, want errPMGateFull", err)
 	}
-	// Wait for the in-flight session to settle (slow OMP sleeps 2s) → the
+	// Wait for the in-flight session to settle (slow DSH sleeps 2s) → the
 	// slot is released and the deferred target dispatches.
 	waitForPmArgs(t, argsPath)
 	deadline := time.Now().Add(5 * time.Second)

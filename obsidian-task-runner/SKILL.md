@@ -1,6 +1,6 @@
 ---
 name: obsidian-task-runner
-description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon (otg-task-watcher.service) runs phase skills via the DSH headless agent-server (dsh-agent-server.service, default dsh-embed executor, free-channel-first model routing) and drives stage-based delivery with per-phase concurrency limits, aged auto-resume fallback, and decision-list pause/reactivate. Trigger: task runner, 自动执行 Obsidian 任务, 阶段化交付, 任务并发."
+description: "Manual entry and reference router for the Obsidian task lifecycle. Daemon (otg-task-watcher.service) runs phase skills via the DSH headless agent-server (dsh-agent-server.service, default dsh-embed executor, operator-configured model routing) and drives stage-based delivery with per-phase concurrency limits, aged auto-resume fallback, and decision-list pause/reactivate. Trigger: task runner, 自动执行 Obsidian 任务, 阶段化交付, 任务并发."
 ---
 
 # Obsidian Task Runner — Core Contract
@@ -71,7 +71,7 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 - **`project_type: team`**：daemon 禁止对该项目自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`——仓库归团队所有，操作面只读 + 推送。
 - **`merge_mode: manual`**：交付停在**推分支**（`git push` 用仓库自身 SSH/https 凭据，不注入 gh credential helper）；不创建 PR、不轮询 CI、不自动合并。push 后写 `merge_status=pushed`、保持 `review` 并通知「请到仓库 UI 合并」；**daemon 每轮探测远端默认分支（`git ls-remote --symref` + fetch + `merge-base --is-ancestor`，默认分支名不硬编码）**，人工合入后自动转 `done`。完成审计（AC 证据复核）在 push 前照常执行。
-- **`merge_mode: fork-merge`**（fork 开发）：自动化推进到**本地 merge 完成**——在任务 worktree 中把 feature 分支 `merge --no-ff` 进 fork 默认分支（默认分支名经 `ls-remote --symref` 解析，不硬编码 main）；**冲突由 AI 会话自动解决**（`merge_retry_count` 预算，与 PR 冲突共享）；merge 成功后用仓库自身凭据 push fork 默认分支，任务自动转 `done` 并通知**「请手动向团队项目提交 PR」**——团队侧 PR/review/合入完全人工，daemon 不接触团队仓库。失败（预算耗尽）转 conflict 交还用户，与 manual 同语义。
+- **`merge_mode: fork-merge`**（fork 开发）：自动化推进到**本地 merge 完成**——在任务 worktree 中把 feature 分支 `merge --no-ff` 进 fork 默认分支（默认分支名经 `ls-remote --symref` 解析，不硬编码 main）；为避免「默认分支已被主 checkout/其他 worktree 占用」而卡死，worktree 用 `checkout --detach origin/<default>` 后 merge，再以仓库自身凭据 `push HEAD:<default>`；**冲突由 AI 会话自动解决**（`merge_retry_count` 预算，与 PR 冲突共享）；任务自动转 `done` 并通知**「请手动向团队项目提交 PR」**——团队侧 PR/review/合入完全人工，daemon 不接触团队仓库。失败（预算耗尽）转 conflict 交还用户，与 manual 同语义。
 - **规范审查门禁**：团队项目（`project_type: team` 是已有项目的子集）**首个任务**在 refining 前必须通过只读基线审查（`/obsidian-task-runner-conventions`，models.default）——汇总项目的设计/代码/注释语言/API 文档/文档/提交规范 **+ 架构约束**（技术栈、数据库分环境、schema/字段命名、迁移机制）到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性标记**，删除可重审）；审查只总结现状、零优化建议、零代码修改。失败转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
 - **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复全部会话，**优先级高于全局默认约定**——项目注释用中文就用中文、技术栈按项目既有模式、commit 按项目习惯；**数据库/schema 决策以 `## 架构约束` 的 test/prod 引擎为准**；不引入项目没有的框架，不做计划外重构（团队 review 认知负担优先）。
 - **防误重开**：`detectStaleDoneReopens` 与 done 重开 merge 对团队项目跳过（squash 合入后 checkpoint 不是 main 祖先，但 `merge_status=merged` 由远端探测/本地 merge 完成写入，是权威交付证据）。**done→review 自动重开（`DoneReopensMerge`）同样对 team 跳过**（2026-08-25 接线：用户手动置 done 而 `merge_status=pushed`/残留 PR URL 的 team 任务不再被拽回 review，team forge 生命周期完全人工）。
@@ -195,24 +195,21 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 
 `selectModel(assignee, phase)`（`internal/daemon/daemon.go`）与 `phaseThinking(phase)`（`executor.go`）：
 
-| 阶段 | 模型（assignee=default 时） | reasoningEffort |
-|------|------------------------------|-----------------|
-| planning / round2 / merge（重型） | `models.deepseek_magic`（免费旗舰 deepseek-v4-pro；键缺失时硬编码同值） | planning=high / round2=max / merge=low |
-| design（全局设计库修订，daemon 硬编码） | `deepseek_magic/deepseek-v4-pro`（`design_session.go` 写死，不受 assignee 覆盖） | max |
-| refining / priority（规格作者） | `models.default`（gpt-5.4-mini） | refining=medium / priority=medium |
-| pm / audit / conventions（确定性为主） | `models.default` | low |
+| 阶段 | 模型（assignee 非空且非 default 时） | reasoningEffort |
+|------|----------------------------------------|-----------------|
+| 全部阶段 | 该 assignee 在 vault-map.json `models` 中配置的路由 | planning=high / round2=max / merge=high / design=max / refining=medium / priority=medium / pm=low / audit=low / conventions=low |
 
-- **显式 assignee（非空且非 `default`）覆盖一切**——逐任务换模型仍然有效。assignee 是 `vault-map.json` `models` 键，DSH 2.0 模型家族缩写：`ds`/`deepseek`/`ds-official`（DeepSeek）、`gp`（OpenAI GPT，`gpt`/`openai` 为历史别名）、`ge`（谷歌 Gemini）、`cl`（网宿 CL/ClaudeCode）、`qw`（阿里千问 Qwen）、`db`（字节豆包 Seedance）——对应 provider 需在 `~/.dsh/settings.yaml` 配置。
-- 教训（2026-08-22 复盘）：旧实现按 assignee 全阶段统一路由，default assignee 让 planning/round2 跑在 V4 Flash 级 mini 上——spec/计划/代码质量与 high/max effort 不匹配（TASK-079 推断字段名与 gate fixture 不一致等缺口部分源于此）。refining 的 effort 从 low 提到 medium 同理（spec 命名推断失误）。
+- **路由规则**：显式 `assignee`（非空且非 `default`）覆盖一切；`default` 与空 assignee 统一走 `models.default`；两者均未配置时任务不派发（daemon 日志提示，每 task+phase 一次）。无内置模型路由、无相位偏好——渠道选择完全由操作者配置。
+- assignee 是 `vault-map.json` `models` 的任意 key；provider 需在 `~/.dsh/settings.yaml` 配置。
 
 ## Fallback Model（兜底模型）
 
-模型兜底统一由 DSH 的 fallback.mjs 插件处理（配置在 `headless` / `headless-agent-server` 的 `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
+模型兜底统一由 DSH 的 fallback.mjs 插件处理：链由 daemon 经 vault-map.json 的 `fallback` 字段随 `/agent/run` 动态下发（**不在** `~/.dsh/cordis.patch.yml`）：
 
-- **进程内跨模型降级**：magic 免费 deepseek 失败 / 配额耗尽 → 自动切 magic 免费 openai gpt-5.6（`deepseek-v4-pro → gpt-5.6-terra` / `gpt-5.4-mini → gpt-5.6-luna`）。
+- **进程内跨模型降级**：按 daemon 随 `/agent/run` 下发的 vault-map `fallback` 链切换（链完全由操作者配置）。
 - **失败码白名单**（SERVER / RATE_LIMIT / TIMEOUT / QUOTA / EMPTY_RESPONSE 等）触发切换；HTTP 5xx 也触发。
-- daemon 侧无 fallback 层——OMP 时代的 `fallback_models` / `watchEmptyStops` 已随 OMP 退役移除。
-- **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在免费渠道间循环切换。
+- daemon 侧无 fallback 层——旧执行器时代的 `fallback_models` / `watchEmptyStops` 已随迁移移除。
+- **不要**把 fallback 加回 home 级 `~/.dsh/cordis.patch.yml`：dsh web / dsh-tui 交互会话应失败即返回，不在渠道间循环切换。
 
 ## Frontmatter 字段规范
 
@@ -237,4 +234,4 @@ TASK frontmatter 有**规范字段序**（`pkg/yamlfrontmatter/frontmatter.go` �
 
 - **自动化主路径（agent）**：`otg kb search`（BM25 + 可选 embedding 混合，语义命中优先）→ `read` 原文 → 引用路径；未命中才 web_search/Context7。检索链路与 skill 指令见 `skill://knowledge-base` Step 1（§12 知识流细节见仓库 `docs/workflow.md`）。
 - **交互问答（人类/会话入口）**：`otg kb ask "<问题>"`（vault-map 配 `kb_chat`）——混合检索 + chat 流式生成，附确定性「参考资料」列表；`kb_rerank` 可选 cross-encoder 精排。**定位边界**：ask 用于用户提问与交互会话，agent 计划引用禁止用 ask 替代原文检索（转述有信息损耗）。
-- **配置**：`kb_embedding`（后端/模型/混合权重/chunk 截断/批量/KNN 候选）、`kb_rerank`（精排）、`kb_chat`（生成）——字段说明与部署见 README「知识库语义检索」「检索精排」「知识库问答」及 `obsidian-task-runner/config/vault-map.example.json`。
+- **配置**：`kb_embedding`（后端/模型/混合权重/chunk 截断/批量/KNN 候选）、`kb_rerank`（精排）、`kb_chat`（生成）——字段说明与部署见 README「知识库语义检索」「检索精排」「知识库问答」；完整字段表见 `docs/config-reference.md`（KB 三后端为可选配置，最小示例文件不再展开）。

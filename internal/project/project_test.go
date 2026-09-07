@@ -131,7 +131,7 @@ func TestMaintenancePreservesFieldOrder(t *testing.T) {
 	curated := `{
   "config_version": 1,
   "new_project_root": "/x",
-  "models": {"default": "deepseek-v4-flash"},
+  "models": {"default": "acme-flash"},
   "projects": [
     {
       "git_remote": "github.com/ndzuki/alpha",

@@ -564,13 +564,20 @@ func sectionAfter(content, heading string) string {
 	return content[idx+len(heading):]
 }
 
-// decisionBlockRE matches a decision point block heading in the list.
+// decisionBlockRE matches a decision-point heading. It deliberately anchors
+// on `### D-<n>` and does NOT require a specific separator after the
+// number: PM revisions have written `### D-8: …`, `### D-110 · …` and
+// `### D-110：…`. Requiring `:` made the alternate forms entirely invisible
+// — total=0, pending=0, answers-hash==empty-hash — so the daemon neither
+// opened the decision tab nor auto-distributed (TASK-085).
 // decisionLineRE matches the answer line ("决策: <用户填写>").
 // splitLineRE matches the split-confirmation line ("拆分: <确认 / …>").
 var (
-	decisionBlockRE = regexp.MustCompile(`(?m)^### D-\d+:`)
-	decisionLineRE  = regexp.MustCompile(`(?m)^- 决策:\s*(.*)$`)
-	splitLineRE     = regexp.MustCompile(`(?m)^- 拆分:\s*(.*)$`)
+	decisionBlockRE = regexp.MustCompile(`(?m)^### D-\d+`)
+	// decisionLineRE / splitLineRE accept both ASCII and full-width colons,
+	// so a `- 决策：…` answer line cannot silently vanish either.
+	decisionLineRE = regexp.MustCompile(`(?m)^- 决策[：:]\s*(.*)$`)
+	splitLineRE    = regexp.MustCompile(`(?m)^- 拆分[：:]\s*(.*)$`)
 )
 
 // grillingDecisionCounts parses the decision list and counts total and
@@ -604,6 +611,11 @@ func grillingDecisionCountsContent(content string) (total, pending int) {
 			if !decisionAnswered(m[1]) {
 				pending++
 			}
+		} else {
+			// A heading without any answer line is a malformed block the user
+			// can never see or answer; count it pending instead of silently
+			// treating it as answered (TASK-085: missing `- 决策:` line).
+			pending++
 		}
 	}
 	if m := splitLineRE.FindStringSubmatch(content); m != nil {
@@ -692,6 +704,10 @@ func grillingDecisionPendingForTask(path, taskID string) int {
 			if !decisionAnswered(m[1]) {
 				pending++
 			}
+		} else {
+			// Malformed block without an answer line must stay pending for
+			// its source task, matching grillingDecisionCountsContent.
+			pending++
 		}
 	}
 	return pending
@@ -865,7 +881,7 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 		return s
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("daemon 注入依赖闭包上下文（replan_gate_threshold=%d）：\n", r.cfg.ReplanGateThreshold))
+	fmt.Fprintf(&b, "daemon 注入依赖闭包上下文（replan_gate_threshold=%d）：\n", r.cfg.ReplanGateThreshold)
 	for _, p := range taskPaths {
 		fm, err := readFrontmatter(p)
 		if err != nil || fm == nil {
@@ -882,10 +898,10 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 				}
 			}
 		}
-		b.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&b,
 			"- TASK-%s (%s) stage=%s plan_v=%d design_replan_v=%d blocked_by=[%s] blocks=[%s] req=%s req_depends_on=[%s]\n",
 			fm.ID, orDash(fm.Title), orDash(fm.Stage), fm.PlanVersion, fm.DesignReplanVersion,
-			strings.Join(fm.BlockedBy, ", "), strings.Join(fm.Blocks, ", "), orDash(fm.ReqDoc), depends))
+			strings.Join(fm.BlockedBy, ", "), strings.Join(fm.Blocks, ", "), orDash(fm.ReqDoc), depends)
 	}
 	// Design library inventory: an empty library means any planning task with
 	// plan_version >= threshold will be swallowed by the replan gate and never
@@ -894,8 +910,8 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 	if fm, err := readFrontmatter(taskPaths[0]); err == nil && fm != nil {
 		if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, fm.Project); projDir != "" {
 			if sum, serr := designlib.ForProject(projDir).ReadSummary(); serr == nil {
-				b.WriteString(fmt.Sprintf("设计库: revision=%d contracts=%d decisions=%d waves=%d glossary=%v\n",
-					sum.Revision, len(sum.Contracts), len(sum.Decisions), len(sum.Waves), sum.HasGlossary))
+				fmt.Fprintf(&b, "设计库: revision=%d contracts=%d decisions=%d waves=%d glossary=%v\n",
+					sum.Revision, len(sum.Contracts), len(sum.Decisions), len(sum.Waves), sum.HasGlossary)
 			} else {
 				b.WriteString("设计库: 空/不可读（replan gate 未通过——规划阶段会被 gate 拦截，必须作为决策点提出）\n")
 			}
@@ -903,7 +919,7 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 			// archive before asking the user to decide anything again.
 			if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, fm.Project); listPath != "" {
 				archivePath := filepath.Join(filepath.Dir(listPath), "Grilling-Decisions-archive.md")
-				b.WriteString(fmt.Sprintf("决策先例范围: 主清单=%s 归档=%s\n", listPath, archivePath))
+				fmt.Fprintf(&b, "决策先例范围: 主清单=%s 归档=%s\n", listPath, archivePath)
 			}
 		}
 	}

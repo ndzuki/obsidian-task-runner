@@ -4,13 +4,8 @@ id: ""
 title: ""
 project: ""
 project_id: ""  # 项目内唯一数字 ID，如 "001"
-# 模型选择：assignee = vault-map.json `models` 键；default/留空 = daemon 按阶段自动路由
-#   ds / deepseek / deepseek_magic / ds-official — DeepSeek 系列
-#   gp  — OpenAI GPT 系列（gpt/openai 为历史别名）
-#   ge  — 谷歌 Gemini 系列
-#   cl  — 网宿 CL（ClaudeCode 系列）
-#   qw  — 阿里千问（Qwen 系列）
-#   db  — 字节豆包（Seedance 系列）
+# 模型选择：assignee = vault-map.json `models` 键（你配置的 provider/model 路由）；
+# default/留空 = 使用 models.default。项目不内置任何模型路由。
 assignee: ""
 req_doc: ""
 status: blocked
@@ -44,21 +39,14 @@ tags: []
 epic: ""
 blocked_by: []  # 同项目 TASK-010；跨项目 project-key:TASK-010
 blocks: []
-target_env: staging
 stage: ""  # 所属交付阶段（P1/P2/...，与 Notes/Stage-Plan.md 对应）；由 REQ 继承或 PM 拆分时写入
 stage_source: ""  # req=继承 REQ（跟随 REQ 变更）/ 空=auto-staging 或 PM 手动（不跟随）
 plan_files: []  # 当前计划要修改的仓库内文件（daemon 按重叠串行化调度）
 new_project: false
 
 # 🟢 高级（按需取消注释）
-# due_date: ""
-# estimated_hours: 0
-# actual_hours: 0
-# component: ""
-# parent: ""
 # reviewer: ""
 # author: ""
-# template: ""  # 旧脚手架提示字段，已由 scaffold 取代；保留向后兼容
 # off_peak_only: false
 auto_approve: true  # 默认自动批准：grilling 后全自动（计划直接进入实现）；设 false 恢复人工审计划
 

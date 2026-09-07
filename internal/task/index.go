@@ -257,7 +257,7 @@ func buildReadyTask(fm *yamlfrontmatter.Frontmatter, filePath, fileName string) 
 		FilePath: filePath, FileName: fileName,
 		Status: fm.Status, PlanApproved: fm.PlanApproved,
 		MergeApproved: fm.MergeApproved, CloseApproved: fm.CloseApproved,
-		ReqDoc: fm.ReqDoc, Template: fm.Template, Assignee: fm.Assignee,
+		ReqDoc: fm.ReqDoc, Assignee: fm.Assignee,
 		AutoApprove: fm.AutoApprove, AutoMerge: fm.AutoMerge, PendingReq: fm.PendingReq,
 		PhaseErrorCode: fm.PhaseErrorCode,
 		GrillDone:      fm.GrillDone, GrillPrevStatus: fm.GrillPrevStatus,

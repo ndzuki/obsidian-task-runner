@@ -22,7 +22,7 @@ func TestClearMergeRepairBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := newTestRunner(t.TempDir(), "omp", filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(t.TempDir(), "dsh", filepath.Join(dir, "logs"), 1)
 
 	// Planning round completes → budget cleared.
 	runner.clearMergeRepairBudget(taskPath, "planning")
@@ -54,7 +54,7 @@ func TestAutoResolveMergeConflictBudgetExhaustedDebounces(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := newTestRunner(t.TempDir(), "omp", filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(t.TempDir(), "dsh", filepath.Join(dir, "logs"), 1)
 	candidate := task.ReadyTask{
 		ID: "067", Title: "Op", FilePath: taskPath,
 		Status: "review", MergeApproved: true,

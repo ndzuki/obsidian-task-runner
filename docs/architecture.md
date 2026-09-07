@@ -2,7 +2,7 @@
 
 > 本文是当前实现的权威架构说明（2026-08 起，`refactor/dsh-architecture`）。
 > 早期规划文档（`phase5-executor-migration.md` / `embed-migration-plan.md` /
-> `go-rewrite-plan.md` / `refactor-architecture.md`）为历史资料，其中 OMP
+> `go-rewrite-plan.md` / `refactor-architecture.md`）为历史资料，其中早期执行器
 > 执行器描述已被本文取代。运行时契约见 `obsidian-task-runner/SKILL.md`
 > 与 `reference.md`；完整流程见 `workflow.md`。
 
@@ -23,13 +23,13 @@
 │ 门禁：阶段并发 / plan_files 重叠串行 / round2 空转冷却 / quota 指数退避 / 入口门禁          │
 │ 交付：git worktree（task/<id>-slug）→ push → PR → CI 轮询 → 合并 → 知识提炼               │
 └───────┬──────────────────────────────────────────────────────┬────────────────────────────┘
-        │ 阶段执行（cfg.executor）                              │ 模型路由（免费优先）
+        │ 阶段执行（cfg.executor）                              │ 模型路由（用户配置）
         ▼                                                       ▼
 ┌───────────────────────────────────┐        ┌──────────────────────────────────────────────────┐
-│ agent-server（daemon 自管，默认）    │        │ default   → deepseek_magic/gpt-5.4-mini（轻量） │
-│   dsh --profile headless-agent-    │        │ deepseek  → deepseek_magic/deepseek-v4-pro（重度）│
-│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/openai→ openai/gpt-5.6-sol（fallback/手动） │
-│   dsh-embed executor：会话持久化，   │  RPC   │ ds-official→ 自费官方，仅 assignee 手动指定      │
+│ agent-server（daemon 自管，默认）    │        │ default   → acme/acme-mini（轻量） │
+│   dsh --profile headless-agent-    │        │ acme  → acme/acme-pro（重度）│
+│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/beta→ beta/beta-sol（fallback/手动） │
+│   dsh-embed executor：会话持久化，   │  RPC   │ paid→ 自费官方，仅 assignee 手动指定      │
 │   支持 executor_session_id 断点续跑 │        │ gemini/claude/minimax → 显式 assignee 可选      │
 │ （agent_server_managed=false 时     │        │ 失败降级链 = vault-map `fallback` 字段动态下发    │
 │   改为外部 dsh-agent-server.service）│        └──────────────────────────────────────────────────┘
@@ -68,20 +68,21 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
   持久化到任务 frontmatter，恢复时先 resume，失败再 fresh start
   （`internal/daemon/phase_executor.go`）。
 - `dsh`：每阶段临时 spawn `dsh --profile headless`（无持久会话，一次性进程）。
-- ~~`omp`~~：已随 OMP 时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
+- ~~`早期执行器`~~：已随早期执行器时代退役——`newPhaseExecutor` 不再识别该值（任何非 `dsh` 值一律解析为 dsh-embed）。
 
-## 4. 模型路由（免费优先）
+## 4. 模型路由（无内置路由）
 
-见 `internal/config/config.go` `DefaultModels()`。daemon 按任务 `assignee`
-（映射 key）选择 DSH route；未知 key 回退 `default`。**免费渠道是默认**，
-`ds-official`（自费）永不自动选用——仅在 assignee 显式指定时使用。
+`models` 完全由操作者在 vault-map.json 配置：daemon 按任务 `assignee`
+（`models` 的 key）选择 DSH route，未知 key 回退 `default`；两者都未配置时
+任务不派发（日志提示，每 task+phase 一次）。仓库不内置任何 provider/model 路由，
+也不内置任何「渠道优先」策略——渠道偏好属于部署者。
 
 ## 5. 失败恢复层级（从快到慢）
 
 | 层 | 触发 | 行为 |
 |----|------|------|
 | 阶段内重试 | refining/planning 首次失败 | 记 `refine_retry_count`/`planning_retry_count`，下一轮 scan 自动重试一次 |
-| **活动会话续期（2026-08 TASK-065）** | 阶段 HTTP 等待超过 phase timeout，但 agent-server 会话近期仍有事件（模型还在推 step/工具调用） | 判 `timeout_active`：不 cancel、不计失败、不转 blocked；保留 `executor_session_id`，下一轮 scan 继续等待同一会话。只有长时间无事件的会话才按 wedged cancel |
+| **活动会话续期** | 阶段 HTTP 等待超过 phase timeout，但 agent-server 会话近期仍有事件（模型还在推 step/工具调用） | 判 `timeout_active`：不 cancel、不计失败、不转 blocked；保留 `executor_session_id`，下一轮 scan 继续等待同一会话。只有长时间无事件的会话才按 wedged cancel |
 | quota 退避 | `MODEL_QUOTA_EXHAUSTED` | `quota_backoff_until` 指数退避（2m→4m→…→4h），到期前不重派；重启不清零 |
 | API key 探测 | `API_KEY_UNAVAILABLE` | 每轮 scan 探测，恢复即自动 resume |
 | 重启中断自愈 | `PHASE_INTERRUPTED` | 重启后自动重派（daemon 优雅停机路径） |
@@ -102,7 +103,7 @@ agent-server 随之重启，但阶段会话经 `executor_session_id` durable res
 4. 独立审计会话逐条复核 AC → `auto_merge` 授权 → push/PR/CI/merge → `done` → 知识提炼入库（SQLite FTS5 + 向量）。
 5. 任何阶段失败按 §5 层级恢复；人为决策块（REQ_MISSING/DOCUMENT_INVALID 等）不自动恢复。
 
-### 全局设计会话（replan gate）契约（2026-08-24 TASK-065 修复后）
+### 全局设计会话（replan gate）契约
 
 - 会话 `WorkingDir` = Vault 的 `Design/` 目录（workspace-write 沙箱范围即制品树）；
   `repo_dir` 作为只读证据路径经 prompt 传入，不再把仓库当工作目录。
@@ -138,3 +139,21 @@ ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jso
 | `~/.dsh/config/` | 配置（vault-map.json 在 skill 包 `config/` 下） |
 | `~/.config/systemd/user/` | 三个 user 单元 |
 | `<repo>/.otg-worktrees/` 或 `~/.otg-worktrees/` | 任务 worktree（按配置） |
+
+## 9. 迁移历史（归档）
+
+架构经历三代表演进：Python 脚本（Claude Code 时代）→ Go 单二进制 + 早期执行器 / DSH spawn → DSH 2.0 embed。
+以下迁移文档仅作历史资料，按需查阅，**不作为现势实现依据**：
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/archive/go-rewrite-plan.md`](archive/go-rewrite-plan.md) | Python → Go 重写方案与迁移对照 |
+| [`docs/archive/refactor-architecture.md`](archive/refactor-architecture.md) | DSH 目标架构与重构方案（数据层/执行层切分） |
+| [`docs/archive/phase5-executor-migration.md`](archive/phase5-executor-migration.md) | 执行路径迁移：spawn → DSH（Phase 5） |
+| [`docs/archive/embed-migration-plan.md`](archive/embed-migration-plan.md) | DSH 2.0 融合方案（agent-server 长驻运行时） |
+| [`docs/archive/phase6-skill-audit.md`](archive/phase6-skill-audit.md) | 技能包一次性审计记录 |
+| [`docs/archive/phase6-skill-value-audit.md`](archive/phase6-skill-value-audit.md) | 技能价值审计记录 |
+| [`docs/archive/workflow-full-v49.md`](archive/workflow-full-v49.md) | 工作流历史全量版（含逐条实现验收清单） |
+| [`docs/archive/superpowers/`](archive/superpowers/) | 首版设计与计划（2026-07） |
+
+现势口径以本文与 [`docs/workflow.md`](workflow.md) 为准。

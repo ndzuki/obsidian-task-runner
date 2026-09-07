@@ -57,8 +57,8 @@ func main() {
 		reqDoc    = flag.String("req", "", "requirement doc path (relative to vault)")
 		vaultPath = flag.String("vault", "", "obsidian vault absolute path")
 		addr      = flag.String("addr", "127.0.0.1:8799", "agent-server address")
-		provider  = flag.String("provider", "deepseek_magic", "DSH provider")
-		model     = flag.String("model", "deepseek-v4-pro", "DSH model")
+		provider  = flag.String("provider", "", "DSH provider (required)")
+		model     = flag.String("model", "", "DSH model (required)")
 		effort    = flag.String("effort", "low", "reasoning effort for questionnaire generation (off/low/high/max)")
 		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
 		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
@@ -73,6 +73,10 @@ func main() {
 
 	if *addr == "" {
 		fmt.Fprintln(os.Stderr, "kitty-grill: --addr is required")
+		os.Exit(2)
+	}
+	if *provider == "" || *model == "" {
+		fmt.Fprintln(os.Stderr, "kitty-grill: --provider and --model are required (no built-in model routes)")
 		os.Exit(2)
 	}
 
@@ -595,7 +599,7 @@ func manualFill(addr, provider, model, effort, sessionID, taskID, vaultPath, req
 const writebackTimeout = 10 * time.Minute
 
 // writebackMaxAttempts bounds model-level retries for the write-back turn.
-// 免费渠道偶发 SERVER/outcome error 时（观测：TASK-058 决策写回一次失败即
+// 模型渠道偶发 SERVER/outcome error 时（历史观测：决策写回一次失败即
 // 丢弃答案），重试同一会话同一答案（幂等）显著提高写回成功率。
 const writebackMaxAttempts = 3
 
@@ -811,7 +815,7 @@ func closeChatSession(addr, sessionID string) {
 		return
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // writebackLogDir returns the directory for detached write-back logs.
@@ -865,12 +869,12 @@ func spawnAsyncWriteback(addr, provider, model, effort, sessionID, message, task
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	fmt.Printf("\n✅ 决策已提交，后台异步写回需求文档（进度见 %s），本标签页即将关闭。\n", logPath)
 	// 关闭日志句柄：子进程继承 fd，父进程无需等待。
-	f.Close()
+	_ = f.Close()
 	return nil
 }
 
@@ -962,7 +966,7 @@ func chat(addr, provider, model, effort, sessionID, message string, timeout time
 		}
 		return nil, fmt.Errorf("agent-server unreachable: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {

@@ -52,7 +52,6 @@ var (
 	optionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	reasonStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	recStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	inputHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 )
 

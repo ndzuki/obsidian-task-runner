@@ -295,8 +295,13 @@ target_branch: %s
 	}
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
-	runner := newTestRunner(dir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(dir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
+	// Merge completion can launch an async knowledge-extraction goroutine
+	// that writes under the fixture vault. Wait for it before TempDir
+	// cleanup, otherwise the cleanup races the write and flakes with
+	// "directory not empty" (Go 1.26 TempDir numbered subdirectories).
+	t.Cleanup(func() { waitForTasksIdle(t, runner) })
 	return &mergeFixture{
 		repo:     repo,
 		worktree: worktree,
@@ -657,6 +662,10 @@ exit 0
 	if got := strings.TrimSpace(string(createCalls)); got != "2" {
 		t.Fatalf("gh pr create calls = %s, want 2 (first attempt failed, retry succeeded)", got)
 	}
+	// Merge completion launches an async knowledge-extraction goroutine that
+	// writes under the fixture vault; wait for it before TempDir cleanup, or
+	// the cleanup races the write and flakes with "directory not empty".
+	waitForTasksIdle(t, f.runner)
 }
 
 // TestProcessMergeTaskWithRetryStopsOnHardFailure pins that a non-retryable

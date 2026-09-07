@@ -215,7 +215,7 @@ func TestDecisionTabScriptEmbedsPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "请审阅项目级决策清单") {
 		t.Fatalf("decision tab prompt lost its core instruction:\n%s", prompt)
 	}
-	script := decisionTabScript("release-manager", listPath, prompt, "127.0.0.1:8799", "openai", "gpt-5.6-luna")
+	script := decisionTabScript("release-manager", listPath, prompt, "127.0.0.1:8799", "beta", "beta-luna")
 	for _, want := range []string{
 		"export KITTY_GRILL_PROMPT=$(cat <<'PROMPT_EOF'",
 		"PROMPT_EOF\n)",

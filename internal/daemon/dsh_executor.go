@@ -15,7 +15,7 @@ import (
 // `dsh --profile headless` per phase — the minimal, drop-in migration path
 // that keeps the Go control plane untouched while executing on DSH.
 //
-// Migration notes (target architecture docs/refactor-architecture.md §4):
+// Migration notes (target architecture docs/archive/refactor-architecture.md §4):
 //   - The skill prompt is translated into a DSH task text that loads the same
 //     slash skill. The DSH session's own skill routing (dsh-tool-skill +
 //     skill catalog) resolves it; no daemon-side prompt string assembly.
@@ -25,8 +25,8 @@ import (
 //   - Reasoning effort maps to DSH's effort enum (off/low/high/max → the
 //     DSH adapter default set). DSH's own cross-model fallback plugin
 //     (fallback.mjs) covers provider failure; there is no daemon-side fallback
-//     layer — that OMP-era mechanism was removed with OMP itself
-//     (DSH 2.0 era; no OMP code path remains).
+//     layer — that pre-DSH mechanism was removed in the DSH 2.0 migration
+//     (no legacy code path remains).
 //   - Future: replace spawn-per-phase with ctx.agents.create/resume for
 //     durable, resumable sessions (Phase 3+). Until then, resume is
 //     unsupported and daemon restart re-dispatches from frontmatter state,
@@ -167,7 +167,7 @@ func (e *dshExecutor) Start(ctx context.Context, spec PhaseSpec, snap TaskSnapsh
 	// writes `dsh: <code>: <message>` on stderr and the final assistant message
 	// on stdout; its exit code is only 0/1, so the failure class and any JSON
 	// output contract must be recovered from the streams
-	// (docs/phase5-executor-migration.md §5.6). *os.File avoids the pipe that
+	// (docs/archive/phase5-executor-migration.md §5.6). *os.File avoids the pipe that
 	// a bytes.Buffer would introduce — a killed child keeps a pipe's write end
 	// open and hangs Wait() on timeout.
 	stderrFile, err := os.CreateTemp("", "dsh-stderr-*.log")

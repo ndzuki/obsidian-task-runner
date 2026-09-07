@@ -74,7 +74,7 @@ func (r *Runner) runGlobalDesignSession(ctx context.Context, project, taskID, ta
 	reqPath := filepath.Join(r.cfg.ObsidianVault, reqDoc)
 	spec := PhaseSpec{
 		Phase:           "design",
-		Model:           r.cfg.Model("deepseek"),
+		Model:           r.cfg.Model("default"),
 		ReasoningEffort: "max",
 		SkillPrompt: fmt.Sprintf(
 			"/obsidian-task-runner-design project_dir=%s project=%s task_id=%s task_path=%s req_doc=%s design_dir=%s repo_dir=%s",

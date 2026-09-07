@@ -94,7 +94,7 @@ target_branch: task/001-manual
 	}
 
 	skillDir := writeTeamVaultMap(t, dir, "team-app", repo)
-	runner = newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner = newTestRunner(skillDir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	// The task worktree carries the feature branch; processMergeTask must
 	// find and reuse it via the same taskRunKey the daemon uses.
@@ -311,7 +311,7 @@ knowledge_extracted: true
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	if reopened := runner.detectStaleDoneReopens(); reopened != 0 {
 		t.Fatalf("team project stale-done reopens = %d, want 0", reopened)
@@ -334,7 +334,7 @@ knowledge_extracted: true
 	if err := os.WriteFile(filepath.Join(skillDir, "config", "vault-map.json"), plainMap, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runner2 := newTestRunner(skillDir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
+	runner2 := newTestRunner(skillDir, filepath.Join(dir, "dsh"), filepath.Join(dir, "logs"), 1)
 	runner2.cfg.ObsidianVault = vault
 	// The project dir name must resolve; repo has no origin/main so the
 	// checkpoint check is inconclusive and stays conservative — this probe
@@ -374,7 +374,7 @@ func TestConventionsGateDispatchesReviewAndIdempotency(t *testing.T) {
 	repo := filepath.Join(dir, "repo")
 	git(t, "init", "-b", "main", repo)
 	skillDir := writeTeamVaultMap(t, dir, "team-app", repo)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	argsDir := filepath.Join(dir, "args")
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
@@ -399,7 +399,7 @@ req_doc: Projects/001-team-app/Requirements/REQ-001-x.md
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 
 	done := runBatch(runner, []task.ReadyTask{{
@@ -473,7 +473,7 @@ func TestExistingProjectConventionsGateNonTeam(t *testing.T) {
 		t.Fatalf("mkdir repo: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"existing-app": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	argsDir := filepath.Join(dir, "args")
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
@@ -498,7 +498,7 @@ req_doc: Projects/001-existing-app/Requirements/REQ-001-x.md
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 
 	done := runBatch(runner, []task.ReadyTask{{
@@ -521,7 +521,7 @@ req_doc: Projects/001-existing-app/Requirements/REQ-001-x.md
 }
 
 // readSingleArgsFile returns the concatenated content of the first file in
-// dir (the barrier OMP writes one argv-capture file per invocation, named by
+// dir (the barrier DSH writes one argv-capture file per invocation, named by
 // PID).
 func readSingleArgsFile(t *testing.T, dir string) (string, error) {
 	t.Helper()
@@ -570,7 +570,7 @@ func TestMergePhaseGateDefersWhenFull(t *testing.T) {
 		t.Fatalf("mkdir repo: %v", err)
 	}
 	skillDir := writeVaultMap(t, dir, map[string]string{"merge-app": repo})
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -584,7 +584,7 @@ func TestMergePhaseGateDefersWhenFull(t *testing.T) {
 	if err := os.WriteFile(taskPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write task: %v", err)
 	}
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	runner.phaseGates = map[string]*phaseGate{"merge": newPhaseGate(1)}
 	// 预占唯一的 merge 槽位：本轮 scan 的授权 merge 必须被延迟，不能派发。
@@ -618,7 +618,7 @@ func TestTeamDoneTaskNeverAutoReopens(t *testing.T) {
 		t.Fatalf("mkdir repo: %v", err)
 	}
 	skillDir := writeTeamVaultMap(t, dir, "team-app", repo)
-	omp, startDir, releaseFile := writeBarrierOMP(t, dir)
+	dshCmd, startDir, releaseFile := writeBarrierDSH(t, dir)
 	t.Setenv("START_DIR", startDir)
 	t.Setenv("RELEASE_FILE", releaseFile)
 
@@ -655,7 +655,7 @@ func TestTeamDoneTaskNeverAutoReopens(t *testing.T) {
 	}
 
 	// Team: stays done, no session starts.
-	runner := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	dispatch(runner)
 	if got := readStatus(); got != "done" {
@@ -678,7 +678,7 @@ func TestTeamDoneTaskNeverAutoReopens(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "config", "vault-map.json"), plainMap, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runner2 := newTestRunner(skillDir, omp, filepath.Join(dir, "logs"), 1)
+	runner2 := newTestRunner(skillDir, dshCmd, filepath.Join(dir, "logs"), 1)
 	runner2.cfg.ObsidianVault = vault
 	dispatch(runner2)
 	if got := readStatus(); got != "review" {

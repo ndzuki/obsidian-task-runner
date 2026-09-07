@@ -199,7 +199,7 @@ func phaseThinking(phase string) string {
 // reason; every other outcome maps to a stable ErrorCode for handlePhaseFailure
 // and a human-readable reason. dshExecutor currently distinguishes
 // success/failed/timeout/interrupted only; quota/key/empty-response outcomes
-// arrive once the DSH exit-code probe lands (docs/phase5-executor-migration.md
+// arrive once the DSH exit-code probe lands (docs/archive/phase5-executor-migration.md
 // §5.6), but the mapping is already closed over the full ExecOutcome set.
 func mapExecOutcome(result *ExecutionResult) (ExecOutcome, ErrorCode, string) {
 	if result == nil {

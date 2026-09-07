@@ -2,6 +2,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ndzuki/obsidian-task-runner/internal/config"
 	"github.com/ndzuki/obsidian-task-runner/internal/jsonorder"
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
@@ -22,11 +22,15 @@ type Options struct {
 	SkillInstallDir string
 	NotifyEnabled   bool
 	PollIntervalMin int
-	SystemdEnabled  bool
-	Force           bool
-	DryRun          bool
-	SrcDir          string // source directory with skill files
-	RestartSystemd  bool   // stop daemon before install, restart after
+	// ConfigureShell opts the install into appending OBSIDIAN_VAULT to the
+	// user shell rc (~/.zshrc / ~/.bashrc / fish). Default false: install
+	// never touches user shell config unless explicitly asked.
+	ConfigureShell bool
+	SystemdEnabled bool
+	Force          bool
+	DryRun         bool
+	SrcDir         string // source directory with skill files
+	RestartSystemd bool   // stop daemon before install, restart after
 }
 
 // Run performs the installation.
@@ -37,7 +41,7 @@ func Run(opts Options) error {
 		stopDaemon()
 	}
 
-	// 1. Check dependencies（omp 已移除：executor 默认 dsh，不再需要 omp 二进制）
+	// 1. Check dependencies（executor 默认 dsh，无其他执行器依赖）
 	for _, bin := range []string{"git"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("missing dependency: %s", bin)
@@ -88,11 +92,15 @@ func Run(opts Options) error {
 				strings.Join(missing, ", "), strings.Join(missing, " "))
 		}
 	}
-	// 6. Configure shell environment
-	if err := configureShell(opts); err != nil && !d {
-		return fmt.Errorf("shell config: %w", err)
+	// 6. Shell environment: opt-in only. Default install never writes to
+	// the user shell rc — print the export line for manual setup instead.
+	if opts.ConfigureShell {
+		if err := configureShell(opts); err != nil && !d {
+			return fmt.Errorf("shell config: %w", err)
+		}
+	} else if !d {
+		fmt.Println("  shell env not modified (opt-in). Enable with: export OBSIDIAN_VAULT=" + opts.ObsidianVault + "  (or re-run install with --configure-shell)")
 	}
-
 	// 7. Create required directories
 	if !d {
 		if err := os.MkdirAll(filepath.Join(opts.ObsidianVault, "Projects"), 0755); err != nil {
@@ -282,15 +290,12 @@ func generateVaultMap(opts Options) error {
 	// Everything else (tuning, off-peak, KB backends, env cleanup, memory
 	// gate) ships as code defaults and is visible via `otg config show
 	// --effective` / docs/config-reference.md.
-	models := map[string]string{}
-	for k, v := range config.DefaultModels() {
-		models[k] = v
-	}
+	// 无内置模型路由：assignee 键 → provider/model 由用户填写（见 quickstart）。
 	cfg := map[string]interface{}{
 		"obsidian_vault":   opts.ObsidianVault,
 		"new_project_root": opts.NewProjectRoot,
 		"projects":         []interface{}{},
-		"models":           models,
+		"models":           map[string]string{},
 		"notifications":    map[string]interface{}{"desktop": opts.NotifyEnabled},
 		// 0 = no global cap; per-project capacity governs (default 2).
 		"max_concurrent_tasks":             0,
@@ -434,6 +439,10 @@ func configureShell(opts Options) error {
 
 	// Check if already configured
 	existing, _ := os.ReadFile(rcFile)
+	// 幂等：marker 行已存在（无论 vault 路径是否相同）→ 不重复追加。
+	if bytes.Contains(existing, []byte("# Obsidian Task Runner")) {
+		return nil
+	}
 	for _, line := range strings.Split(string(existing), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "export OBSIDIAN_VAULT="+opts.ObsidianVault {
@@ -488,9 +497,9 @@ func ConfigureSystemd(opts Options) error {
 	}
 
 	// Build PATH for the units. Conventional user dirs first, then mise
-	// shims: omp is installed under ~/.local/share/mise/installs/... and
-	// exposed via the shims dir, so without it the daemon cannot exec omp
-	// (observed: "exec: omp: executable file not found in $PATH" every scan,
+	// shims: dsh is installed under ~/.local/share/mise/installs/... and
+	// exposed via the shims dir, so without it the daemon cannot exec dsh
+	// (observed: "exec: dsh: executable file not found in $PATH" every scan,
 	// starving every implementing task behind the failed slots).
 	path := buildSystemdPath(home)
 

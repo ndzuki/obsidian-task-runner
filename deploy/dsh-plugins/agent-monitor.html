@@ -180,7 +180,7 @@
     <button class="btn primary" id="cSend">发送</button>
   </div>
   <div class="c-status"><span id="cSending">⏳ 思考中…</span></div>
-  <div class="c-hint">provider/model 默认取面板配置；同一 agent 的会话自动延续（多轮上下文），新会话才重新预检索。</div>
+  <div class="c-hint">provider/model 需在输入框填写；同一 agent 的会话自动延续（多轮上下文），新会话才重新预检索。</div>
 </div>
 <div id="toast"></div>
 
@@ -2155,8 +2155,8 @@ function locate(sid) {
   if (a.hit) { a.hit.style.transition = 'none'; a.hit.style.left = (a.cx / W * 100) + '%'; a.hit.style.top = ((a.cy - 16) / H * 100) + '%'; void a.hit.offsetWidth; }
 }
 /* ---------- 问答（/agent/chat，KB-first + 项目上下文自动注入） ---------- */
-const CHAT_DEFAULT_PROVIDER = 'deepseek_magic';
-const CHAT_DEFAULT_MODEL = 'deepseek-v4-pro';
+const CHAT_DEFAULT_PROVIDER = ''; // 面板不再内置 provider/model——由用户填写
+const CHAT_DEFAULT_MODEL = '';
 let chatState = new Map(); // sid -> { sessionId, provider, model, msgs: [] }
 let chatCurrentSid = null;
 
@@ -2203,8 +2203,9 @@ async function sendChat() {
   const st = chatState.get(chatCurrentSid);
   const text = $('#cInput').value.trim();
   if (!text) return;
-  st.provider = $('#cProvider').value.trim() || CHAT_DEFAULT_PROVIDER;
-  st.model = $('#cModel').value.trim() || CHAT_DEFAULT_MODEL;
+  st.provider = $('#cProvider').value.trim();
+  st.model = $('#cModel').value.trim();
+  if (!st.provider || !st.model) { appendChatMsg(st, 'system', '请先填写 provider 与 model（面板不内置默认路由）'); return; }
   $('#cInput').value = '';
   appendChatMsg(st, 'user', text);
   $('#cSending').classList.add('show');

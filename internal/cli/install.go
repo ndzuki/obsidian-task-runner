@@ -11,20 +11,22 @@ import (
 )
 
 var (
-	installForce   bool
-	installDryRun  bool
-	installVault   string
-	installNewRoot string
-	installNotif   bool
-	installPoll    int
-	installSystemd bool
+	installForce          bool
+	installDryRun         bool
+	installVault          string
+	installNewRoot        string
+	installNotif          bool
+	installPoll           int
+	installSystemd        bool
+	installConfigureShell bool
 )
 
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install skill to ~/.dsh/skills/ and configure systemd",
 	Long: `Installs the obsidian-task-runner skill to ~/.dsh/skills/,
-generates vault-map.json, configures the shell environment, and
+generates vault-map.json, optionally configures the shell environment
+(--configure-shell, opt-in), and
 optionally registers the DSH systemd units (dsh-agent-server,
 dsh-web, otg-task-watcher).
 
@@ -69,6 +71,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		NotifyEnabled:   installNotif,
 		PollIntervalMin: installPoll,
 		SystemdEnabled:  installSystemd,
+		ConfigureShell:  installConfigureShell,
 		Force:           installForce,
 		DryRun:          installDryRun,
 		RestartSystemd:  installSystemd,
@@ -122,5 +125,6 @@ func init() {
 	installCmd.Flags().BoolVar(&installNotif, "notifications", true, "Enable desktop notifications")
 	installCmd.Flags().IntVar(&installPoll, "poll-interval", 30, "Polling interval in minutes")
 	installCmd.Flags().BoolVar(&installSystemd, "systemd", true, "Register systemd units")
+	installCmd.Flags().BoolVar(&installConfigureShell, "configure-shell", false, "Opt-in: append OBSIDIAN_VAULT to shell rc (default never touches shell config)")
 	rootCmd.AddCommand(installCmd)
 }

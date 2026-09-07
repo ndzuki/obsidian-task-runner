@@ -117,10 +117,10 @@ var kbSearchCmd = &cobra.Command{
 			ready, stored := knowledge.VecStatus(dbPath)
 			switch {
 			case !ready:
-				fmt.Fprintln(cmd.ErrOrStderr(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "kb_embedding configured but vector index missing — run `otg kb index`; falling back to BM25.")
 				client = nil
 			case stored != "" && stored != cfg.KBEmbedding.Model:
-				fmt.Fprintf(cmd.ErrOrStderr(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "vector store built with %s, configured %s — run `otg kb index` to rebuild; falling back to BM25.\n", stored, cfg.KBEmbedding.Model)
 				client = nil
 			}
 		}

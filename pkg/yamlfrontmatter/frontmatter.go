@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,7 +42,6 @@ type Frontmatter struct {
 	AutoApprove    bool     `yaml:"auto_approve"`
 	AutoMerge      bool     `yaml:"auto_merge"`
 	OffPeakOnly    bool     `yaml:"off_peak_only"`
-	DueDate        string   `yaml:"due_date"`
 	PlanApproved   bool     `yaml:"plan_approved"`
 	MergeApproved  bool     `yaml:"merge_approved"`
 	ResumeApproved bool     `yaml:"resume_approved"`
@@ -141,7 +139,6 @@ type Frontmatter struct {
 
 	// Declarative project scaffold intent.
 	Scaffold ScaffoldIntent `yaml:"scaffold"`
-	Template string         `yaml:"template"`
 
 	// GitHub remote creation and merge authorization.
 	RemoteCreate           bool   `yaml:"remote_create"`
@@ -156,20 +153,16 @@ type Frontmatter struct {
 	MergePreconditionFails int    `yaml:"merge_precondition_fails"`
 	MergeRetryNotBefore    string `yaml:"merge_retry_not_before"`
 
-	// General task metadata retained by templates and dashboards.
-	Created        string   `yaml:"created"`
-	Updated        string   `yaml:"updated"`
-	EstimatedHours float64  `yaml:"estimated_hours"`
-	ActualHours    float64  `yaml:"actual_hours"`
-	Reviewer       string   `yaml:"reviewer"`
-	Author         string   `yaml:"author"`
-	Component      string   `yaml:"component"`
-	Tags           []string `yaml:"tags"`
-	Epic           string   `yaml:"epic"`
-	Parent         string   `yaml:"parent"`
-	Blocks         []string `yaml:"blocks"`
-	TargetEnv      string   `yaml:"target_env"`
-	Stage          string   `yaml:"stage"`
+	// General task metadata (display/audit; unused fields were removed in the
+	// 2026-09-04 schema cleanup — legacy docs keep them in Extra without loss).
+	Created  string   `yaml:"created"`
+	Updated  string   `yaml:"updated"`
+	Reviewer string   `yaml:"reviewer"`
+	Author   string   `yaml:"author"`
+	Tags     []string `yaml:"tags"`
+	Epic     string   `yaml:"epic"`
+	Blocks   []string `yaml:"blocks"`
+	Stage    string   `yaml:"stage"`
 	// StageSource records where the stage came from: "req" = inherited from
 	// the REQ frontmatter (follows REQ stage changes), empty = daemon
 	// auto-staging or PM manual assignment (does NOT follow REQ changes).
@@ -200,29 +193,6 @@ func applyCompatibilityDefaults(fm *Frontmatter) {
 		return
 	}
 	fm.PriorityAssessmentStatus = "completed"
-}
-
-// normalizeNumericStrings converts quoted numeric values for known numeric
-// fields to YAML numeric scalars before strict decoding. Obsidian and other
-// frontmatter editors may serialize a number such as 42 as "42".
-func normalizeNumericStrings(doc *yaml.Node) error {
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil
-	}
-
-	for i := 0; i+1 < len(doc.Content[0].Content); i += 2 {
-		key := doc.Content[0].Content[i]
-		value := doc.Content[0].Content[i+1]
-		if (key.Value != "estimated_hours" && key.Value != "actual_hours") || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
-			continue
-		}
-		if _, err := strconv.ParseFloat(value.Value, 64); err != nil {
-			return fmt.Errorf("%s must be a number: %w", key.Value, err)
-		}
-		value.Tag = "!!float"
-	}
-
-	return nil
 }
 
 // extractFrontmatterBlock returns the raw YAML block between the leading
@@ -263,9 +233,6 @@ func Parse(data []byte) (*Frontmatter, error) {
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
-		return nil, fmt.Errorf("parse frontmatter: %w", err)
-	}
-	if err := normalizeNumericStrings(&doc); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
@@ -327,9 +294,8 @@ var taskFieldOrder = []string{
 	"plan_approved", "auto_merge", "merge_approved", "adr_approved",
 	"resume_approved", "close_approved", "pending_req",
 	// Metadata (template 🟡/🟢 sections).
-	"tags", "epic", "blocked_by", "blocks", "target_env", "stage", "stage_source", "plan_files", "new_project",
-	"due_date", "estimated_hours", "actual_hours", "component", "parent",
-	"reviewer", "author", "template", "off_peak_only", "auto_approve",
+	"tags", "epic", "blocked_by", "blocks", "stage", "stage_source", "plan_files", "new_project",
+	"reviewer", "author", "off_peak_only", "auto_approve",
 	// Timestamps.
 	"created", "updated",
 	// Lifecycle (daemon-maintained).
@@ -474,7 +440,6 @@ var taskFieldDefaults = map[string]interface{}{
 	"priority_reason":                "",
 	"priority_recommendation":        "",
 	"new_project":                    false,
-	"target_env":                     "staging",
 	"adr_proposed":                   []interface{}{},
 	"adr_written":                    []interface{}{},
 	"knowledge_extracted":            false,
@@ -543,9 +508,6 @@ func MissingDefaults(data []byte) ([]FieldDefault, error) {
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(fmBlock), &doc); err != nil {
-		return nil, fmt.Errorf("parse frontmatter: %w", err)
-	}
-	if err := normalizeNumericStrings(&doc); err != nil {
 		return nil, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
@@ -688,9 +650,6 @@ func normalizeFrontmatter(path string, order []string, defaults map[string]inter
 	// Same numeric normalization as Parse: frontmatter editors may serialize
 	// estimated_hours/actual_hours as quoted strings ("42"), which would
 	// otherwise fail the Decode below and block normalization entirely.
-	if err := normalizeNumericStrings(&doc); err != nil {
-		return false, fmt.Errorf("parse frontmatter: %w", err)
-	}
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return false, fmt.Errorf("frontmatter is not a mapping")
 	}

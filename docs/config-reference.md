@@ -25,7 +25,7 @@ vault-map.json 也只包含最小键；示例文件
 |---|---|---|---|
 | `obsidian_vault` | string | — | Obsidian Vault 根（必填语义） |
 | `new_project_root` | string | `~/src` | 新项目 checkout 根 |
-| `projects` | array | `[]` | 项目注册表；`name/path/git_remote/project_id/project_type/merge_mode` |
+| `projects` | array | 空（`otg install` 生成 `[]`；未配置时视为空） | 项目注册表；`name/path/git_remote/project_id/project_type/merge_mode` |
 | `models` | map | 见 `config.DefaultModels()` | assignee 键 → DSH 模型标识；`default` 缺省兜底 |
 | `fallback` | object | nil | DSH 跨模型兜底链（chains/default/fallbackOnCodes），仅 daemon 自动化阶段生效 |
 | `notifications.desktop` | bool | true | 桌面通知开关 |
@@ -39,7 +39,7 @@ vault-map.json 也只包含最小键；示例文件
 | `agent_server_managed` | bool | true | true=daemon 拉起子进程；false=外部 systemd 管理 |
 | `executor` | string | `dsh-embed` | 阶段执行后端；`dsh` 为旧 spawn 路径 |
 | `dsh_cmd` | string | `dsh` | DSH 可执行文件 |
-| `dsh_profile` | string | `headless` | **deprecated**：仅旧 `executor="dsh"` 路径使用 |
+| `dsh_profile` | string | `""`（空） | 仅 `executor="dsh"`（spawn 路径）使用；空值时内置回退 `headless`；默认 `dsh-embed` 下忽略 |
 | `vault_web_addr` | string | `127.0.0.1:8787` | 只读看板 HTTP API 地址 |
 | `default_assignee` | string | `""` | 新 TASK 预写 assignee；空=等人工 |
 | `auto_resume_aged_after_hours` | int | 24 | 瞬态错误 blocked 任务的老化自动恢复窗口 |
@@ -62,7 +62,7 @@ vault-map.json 也只包含最小键；示例文件
 | `kb_embedding` / `kb_rerank` / `kb_chat` | object | nil | 知识库可选后端；nil=纯 BM25 / 无 RAG |
 | `kb_vault` | string | 回退 obsidian_vault | 全局共享知识库根 |
 | `kb_db` | string | `~/.local/share/otg/kb.sqlite` | 检索存储路径 |
-| `audit` | object | enabled / max_fixes 2 / timeout 15 / concurrency 1 | 完成审计门禁 |
+| `audit` | object | enabled / max_fixes 2 / timeout 15 | 完成审计门禁（并发由 `phase_concurrency["audit"]` 控制，默认 1） |
 
 ## 子结构
 
@@ -93,4 +93,4 @@ vault-map.json 也只包含最小键；示例文件
 `OTG_OBSIDIAN_VAULT`（别名 `OBSIDIAN_VAULT`）、`OTG_DSH_CMD`、`OTG_DSH_PROFILE`、
 `OTG_MAX_CONCURRENT_TASKS`、`OTG_MAX_CONCURRENT_TASKS_PER_PROJECT`。
 安装期另有 `OBSIDIAN_VAULT` / `NEW_PROJECT_ROOT` / `NOTIFY_ENABLED` /
-`POLL_INTERVAL_MINUTES` / `SKILL_INSTALL_DIR`。
+`POLL_INTERVAL_MINUTES` / `SYSTEMD_ENABLED` / `SKILL_INSTALL_DIR`。

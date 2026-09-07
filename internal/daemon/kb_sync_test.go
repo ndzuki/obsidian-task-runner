@@ -46,7 +46,7 @@ func TestMaybeSyncKnowledgeDBIndexesNewRef(t *testing.T) {
 	vault := filepath.Join(dir, "vault")
 	writeKBRef(t, vault, "core/go/probe-ref.md", "probe marker zzq9 unique term")
 
-	runner := newTestRunner(t.TempDir(), "omp", filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(t.TempDir(), "dsh", filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.KBDb = filepath.Join(dir, "kb.sqlite")
 
@@ -69,7 +69,7 @@ func TestMaybeSyncKnowledgeDBIndexesNewRef(t *testing.T) {
 func TestMaybeSyncKnowledgeDBDebounces(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
-	runner := newTestRunner(t.TempDir(), "omp", filepath.Join(dir, "logs"), 1)
+	runner := newTestRunner(t.TempDir(), "dsh", filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
 	runner.cfg.KBDb = filepath.Join(dir, "kb.sqlite")
 

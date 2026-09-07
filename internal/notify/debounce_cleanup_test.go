@@ -77,12 +77,12 @@ func TestCleanStaleKittyDebounceFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open debounce file: %v", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		// 持有中：flock 不释放（清理的 NB 探测必须失败 → 保留）
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 			t.Fatalf("flock debounce file: %v", err)
 		}
-		defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatalf("age held debounce file: %v", err)
 		}
