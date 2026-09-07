@@ -387,6 +387,76 @@ grill_continue: true
 	}
 }
 
+// TestDecisionBlockMalformedFormsStayVisible guards the TASK-085 dead-end:
+// a heading using a non-":" separator, or a block missing its `- 决策:`
+// answer line entirely, used to parse as total=0/pending=0 (answers-hash
+// equals the empty-string hash), so the daemon neither opened the decision
+// tab nor auto-distributed — the task stayed parked forever with no user-
+// visible question.
+func TestDecisionBlockMalformedFormsStayVisible(t *testing.T) {
+	t.Run("separator variants all parse as one pending block", func(t *testing.T) {
+		content := `### D-1: REQ-001
+- 决策: <用户填写>
+
+### D-2 · REQ-002
+- 决策: <用户填写>
+
+### D-3：REQ-003
+- 决策: <用户填写>
+
+### D-4 REQ-004
+- 决策: <用户填写>
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 4 || pending != 4 {
+			t.Fatalf("total=%d pending=%d, want 4/4", total, pending)
+		}
+	})
+
+	t.Run("missing answer line stays pending", func(t *testing.T) {
+		content := `### D-110: TASK-085 Emergency workload identity
+- **来源任务**：TASK-085 / REQ-085
+- **建议**：优先由 Operator 回传 identity。
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 1 || pending != 1 {
+			t.Fatalf("total=%d pending=%d, want 1/1", total, pending)
+		}
+	})
+
+	t.Run("fullwidth colon answer line recognized", func(t *testing.T) {
+		content := `### D-1: REQ-001
+- 决策：采纳方案 A
+`
+		total, pending := grillingDecisionCountsContent(content)
+		if total != 1 || pending != 0 {
+			t.Fatalf("total=%d pending=%d, want 1/0", total, pending)
+		}
+	})
+
+	t.Run("pendingForTask counts malformed block for its source task", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "Grilling-Decisions.md")
+		content := `### D-110: TASK-085 Emergency workload identity
+- 来源任务: TASK-085
+- **建议**：优先由 Operator 回传 identity。
+
+### D-111: TASK-066
+- 来源任务: TASK-066
+- 决策: 采纳方案 A
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := grillingDecisionPendingForTask(path, "085"); got != 1 {
+			t.Fatalf("pendingForTask(085) = %d, want 1", got)
+		}
+		if got := grillingDecisionPendingForTask(path, "066"); got != 0 {
+			t.Fatalf("pendingForTask(066) = %d, want 0", got)
+		}
+	})
+}
+
 // TestDecisionAnsweredPlaceholderVariants guards placeholder-lenient
 // matching: PM templates write `{用户填写}`, older revisions `<用户填写>`,
 // and field copies render `（用户填写）` — all must count as UNANSWERED.
