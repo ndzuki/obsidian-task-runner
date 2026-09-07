@@ -297,6 +297,11 @@ target_branch: %s
 
 	runner := newTestRunner(dir, filepath.Join(dir, "omp"), filepath.Join(dir, "logs"), 1)
 	runner.cfg.ObsidianVault = vault
+	// Merge completion can launch an async knowledge-extraction goroutine
+	// that writes under the fixture vault. Wait for it before TempDir
+	// cleanup, otherwise the cleanup races the write and flakes with
+	// "directory not empty" (Go 1.26 TempDir numbered subdirectories).
+	t.Cleanup(func() { waitForTasksIdle(t, runner) })
 	return &mergeFixture{
 		repo:     repo,
 		worktree: worktree,
