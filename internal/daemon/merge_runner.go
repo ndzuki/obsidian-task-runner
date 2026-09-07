@@ -584,11 +584,13 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 // Flow (all in the task worktree, which starts on the feature branch):
 //  1. fetch origin <default> (default resolved via ls-remote --symref — forges
 //     allow configuring it, never hardcode main)
-//  2. checkout -B <default> origin/<default>
+//  2. checkout --detach origin/<default> (do not bind the default branch:
+//     it may already be checked out in the primary checkout or another task
+//     worktree, and git forbids checking the same branch out twice)
 //  3. git merge --no-ff <feature>; conflicts go through the bounded AI
 //     conflict-resolution session (merge_retry_count budget, same as PR
 //     conflicts); the AI session commits the resolution, completing the merge
-//  4. push origin <default> with the repository's own credentials (no gh)
+//  4. push HEAD:<default> with the repository's own credentials (no gh)
 //  5. done + merge_status=merged — the fork default branch is the deliverable
 func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm *yamlfrontmatter.Frontmatter) error {
 	defaultBranch := remoteDefaultBranch(r.daemonCtx, repoDir)
@@ -604,8 +606,13 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 	if fetchErr != nil {
 		return fmt.Errorf("fetch fork default branch: %w: %s", fetchErr, strings.TrimSpace(string(out)))
 	}
-	// Move the worktree onto the default branch (tracking the fetched ref).
-	if out, err := exec.Command("git", "-C", repoDir, "checkout", "-B", defaultBranch, "origin/"+defaultBranch).CombinedOutput(); err != nil {
+	// Move the worktree onto the fetched default branch head. Use a detached
+	// HEAD instead of `checkout -B <default>`: the default branch may already
+	// be checked out in the primary checkout or another task worktree, and git
+	// refuses to bind the same branch in two worktrees at once. Pushing
+	// HEAD:<default> below delivers the same fork-merge result without needing
+	// that branch to be free (self-healing TASK-005 2026-09-07).
+	if out, err := exec.Command("git", "-C", repoDir, "checkout", "--detach", "origin/"+defaultBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout fork default branch: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	// Merge the feature branch in; a conflict keeps the in-progress merge
@@ -663,7 +670,9 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 		// re-merges and sees "Already up to date" → clean.
 	}
 	// Push the fork default branch with the repository's own credentials.
-	pushCmd, pushCancel := r.mergePushCommandPlain(repoDir, defaultBranch, false)
+	// The worktree is on a detached HEAD, so push HEAD:<default> rather than
+	// a local branch named after the default.
+	pushCmd, pushCancel := r.mergePushCommandPlainRef(repoDir, defaultBranch, false)
 	output, pushErr := pushCmd.CombinedOutput()
 	pushCancel()
 	if pushErr != nil {
@@ -1107,6 +1116,22 @@ func (r *Runner) mergePushCommandPlain(repoDir, branch string, force bool) (*exe
 		"-c", "http.connectTimeout=15",
 		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
 		"push", "-u", "origin", branch}
+	if force {
+		args = append(args, "--force-with-lease")
+	}
+	return mergeCommand(r.daemonCtx, repoDir, "git", args...)
+}
+
+// mergePushCommandPlainRef pushes the current HEAD (possibly detached) to a
+// named remote branch with the repository's own credentials. fork-merge uses
+// this when the default branch is already checked out in another worktree:
+// the task worktree stays on a detached HEAD and pushes HEAD:<remoteBranch>,
+// so no local branch with the default's name has to be created.
+func (r *Runner) mergePushCommandPlainRef(repoDir, remoteBranch string, force bool) (*exec.Cmd, context.CancelFunc) {
+	args := []string{"-C", repoDir,
+		"-c", "http.connectTimeout=15",
+		"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
+		"push", "-u", "origin", "HEAD:" + remoteBranch}
 	if force {
 		args = append(args, "--force-with-lease")
 	}

@@ -204,6 +204,44 @@ func TestProcessMergeTaskForkMergeHappyPath(t *testing.T) {
 	}
 }
 
+// TestProcessMergeTaskForkMergePrimaryOnDefaultBranch reproduces the real-world
+// TASK-005 blocker: the primary checkout is itself on the default branch, so
+// `git checkout -B main` in the task worktree fails with "already used by
+// worktree". Fork-merge must self-heal by checking out a detached HEAD and
+// pushing HEAD:<default>, so the task still completes without manually freeing
+// the default branch from the primary checkout.
+func TestProcessMergeTaskForkMergePrimaryOnDefaultBranch(t *testing.T) {
+	repo, origin, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
+	// Put the primary checkout back on main, exactly as the user's
+	// magic-models-manager checkout was when TASK-005 was stuck.
+	git(t, "-C", repo, "checkout", "main")
+
+	if err := runner.processMergeTask(candidate, repo); err != nil {
+		t.Fatalf("processMergeTask: %v", err)
+	}
+	data, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read task: %v", err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatalf("parse task: %v", err)
+	}
+	if fm.Status != "done" || fm.MergeStatus != "merged" || fm.Completed == "" {
+		t.Fatalf("status=%q merge_status=%q completed=%q, want done/merged/non-empty", fm.Status, fm.MergeStatus, fm.Completed)
+	}
+	// The fork's main must contain the feature content, proving the detached
+	// HEAD was merged and pushed to the default branch name.
+	out, err := exec.Command("git", "-C", origin, "show", "main:feature.txt").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "feature") {
+		t.Fatalf("fork main missing feature content: %v: %s", err, out)
+	}
+	out, err = exec.Command("git", "-C", origin, "log", "--merges", "--oneline", "main").CombinedOutput()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		t.Fatalf("no merge commit on fork main: %v: %s", err, out)
+	}
+}
+
 // TestForkMergeConflictAutoResolved: a conflicting feature branch goes
 // through the AI conflict-resolution session (fake DSH commits the resolved
 // merge), then the fork default branch is pushed and the task completes.

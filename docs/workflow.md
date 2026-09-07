@@ -537,7 +537,7 @@ daemon 不得创建/移动/复制它。手动在 vault-map.json 注册即可，`
 
 - **禁自动动作**：`ensureProjectRegistered` 跳过（防止推断 remote 覆盖真实配置）、`ensureProjectCheckout` 提升跳过、`gh repo create`/`remote_create` 拒绝（错误信息指引移除 remote_create）。`path` 必须是该团队仓库（或 fork）的本地 checkout（git 根）。
 - **`merge_mode: manual`**：交付停在**推分支**（仓库自身 SSH/https 凭据，无 gh credential-helper 注入）→ `merge_status=pushed` + 保持 `review` + 通知「请到仓库 UI 合并」→ daemon 每轮探测远端默认分支（`ls-remote --symref` + fetch + `merge-base --is-ancestor`，不硬编码 main）→ 人工合入后自动 `done`。详见 §8.2 第 7 条。
-- **`merge_mode: fork-merge`**：`git_remote` 必须指向**开发者自己的 fork**。自动化推进到本地 merge 完成——worktree 内 fetch fork 默认分支 → `checkout -B <default> origin/<default>` → `merge --no-ff <feature>`（冲突由 AI 会话解决，共享 `merge_retry_count` 预算；停机中断保持授权重启自动恢复）→ 仓库自身凭据 push fork 默认分支 → 自动 `done` + 通知「请手动向团队项目提交 PR」。团队侧 PR/review/合入完全在 daemon 之外。详见 §8.2 第 9 条。
+- **`merge_mode: fork-merge`**：`git_remote` 必须指向**开发者自己的 fork**。自动化推进到本地 merge 完成——worktree 内 fetch fork 默认分支 → `checkout --detach origin/<default>`（不占住默认分支名；主 checkout 或其他 worktree 已 checkout 该分支时不会“already used by worktree”）→ `merge --no-ff <feature>`（冲突由 AI 会话解决，共享 `merge_retry_count` 预算；停机中断保持授权重启自动恢复）→ 仓库自身凭据 `push HEAD:<default>` → 自动 `done` + 通知「请手动向团队项目提交 PR」。团队侧 PR/review/合入完全在 daemon 之外。详见 §8.2 第 9 条。
 - **规范审查门禁（强制，每项目一次；适用所有已有项目，非仅 team）**：首个任务在 refining 前先跑只读基线审查会话（`/obsidian-task-runner-conventions`，models.default，工作目录=项目 checkout）。审查汇总项目的设计/代码/注释语言/API 文档/文档/提交规范 **+ 架构约束**（技术栈、数据库分环境、schema/字段命名、迁移机制）到 `Notes/PROJECT-CONVENTIONS.md`（**产物文件即一次性门禁标记**；删除文件可人工重审）。**硬约束：零优化建议、零代码修改、每条规范/约束附项目内证据**。会话失败或成功退出但产物缺失 → 转 blocked（`CONVENTIONS_REVIEW_FAILED`），resume 重跑。
   - **为什么所有已有项目都要过门禁**：此前只有 `project_type: team` 触发审查，普通已有项目开发新功能时不审架构——dev 用 SQLite、test/prod 用 MySQL，字段名结尾（`_at`/`_id` 等）不一致导致上线 bug、返工。现在任何**已注册且存在 checkout** 的项目（`projectIsExisting`）首任务都先过门禁，且审查**必须**采集 `## 架构约束`（数据库分环境、schema/字段命名、迁移方言），环境间引擎不一致 = 最高优先级硬约束，进「需要人工确认」。
 - **规范注入**：`PROJECT-CONVENTIONS.md` 随 `[Project Context]` 注入 refining/planning/round2/merge 修复会话（`BuildProjectContext`），优先级高于全局默认约定——注释语言、代码风格、commit 习惯、技术栈选择均按项目规范；**数据库/schema 决策以 `## 架构约束` 的 test/prod 引擎为准**；round1 Step 1.8 强制计划声明规范 + 架构约束对齐；round2 实现前强制读取。
@@ -680,10 +680,10 @@ Merge Skill 必须在任何远程操作前确认：
 7. **manual 交付模式（`merge_mode: manual`，团队项目）例外**：不适用 gh 通道——push 用仓库自身 SSH/https 凭据（无 gh credential-helper 注入）、跳过 `gh auth` 预检、不创建 PR、不轮询 CI、不自动合并。push 成功写 `merge_status=pushed` + `merge_approved=false` + 通知「请到仓库 UI 合并」，保持 `review`；**`canAutoApproveMerge` 对 pushed 状态返回 false**（防每轮重复 push 与重复通知）。daemon 每轮对 `review + pushed` 任务探测远端默认分支（`git ls-remote --symref origin HEAD` 解析默认分支名，不硬编码 main；fetch + `merge-base --is-ancestor approved_head origin/<default>`），人工合入后自动转 `done` + 知识提炼（等同 `completeMerge`，无 PR URL）。冲突修复（AI 会话）后 push 同样用仓库自身凭据。完成审计（§7.4）在首次 push 前照常执行，push 后 `audit_status=passed` 保持、不重复审计。
 8. **`merge_status` 新值 `pushed`**：manual 模式推送完成标记；`detectStaleDoneReopens` 与 done 重开 merge（`DoneReopensMerge`）对 team 项目不适用（squash 合入后 checkpoint 非 main 祖先但交付已发生，`merge_status=merged` 由远端探测权威写入）。
 9. **fork-merge 交付模式（`merge_mode: fork-merge`，fork 开发）**：`git_remote` 指向**开发者自己的 fork**。自动化推进到本地 merge 完成，不经 gh 通道、不接触团队仓库：
-   - 在任务 worktree 中：fetch fork 默认分支（`ls-remote --symref` 解析，不硬编码 main）→ `checkout -B <default> origin/<default>` → `git merge --no-ff <feature>`；
+   - 在任务 worktree 中：fetch fork 默认分支（`ls-remote --symref` 解析，不硬编码 main）→ `git checkout --detach origin/<default>`（不绑定默认分支名，因此主 checkout 或其他 worktree 已占住该分支也不会 fail）→ `git merge --no-ff <feature>`；
    - **merge 冲突 → AI 冲突解决会话**（本地 commit 完成 merge commit，共享 `merge_retry_count` 预算；预算耗尽转 conflict 交还用户，与 PR 冲突同语义）；
-   - merge 成功 → 仓库自身凭据 `push origin <default>` → 写 `status=done` + `merge_status=merged` + 通知「**请手动向团队项目提交 PR**」+ 知识提炼（等同 completeMerge，无 PR URL）。
-   - 用户手动向团队仓库发 PR，团队 review 后合入——此环节完全在 daemon 之外。worktree 留在默认分支；任务 done 后不参与任何远端探测。
+   - merge 成功 → 仓库自身凭据 `push HEAD:<default>` → 写 `status=done` + `merge_status=merged` + 通知「**请手动向团队项目提交 PR**」+ 知识提炼（等同 completeMerge，无 PR URL）。
+   - 用户手动向团队仓库发 PR，团队 review 后合入——此环节完全在 daemon 之外。worktree 停在默认分支的 merge commit（detached HEAD）；任务 done 后不参与任何远端探测。
 
 任一失败时不得执行远程操作。
 
