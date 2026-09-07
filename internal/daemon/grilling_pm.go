@@ -194,14 +194,15 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 	}
 	dispatched := 0
 	for _, project := range sortedProjectKeys(byProject) {
-		if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, project); listPath != "" && grillingListPaused(listPath) {
+		listPath := grillingDecisionListPath(r.cfg.ObsidianVault, project)
+		if listPath != "" && grillingListPaused(listPath) {
 			r.logger.Printf("project %s: decision list paused, consolidation held", project)
 			continue
 		}
 		group := groupByReqDoc(byProject[project])
 		for _, req := range sortedProjectKeys(group) {
 			members := group[req]
-			if !needsConsolidation(members) {
+			if !needsConsolidation(members, listPath) {
 				continue
 			}
 			// Cooldown: a group whose PM session produced no state change
@@ -210,9 +211,11 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			// batch slot forever — other projects would starve (observed:
 			// 003 re-dispatched every scan while release-manager never got a
 			// slot). Only a genuinely fresh dispute (unparked, non-unstaged
-			// member) resets the cooldown.
+			// member) resets the cooldown; a parked task with no live
+			// decision block is equally fresh (new dispute after an earlier,
+			// now-archived park).
 			if last, ok := r.consolidatedAt.Load(req); ok {
-				if time.Since(last.(time.Time)) < 4*time.Hour && !hasFreshDispute(members) {
+				if time.Since(last.(time.Time)) < 4*time.Hour && !hasFreshDispute(members, listPath) {
 					r.logger.Printf("grilling pm consolidate %s: cooldown (dispatched %v ago), skip", req, time.Since(last.(time.Time)).Round(time.Minute))
 					continue
 				}
@@ -789,24 +792,63 @@ func grillingDecisionTotal(path string) int {
 	return total
 }
 
+// grillingDecisionHasTask reports whether the live project decision list
+// already contains a decision block sourced from the given task. A parked
+// task with a live block is already represented and must not be re-consolidated;
+// a parked task without one has a new dispute that was never appended to the
+// list (TASK-066: D-103/D-108/D-109 were archived, while the 2026-09-04
+// AC-066-17 rerun surfaced three further upstream defects that never made it
+// into the live Grilling-Decisions.md).
+func grillingDecisionHasTask(path, taskID string) bool {
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	content := string(data)
+	ref := "- 来源任务: TASK-" + taskID
+	blocks := decisionBlockRE.FindAllStringIndex(content, -1)
+	for i, loc := range blocks {
+		end := len(content)
+		if i+1 < len(blocks) {
+			end = blocks[i+1][0]
+		}
+		if strings.Contains(content[loc[0]:end], ref) {
+			return true
+		}
+	}
+	return false
+}
+
 // needsConsolidation reports whether a req_doc group requires a PM session:
 // a shared req_doc with at least one un-parked member, or a lone task whose
 // dispute repeated enough to park. Fully parked groups already have their
-// questions in the decision list and must not be re-consolidated.
-func needsConsolidation(members []task.GrillingTask) bool {
+// questions in the decision list and must not be re-consolidated — unless a
+// parked member has NO live decision block, which means an earlier park was
+// archived/resolved and a new dispute appeared that must be consolidated.
+func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 	if len(members) == 0 {
 		return false
 	}
 	if len(members) == 1 {
+		m := members[0]
+		if m.GrillParked {
+			return !grillingDecisionHasTask(listPath, m.ID)
+		}
 		// Single-task consolidation: repeated identical disputes (grill_repeat)
 		// OR a requirement that keeps churning replans (plan_version >= 3, e.g.
 		// TASK-066's 15 no-op replans) OR an unstaged in-flight task (stage
 		// plan upkeep) escalate to the project-level decision list so the user
 		// answers once instead of per round.
-		return !members[0].GrillParked && (members[0].GrillRepeat >= 2 || members[0].PlanVersion >= 3 || members[0].Unstaged)
+		return m.GrillRepeat >= 2 || m.PlanVersion >= 3 || m.Unstaged
 	}
 	for _, m := range members {
 		if !m.GrillParked {
+			return true
+		}
+		if !grillingDecisionHasTask(listPath, m.ID) {
 			return true
 		}
 	}
@@ -823,13 +865,17 @@ func hasParked(members []task.GrillingTask) bool {
 }
 
 // hasFreshDispute reports whether any member carries genuinely new
-// cross-task work: unparked AND not merely an unstaged task. Unstaged-only
+// cross-task work: unparked AND not merely an unstaged task, or a parked
+// task whose project decision list has no live block for it yet. Unstaged-only
 // groups (stage-plan upkeep) must respect the cooldown — re-dispatching
 // them every scan starves other projects when the PM session cannot
 // converge (e.g. no Stage-Plan and nothing to attach).
-func hasFreshDispute(members []task.GrillingTask) bool {
+func hasFreshDispute(members []task.GrillingTask, listPath string) bool {
 	for _, m := range members {
 		if !m.GrillParked && !m.Unstaged {
+			return true
+		}
+		if m.GrillParked && !grillingDecisionHasTask(listPath, m.ID) {
 			return true
 		}
 	}

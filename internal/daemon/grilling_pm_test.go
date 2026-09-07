@@ -260,11 +260,42 @@ func writeDecisionList(t *testing.T, path string, answered bool) {
 	}
 }
 
+// writeDecisionListWithTasks writes a decision list whose live blocks are
+// explicitly sourced from the given task IDs. This mirrors the format the
+// PM consolidate/distribute session writes, and lets tests distinguish an
+// already-consolidated parked task from one with a genuinely new dispute.
+func writeDecisionListWithTasks(t *testing.T, path string, taskIDs ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir list dir: %v", err)
+	}
+	var content strings.Builder
+	content.WriteString("---\n" +
+		"id: \"grilling-decisions\"\n" +
+		"project: test\n" +
+		"status: open\n" +
+		"grill_continue: false\n" +
+		"---\n# Grilling Decisions\n" +
+		"\n## 决策点\n")
+	for i, id := range taskIDs {
+		content.WriteString("\n### D-" + strconv.Itoa(i+1) + ": source-" + id + "\n")
+		content.WriteString("- 决策: <用户填写>\n")
+		content.WriteString("- 来源任务: TASK-" + id + "\n")
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
+		t.Fatalf("write decision list: %v", err)
+	}
+}
+
 func TestNeedsConsolidationGrouping(t *testing.T) {
+	dir := t.TempDir()
+	listWithTask := filepath.Join(dir, "Grilling-Decisions.md")
+	writeDecisionListWithTasks(t, listWithTask, "030", "031")
 	cases := []struct {
-		name    string
-		members []task.GrillingTask
-		want    bool
+		name     string
+		members  []task.GrillingTask
+		listPath string
+		want     bool
 	}{
 		{
 			name:    "empty group never consolidates",
@@ -292,9 +323,15 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 			want:    false,
 		},
 		{
-			name:    "lone parked task does not re-consolidate",
-			members: []task.GrillingTask{{GrillRepeat: 3, GrillParked: true}},
-			want:    false,
+			name:    "lone parked task with no live decision block consolidates",
+			members: []task.GrillingTask{{ID: "030", GrillRepeat: 3, GrillParked: true}},
+			want:    true,
+		},
+		{
+			name:     "lone parked task already in live list does not re-consolidate",
+			members:  []task.GrillingTask{{ID: "030", GrillRepeat: 3, GrillParked: true}},
+			listPath: listWithTask,
+			want:     false,
 		},
 		{
 			name: "shared req with un-parked member consolidates",
@@ -305,17 +342,27 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "fully parked shared group does not re-consolidate",
+			name: "fully parked shared group already in live list does not re-consolidate",
 			members: []task.GrillingTask{
-				{GrillRepeat: 2, GrillParked: true},
-				{GrillRepeat: 2, GrillParked: true},
+				{ID: "030", GrillRepeat: 2, GrillParked: true},
+				{ID: "031", GrillRepeat: 2, GrillParked: true},
 			},
-			want: false,
+			listPath: listWithTask,
+			want:     false,
+		},
+		{
+			name: "fully parked shared group with a new dispute consolidates",
+			members: []task.GrillingTask{
+				{ID: "030", GrillRepeat: 2, GrillParked: true},
+				{ID: "032", GrillRepeat: 2, GrillParked: true},
+			},
+			listPath: listWithTask,
+			want:     true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := needsConsolidation(tc.members); got != tc.want {
+			if got := needsConsolidation(tc.members, tc.listPath); got != tc.want {
 				t.Fatalf("needsConsolidation = %v, want %v", got, tc.want)
 			}
 		})
@@ -528,6 +575,7 @@ grill_continue: true
 
 ### D-1: REQ-025 — 问题
 - 决策: 采纳方案 A
+- 来源任务: TASK-025
 `
 	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -579,6 +627,7 @@ grill_continue: false
 
 ### D-1: REQ-025 — 问题
 - 决策: 采纳方案 A
+- 来源任务: TASK-025
 `
 	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -674,9 +723,11 @@ last_distributed_at: 2026-08-05T10:00:00+08:00
 
 ### D-1: REQ-025 — 问题
 - 决策: 采纳方案 A
+- 来源任务: TASK-025
 
 ### D-2: REQ-025 — 问题2
 - 决策: <用户填写>
+- 来源任务: TASK-025
 `
 	if err := os.MkdirAll(filepath.Dir(listPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -880,6 +931,8 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-012.md"), "012", "Projects/001-test/Requirements/REQ-012.md", "test", true, 2)
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-074.md"), "074", "Projects/001-test/Requirements/REQ-012.md", "test", true, 2)
+	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
+	writeDecisionListWithTasks(t, listPath, "012", "074")
 
 	argsPath := filepath.Join(dir, "pm-args")
 	dshCmd := writeArgsDSH(t, argsPath)
@@ -900,6 +953,42 @@ func TestProcessGrillingConsolidationSkipsFullyParkedGroup(t *testing.T) {
 	}
 	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
 		t.Fatal("PM session must not be dispatched for a fully parked group")
+	}
+}
+
+func TestProcessGrillingConsolidationReconsolidatesParkedGroupWithNewDispute(t *testing.T) {
+	dir := t.TempDir()
+	withAPIKey(t)
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	// Both tasks are parked, but the project decision list has no live block
+	// for either of them — an earlier park was archived and a new dispute
+	// appeared (the TASK-066 shape). This must consolidate again.
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-066.md"), "066", "Projects/001-test/Requirements/REQ-066.md", "test", true, 2)
+	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-067.md"), "067", "Projects/001-test/Requirements/REQ-066.md", "test", true, 2)
+	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
+	writeDecisionList(t, listPath, false)
+
+	argsPath := filepath.Join(dir, "pm-args")
+	dshCmd := writeArgsDSH(t, argsPath)
+	runner := &Runner{
+		cfg: &config.Config{
+			Executor:            "dsh",
+			DSHCmd:              dshCmd,
+			ObsidianVault:       vault,
+			PhaseTimeoutMinutes: map[string]int{"refining": 1},
+			Models:              testModels(),
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+
+	processed := runner.processGrillingConsolidation(context.Background())
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1 (parked tasks with a new dispute must consolidate)", processed)
+	}
+	args := waitForPmArgs(t, argsPath)
+	if !strings.Contains(args, "consolidate") {
+		t.Fatalf("pm args = %q, want consolidate prompt", args)
 	}
 }
 
