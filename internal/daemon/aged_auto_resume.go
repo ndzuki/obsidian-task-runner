@@ -89,6 +89,11 @@ func (r *Runner) autoResumeAgedBlocks() {
 			if !agedAutoResumeCode(fm.PhaseErrorCode) {
 				continue
 			}
+			// 模型渠道退避窗口内不恢复（与 dependency resolver 同闸门）：
+			// provider 宕机时 24h 老化恢复也会形成 resume→fail 循环。
+			if modelBackoffActive(fm) {
+				continue
+			}
 			if fm.AutoResumeCount >= maxAutoResumeAttempts {
 				if _, seen := r.agedSkipLogged.LoadOrStore(path, true); !seen {
 					r.logger.Printf("task %s: aged auto-resume skipped: auto-resume budget exhausted (%d), manual resume required", fm.ID, fm.AutoResumeCount)
@@ -106,9 +111,11 @@ func (r *Runner) autoResumeAgedBlocks() {
 			if time.Since(blockedAt) < r.autoResumeAgedWindow() {
 				continue
 			}
+			// 预算在授出时递增（grant-time，与 dependency resolver 同语义）。
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
 				"resume_approved":     true,
 				"auto_resume_pending": true,
+				"auto_resume_count":   fm.AutoResumeCount + 1,
 			}); err != nil {
 				r.logger.Printf("task %s: aged auto-resume failed: %v", fm.ID, err)
 				continue

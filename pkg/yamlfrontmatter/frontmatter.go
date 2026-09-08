@@ -75,11 +75,19 @@ type Frontmatter struct {
 	// reopen、stale-done 重开等）递增；attempt_id / executor_session_id
 	// 记录当前执行 attempt 的身份。阶段回写必须携带期望 generation，
 	// 不匹配视为旧会话晚到写回，拒绝并仅记审计（见 internal/task/store.go）。
-	Generation          int    `yaml:"generation"`
-	AttemptID           string `yaml:"attempt_id"`
-	ExecutorSessionID   string `yaml:"executor_session_id"`
-	QuotaBackoffLevel   int    `yaml:"quota_backoff_level"`
-	QuotaBackoffUntil   string `yaml:"quota_backoff_until"`
+	Generation        int    `yaml:"generation"`
+	AttemptID         string `yaml:"attempt_id"`
+	ExecutorSessionID string `yaml:"executor_session_id"`
+	QuotaBackoffLevel int    `yaml:"quota_backoff_level"`
+	QuotaBackoffUntil string `yaml:"quota_backoff_until"`
+	// Model-provider failure (MODEL_FAILED) exponential backoff: level =
+	// consecutive provider-failure episodes, until = next allowed dispatch.
+	// Same ladder as quota backoff but independent fields — a provider
+	// outage is not a quota condition and must not share the quota budget
+	// (2026-09-08 TASK-008/089: refine→plan→block→recover loop with no
+	// backoff while the provider was down).
+	ModelBackoffLevel   int    `yaml:"model_backoff_level"`
+	ModelBackoffUntil   string `yaml:"model_backoff_until"`
 	AdrApproved         bool   `yaml:"adr_approved"`
 	AdrProposed         any    `yaml:"adr_proposed"`
 	AdrWritten          any    `yaml:"adr_written"`
@@ -304,7 +312,7 @@ var taskFieldOrder = []string{
 	"checkpoint_commit", "target_branch", "pr_url", "completed", "reopen_count",
 	"generation", "attempt_id", "executor_session_id",
 	"merge_status", "approved_head", "merge_retry_count", "merge_precondition_fails", "merge_retry_not_before", "task_schema_version", "req_refine_count",
-	"quota_backoff_level", "quota_backoff_until",
+	"quota_backoff_level", "quota_backoff_until", "model_backoff_level", "model_backoff_until",
 	"round2_stall_until", "round2_stall_level",
 	"audit_status", "audit_fail_count", "audit_log",
 	// Blocking and failure state (daemon-maintained, least user-facing).

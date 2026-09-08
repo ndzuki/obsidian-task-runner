@@ -1701,7 +1701,8 @@ func TestResolveBlockedDependenciesAutoResumeIncrementsBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-120-upstream.md"), []byte(`---
+	upstream := filepath.Join(tasksDir, "TASK-120-upstream.md")
+	if err := os.WriteFile(upstream, []byte(`---
 id: "120"
 title: Upstream
 project: test
@@ -1732,17 +1733,45 @@ assignee: default
 
 	runner := New(&config.Config{ObsidianVault: vault})
 	runner.logger = log.New(io.Discard, "", 0)
-	runner.resolveBlockedDependencies()
 
-	fm := mustParse(t, filepath.Join(tasksDir, "TASK-120-upstream.md"))
-	if !fm.ResumeApproved {
+	// First grant: budget increments at grant time. The old failure-time
+	// accounting never grew the count (the pending marker is consumed by the
+	// resume before the retry dispatch fails) — TASK-089's 5h MODEL_FAILED
+	// blocked→auto-resume→fail loop.
+	runner.resolveBlockedDependencies()
+	fm := mustParse(t, upstream)
+	if !fm.ResumeApproved || !fm.AutoResumePending {
 		t.Fatal("upstream within budget should be auto-resumed")
 	}
-	if !fm.AutoResumePending {
-		t.Fatal("auto-resume must set auto_resume_pending marker")
+	if fm.AutoResumeCount != 1 {
+		t.Fatalf("auto_resume_count = %d, want 1 after first grant", fm.AutoResumeCount)
 	}
-	if fm.AutoResumeCount != 0 {
-		t.Fatalf("auto_resume_count = %d, want 0 — count only increments on failure", fm.AutoResumeCount)
+
+	// Second grant reaches the cap.
+	if err := yamlfrontmatter.Update(upstream, map[string]interface{}{
+		"status": "blocked", "resume_approved": false, "auto_resume_pending": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.resolveBlockedDependencies()
+	fm = mustParse(t, upstream)
+	if fm.AutoResumeCount != 2 {
+		t.Fatalf("auto_resume_count = %d, want 2 after second grant", fm.AutoResumeCount)
+	}
+
+	// Third attempt is refused: budget exhausted → manual resume required.
+	if err := yamlfrontmatter.Update(upstream, map[string]interface{}{
+		"status": "blocked", "resume_approved": false, "auto_resume_pending": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.resolveBlockedDependencies()
+	fm = mustParse(t, upstream)
+	if fm.ResumeApproved {
+		t.Fatal("third auto-resume must be refused once the budget is exhausted")
+	}
+	if fm.AutoResumeCount != 2 {
+		t.Fatalf("auto_resume_count = %d, want 2 preserved after refusal", fm.AutoResumeCount)
 	}
 }
 
@@ -1825,6 +1854,124 @@ assignee: default
 	fm = mustParse(t, path)
 	if fm.AutoResumeCount != 0 {
 		t.Fatalf("auto_resume_count = %d, want 0 after manual-resume failure", fm.AutoResumeCount)
+	}
+}
+
+// TestModelFailedBackoffPersistsAndGates guards the provider-outage backoff:
+// a MODEL_FAILED failure persists an escalating model_backoff_until that
+// every recovery path (dependency auto-resume, pending_req reroute) respects,
+// so a sustained provider outage cools down instead of looping
+// dispatch→fail→resume every scan (2026-09-08 TASK-008/089).
+func TestModelFailedBackoffPersistsAndGates(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tasksDir, "TASK-140-model-fail.md")
+	writeFile(t, path, `---
+id: "140"
+project: test
+status: implementing
+blocked_phase: ""
+phase_error_code: ""
+model_backoff_level: 0
+model_backoff_until: ""
+assignee: default
+---
+# Failing
+`)
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+
+	// First failure: level 1 → until ~2m out.
+	runner.handlePhaseFailure(path, "140", "Failing", "implementing", "round2", ErrModelFailed, "upstream down", "")
+	fm := mustParse(t, path)
+	if fm.ModelBackoffLevel != 1 {
+		t.Fatalf("model_backoff_level = %d, want 1", fm.ModelBackoffLevel)
+	}
+	until1, err := time.Parse(time.RFC3339, fm.ModelBackoffUntil)
+	if err != nil {
+		t.Fatalf("model_backoff_until unparseable: %v", err)
+	}
+	if until1.Before(time.Now().Add(time.Minute)) || until1.After(time.Now().Add(4*time.Minute)) {
+		t.Fatalf("level-1 backoff window unexpected: %v", until1)
+	}
+	if !modelBackoffActive(fm) {
+		t.Fatal("task must be inside the backoff window right after the failure")
+	}
+
+	// Second failure escalates: level 2 → ~4m out.
+	if err := yamlfrontmatter.Update(path, map[string]interface{}{"status": "implementing", "blocked_phase": ""}); err != nil {
+		t.Fatal(err)
+	}
+	runner.handlePhaseFailure(path, "140", "Failing", "implementing", "round2", ErrModelFailed, "upstream down again", "")
+	fm = mustParse(t, path)
+	if fm.ModelBackoffLevel != 2 {
+		t.Fatalf("model_backoff_level = %d, want 2", fm.ModelBackoffLevel)
+	}
+	until2, err := time.Parse(time.RFC3339, fm.ModelBackoffUntil)
+	if err != nil {
+		t.Fatalf("model_backoff_until unparseable: %v", err)
+	}
+	if until2.Before(time.Now().Add(3*time.Minute)) || until2.After(time.Now().Add(8*time.Minute)) {
+		t.Fatalf("level-2 backoff window unexpected: %v", until2)
+	}
+
+	// Expired backoff releases the gate; wrong error code never engages it.
+	expired := &yamlfrontmatter.Frontmatter{
+		PhaseErrorCode:    string(ErrModelFailed),
+		ModelBackoffUntil: time.Now().Add(-time.Minute).Format(time.RFC3339),
+	}
+	if modelBackoffActive(expired) {
+		t.Fatal("expired backoff window must not be active")
+	}
+	other := &yamlfrontmatter.Frontmatter{
+		PhaseErrorCode:    string(ErrModelQuotaExhausted),
+		ModelBackoffUntil: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}
+	if modelBackoffActive(other) {
+		t.Fatal("non-MODEL_FAILED error must not engage the model backoff")
+	}
+
+	// Dependency auto-resume holds off inside the window.
+	upstream := filepath.Join(tasksDir, "TASK-141-up.md")
+	writeFile(t, upstream, `---
+id: "141"
+project: test
+status: blocked
+blocked_phase: implementing
+phase_error_code: MODEL_FAILED
+resume_approved: false
+model_backoff_until: "`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"
+assignee: default
+---
+# Up
+`)
+	writeFile(t, filepath.Join(tasksDir, "TASK-142-down.md"), `---
+id: "142"
+project: test
+status: blocked
+blocked_by: ["TASK-141"]
+assignee: default
+---
+# Down
+`)
+	runner.resolveBlockedDependencies()
+	fm = mustParse(t, upstream)
+	if fm.ResumeApproved {
+		t.Fatal("auto-resume must hold off while the model backoff window is active")
+	}
+
+	// Once the window expires the auto-resume proceeds (grant-time budget).
+	if err := yamlfrontmatter.Update(upstream, map[string]interface{}{"model_backoff_until": time.Now().Add(-time.Minute).Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	runner.resolveBlockedDependencies()
+	fm = mustParse(t, upstream)
+	if !fm.ResumeApproved || fm.AutoResumeCount != 1 {
+		t.Fatalf("after backoff expiry auto-resume should proceed, got approved=%v count=%d", fm.ResumeApproved, fm.AutoResumeCount)
 	}
 }
 

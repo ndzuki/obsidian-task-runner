@@ -160,13 +160,16 @@ func (r *Runner) clearExecutorSessionID(taskPath string) {
 	}
 }
 
-// clearQuotaBackoff resets the model-quota backoff after a phase succeeds,
-// so the next failure starts a fresh 2m→4m→… ladder.
+// clearQuotaBackoff resets both provider-failure backoffs after a phase
+// succeeds, so the next failure starts a fresh 2m→4m→… ladder (quota and
+// model-provider outage share the ladder but are independent budgets).
 func (r *Runner) clearQuotaBackoff(taskPath string) {
 	if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
 		"quota_backoff_level": 0,
 		"quota_backoff_until": "",
+		"model_backoff_level": 0,
+		"model_backoff_until": "",
 	}); err != nil {
-		r.logger.Printf("clear quota backoff: %v", err)
+		r.logger.Printf("clear quota/model backoff: %v", err)
 	}
 }

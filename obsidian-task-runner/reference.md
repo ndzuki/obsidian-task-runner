@@ -410,6 +410,8 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 | `req_refine_count` | int | — | lifecycle | 需求缺口循环计数（≥3 主动交互） |
 | `quota_backoff_level` | int | — | lifecycle | 模型配额退避等级 |
 | `quota_backoff_until` | string | — | lifecycle | 下次可重试时间 |
+| `model_backoff_level` | int | — | lifecycle | 模型渠道失败（MODEL_FAILED）退避等级 |
+| `model_backoff_until` | string | — | lifecycle | 下次可重试时间（渠道恢复冷却） |
 | `round2_stall_until` | string | "" | lifecycle | Round 2 无进展冷却截止（持久化） |
 | `round2_stall_level` | int | 0 | lifecycle | 无进展熔断计数（连续 3 转 blocked） |
 | `audit_status` | string | — | lifecycle | pending/passed/failed（完成审计） |

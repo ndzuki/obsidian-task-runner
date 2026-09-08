@@ -2183,6 +2183,11 @@ func (r *Runner) recoverBlockedPendingReq() {
 				(fm.PhaseErrorCode == "" && len(fm.BlockedBy) > 0) {
 				continue
 			}
+			// 模型渠道退避窗口内不重路由：provider 宕机时重路由只会把任务
+			// 送回 refining→planning 再失败一次（2026-09-08 TASK-008 循环）。
+			if modelBackoffActive(fm) {
+				continue
+			}
 			// Reuse transitionToRefining so every grill/plan/merge residual is
 			// cleared atomically: a stale grill_resolution left on a task that
 			// re-enters needs-grilling would be re-consumed by nextLocalTransition
@@ -2458,6 +2463,22 @@ func isAutoResumableError(code string) bool {
 	}
 }
 
+// modelBackoffActive reports whether the task sits inside its persisted
+// MODEL_FAILED backoff window — every auto-recovery path (dependency
+// auto-resume, aged auto-resume, pending_req reroute, dispatch retry) must
+// hold off while the provider outage cooldown is running, or a sustained
+// provider failure turns the recovery loops into unthrottled hammering.
+func modelBackoffActive(fm *yamlfrontmatter.Frontmatter) bool {
+	if fm == nil || fm.PhaseErrorCode != string(ErrModelFailed) || fm.ModelBackoffUntil == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, fm.ModelBackoffUntil)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(until)
+}
+
 // autoResumePhaseFailureBlocker looks up the task referenced by a blocked_by
 // entry ("TASK-010" or "project-key:TASK-010") and approves its resume if it
 // is blocked on a phase failure (blocked_phase set) but not yet resumed.
@@ -2513,6 +2534,13 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 		}
 		if upstream.Status == "blocked" && upstream.BlockedPhase != "" && !upstream.ResumeApproved &&
 			(upstream.PhaseErrorCode != "" || len(upstream.BlockedBy) == 0) && isAutoResumableError(upstream.PhaseErrorCode) {
+			// Provider-outage backoff: MODEL_FAILED 的指数冷却窗口内不自动恢复，
+			// 否则 provider 宕机期间 blocked→auto-resume→dispatch→fail 每轮扫描
+			// 循环（2026-09-08 TASK-089 实测）。
+			if modelBackoffActive(upstream) {
+				r.logger.Printf("dependency: skip auto-resume TASK-%s — model provider backoff until %s", id, upstream.ModelBackoffUntil)
+				return
+			}
 			if upstream.AutoResumeCount >= maxAutoResumeAttempts {
 				r.logger.Printf("dependency: TASK-%s exceeded %d auto-resume attempts, manual resume required", id, maxAutoResumeAttempts)
 				notify.SendTaskAction(id, upstream.Title, "🧩", "自动恢复达上限",
@@ -2524,11 +2552,20 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 				r.logger.Printf("dependency: skip auto-resume TASK-%s — would create dependency cycle", id)
 				return
 			}
-			if err := yamlfrontmatter.Update(path, map[string]interface{}{"resume_approved": true, "auto_resume_pending": true}); err != nil {
+			// 预算在授出时递增并持久化（grant-time），而不是失败时凭
+			// auto_resume_pending 标记重算——标记在恢复消费时（restoreBlockedPhase）
+			// 就被清空，失败时永远读不到 true，旧实现每次失败都把计数写回 0，
+			// 使预算永不耗尽（2026-09-08 TASK-089：MODEL_FAILED 循环 5h+）。
+			attempts := upstream.AutoResumeCount + 1
+			if err := yamlfrontmatter.Update(path, map[string]interface{}{
+				"resume_approved":     true,
+				"auto_resume_pending": true,
+				"auto_resume_count":   attempts,
+			}); err != nil {
 				r.logger.Printf("dependency: FAILED to auto-resume upstream TASK-%s: %v", id, err)
 				return
 			}
-			r.logger.Printf("dependency: auto-resumed blocked upstream TASK-%s (blocked_phase=%s) to unwind blocked_by chain", id, upstream.BlockedPhase)
+			r.logger.Printf("dependency: auto-resumed blocked upstream TASK-%s (blocked_phase=%s, attempt %d/%d)", id, upstream.BlockedPhase, attempts, maxAutoResumeAttempts)
 		}
 		return
 	}
@@ -3192,6 +3229,16 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 	for _, t := range tasks {
 		taskPath := t.FilePath
 
+		// 模型渠道不可用退避（中央闸门）：MODEL_FAILED 的指数冷却窗口内，
+		// 任何状态的任务都不再派发——覆盖 planning 首败重试、blocked 自恢复
+		// 与 refining 重路由三条路径，避免 provider 宕机时
+		// refine→plan→block→recover 空转循环（2026-09-08 TASK-008/089）。
+		if data, err := os.ReadFile(taskPath); err == nil {
+			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && modelBackoffActive(fm) {
+				continue
+			}
+		}
+
 		// Env teardown episode marker: a task that left the dead-end states
 		// and is running again must be eligible for a fresh teardown the next
 		// time it blocks (and the marker map stays bounded).
@@ -3750,6 +3797,24 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 	if err := knowledge.AppendFailurePattern(r.cfg.ObsidianVault, string(code), phase, taskID, logPath); err != nil {
 		r.logger.Printf("task %s: knowledge base pattern sink failed: %v", taskID, err)
 	}
+	// 模型渠道不可用（MODEL_FAILED）指数退避：provider 宕机时 refine→plan→
+	// block→recover / blocked→auto-resume 各恢复路径都会立刻重派并再次失败，
+	// 形成无冷却循环（2026-09-08 TASK-008/089 实测：PI_AI_ERROR 期间两个任务
+	// 每 ~2min 各烧一轮会话）。level 持久化到 frontmatter（重启不清零），
+	// 冷却 2m→4m→8m→…→4h 上限；成功后由 clearQuotaBackoff 一并清零。
+	if code == ErrModelFailed {
+		level := 0
+		if fm, err := readFrontmatter(taskPath); err == nil && fm != nil {
+			level = fm.ModelBackoffLevel
+		}
+		level++
+		until := time.Now().Add(quotaCooldown(level))
+		_ = yamlfrontmatter.Update(taskPath, map[string]interface{}{
+			"model_backoff_level": level,
+			"model_backoff_until": until.Format(time.RFC3339),
+		})
+		r.logger.Printf("task %s: model provider failed, backoff level %d, retry after %s", taskID, level, until.Format("15:04:05"))
+	}
 	policy := recoveryForPhase(phase, code)
 	if policy == recoveryBlock {
 		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
@@ -3810,16 +3875,11 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		return
 	}
 	if policy == recoveryFallbackThenBlock {
-		// Only a failure that follows an auto-resume (pending marker set) counts
-		// against the budget; an initial failure or one after a manual resume
-		// leaves the count untouched so auto-resume gets its full 2 attempts.
-		attempts := 0
-		if data, err := os.ReadFile(taskPath); err == nil {
-			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.AutoResumePending {
-				attempts = fm.AutoResumeCount + 1
-			}
-		}
-		if err := yamlfrontmatter.Update(taskPath, map[string]interface{}{
+		// 预算在 autoResumeInProject 授出时已递增（grant-time）。失败回写只
+		// 在 pending 标记仍然在案（罕见：恢复尚未被消费即失败）时 +1；标记
+		// 已清则保持现值——旧的“pending 为 false 一律写 0”会把授出预算清零，
+		// 使 MODEL_FAILED 循环永不触顶（2026-09-08 TASK-089）。
+		updates := map[string]interface{}{
 			"status":              "blocked",
 			"blocked_phase":       "implementing",
 			"blocked_at":          time.Now().Format(time.RFC3339),
@@ -3827,9 +3887,14 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 			"phase_error":         reason,
 			"phase_log":           logPath,
 			"resume_approved":     false,
-			"auto_resume_count":   attempts,
 			"auto_resume_pending": false,
-		}); err != nil {
+		}
+		if data, err := os.ReadFile(taskPath); err == nil {
+			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && fm.AutoResumePending {
+				updates["auto_resume_count"] = fm.AutoResumeCount + 1
+			}
+		}
+		if err := yamlfrontmatter.Update(taskPath, updates); err != nil {
 			r.logger.Printf("task %s: record Round 2 failure: %v", taskID, err)
 		}
 		r.phaseFailures.Store(taskPath, time.Now())

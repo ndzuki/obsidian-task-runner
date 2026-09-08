@@ -359,11 +359,70 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 			listPath: listWithTask,
 			want:     true,
 		},
+		{
+			name: "lone upstream-fix park never re-consolidates (waits on blocked_by facts)",
+			members: []task.GrillingTask{{
+				ID: "066", GrillRepeat: 3, GrillParked: true, GrillResolution: "blocked_by_upstream_fixes",
+			}},
+			want: false,
+		},
+		{
+			name: "upstream-fix park in a shared group does not force consolidation",
+			members: []task.GrillingTask{
+				{ID: "066", GrillParked: true, GrillResolution: "blocked_by_upstream_fixes"},
+				{ID: "030", GrillRepeat: 2, GrillParked: true},
+			},
+			listPath: listWithTask,
+			want:     false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := needsConsolidation(tc.members, tc.listPath); got != tc.want {
 				t.Fatalf("needsConsolidation = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHasFreshDisputeExcludesUpstreamFixParks guards the TASK-066 re-verify
+// storm: an upstream-fix park (grill_resolution=blocked_by_upstream_fixes)
+// must never count as a fresh dispute, or the 4h consolidate cooldown is
+// bypassed every scan and a no-op PM session runs every ~2 minutes while the
+// repair task is still in flight.
+func TestHasFreshDisputeExcludesUpstreamFixParks(t *testing.T) {
+	cases := []struct {
+		name    string
+		members []task.GrillingTask
+		want    bool
+	}{
+		{
+			name: "upstream-fix park is not fresh",
+			members: []task.GrillingTask{{
+				ID: "066", GrillParked: true, GrillResolution: "blocked_by_upstream_fixes",
+			}},
+			want: false,
+		},
+		{
+			name: "ordinary parked dispute without a live block is fresh",
+			members: []task.GrillingTask{{
+				ID: "040", GrillParked: true,
+			}},
+			want: true,
+		},
+		{
+			name: "unparked member is fresh even beside an upstream-fix park",
+			members: []task.GrillingTask{
+				{ID: "066", GrillParked: true, GrillResolution: "blocked_by_upstream_fixes"},
+				{ID: "041", GrillParked: false},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasFreshDispute(tc.members, ""); got != tc.want {
+				t.Fatalf("hasFreshDispute = %v, want %v", got, tc.want)
 			}
 		})
 	}

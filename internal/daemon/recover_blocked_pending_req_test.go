@@ -3,6 +3,9 @@ package daemon
 import (
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
 // TestRecoverBlockedPendingReqRoutesPhaseFailure guards the TASK-001-deployd
@@ -144,5 +147,51 @@ blocked_by: []
 	fm := mustParse(t, path)
 	if fm.Status != "blocked" {
 		t.Fatalf("status = %q, want blocked (no pending_req)", fm.Status)
+	}
+}
+
+// TestRecoverBlockedPendingReqRespectsModelBackoff guards the provider-outage
+// gate: a MODEL_FAILED blocked task inside its model_backoff window must NOT
+// be routed back to refining, or the pending_req reroute re-enters
+// refining→planning and fails again every scan while the provider is down
+// (2026-09-08 TASK-008 loop). Once the window expires the reroute proceeds.
+func TestRecoverBlockedPendingReqRespectsModelBackoff(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
+	path := filepath.Join(tasksDir, "TASK-004-backoff.md")
+	writeHealthTask(t, tasksDir, "TASK-004-backoff.md", `---
+id: "004"
+title: Backoff
+project: test
+assignee: default
+status: blocked
+blocked_phase: planning
+phase_error_code: MODEL_FAILED
+pending_req: true
+blocked_by: []
+model_backoff_level: 1
+model_backoff_until: "`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"
+---
+# Backoff
+`)
+	runner := healthRunner(t, vault)
+	runner.recoverBlockedPendingReq()
+
+	fm := mustParse(t, path)
+	if fm.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked while model backoff is active", fm.Status)
+	}
+
+	// Window expired → normal pending_req reroute to refining resumes.
+	if err := yamlfrontmatter.Update(path, map[string]interface{}{
+		"model_backoff_until": time.Now().Add(-time.Minute).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner.recoverBlockedPendingReq()
+	fm = mustParse(t, path)
+	if fm.Status != "refining" {
+		t.Fatalf("status = %q, want refining after backoff expiry", fm.Status)
 	}
 }

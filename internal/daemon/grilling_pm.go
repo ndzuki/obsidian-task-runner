@@ -828,6 +828,11 @@ func grillingDecisionHasTask(path, taskID string) bool {
 // questions in the decision list and must not be re-consolidated — unless a
 // parked member has NO live decision block, which means an earlier park was
 // archived/resolved and a new dispute appeared that must be consolidated.
+// Upstream-fix parks (grill_resolution=blocked_by_upstream_fixes) are
+// prerequisite-gate parks waiting on blocked_by facts, not disputes: their
+// exit is parkedFactRecovery, and re-consolidating them produces no-op
+// "保持 park" sessions forever (2026-09-08 TASK-066 re-verify loop, one
+// no-op PM session every ~2min while TASK-089 was still implementing).
 func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 	if len(members) == 0 {
 		return false
@@ -835,6 +840,9 @@ func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 	if len(members) == 1 {
 		m := members[0]
 		if m.GrillParked {
+			if m.GrillResolution == "blocked_by_upstream_fixes" {
+				return false
+			}
 			return !grillingDecisionHasTask(listPath, m.ID)
 		}
 		// Single-task consolidation: repeated identical disputes (grill_repeat)
@@ -847,6 +855,9 @@ func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 	for _, m := range members {
 		if !m.GrillParked {
 			return true
+		}
+		if m.GrillResolution == "blocked_by_upstream_fixes" {
+			continue
 		}
 		if !grillingDecisionHasTask(listPath, m.ID) {
 			return true
@@ -869,11 +880,16 @@ func hasParked(members []task.GrillingTask) bool {
 // task whose project decision list has no live block for it yet. Unstaged-only
 // groups (stage-plan upkeep) must respect the cooldown — re-dispatching
 // them every scan starves other projects when the PM session cannot
-// converge (e.g. no Stage-Plan and nothing to attach).
+// converge (e.g. no Stage-Plan and nothing to attach). Upstream-fix parks
+// never count as fresh: they wait on blocked_by facts, and treating them as
+// fresh bypasses the 4h cooldown → no-op consolidate every scan (TASK-066).
 func hasFreshDispute(members []task.GrillingTask, listPath string) bool {
 	for _, m := range members {
 		if !m.GrillParked && !m.Unstaged {
 			return true
+		}
+		if m.GrillParked && m.GrillResolution == "blocked_by_upstream_fixes" {
+			continue
 		}
 		if m.GrillParked && !grillingDecisionHasTask(listPath, m.ID) {
 			return true

@@ -22,6 +22,7 @@ type GrillingTask struct {
 	FilePath            string
 	GrillParked         bool
 	GrillRepeat         int
+	GrillResolution     string   // "blocked_by_upstream_fixes" = prerequisite-gate park, not a dispute
 	PlanVersion         int      // high replan count drives single-task consolidation
 	DesignReplanVersion int      // replan-gate revision marker (0 = gate still pending)
 	BlockedBy           []string // upstream task ids (dependency closure input)
@@ -146,6 +147,7 @@ func FindGrillingTasks(vaultPath string) ([]GrillingTask, error) {
 				FilePath:            path,
 				GrillParked:         fm.GrillParked,
 				GrillRepeat:         fm.GrillRepeat,
+				GrillResolution:     fm.GrillResolution,
 				PlanVersion:         fm.PlanVersion,
 				DesignReplanVersion: fm.DesignReplanVersion,
 				BlockedBy:           fm.BlockedBy,
