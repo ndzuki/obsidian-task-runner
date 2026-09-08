@@ -350,11 +350,240 @@ grill_continue: false
 	}
 }
 
+// TestParkedFactRecoveryUnparksUpstreamFixPark guards the D-103/D-108/D-111
+// handoff exit: a needs-grilling+parked task resolved as
+// grill_resolution=blocked_by_upstream_fixes (create upstream repair tasks +
+// keep this task parked on blocked_by) must un-park automatically once every
+// blocked_by upstream landed — including closed upstreams, which are terminal
+// like done. TASK-066 carried grill_prev_status=implementing +
+// maturity=parked context, so it was mis-read as a dispute park and stayed
+// parked after TASK-086/087/088 merged; with pending_req=true (REQ changed
+// since the last plan) recovery must re-enter refining and preserve
+// pending_req (daemon invariant #5).
+func TestParkedFactRecoveryUnparksUpstreamFixPark(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Closed upstream: terminal and finished (resolveBlockedDependencies
+	// precedent) — historically kept every prereq fact gate shut.
+	writeFile(t, filepath.Join(tasksDir, "TASK-021-up.md"), `---
+id: "021"
+project: test
+status: closed
+merge_status: merged
+phase_error_code: ""
+assignee: default
+---
+# Up
+`)
+	writeFile(t, filepath.Join(tasksDir, "TASK-086-up.md"), `---
+id: "086"
+project: test
+status: done
+merge_status: merged
+phase_error_code: ""
+assignee: default
+---
+# Up
+`)
+	// TASK-066 shape: upstream-fix park pulled out of implementing, with the
+	// REQ changed since the last plan (pending_req).
+	parked := filepath.Join(tasksDir, "TASK-066-e2e.md")
+	writeFile(t, parked, `---
+id: "066"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_done: false
+grill_resolution: blocked_by_upstream_fixes
+grill_prev_status: implementing
+grill_context: "maturity=parked; D-111=A 已分发；TASK-086/087/088 承接三处上游缺陷，合入同一 main 后自动重跑 AC-066-17"
+pending_req: true
+plan_approved: true
+blocked_by: ["021", "086"]
+assignee: default
+---
+# E2E
+`)
+
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.parkedFactRecovery()
+
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "refining" || fm.GrillParked {
+		t.Fatalf("upstream-fix park must un-park to refining while pending_req, got status=%s parked=%v", fm.Status, fm.GrillParked)
+	}
+	if fm.GrillResolution != "" || fm.GrillPrevStatus != "" || fm.GrillContext != "" {
+		t.Fatalf("stale grill fields must be cleared, got resolution=%q prev=%q ctx=%q", fm.GrillResolution, fm.GrillPrevStatus, fm.GrillContext)
+	}
+	if !fm.PendingReq {
+		t.Fatal("pending_req must survive the un-park (never cleared by hand)")
+	}
+
+	// Upstream with an unresolved merge error keeps the gate shut even for
+	// an upstream-fix park.
+	writeFile(t, filepath.Join(tasksDir, "TASK-086-up.md"), `---
+id: "086"
+project: test
+status: done
+merge_status: pushed
+phase_error_code: BASE_COMMIT_MISMATCH
+assignee: default
+---
+# Up
+`)
+	parked2 := filepath.Join(tasksDir, "TASK-067-e2e2.md")
+	writeFile(t, parked2, `---
+id: "067"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_resolution: blocked_by_upstream_fixes
+grill_prev_status: implementing
+blocked_by: ["021", "086"]
+assignee: default
+---
+# E2E2
+`)
+	runner.parkedFactRecovery()
+	data, _ = os.ReadFile(parked2)
+	fm, _ = yamlfrontmatter.Parse(data)
+	if fm.Status != "needs-grilling" || !fm.GrillParked {
+		t.Fatal("upstream-fix park must stay parked while an upstream carries an unresolved merge error")
+	}
+}
+
+// TestParkedFactRecoveryRestoresParkedPhase guards the plan-current branch:
+// an upstream-fix park whose REQ did not change since the last plan and whose
+// plan is approved returns to implementing directly — no refining→planning
+// churn on an unchanged REQ (TASK-066's 17 zero-increment replans).
+func TestParkedFactRecoveryRestoresParkedPhase(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, "vault")
+	projDir := filepath.Join(vault, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(tasksDir, "TASK-001-up.md"), `---
+id: "001"
+project: test
+status: done
+merge_status: merged
+phase_error_code: ""
+assignee: default
+---
+# Up
+`)
+	parked := filepath.Join(tasksDir, "TASK-002-e2e.md")
+	writeFile(t, parked, `---
+id: "002"
+project: test
+status: needs-grilling
+grill_parked: true
+grill_resolution: blocked_by_upstream_fixes
+grill_prev_status: implementing
+pending_req: false
+plan_approved: true
+blocked_by: ["001"]
+assignee: default
+---
+# E2E
+`)
+	runner := New(&config.Config{ObsidianVault: vault})
+	runner.logger = log.New(io.Discard, "", 0)
+	runner.parkedFactRecovery()
+
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, err := yamlfrontmatter.Parse(data)
+	if err != nil || fm == nil {
+		t.Fatal(err)
+	}
+	if fm.Status != "implementing" || fm.GrillParked {
+		t.Fatalf("plan-current upstream-fix park must restore implementing, got status=%s parked=%v", fm.Status, fm.GrillParked)
+	}
+	if !fm.PlanApproved {
+		t.Fatal("plan_approved must survive the un-park")
+	}
+	if fm.GrillResolution != "" || fm.GrillPrevStatus != "" {
+		t.Fatalf("stale grill fields must be cleared, got resolution=%q prev=%q", fm.GrillResolution, fm.GrillPrevStatus)
+	}
+}
+
+// TestPrereqDepsAcceptClosedUpstreams guards closed handling in the prereq
+// fact gates: closed is terminal like done (resolveBlockedDependencies
+// precedent). TASK-066's blocked_by carries closed 021/037/063, which kept
+// every fact check shut until closed was accepted.
+func TestPrereqDepsAcceptClosedUpstreams(t *testing.T) {
+	dir := t.TempDir()
+	projDir := filepath.Join(dir, "Projects", "001-test")
+	tasksDir := filepath.Join(projDir, "Tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, status, merge, errCode string) {
+		t.Helper()
+		content := "---\nid: \"" + name + "\"\nproject: test\nstatus: " + status + "\nmerge_status: " + merge + "\nphase_error_code: \"" + errCode + "\"\n---\n"
+		if err := os.WriteFile(filepath.Join(tasksDir, "TASK-"+name+"-x.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("021", "closed", "merged", "")
+	write("086", "done", "merged", "")
+
+	runner := New(&config.Config{})
+	fm := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"021", "086"}}
+	if !runner.prereqDepsSatisfied(dir, projDir, fm) {
+		t.Fatal("closed+clean upstream must satisfy prereqDepsSatisfied")
+	}
+	if !runner.prereqDepsMerged(dir, projDir, fm) {
+		t.Fatal("closed+merged upstream must satisfy prereqDepsMerged")
+	}
+	// Closed with an unresolved merge error stays shut (its PR never landed).
+	write("037", "closed", "merged", "GIT_CONFLICT")
+	fm2 := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"021", "037"}}
+	if runner.prereqDepsSatisfied(dir, projDir, fm2) || runner.prereqDepsMerged(dir, projDir, fm2) {
+		t.Fatal("closed upstream with a lingering phase error must keep both gates shut")
+	}
+	// Non-terminal upstreams never satisfy the gate.
+	write("050", "implementing", "", "")
+	fm3 := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"021", "050"}}
+	if runner.prereqDepsSatisfied(dir, projDir, fm3) || runner.prereqDepsMerged(dir, projDir, fm3) {
+		t.Fatal("implementing upstream must keep both gates shut")
+	}
+	// Closed without merged passes the base gate but not the stricter one.
+	write("063", "closed", "", "")
+	fm4 := &yamlfrontmatter.Frontmatter{BlockedBy: []string{"021", "063"}}
+	if !runner.prereqDepsSatisfied(dir, projDir, fm4) {
+		t.Fatal("closed+clean upstream must satisfy prereqDepsSatisfied regardless of merge_status")
+	}
+	if runner.prereqDepsMerged(dir, projDir, fm4) {
+		t.Fatal("closed without merged must not satisfy prereqDepsMerged (anti-lie gate)")
+	}
+}
+
 // TestIsDisputePark classifies parked tasks by their own frontmatter:
 // implementation-block parks (grill_prev_status) and list-escalation parks
 // (decision_required / maturity=parked / Grilling-Decisions) are dispute
 // parks that only PM distribute may recover; a bare prerequisite-gate park
-// (park-until-upstream, no dispute markers) is not.
+// (park-until-upstream, no dispute markers) is not, and neither is an
+// upstream-fix park (grill_resolution=blocked_by_upstream_fixes), whose
+// exit is blocked_by fact convergence.
 func TestIsDisputePark(t *testing.T) {
 	cases := []struct {
 		name string
@@ -385,6 +614,24 @@ func TestIsDisputePark(t *testing.T) {
 			&yamlfrontmatter.Frontmatter{
 				GrillParked:  true,
 				GrillContext: "PREREQUISITE_SMOKE_FAILED: park until TASK-001 merges",
+			},
+			false,
+		},
+		{
+			"upstream-fix-park",
+			&yamlfrontmatter.Frontmatter{
+				GrillParked:     true,
+				GrillResolution: "blocked_by_upstream_fixes",
+				GrillPrevStatus: "implementing",
+				GrillContext:    "maturity=parked; D-111=A 已分发；TASK-086/087/088 承接三处上游缺陷",
+			},
+			false,
+		},
+		{
+			"upstream-fix-park-no-prev-status",
+			&yamlfrontmatter.Frontmatter{
+				GrillParked:     true,
+				GrillResolution: "blocked_by_upstream_fixes",
 			},
 			false,
 		},

@@ -2206,11 +2206,14 @@ func (r *Runner) recoverBlockedPendingReq() {
 }
 
 // parkedFactRecovery unparks needs-grilling+parked tasks whose blocked_by
-// facts have all converged (every upstream done with no phase error) — the
-// D-19 style "park until upstream changes" decision needs an exit without a
-// distribute round-trip. Without it TASK-066 would stay parked forever after
-// its upstream PRs merge. Recovery re-enters refining (maturity gate re-runs
-// with the converged facts available).
+// facts have all converged (every upstream done/closed with no phase error) —
+// the D-19 style "park until upstream changes" decision and the D-103/D-108/
+// D-111 "upstream repair tasks" handoff need an exit without a distribute
+// round-trip. Without it TASK-066 would stay parked forever after its
+// upstream PRs merge. Recovery re-enters refining when the REQ changed since
+// the last plan (pending_req), and restores the parked-out phase otherwise —
+// the maturity gate re-runs with the converged facts available in the
+// former case.
 func (r *Runner) parkedFactRecovery() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -2268,9 +2271,21 @@ func (r *Runner) parkedFactRecovery() {
 				grillingDecisionPendingForTask(listPath, fm.ID) > 0 {
 				continue
 			}
-			r.logger.Printf("dependency: parked facts converged, un-parking TASK-%s (upstream all done+merged)", fm.ID)
+			r.logger.Printf("dependency: parked facts converged, un-parking TASK-%s (upstream all done/closed+clean)", fm.ID)
+			// Recovery destination: pending_req means the REQ changed since the
+			// last plan — the task must re-enter refining so a new plan absorbs
+			// it (daemon invariant #5: pending_req is never cleared by hand).
+			// When the plan is current and already approved, restoring the phase
+			// the task was parked out of skips a no-op refining→planning churn
+			// (TASK-066's 17 zero-increment replans); everything else falls
+			// back to refining, whose maturity gate re-runs with the converged
+			// facts available.
+			target := "refining"
+			if !fm.PendingReq && fm.GrillPrevStatus == "implementing" && fm.PlanApproved {
+				target = "implementing"
+			}
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
-				"status":            "refining",
+				"status":            target,
 				"grill_parked":      false,
 				"grill_done":        false,
 				"grill_resolution":  "",
@@ -2300,8 +2315,19 @@ func (r *Runner) parkedFactRecovery() {
 // Writers: PM consolidate parks implementation blocks with grill_prev_status
 // and/or "decision_required" in grill_context; refining Step 4c parks with
 // grill_context "maturity=parked; …已并入 Notes/Grilling-Decisions.md".
+//
+// An upstream-fix park (grill_resolution=blocked_by_upstream_fixes, the
+// D-103/D-108/D-111 "create upstream repair tasks and keep the downstream
+// parked on blocked_by" handoff) is NOT a dispute park: its dispute was
+// already answered, so its recovery gate is blocked_by fact convergence,
+// not decision-list answers. TASK-066 stayed parked after TASK-086/087/088
+// merged because it carried grill_prev_status + maturity=parked context and
+// was mis-read as a dispute park.
 func isDisputePark(fm *yamlfrontmatter.Frontmatter) bool {
 	if fm == nil || !fm.GrillParked {
+		return false
+	}
+	if isUpstreamFixPark(fm) {
 		return false
 	}
 	// Implementation-block parks carry the phase they were pulled out of.
@@ -2314,19 +2340,31 @@ func isDisputePark(fm *yamlfrontmatter.Frontmatter) bool {
 		strings.Contains(ctx, "maturity=parked")
 }
 
+// isUpstreamFixPark reports whether a parked task is a prerequisite-gate park
+// waiting for upstream repair tasks to land: its grilling was resolved as
+// "blocked_by_upstream_fixes" (create upstream repair tasks + keep this task
+// parked on blocked_by). Such a park exits via parkedFactRecovery when the
+// blocked_by facts converge — it must never be held as a dispute park, whose
+// only recovery is decision-list answers consumed by PM distribute.
+func isUpstreamFixPark(fm *yamlfrontmatter.Frontmatter) bool {
+	return fm != nil && fm.GrillParked && fm.GrillResolution == "blocked_by_upstream_fixes"
+}
+
 // prereqDepsSatisfied reports whether every blocked_by dependency of a
-// prerequisite-gated task has actually converged: upstream status=done with
-// no unresolved phase error (phase_error_code cleared means its PR merged —
-// completeMerge clears it; a lingering BASE_COMMIT_MISMATCH/GIT_CONFLICT
-// keeps the gate closed). The gate re-opens only on fact change, not on
-// state, which is what makes the prereq gate loop-free.
+// prerequisite-gated task has actually converged: upstream status=done (or
+// closed — terminal states need no further unblocking, same precedent as
+// resolveBlockedDependencies) with no unresolved phase error
+// (phase_error_code cleared means its PR merged — completeMerge clears it; a
+// lingering BASE_COMMIT_MISMATCH/GIT_CONFLICT keeps the gate closed). The
+// gate re-opens only on fact change, not on state, which is what makes the
+// prereq gate loop-free.
 func (r *Runner) prereqDepsSatisfied(projectsDir, projDir string, fm *yamlfrontmatter.Frontmatter) bool {
 	for _, ref := range fm.BlockedBy {
 		upstream, _, err := r.findTaskByRef(projectsDir, projDir, ref)
 		if err != nil || upstream == nil {
 			return false
 		}
-		if upstream.Status != "done" || upstream.PhaseErrorCode != "" {
+		if (upstream.Status != "done" && upstream.Status != "closed") || upstream.PhaseErrorCode != "" {
 			return false
 		}
 	}
@@ -2334,16 +2372,17 @@ func (r *Runner) prereqDepsSatisfied(projectsDir, projDir string, fm *yamlfrontm
 }
 
 // prereqDepsMerged is the stricter fact check for previously capped tasks:
-// every upstream must be done AND merge_status=merged. frontmatter done with
-// a stale/pushed/empty merge_status is the TASK-018 lie signature (done but
-// the PR never actually merged) that would loop a capped task forever.
+// every upstream must be done (or closed) AND merge_status=merged.
+// frontmatter done with a stale/pushed/empty merge_status is the TASK-018
+// lie signature (done but the PR never actually merged) that would loop a
+// capped task forever.
 func (r *Runner) prereqDepsMerged(projectsDir, projDir string, fm *yamlfrontmatter.Frontmatter) bool {
 	for _, ref := range fm.BlockedBy {
 		upstream, _, err := r.findTaskByRef(projectsDir, projDir, ref)
 		if err != nil || upstream == nil {
 			return false
 		}
-		if upstream.Status != "done" || upstream.PhaseErrorCode != "" || upstream.MergeStatus != "merged" {
+		if (upstream.Status != "done" && upstream.Status != "closed") || upstream.PhaseErrorCode != "" || upstream.MergeStatus != "merged" {
 			return false
 		}
 	}

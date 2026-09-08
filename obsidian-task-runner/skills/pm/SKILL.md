@@ -82,6 +82,7 @@ Daemon 在 consolidate 模式的 prompt 中注入 `<dependency_context>` 块：�
 consolidate 的 `<dependency_context>` 注入「PM 强制规则」与本条语义一致，必须遵守：
 
 1. **实现缺陷 ≠ 需求歧义**：已合入上游代码/seed 的功能缺陷（非 REQ 规格问题）**禁止触发下游 TASK replan/refining**。处置 = 归类上游兑现缺口，归属上游修复任务（新建 TASK 承接，下游挂 `blocked_by`），E2E-only/测试类 TASK 保持 park。AC-066-17 式门禁失败不是需求争议，replan 不改变任何上游事实（17 轮零收敛教训）。
+   - **保持 park 的下游 TASK 必须写 `grill_resolution=blocked_by_upstream_fixes`**（`otg update-status {task} grill_resolution=blocked_by_upstream_fixes`），并保留 `grill_prev_status`。daemon `parkedFactRecovery` 以此区分「上游修复 park」与「争议 park」：`blocked_by` 事实收敛（上游 done/closed 且 phase_error 清空）后自动解除——REQ 有变更（pending_req）回 refining 吸收，计划现行且已批准则恢复 implementing。**缺该标记会被 `isDisputePark` 误判为争议 park，上游修复合入后仍永久等待清单答案（TASK-066：086/087/088 合入后仍 park 的根因）**。
 2. **先例沿用（防重复三选一）**：新争议与**主清单历史条目或 `Grilling-Decisions-archive.md` 中已答决策同构**（同一任务、同一缺口类别、用户已有答案）时，**不重复提出 A/B/C**。处置 = 沿用先例答案直接落地：
    - 在清单追加一条**已答**条目：`决策: {先例答案}（沿用 D-{先例编号}，{ISO8601}；如不同意请修改本行后手动 grill_continue=true）`，`来源任务` 标注当前 TASK；
    - 落地动作与 distribute 相同（如先例 A → 新建上游修复任务 + 下游 `blocked_by` + 保持 park）；
@@ -288,6 +289,7 @@ last_distributed_at: <ISO8601>
 ### 完成标准
 - [ ] 每条已填决策写回对应 REQ，标注含来源与时间
 - [ ] 每个引用任务重置为 refining，grill_parked=false / grill_repeat=0
+- [ ] **例外（上游修复承接）**：按 Step 2.1 保持 park 的下游任务不重置 refining——必须带 `grill_resolution=blocked_by_upstream_fixes` + `blocked_by` 新增承接任务，交给 daemon `parkedFactRecovery` 按事实自动恢复
 - [ ] 清单 status=answered, grill_continue=false
 - [ ] `otg validate-doc` 通过所有改动文档
 
