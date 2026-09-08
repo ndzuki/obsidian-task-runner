@@ -134,6 +134,58 @@ func TestParseQuestionnaireEmptyDecisionsOK(t *testing.T) {
 	}
 }
 
+// TestParseQuestionnaireTrailingComma guards the 2026-09-07 regression:
+// 模型在 decisions 数组最后一个元素后输出了 `,`（D-44 之后 `},` 直接
+// 接 `]`），encoding/json 拒绝尾逗号，完整可用的问卷被整体倒进 tab 并回退
+// manualFill 纯文本。reply 为事故现场真实模型回复（fenced 多行 JSON）。
+func TestParseQuestionnaireTrailingComma(t *testing.T) {
+	reply := "```json\n{\"decisions\":[\n" +
+		"  {\"id\":\"D-38\",\"question\":\"V0.4 交付形态？\",\"options\":[{\"id\":\"A\",\"label\":\"保持单 REQ\"},{\"id\":\"B\",\"label\":\"拆分多个子 REQ\"}],\"recommended\":\"A\",\"reason\":\"r38\"},\n" +
+		"  {\"id\":\"D-44\",\"question\":\"体验项范围？\",\"options\":[{\"id\":\"A\",\"label\":\"plan+消息动作\"},{\"id\":\"B\",\"label\":\"收窄\"}],\"recommended\":\"A\",\"reason\":\"与 roadmap V0.4 一致，}\"},\n" +
+		"]}\n```"
+	q, ok := parseQuestionnaire(reply)
+	if !ok {
+		t.Fatal("带尾逗号的 fenced 问卷应被解析")
+	}
+	if len(q.Decisions) != 2 {
+		t.Fatalf("期望 2 个决策，got %+v", q.Decisions)
+	}
+	if q.Decisions[1].ID != "D-44" || q.Decisions[1].Recommended != "A" {
+		t.Fatalf("尾逗号清洗不得破坏字段: %+v", q.Decisions[1])
+	}
+}
+
+// TestParseQuestionnaireTrailingCommaBareJSON 覆盖裸 JSON（无 fence）形态的
+// 尾逗号清洗，包括数组尾逗号与对象尾逗号两种位置。
+func TestParseQuestionnaireTrailingCommaBareJSON(t *testing.T) {
+	reply := `{"decisions":[{"id":"D1","question":"q","options":[{"id":"A","label":"a"}],"recommended":"A","reason":"r",},]}`
+	q, ok := parseQuestionnaire(reply)
+	if !ok {
+		t.Fatal("带对象/数组尾逗号的裸 JSON 问卷应被解析")
+	}
+	if len(q.Decisions) != 1 || q.Decisions[0].ID != "D1" {
+		t.Fatalf("解析结果错误: %+v", q)
+	}
+}
+
+// TestStripTrailingCommasPreservesStrings 防止清洗误伤字符串内容：label /
+// reason 里合法的 `, ]`、`, }`、`\",}` 不得被改写。
+func TestStripTrailingCommasPreservesStrings(t *testing.T) {
+	raw := `{"decisions":[{"id":"D1","question":"q","options":[{"id":"A","label":"选 A, ] 或 B, } 都行"}],"recommended":"A","reason":"逗号 ,] ,} 与引号 \",} 保留"},]}`
+	got := stripTrailingCommas(raw)
+	want := `{"decisions":[{"id":"D1","question":"q","options":[{"id":"A","label":"选 A, ] 或 B, } 都行"}],"recommended":"A","reason":"逗号 ,] ,} 与引号 \",} 保留"}]}`
+	if got != want {
+		t.Fatalf("字符串内逗号被误删:\ngot  %q\nwant %q", got, want)
+	}
+	q, ok := unmarshalQuestionnaire(got)
+	if !ok {
+		t.Fatal("清洗后的 JSON 应可解析")
+	}
+	if q.Decisions[0].Options[0].Label != "选 A, ] 或 B, } 都行" {
+		t.Fatalf("label 被改写: %+v", q.Decisions[0].Options[0])
+	}
+}
+
 // TestReplZeroDecisionsExitsCleanly guards the decision-list tab regression:
 // when the model returns an empty questionnaire (all decisions answered
 // between tab launch and questionnaire generation — 2026-08-24 19:32 观测),

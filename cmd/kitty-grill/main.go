@@ -309,14 +309,57 @@ func parseQuestionnaire(text string) (questionnaire, bool) {
 	return questionnaire{}, false
 }
 
+// stripTrailingCommas removes `,` immediately before a closing `]` or `}`
+// (optionally separated by whitespace) while skipping JSON string contents.
+// encoding/json rejects such trailing commas, but models emit them in practice
+// (观测 2026-09-07：模型在 decisions 数组最后一个元素后输出尾逗号，整个
+// 合法问卷被拒并回退 manualFill 纯文本). Dropping only those commas keeps every other
+// character byte-identical, so valid JSON is untouched and invalid JSON still
+// fails to unmarshal (truncation etc. keeps reaching manualFill).
+func stripTrailingCommas(raw string) string {
+	var out []byte
+	inString, escaped := false, false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			out = append(out, c)
+		case ',':
+			j := i + 1
+			for j < len(raw) && (raw[j] == ' ' || raw[j] == '\t' || raw[j] == '\n' || raw[j] == '\r') {
+				j++
+			}
+			if j < len(raw) && (raw[j] == ']' || raw[j] == '}') {
+				continue // drop the trailing comma, keep the whitespace
+			}
+			out = append(out, c)
+		default:
+			out = append(out, c)
+		}
+	}
+	return string(out)
+}
+
 // unmarshalQuestionnaire parses JSON into the questionnaire shape and
 // requires the "decisions" key to actually exist. Anything that unmarshals
 // without that key (e.g. an unrelated JSON object) must fall through to
 // manualFill instead of silently rendering the misleading zero-pending
-// screen.
+// screen. Trailing commas are tolerated (see stripTrailingCommas).
 func unmarshalQuestionnaire(raw string) (questionnaire, bool) {
 	var q questionnaire
-	if err := json.Unmarshal([]byte(raw), &q); err != nil {
+	if err := json.Unmarshal([]byte(stripTrailingCommas(raw)), &q); err != nil {
 		return questionnaire{}, false
 	}
 	if q.Decisions == nil {
