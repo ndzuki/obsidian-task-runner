@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -197,9 +198,39 @@ func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote 
 	if t.Status == "review" || t.Status == "conflict" {
 		if err := ensureRemoteDefaultBranch(checkout, ownerRepo); err != nil {
 			r.logger.Printf("task %s: ensure remote default branch %s: %v", t.ID, ownerRepo, err)
-			r.notifyRemoteRepoFailure(t, ownerRepo, err)
+			// Probe failures are transient (remote unreachable / auth flap):
+			// the next scan re-runs the probe, and a desktop notification
+			// would only repeat misleading "repo init blocked" guidance that
+			// suggests gh repo create. Only notify on definitive failures.
+			if !errors.Is(err, errRemoteDefaultProbe) {
+				r.notifyRemoteRepoFailure(t, ownerRepo, err)
+			}
 		}
 	}
+}
+
+// errRemoteDefaultProbe marks failures where the remote default-branch state
+// could not be determined (remote unreachable, transient network error). A
+// failed probe must never fall through to a blind push: when connectivity
+// returns, the branch is usually already there and the push would be rejected
+// non-fast-forward (observed: dshtui TASK-008 flapping on "push default
+// branch main ... non-fast-forward" while origin/main was 72 commits ahead).
+var errRemoteDefaultProbe = errors.New("cannot determine remote default-branch state")
+
+// remoteHeadExists reports whether origin carries refs/heads/<branch>. A
+// probe failure (remote unreachable, auth error) is returned as an error
+// wrapping errRemoteDefaultProbe, never as "branch missing" — with
+// --exit-code, "no matching ref" is exit status 2 and only that means absent.
+func remoteHeadExists(repoDir, branch string) (bool, error) {
+	out, err := exec.Command("git", "-C", repoDir, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+		return false, nil
+	}
+	return false, fmt.Errorf("%w: ls-remote origin refs/heads/%s: %v: %s", errRemoteDefaultProbe, branch, err, strings.TrimSpace(string(out)))
 }
 
 // ensureRemoteDefaultBranch pushes the local default branch to origin and
@@ -221,13 +252,28 @@ func ensureRemoteDefaultBranch(repoDir, ownerRepo string) error {
 	if defaultBranch == "" || defaultBranch == "HEAD" {
 		return fmt.Errorf("cannot determine a default branch for %s", ownerRepo)
 	}
-	// Only create the remote default branch when it is missing. If the remote
-	// already has main/master we do not force-push local history over it — the
-	// PR base is the remote branch, not our local copy.
-	remoteHasDefault := exec.Command("git", "-C", repoDir, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+defaultBranch).Run() == nil
-	if !remoteHasDefault {
-		if out, err := exec.Command("git", "-C", repoDir, "push", "-u", "origin", defaultBranch).CombinedOutput(); err != nil {
-			return fmt.Errorf("push default branch %s to origin: %v: %s", defaultBranch, err, strings.TrimSpace(string(out)))
+	// Only create the remote default branch when it is genuinely missing. If
+	// the remote already has main/master we do not force-push local history
+	// over it — the PR base is the remote branch, not our local copy.
+	hasDefault, err := remoteHeadExists(repoDir, defaultBranch)
+	if err != nil {
+		return err
+	}
+	if !hasDefault {
+		out, pushErr := exec.Command("git", "-C", repoDir, "push", "-u", "origin", defaultBranch).CombinedOutput()
+		if pushErr != nil {
+			// A rejected push usually means the branch appeared on the remote
+			// between probe and push (a concurrent task or a manual push won
+			// the race). Re-probe before failing the step; if the re-probe
+			// itself cannot reach the remote, report as transient instead of
+			// "repo init blocked".
+			exists, reProbeErr := remoteHeadExists(repoDir, defaultBranch)
+			if reProbeErr != nil {
+				return fmt.Errorf("push default branch %s to origin: %v: %s; re-probe: %w", defaultBranch, pushErr, strings.TrimSpace(string(out)), reProbeErr)
+			}
+			if !exists {
+				return fmt.Errorf("push default branch %s to origin: %v: %s", defaultBranch, pushErr, strings.TrimSpace(string(out)))
+			}
 		}
 	}
 	if out, err := exec.Command("gh", "repo", "edit", ownerRepo, "--default-branch", defaultBranch).CombinedOutput(); err != nil {

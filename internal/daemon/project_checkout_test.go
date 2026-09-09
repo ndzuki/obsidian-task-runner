@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -512,5 +514,363 @@ func TestEnsureProjectCheckoutSkipsVaultOnlyProject(t *testing.T) {
 	got, err := runner.ensureProjectCheckout(candidate, projectDir)
 	if err != nil || got != projectDir {
 		t.Fatalf("vault-only project must keep its fallback path, got %q (%v)", got, err)
+	}
+}
+
+// TestEnsureRemoteDefaultBranchProbeFailureSkipsPush pins the dshtui TASK-008
+// regression: when ls-remote cannot reach the remote (network flap, auth
+// error), the probe failure must be reported as errRemoteDefaultProbe and must
+// NOT fall through to a blind push. A blind push would either fail with a
+// confusing network error or be rejected non-fast-forward once connectivity
+// returns and the branch turns out to exist.
+func TestEnsureRemoteDefaultBranchProbeFailureSkipsPush(t *testing.T) {
+	dir := t.TempDir()
+	repo := createRepository(t, filepath.Join(dir, "local"))
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("rename default branch: %v: %s", err, out)
+	}
+	// origin points at a path that does not exist: ls-remote fails without
+	// reaching any server, like an unreachable github.com.
+	missing := filepath.Join(dir, "missing", "origin.git")
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", missing).CombinedOutput(); err != nil {
+		t.Fatalf("add origin: %v: %s", err, out)
+	}
+	_, editMarker := writeFakeGhScript(t, dir)
+
+	err := ensureRemoteDefaultBranch(repo, "ndzuki/demo")
+	if !errors.Is(err, errRemoteDefaultProbe) {
+		t.Fatalf("want errRemoteDefaultProbe, got: %v", err)
+	}
+	if _, statErr := os.Stat(editMarker); statErr == nil {
+		t.Fatal("gh repo edit must not run when the probe cannot reach the remote")
+	}
+}
+
+// TestEnsureRemoteDefaultBranchSkipsPushWhenRemoteHasMain: a remote main that
+// is DIVERGED from local main (the real dshtui state: origin/main 72 commits
+// ahead) must be left untouched — the probe reports "present" and no push is
+// attempted, because any push would be rejected non-fast-forward.
+func TestEnsureRemoteDefaultBranchSkipsPushWhenRemoteHasMain(t *testing.T) {
+	dir := t.TempDir()
+	repo := createRepository(t, filepath.Join(dir, "local"))
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("rename default branch: %v: %s", err, out)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, out)
+	}
+	// Seed the remote main with an unrelated history (diverged from local).
+	seed := createRepository(t, filepath.Join(dir, "seed"))
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", seed, "add", "README.md").CombinedOutput(); err != nil {
+		t.Fatalf("seed add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "commit", "-m", "remote history").CombinedOutput(); err != nil {
+		t.Fatalf("seed commit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("seed rename: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("seed add origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "push", "-u", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("seed push: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("add origin: %v: %s", err, out)
+	}
+	remoteBefore, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/main").Output()
+	if err != nil {
+		t.Fatalf("read remote main: %v", err)
+	}
+	_, editMarker := writeFakeGhScript(t, dir)
+
+	if err := ensureRemoteDefaultBranch(repo, "ndzuki/demo"); err != nil {
+		t.Fatalf("remote already has main, want nil: %v", err)
+	}
+	if _, err := os.Stat(editMarker); err != nil {
+		t.Fatal("gh repo edit (default branch) must still run when main exists")
+	}
+	remoteAfter, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/main").Output()
+	if err != nil {
+		t.Fatalf("read remote main after: %v", err)
+	}
+	if string(remoteBefore) != string(remoteAfter) {
+		t.Fatal("remote main must not be touched when it already exists")
+	}
+}
+
+// TestEnsureRemoteDefaultBranchRecoversWhenPushRejected: a rejected push (the
+// branch appeared on the remote between probe and push — a concurrent task or
+// a manual push won the race) must re-probe and treat the branch as present
+// instead of failing the step.
+func TestEnsureRemoteDefaultBranchRecoversWhenPushRejected(t *testing.T) {
+	dir := t.TempDir()
+	repo := createRepository(t, filepath.Join(dir, "local"))
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("rename default branch: %v: %s", err, out)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("add origin: %v: %s", err, out)
+	}
+	// Seed an unrelated ref so the bare origin holds objects the fake push
+	// can point refs/heads/main at (update-ref rejects unknown objects).
+	seed := createRepository(t, filepath.Join(dir, "seed"))
+	if out, err := exec.Command("git", "-C", seed, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("seed add origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "push", "origin", "HEAD:refs/heads/other").CombinedOutput(); err != nil {
+		t.Fatalf("seed push: %v: %s", err, out)
+	}
+	seedSha, err := exec.Command("git", "-C", seed, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Fake git: only intercepts `push` — it materializes refs/heads/main on
+	// the remote (as if a concurrent push won) and exits 1 with a
+	// non-fast-forward rejection. Everything else delegates to the real git.
+	fakeGit := fmt.Sprintf(`#!/bin/sh
+real=%q
+origin=%q
+sha=%q
+if [ "$1" = "-C" ] && [ "$3" = "push" ]; then
+  "$real" --git-dir="$origin" update-ref refs/heads/main "$sha"
+  echo " ! [rejected]        main -> main (non-fast-forward)"
+  exit 1
+fi
+exec "$real" "$@"
+`, realGit, origin, strings.TrimSpace(string(seedSha)))
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(fakeGit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, editMarker := writeFakeGhScript(t, dir)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	if err := ensureRemoteDefaultBranch(repo, "ndzuki/demo"); err != nil {
+		t.Fatalf("re-probe must recover from a rejected push, got: %v", err)
+	}
+	if _, err := os.Stat(editMarker); err != nil {
+		t.Fatal("gh repo edit must still run after re-probe recovery")
+	}
+	if out, err := exec.Command("git", "-C", origin, "rev-parse", "--verify", "refs/heads/main").CombinedOutput(); err != nil {
+		t.Fatalf("remote main missing after race: %v: %s", err, out)
+	}
+}
+
+// TestEnsureRemoteDefaultBranchPushFailsDefinitively: a push that fails while
+// the branch stays absent (e.g. permission denied) is a definitive error, not
+// a transient probe failure.
+func TestEnsureRemoteDefaultBranchPushFailsDefinitively(t *testing.T) {
+	dir := t.TempDir()
+	repo := createRepository(t, filepath.Join(dir, "local"))
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("rename default branch: %v: %s", err, out)
+	}
+	origin := filepath.Join(dir, "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("init bare origin: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+		t.Fatalf("add origin: %v: %s", err, out)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Push always fails without creating the branch: definitive failure.
+	fakeGit := fmt.Sprintf(`#!/bin/sh
+real=%q
+if [ "$1" = "-C" ] && [ "$3" = "push" ]; then
+  echo "remote: Permission denied"
+  exit 1
+fi
+exec "$real" "$@"
+`, realGit)
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(fakeGit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, editMarker := writeFakeGhScript(t, dir)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	err = ensureRemoteDefaultBranch(repo, "ndzuki/demo")
+	if err == nil {
+		t.Fatal("definitive push failure must error")
+	}
+	if errors.Is(err, errRemoteDefaultProbe) {
+		t.Fatalf("definitive push failure must not be classified as transient probe failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "push default branch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(editMarker); statErr == nil {
+		t.Fatal("gh repo edit must not run after a definitive push failure")
+	}
+}
+
+// TestEnsureCheckoutRemoteRepoNotifySuppression pins the caller-level
+// behavior: transient probe failures are logged and retried by the next scan
+// without a misleading "repo init blocked" desktop notification; definitive
+// failures keep notifying.
+func TestEnsureCheckoutRemoteRepoNotifySuppression(t *testing.T) {
+	t.Run("probe failure does not notify", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := createRepository(t, filepath.Join(dir, "local"))
+		if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+			t.Fatalf("rename default branch: %v: %s", err, out)
+		}
+		missing := filepath.Join(dir, "missing", "origin.git")
+		if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", missing).CombinedOutput(); err != nil {
+			t.Fatalf("add origin: %v: %s", err, out)
+		}
+		writeFakeGhScript(t, dir)
+		notifyLog := filepath.Join(dir, "notify.log")
+		writeFakeNotifySend(t, dir, notifyLog)
+
+		runner := &Runner{cfg: &config.Config{
+			ObsidianVault: dir, SkillInstallDir: filepath.Join(dir, "skill"),
+			Notifications: config.NotifConfig{Desktop: true},
+		}, logger: log.New(io.Discard, "", 0)}
+		candidate := task.ReadyTask{
+			ID: "008", Title: "NFR", Project: "dshtui", Status: "review",
+			FilePath: filepath.Join(dir, "TASK-008.md"),
+		}
+		runner.ensureCheckoutRemoteRepo(candidate, repo, "https://github.com/ndzuki/dshtui")
+
+		data, err := os.ReadFile(notifyLog)
+		if err != nil {
+			t.Fatalf("read notify log: %v", err)
+		}
+		if strings.TrimSpace(string(data)) != "" {
+			t.Fatalf("transient probe failure must not notify, got: %q", data)
+		}
+	})
+	t.Run("definitive push failure notifies", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := createRepository(t, filepath.Join(dir, "local"))
+		if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+			t.Fatalf("rename default branch: %v: %s", err, out)
+		}
+		origin := filepath.Join(dir, "origin.git")
+		if out, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
+			t.Fatalf("init bare origin: %v: %s", err, out)
+		}
+		if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
+			t.Fatalf("add origin: %v: %s", err, out)
+		}
+		realGit, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fakeGit := fmt.Sprintf(`#!/bin/sh
+real=%q
+if [ "$1" = "-C" ] && [ "$3" = "push" ]; then
+  echo "remote: Permission denied"
+  exit 1
+fi
+exec "$real" "$@"
+`, realGit)
+		if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(fakeGit), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFakeGhScript(t, dir)
+		notifyLog := filepath.Join(dir, "notify.log")
+		writeFakeNotifySend(t, dir, notifyLog)
+		t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+		runner := &Runner{cfg: &config.Config{
+			ObsidianVault: dir, SkillInstallDir: filepath.Join(dir, "skill"),
+			Notifications: config.NotifConfig{Desktop: true},
+		}, logger: log.New(io.Discard, "", 0)}
+		candidate := task.ReadyTask{
+			ID: "008", Title: "NFR", Project: "dshtui", Status: "review",
+			FilePath: filepath.Join(dir, "TASK-008.md"),
+		}
+		runner.ensureCheckoutRemoteRepo(candidate, repo, "https://github.com/ndzuki/dshtui")
+
+		data, err := os.ReadFile(notifyLog)
+		if err != nil {
+			t.Fatalf("read notify log: %v", err)
+		}
+		if !strings.Contains(string(data), "仓库自动初始化受阻") {
+			t.Fatalf("definitive failure must notify, got: %q", data)
+		}
+	})
+}
+
+// writeFakeGhScript installs a fake `gh` whose `repo view` always succeeds
+// (repo exists) and whose `repo edit` records an invocation marker.
+func writeFakeGhScript(t *testing.T, dir string) (binDir, editMarker string) {
+	t.Helper()
+	binDir = filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	editMarker = filepath.Join(dir, "gh-edit-called")
+	script := fmt.Sprintf(`#!/bin/sh
+marker=%q
+case "$1" in
+  repo)
+    case "$2" in
+      view)
+        exit 0
+        ;;
+      edit)
+        touch "$marker"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+exit 1
+`, editMarker)
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	return binDir, editMarker
+}
+
+// writeFakeNotifySend installs a fake `notify-send` that appends the title to
+// a log file, so tests can observe desktop notification attempts.
+func writeFakeNotifySend(t *testing.T, dir, logPath string) {
+	t.Helper()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" >> %q
+exit 0
+`, logPath)
+	if err := os.WriteFile(filepath.Join(binDir, "notify-send"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create the log so an un-notified run reads as an empty file.
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
