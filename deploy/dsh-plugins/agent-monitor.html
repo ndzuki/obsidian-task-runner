@@ -1653,6 +1653,7 @@ const PASSER_SPRITE = {
 
 /* 装饰角色数组 —— 行为状态机：idle / walk / chat / hop / follow / flee / fly */
 let passers = [];
+let passerSeq = 0;
 function createPasserHit(p) {
   if (p.kind === 'bird') return null;
   const hit = document.createElement('div');
@@ -1696,6 +1697,7 @@ function spawnPassers() {
     p.hairColor = ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)];
     p.speed = base.speed || 26;
     p.hit = null;
+    p.lastX = start.x; p.lastY = start.y; p.stallT = 0; p.seq = passerSeq++;
     return p;
   };
   for (const h of humans) passers.push(make(h));
@@ -1719,7 +1721,7 @@ function moveAlongPath(e, dt, speed) {
   e.cx += (dx / dist) * step; e.cy += (dy / dist) * step;
   e.moving = true; e.dir = dx >= 0 ? 1 : -1; e.frame += dt * 8;
 }
-/* 动态分离：地面角色（路人/小精灵/agent）不与附近其他单位重叠，且不挤进建筑 */
+/* 动态分离：地面角色（路人/小精灵/agent）双向推开，不与附近其他单位重叠，且不挤进建筑 */
 function separateGround(e) {
   const crowd = [];
   for (const q of passers) if (q !== e && q.kind !== 'bird') crowd.push(q);
@@ -1727,10 +1729,14 @@ function separateGround(e) {
   for (const q of crowd) {
     const dx = e.cx - q.cx, dy = e.cy - q.cy, d = Math.hypot(dx, dy);
     if (d > 0 && d < 14) {
-      const f = (14 - d) * 0.45;
-      let nx = e.cx + dx / d * f, ny = e.cy + dy / d * f;
-      if (!isWalkPx(nx, ny)) { nx = e.cx + dx / d * f * 0.5; ny = e.cy + dy / d * f * 0.5; }
-      if (isWalkPx(nx, ny)) { e.cx = nx; e.cy = ny; }
+      const f = (14 - d) * 0.5;
+      const ux = dx / d, uy = dy / d;
+      let ex = e.cx + ux * f, ey = e.cy + uy * f;
+      let qx = q.cx - ux * f, qy = q.cy - uy * f;
+      if (!isWalkPx(ex, ey)) { ex = e.cx + ux * f * 0.5; ey = e.cy + uy * f * 0.5; }
+      if (!isWalkPx(qx, qy)) { qx = q.cx - ux * f * 0.5; qy = q.cy - uy * f * 0.5; }
+      if (isWalkPx(ex, ey)) { e.cx = ex; e.cy = ey; }
+      if (isWalkPx(qx, qy)) { q.cx = qx; q.cy = qy; }
     }
   }
 }
@@ -1762,7 +1768,8 @@ function updatePassers(dt) {
       else if (p.state === 'wave') { if (p.stateT <= 0) p.state = 'idle'; }
     } else if (p.kind === 'pokemon') {
       if (p.state === 'sparkle') { p.stateT -= dt; p.hopT -= dt; if (p.stateT <= 0) p.state = 'idle'; continue; }
-      // 优先跟随人类/真实 agent，避免小精灵互相追成一团
+      p.stateT -= dt;
+      // 优先跟随人类/真实 agent，避免小精灵互相追成一团；空闲超时后改为独立随机游走
       let near = null, nearD = 70;
       for (const q of passers) if (q !== p && q.kind === 'human') {
         const d = Math.hypot(q.cx - p.cx, q.cy - p.cy);
@@ -1772,17 +1779,51 @@ function updatePassers(dt) {
         const d = Math.hypot(a.cx - p.cx, a.cy - p.cy);
         if (d < nearD) { near = a; nearD = d; }
       }
-      if (near) {
+      if (p.state === 'follow' && !near) { p.state = 'idle'; p.stateT = 0.5 + Math.random() * 1.5; }
+      // 跟随停止距离带抖动：多只小精灵不再叠在同一点
+      const stopDist = 18 + (p.seq % 12);
+      if (near && p.state !== 'walk') {
         const dx = near.cx - p.cx, dy = near.cy - p.cy, dist = Math.hypot(dx, dy);
-        if (dist > 18) { const step = Math.min(p.speed * 2, dist) * dt; p.cx += (dx / dist) * step; p.cy += (dy / dist) * step; p.frame += dt * 6; p.dir = dx >= 0 ? 1 : -1; p.state = 'follow'; }
-        else { p.state = 'idle'; p.frame += dt * 4; }
-      } else {
-        p.stateT -= dt;
-        if (p.stateT <= 0) { p.stateT = 1 + Math.random() * 2; p.state = 'hop'; p.hopT = 0.35; }
-        if (p.state === 'hop') { p.hopT -= dt; if (p.hopT <= 0) p.state = 'idle'; }
+        if (dist > stopDist) {
+          const step = Math.min(p.speed * 2, dist) * dt;
+          p.cx += (dx / dist) * step; p.cy += (dy / dist) * step;
+          p.frame += dt * 6; p.dir = dx >= 0 ? 1 : -1; p.state = 'follow';
+        } else { p.state = 'idle'; p.frame += dt * 4; }
+      }
+      if (p.state === 'walk') {
+        moveAlongPath(p, dt, p.speed);
+        if (!p.path || !p.path.length) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      } else if (p.state === 'idle' && p.stateT <= 0) {
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) { p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y; }
+        else p.stateT = 1 + Math.random() * 2;
+      } else if (p.state === 'hop') {
+        p.hopT -= dt;
+        if (p.hopT <= 0) { p.state = 'idle'; p.stateT = 0.5 + Math.random() * 1.5; }
       }
     }
-    if (p.kind !== 'bird') separateGround(p);
+    if (p.kind !== 'bird') {
+      // 卡住兜底：非聊天/挥手/闪烁状态下长时间几乎不动 → 重新随机游走，避免聚集后无法散开
+      const moved = Math.hypot(p.cx - p.lastX, p.cy - p.lastY);
+      if (moved < 1 && p.state !== 'chat' && p.state !== 'wave' && p.state !== 'sparkle') {
+        p.stallT += dt;
+      } else {
+        p.stallT = 0;
+      }
+      p.lastX = p.cx; p.lastY = p.cy;
+      if (p.stallT > 5) {
+        p.stallT = 0;
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) {
+          p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y;
+        } else {
+          p.state = 'idle'; p.stateT = 1 + Math.random() * 2;
+        }
+      }
+      separateGround(p);
+    }
   }
 }
 function drawPasser(b, p, pal) {
@@ -1865,6 +1906,19 @@ function updateAgent(a, dt) {
     } else if (a.state === 'walk') {
       if (a.path && a.path.length) moveAlongPath(a, dt, 26);
       else { a.state = 'idle'; a.stateT = 1.5 + Math.random() * 3; }
+    }
+  }
+  // 卡住兜底：空闲 agent 长时间几乎不动 → 重新随机游走
+  if (!a.working) {
+    const moved = Math.hypot(a.cx - a.lastX, a.cy - a.lastY);
+    if (moved < 1) a.stallT += dt; else a.stallT = 0;
+    a.lastX = a.cx; a.lastY = a.cy;
+    if (a.stallT > 5) {
+      a.stallT = 0;
+      const target = pickTownPoint();
+      a.path = findPath(a.cx, a.cy, target.x, target.y);
+      if (a.path && a.path.length) { a.state = 'walk'; a.stateT = 5 + Math.random() * 4; a.tx = target.x; a.ty = target.y; }
+      else { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
     }
   }
   separateGround(a);
@@ -2024,7 +2078,7 @@ async function poll() {
       let a = agents.get(d.sessionId);
       if (!a) {
         const pos = STATION_POS[key] || STATION_POS.working;
-        a = { sid: d.sessionId, data: d, key, cx: 480, cy: 300, tx: 480, ty: 300, frame: 0, moving: false, working: false, cheering: false, hit: null, roamT: 0, assigned: false, palette: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], state: 'idle', stateT: 0, dir: 1, hatStyle: Math.floor(Math.random() * 3), scarfColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hatColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], pantsColor: ['#2f3a4a', '#4a3a5a', '#3a5a3a', '#5a3a3a', '#3a3a6a'][Math.floor(Math.random() * 5)], shoeColor: ['#20242b', '#402020', '#204020', '#202040'][Math.floor(Math.random() * 4)] };
+        a = { sid: d.sessionId, data: d, key, cx: 480, cy: 300, tx: 480, ty: 300, frame: 0, moving: false, working: false, cheering: false, hit: null, roamT: 0, assigned: false, lastX: 480, lastY: 300, stallT: 0, palette: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], state: 'idle', stateT: 0, dir: 1, hatStyle: Math.floor(Math.random() * 3), scarfColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hatColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], pantsColor: ['#2f3a4a', '#4a3a5a', '#3a5a3a', '#5a3a3a', '#3a3a6a'][Math.floor(Math.random() * 5)], shoeColor: ['#20242b', '#402020', '#204020', '#202040'][Math.floor(Math.random() * 4)] };
         agents.set(d.sessionId, a);
         lastStage.set(d.sessionId, key);
         logEvent('👋', d, '进入小镇');
