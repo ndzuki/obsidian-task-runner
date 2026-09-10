@@ -60,7 +60,7 @@ func TestRunDSHPhaseDispatchSuccess(t *testing.T) {
 // REQ during its own write-back changes the hash. If the success tail does
 // not re-stamp the post-session bytes, every later scan sees a stale
 // refine_req_hash and re-runs the maturity gate forever instead of routing
-// to planning (TASK-058 loop observed after TASK-079 merged).
+// to planning (a loop observed after the restamp fix landed).
 func TestRunDSHPhaseDispatchRefiningRestampsReqHash(t *testing.T) {
 	dir := t.TempDir()
 	reqContent := "## 目标\nrefined requirement\n"
@@ -209,8 +209,8 @@ func TestSelectModelPhaseRouting(t *testing.T) {
 }
 
 // TestOmpPhaseThinkingRefiningMedium 守护 spec 作者阶段的强度提升：
-// refining/design 从 low 提到 medium（TASK-079 D5 字段名推断类失误复盘），
-// planning 从 high 提到 max（2026-09-02：plan 是全任务最高杠杆产物，被
+// refining/design 从 low 提到 medium（字段名推断类失误复盘），
+// planning 从 high 提到 max（plan 是全任务最高杠杆产物，被
 // 每个 AC 迭代消费，plan-review 人审拦不住字段契约类细节）。
 func TestOmpPhaseThinkingRefiningMedium(t *testing.T) {
 	cases := map[string]string{
@@ -272,14 +272,15 @@ func assertToolPolicy(t *testing.T, policy string, include mustContain, exclude 
 	}
 }
 
-// TestRunDSHPhaseDispatchConventionsRestrictsTools guards the gap-7 fix: the
+// TestRunDSHPhaseDispatchConventionsRestrictsTools guards the conventions
+// session's tool policy: the
 // conventions baseline-review session must carry the restricted tool policy at
 // the daemon layer (parity with the audit session), not rely on the skill's
 // prompt self-restraint. The policy must include the harness's benign tools
 // (skill/todo_write/job_output/job_kill/read_image) and write (the review
 // artifact), but must exclude the worktree-mutating edit/str_replace_editor —
 // otherwise the session fails with TOOL_POLICY_VIOLATION before it can write
-// PROJECT-CONVENTIONS.md (TASK-080 2026-08-31 CONVENTIONS_REVIEW_FAILED).
+// PROJECT-CONVENTIONS.md (the CONVENTIONS_REVIEW_FAILED loop).
 func TestRunDSHPhaseDispatchConventionsRestrictsTools(t *testing.T) {
 	r, candidate, taskPath := newDispatchFixture(t, &ExecutionResult{Code: OutcomeSuccess})
 	captor := &specCaptureExecutor{phaseExecutorStub: phaseExecutorStub{result: &ExecutionResult{Code: OutcomeSuccess}}}

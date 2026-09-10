@@ -43,7 +43,7 @@ func writeTeamVaultMapMode(t *testing.T, dir, name, path, mergeMode string) stri
 // carries a base commit (pushed); the feature branch carries one extra commit
 // and is NOT pushed — fork-merge delivery never pushes the feature branch.
 // The PRIMARY checkout sits on main while the feature branch lives in the
-// task worktree (the real daemon layout, TASK-067).
+// task worktree (the real daemon layout).
 // Returns (repo, origin, taskPath, runner, candidate).
 func newForkMergeFixture(t *testing.T, mergeMode string) (string, string, string, *Runner, task.ReadyTask) {
 	t.Helper()
@@ -204,16 +204,16 @@ func TestProcessMergeTaskForkMergeHappyPath(t *testing.T) {
 	}
 }
 
-// TestProcessMergeTaskForkMergePrimaryOnDefaultBranch reproduces the real-world
-// TASK-005 blocker: the primary checkout is itself on the default branch, so
-// `git checkout -B main` in the task worktree fails with "already used by
-// worktree". Fork-merge must self-heal by checking out a detached HEAD and
-// pushing HEAD:<default>, so the task still completes without manually freeing
-// the default branch from the primary checkout.
+// TestProcessMergeTaskForkMergePrimaryOnDefaultBranch reproduces the
+// default-branch blocker: the primary checkout is itself on the default
+// branch, so `git checkout -B main` in the task worktree fails with "already
+// used by worktree". Fork-merge must self-heal by checking out a detached
+// HEAD and pushing HEAD:<default>, so the task still completes without
+// manually freeing the default branch from the primary checkout.
 func TestProcessMergeTaskForkMergePrimaryOnDefaultBranch(t *testing.T) {
 	repo, origin, taskPath, runner, candidate := newForkMergeFixture(t, "fork-merge")
-	// Put the primary checkout back on main, exactly as the user's
-	// magic-models-manager checkout was when TASK-005 was stuck.
+	// Put the primary checkout back on main, exactly as a user checkout can
+	// be while the task runs.
 	git(t, "-C", repo, "checkout", "main")
 
 	if err := runner.processMergeTask(candidate, repo); err != nil {

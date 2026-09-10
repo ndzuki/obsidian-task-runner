@@ -20,13 +20,12 @@ import (
 // ---------------------------------------------------------------------------
 // Daemon-side host memory gate for implementing/round2 dispatch.
 //
-// Background (2026-08-25 TASK-065): REQ-065 declares a "MemAvailable ≥ 12 GiB"
-// gate (AC-065-20) that `make dev-up` enforces, but the memory gate existed
-// ONLY inside the round2 skill (the model reads `free` and bails). The daemon
-// had no way to detect a shortfall before spending an LLM session, and the
-// user had to manually `k3d cluster stop deployd-customer` every time memory
-// was 1 GiB short — a 12GiB gate 1GiB short looped the task between
-// implementing/grilling.
+// Background: a requirement can declare a "MemAvailable ≥ 12 GiB" gate that
+// `make dev-up` enforces, but the memory gate existed ONLY inside the round2
+// skill (the model reads `free` and bails). The daemon had no way to detect
+// a shortfall before spending an LLM session, and the user had to manually
+// stop a k3d staging cluster every time memory was 1 GiB short — a 12GiB
+// gate 1GiB short looped the task between implementing/grilling.
 //
 // This gate moves the check daemon-side, before dispatching round2:
 //   1. detect  MemAvailable < 门禁 (REQ 声明或配置全局下限);
@@ -46,7 +45,7 @@ var memoryGateExcludeDefault = []string{}
 const memoryRecoveryDebounce = 5 * time.Minute
 
 // memGateReqRE matches the memory floor a REQ declares, both phrasings used
-// in the field: "MemAvailable ≥ 12 GiB" and "可用内存 <12 GiB" (AC-065-20).
+// in the field: "MemAvailable ≥ 12 GiB" and "可用内存 <12 GiB".
 var memGateReqRE = regexp.MustCompile(`(?i)(?:MemAvailable|可用内存)\s*(?:≥|>=|>|<)\s*(\d+(?:\.\d+)?)\s*GiB`)
 
 // meminfoReader returns host MemAvailable in MiB. Overridable in tests.

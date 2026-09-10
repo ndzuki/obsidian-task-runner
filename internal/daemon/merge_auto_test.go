@@ -6,8 +6,8 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/internal/task"
 )
 
-// TestCanAutoApproveMerge guards the auto_merge re-authorization gate
-// (TASK-051/059 lesson): a merge-failure fallback that is REQ-stable with
+// TestCanAutoApproveMerge guards the auto_merge re-authorization gate: a
+// merge-failure fallback that is REQ-stable with
 // repair budget left re-authorizes automatically — including GITHUB_UNAVAILABLE
 // (transient keyring/network failures recover; the merge gate re-checks gh
 // auth and revokes again when the CLI is genuinely absent) — while the

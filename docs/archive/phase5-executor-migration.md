@@ -17,9 +17,9 @@
 
 | 逻辑 | 位置 | DSH 对应 | 迁移动作 |
 |---|---|---|---|
-| `exec.CommandContext(OMPCmd, args...)` | daemon.go:3280,3477 | `dshExecutor.Start` | 替换 |
+| `exec.CommandContext(execCmd, args...)` | daemon.go:3280,3477 | `dshExecutor.Start` | 替换 |
 | PID 文件（check/write/cleanup/adopt） | 3266,3327,2487,2516 | durable session id（`executor_session_id`） | 移除，改用 frontmatter 会话身份 |
-| `tailOMPLog`（结构化日志尾随） | 3304,4269 | DSH 输出直接落任务日志 | 移除 |
+| `tailLegacyLog`（结构化日志尾随） | 3304,4269 | DSH 输出直接落任务日志 | 移除 |
 | `watchEmptyStops`（空响应检测） | 3312 | DSH fallback 插件处理 | 移除 |
 | `checkAPIKeyUnavailable`/`checkTokenQuota` | 3383,3388 | 需调研 DSH headless 退出码/输出 | 待调研后替换 |
 | fallback model 重试（完整循环 + stale-guard） | 3395-3500 | `~/.dsh/plugins/fallback.mjs` 跨模型降级 | 移除，交 DSH 插件 |
@@ -62,22 +62,22 @@ Executor string `json:"executor"` // "早期执行器"(default) | "dsh"
 | 步 | 内容 | 验证 |
 |---|---|---|
 | 5.0 | config `executor` 开关 + 校验 + 默认值 | config 测试 |
-| 5.1 | 提取早期执行器内联执行段为 `runOMPPhase`（行为不变纯重构） | 现有 daemon 测试全绿 |
+| 5.1 | 提取早期执行器内联执行段为 `runLegacyPhase`（行为不变纯重构） | 现有 daemon 测试全绿 |
 | 5.2 | 新增 `runDSHPhase`：PhaseSpec 构造 + dshExecutor + ExecutionResult→ErrorCode 映射 | 单测（fake executor） |
 | 5.3 | `processBatchSequential` 按 `executor` 分流；默认早期执行器 | 双路径测试 |
 | 5.4 | **逐阶段**验证 dsh 路径：refining → planning → round2 → priority（先 4 个无 git 侧效的阶段） | 每阶段一个真实 vault 冒烟 |
 | 5.5 | 验证 merge/pm/audit/conventions（4 个 git/审核阶段） | 同上 |
 | 5.6 | 调研并实现 DSH 退出码→ quota/key-unavailable 检测（替代日志解析） | 错误码映射测试 |
-| 5.7 | 移除早期执行器特有逻辑（PID 文件、tailOMPLog、empty-stop、fallback 循环） | 删除后全量回归 |
-| 5.8 | install.go 移除早期执行器检查/symlink；skill 目录 ~/.dsh → ~/.dsh；systemd unit 改名 | install 测试 + 全新安装冒烟 |
-| 5.9 | 默认 `executor: "dsh"`；删除早期执行器分支与 `OMPCmd` | 全链路 DSH 跑通 |
+| 5.7 | 移除早期执行器特有逻辑（PID 文件、tailLegacyLog、empty-stop、fallback 循环） | 删除后全量回归 |
+| 5.8 | install.go 移除早期执行器检查/symlink；skill 目录收敛到 `~/.dsh`；systemd unit 改名 | install 测试 + 全新安装冒烟 |
+| 5.9 | 默认 `executor: "dsh"`；删除早期执行器分支与 `execCmd` | 全链路 DSH 跑通 |
 
 ## 5.4 冒烟验证记录
 
-**refining 阶段 —— 已验证 ✅（2026-08-19）**
+**refining 阶段 —— 已验证 ✅**
 
 隔离 vault（`~/.dsh/tmp/smoke-vault`，含完整十章节 REQ + `status: refining` TASK），
-spawn `dsh --profile headless`（acme-pro）执行 refining skill：
+spawn `dsh --profile headless` 执行 refining skill：
 
 - ✅ skill 正确加载并遵循 `obsidian-task-runner-refining` 指令
 - ✅ 读取 TASK/REQ、预计算 `refine_req_hash`（零 token 回退）
@@ -87,15 +87,15 @@ spawn `dsh --profile headless`（acme-pro）执行 refining skill：
 - ✅ 退出码 0，输出为结构化执行摘要
 
 **关键依赖确认**：skill 内部调用 `otg update-status` / `otg validate-doc`，
-依赖 `otg` 在 PATH（`~/go/bin/otg`，dsh headless 继承 daemon 环境，可达）。
+依赖 `otg` 在 PATH（dsh headless 继承 daemon 环境，可达）。
 
 **其余阶段**：
-- **priority —— 已验证 ✅（2026-08-19）**：dsh headless 输出 ```json fenced block，
+- **priority —— 已验证 ✅**：dsh headless 输出 ```json fenced block，
   经 extractJSON 提取 + priority.Decode 完整解析（`runPriorityAssessmentDSH` 分流
   已单测：成功写回 score、中断重置 claim、畸形 stdout 失败）。skill 冒烟（spawn
   `dsh --profile headless "/obsidian-task-runner-priority <REQ>"`）确认输出形状。
-- **planning —— 冒烟未通过 ⚠️（2026-08-19，两次）**：
-  - 修复 1（已提交 63bf9b0）：phase skills 带 `disable-model-invocation: true`
+- **planning —— 冒烟未通过 ⚠️（两次）**：
+  - 修复 1（已提交）：phase skills 带 `disable-model-invocation: true`
     被 DSH 从模型目录排除，dsh 会话无法加载 → dshExecutor 改为直接注入
     `~/.dsh/skills/<skill>/SKILL.md` 正文（对齐早期执行器「daemon 注入正文」机制）。
   - 修复 2：fallback 白名单加 `QUOTA`（网关配额耗尽 402 也切下一渠道）。
@@ -116,30 +116,29 @@ spawn `dsh --profile headless`（acme-pro）执行 refining skill：
     是「默认切 dsh 后」的主要风险；需 embed（方案 C，含 reasoningEffort）或
     更高推理模型才能可靠。
 - round2 涉及 git worktree 需额外前置；merge/pm/audit/conventions 有专属 runner，
-  已做 dsh 分流（5b45d2b）但未真实冒烟。
+  已做 dsh 分流但未真实冒烟。
 
-## 5.5 模型路由（2026-08-19，用户确认）
+## 5.5 模型路由（用户确认）
 
 - **fallback 链**（fallback.mjs，配置在 `headless` / `headless-agent-server` 的
   `cordis.patch.yml`，**不在** `~/.dsh/cordis.patch.yml`）：
-  - `acme/acme-pro` → `beta/beta-terra`（+ `beta-sol` 次级）
-  - `acme/acme-mini`（=flash）→ `beta/beta-luna`
+  - 主模型（网关渠道）→ 备用模型（+ 次级备用）
+  - 轻量模型（=flash）→ 备用轻量模型
   - 即网关渠道失败 → 下一配置渠道（能力映射）。
   - 仅 obsidian-task-runner 自动化任务（headless / headless-agent-server）加载；
-    dsh web / dsh-tui 交互会话不加载，模型失败直接返回。
+    dsh web 与 dsh 终端客户端的交互会话不加载，模型失败直接返回。
 - **settings.yaml**：`agent-default-model` = 操作者配置的路由；
-  官方直连 provider 名 **`paid`**（模型 id 小写 `acme-pro`/`acme-flash`，
-  与 `/models` 实测一致）。
-- **DSH 注册 bug（已绕过）**：provider 名含 `acme` 前缀（如 `paid-official`）
-  且 `agent-default-model` 设为 magic 时，llm-pi-ai 注册冲突 → `NO_ADAPTER`（已实测定位）。
+  官方直连 provider 名 **`paid`**（与 `/models` 实测一致）。
+- **DSH 注册 bug（已绕过）**：provider 名含特定前缀（如 `paid-official`）
+  且 `agent-default-model` 设为某模型时，DSH 模型接入层注册冲突 → `NO_ADAPTER`（已实测定位）。
   官方直连 provider 因此命名 `paid`，默认模型路由由操作者配置。
-- **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：gpt 主模型
-  `gateway/acme-pro`（网关渠道），fallback `acme/acme-pro`（官方渠道）。
-- **已知：网关配额可能耗尽**（2026-08-19 实测 planning 冒烟命中 `dsh: QUOTA:
+- **otg 侧**（vault-map.json / DefaultModels / DefaultFallbackModels）：主模型
+  走网关渠道，fallback 走官方渠道。
+- **已知：网关配额可能耗尽**（实测 planning 冒烟命中 `dsh: QUOTA:
   402 Insufficient Balance`）——fallback.mjs 会在配置的渠道间切换，
   渠道全耗尽时 daemon 通知调整 assignee 或 models 配置。
 
-## 5.6 spawn 模式推理强度失效（已知限制，2026-08-19）
+## 5.6 spawn 模式推理强度失效（已知限制）
 
 早期执行器的 `--thinking low|high|max` 是 **per-阶段 CLI 参数**，DSH headless 无等价物：
 
@@ -176,13 +175,13 @@ reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc �
 ## 6. 完成判据
 
 - `executor: "dsh"` 下 8 阶段全链路冒烟通过；
-- `OMPCmd`、`FallbackModels`、`tailOMPLog`、PID 文件、早期执行器日志解析全部移除；
+- `execCmd`、`FallbackModels`、`tailLegacyLog`、PID 文件、早期执行器日志解析全部移除；
 - `otg install` 不再检查/安装早期执行器；skills 落 `~/.dsh/skills`；
-- `make test` 全绿 + 真实 vault 端到端（release-manager 73 任务）无回归。
+- `make test` 全绿 + 真实 vault 端到端（73 个任务）无回归。
 
-## 7. DSH rc.8 升级（2026-08-19）
+## 7. DSH rc.8 升级
 
-- **升级**：dsh `0.1.0-rc.7 → 0.1.0-rc.8`（npm `next` tag）+ dsh-tui `0.8.1 → 0.8.5`。
+- **升级**：dsh `0.1.0-rc.7 → 0.1.0-rc.8`（npm `next` tag）+ dsh 终端客户端 `0.8.1 → 0.8.5`。
 - **验证**：`dsh-upgrade-check --full` 全绿——5 个插件（fallback/早期执行器-commands/
   kb-distill/mcp-context7/vault）+ agent-server 语法 OK，headless 冒烟通过。
 - **rc.8 关键变更（与 dsh 路径相关）**：
@@ -196,9 +195,9 @@ reasoningEffort}})` 是 DSH 原生 per-request 字段；随 embed 迁移（rc �
   权威源 + `npm view ... dist-tags.next` 交叉确认。
 - **推理强度失效（§5.6）在 rc.8 未解决**：spawn 模式仍无 per-调用 reasoningEffort；
   rc.8 的「推理内容回传修复」是传输层修复，非 per-request 强度能力。
-- **planning 收敛修复 ✅（rc.8 实测，2026-08-20）**：重跑 planning 冒烟，模型
+- **planning 收敛修复 ✅（rc.8 实测）**：重跑 planning 冒烟，模型
   **完整执行了 round1 流程**（rc.7 时只探索不写回）——读 ADR/CONTEXT/REQ → 校验
-  canonical 不变量 → 发现隔离 TASK-005 是非法夹具（`req_doc` 重复关联 REQ-004 的
+  canonical 不变量 → 发现隔离 smoke-vault 任务是非法夹具（`req_doc` 重复关联另一 REQ 的
   Canonical TASK，违反 CONTEXT.md 一对一契约）→ 正确 **fail-closed** 写回
   `status: blocked` + `phase_error_code: VALIDATION_FAILED`（非瞬时码，daemon 不自动
   恢复），并给出三选一决策入口。

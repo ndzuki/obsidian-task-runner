@@ -74,7 +74,7 @@ for bool (true/false), int, float, string, and list (comma-separated) values.
 Examples:
   otg update-status task.md status=plan-review plan_version=1
   otg update-status task.md status=done merge_approved=false
-  otg update-status task.md blocked_by=TASK-010,TASK-039`,
+  otg update-status task.md blocked_by=TASK-010,TASK-020`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runUpdateStatus,
 }

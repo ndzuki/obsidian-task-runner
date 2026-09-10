@@ -40,13 +40,13 @@
 - `dry_run`：只记录和通知"将清理什么"，不实际删除，用于先审计再信任。
 - 该清理只针对 k3d 集群 / k3d registry / k3d 网络，不触碰任意 docker 容器。
 
-`project` 必须匹配 `projects[].name`（如 `magic-models-manager`；带数字前缀的目录名 `002-magic-models-manager` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`config-reference.md`](config-reference.md)（示例文件只含最小键，`otg config show --effective` 查看生效值）。
+`project` 必须匹配 `projects[].name`（如 `example-project`；带数字前缀的目录名 `002-example-project` 亦被兼容识别，新文档推荐使用 name）。`assignee` 必须匹配 `models` 的 key；未知 key 会回退到 `default`。完整字段见 [`config-reference.md`](config-reference.md)（示例文件只含最小键，`otg config show --effective` 查看生效值）。
 
 **团队已有项目（私有 Gitea 等）**：手动注册并标记 `project_type: team`（daemon 禁止自动建仓/提升/gh 操作，首个任务自动过只读规范审查门禁）。`merge_mode` 按开发方式选择——`manual`：直接在团队仓库上开发，交付停在推分支、你在仓库 UI 人工合并；`fork-merge`（推荐）：`git_remote` 指向你自己的 fork，自动化 merge 进 fork 默认分支并推送（冲突 AI 解决），再由你手动向团队项目提交 PR。详见 `docs/workflow.md` §6.5.1。
 
 ### 阶段并发上限（`phase_concurrency`）
 
-`max_concurrent_tasks` / `max_concurrent_tasks_per_project` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM）默认各有限额，防止多任务同时启动 dsh 会话导致 token 快速消耗、API 限速或资源抢占：
+`max_concurrent_tasks` / `max_concurrent_tasks_per_project` 只限制 implementing；其它阶段（refining/planning/merge/priority/PM/audit）默认各有限额，防止多任务同时启动 dsh 会话导致 token 快速消耗、API 限速或资源抢占：
 
 ```json
 "phase_concurrency": {
@@ -60,12 +60,12 @@
 ```
 
 - 达到上限的任务留在待调度队列，等其它任务完成释放槽位后自动启动（无需手动操作）。
-- 任意 key 可调大/调小；置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限）+ `max_concurrent_tasks`（可选全局总封顶）控制（不在此配置）。
+- 任意 key 可调大/调小；置 `0` = 该阶段不限并发，删除 key 则回退代码默认值；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限）+ `max_concurrent_tasks`（可选全局总封顶）控制（不在此配置）。
 - 修改后重启 daemon 生效。
 
 ### 阻断任务老化兜底恢复（`auto_resume_aged_after_hours`，默认 24）
 
-`status=blocked` 且错误可自动恢复（MODEL_FAILED/QUOTA/PHASE_TIMEOUT/PHASE_INTERRUPTED/DESIGN_SESSION_FAILED 等）的任务，阻断超过该窗口后 daemon 每轮 scan 自动 `resume_approved=true` 重试（预算 2 次）。想改为 12 小时就在 vault-map.json 设 `"auto_resume_aged_after_hours": 12`；人为决策块（REQ_MISSING/DOCUMENT_INVALID/入口门禁）不按年龄恢复。
+`status=blocked` 且错误可自动恢复（MODEL_FAILED/MODEL_QUOTA_EXHAUSTED/PHASE_TIMEOUT/PHASE_INTERRUPTED/DESIGN_SESSION_FAILED 等）的任务，阻断超过该窗口后 daemon 每轮 scan 自动 `resume_approved=true` 重试（预算 2 次）。想改为 12 小时就在 vault-map.json 设 `"auto_resume_aged_after_hours": 12`；人为决策块（REQ_MISSING/DOCUMENT_INVALID/入口门禁）不按年龄恢复。
 
 ### 知识库语义检索（`kb_embedding`，可选）
 
@@ -75,7 +75,7 @@
 flowchart LR
     subgraph Index[索引构建 · otg kb index / 增量同步]
         A[References/ 文档] --> B[按 ## 标题切 chunk<br/>+ topics/title/summary 前缀]
-        B --> C[embed 批量 32 · ollama bge-m3 核显]
+        B --> C[embed 批量 32 · ollama bge-m3]
         C --> D[(kb.sqlite<br/>FTS5 + vec0 + chunk 文本)]
     end
     subgraph Query[检索 · kb search]
@@ -97,10 +97,10 @@ flowchart LR
 
 ```json
 "kb_embedding": {
-  "backend": "ollama",              // ollama（默认）或 beta（OpenAI 兼容 API）
-  "url": "http://127.0.0.1:11434",  // ollama 基址；beta 填 https://api.beta.com/v1
+  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容 API）
+  "url": "http://127.0.0.1:11434",  // ollama 基址；openai 填 https://api.example.com/v1
   "model": "bge-m3",                // ollama 推荐 bge-m3（中文友好）
-  "api_key": "",                    // 仅 beta 后端需要
+  "api_key": "",                    // 仅 openai 后端需要
   "weight": 0.5,                    // 余弦相似度权重（0.5 = 与 BM25 对半）
   "chunk_chars": 600,               // 每 section 嵌入正文上限（字符；调大捕获更多语义，需重跑 kb index）
   "batch_size": 32,                 // 每次嵌入 API 调用条数（索引构建吞吐）
@@ -108,7 +108,7 @@ flowchart LR
 }
 ```
 
-配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；**注意**：配置 `kb_db` 覆盖路径后，`otg kb hit` 的 hits 同步仍走默认库（该命令无配置上下文）——保持默认路径则实时生效，覆盖路径下 hits 在下次内容变更同步时从 frontmatter 补入。
+配置后执行一次 `otg kb index` 全量重建检索库（存 `~/.local/share/otg/kb.sqlite`，vault 外——云同步的 vault 不背索引；百篇级约 90 秒，以 embedding 推理为主）；之后 `otg kb search` 自动混合 FTS5 BM25 + 余弦，embedding 后端不可用时自动回退纯 BM25。之后每次 `kb absorb`/merge 提取/promote 都会**增量同步**（content_hash 比对，未变文档零成本），无需重复全量重建。需先本地运行 ollama 并 `ollama pull bge-m3`。检索库记录所用 embedding 模型：**切换模型（含切到 OpenAI 兼容云服务）后旧向量自动失效**，`otg kb search` 提示并回退 BM25，重跑 `otg kb index` 全量重建即可——不同模型的向量维度不兼容，绝不混用。库路径可用 vault-map.json 的 `kb_db` 字段覆盖（默认路径不区分 vault——**多 vault 机器必须为每个 vault 配置独立的 `kb_db`**，否则错误的 `--map-file` 会命中别的 vault 的库）；`otg kb hit` 同样经 vault-map 读取 `kb_db` 并同步到配置的库。
 
 **GPU/特殊硬件**：Ollama 官方镜像不含 Intel GPU 后端；Intel Arc 等设备请使用社区 SYCL 构建镜像，端口保持 11434 即可，`kb_embedding` 配置无需改动。
 
@@ -132,8 +132,8 @@ flowchart LR
   - **非阻塞**：agent-server 与 kb-preflight 一致——首问不等检索子进程/embedding/rerank；未命中只注入毫秒级 INDEX 摘要，后台异步预热缓存。
   - **可观测**：小时日志 `kb-precompute stats(hourly) hits=… avgMs=…`（命中率/平均耗时）；旧 `kb-injected injected=N consumed=M` 只在命中缓存并注入 top-3 路径时统计（未命中首轮为 INDEX 摘要，不产生该日志）。
   - **常驻检索端点（B2）**：agent-server 预检索与 kb-preflight 后台预热**优先走 daemon 内嵌 vaultweb 的 `GET /api/kb/search?q=…&limit=…&rerank=false`**（进程内 FTS5 BM25 + embedding 混合，hybrid-only 快路径；不传 `rerank=false` 时保持含 rerank 的完整语义）——免去每次 spawn otg 重开 SQLite 的固定开销，也避免预检索为 cross-encoder 付 2-3 秒 CPU 延迟；端点不可用（daemon 未起/未配置 vault_web_addr）自动回退 spawn（`--no-rerank`），两条路径共用同一缓存。
-- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 可改（默认 `acme/acme-pro`）。改 `agent-monitor.html` 后 `make deploy` 由重启后的 daemon 拉起新 agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms；累计跨 agent-server 重启持久化到 `~/.local/state/dsh/agent-server-kb-stats.json`，重启后自动恢复）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
-- **dsh web / dsh-tui 原生聊天**（2026-09-02 起，`kb-preflight` 插件）：原生交互会话不经过 agent-server，由 `deploy/dsh-plugins/kb-preflight.mjs` 在 DSH 原生 seam（`agent/pre-step`）对新会话首个用户消息注入同款两块内容——**非阻塞设计，首问只快不慢**：项目上下文为毫秒级文件读（CONTEXT 别名容错/ADR 按 mtime 倒序附 status/决策/规范）；KB 块优先命中缓存（归一化查询词，10min TTL，失败短缓存 30s），未命中时**只注入毫秒级的 INDEX 摘要（按查询词相关性排序）并在后台异步 spawn `otg kb search` 预热缓存**，绝不让首问等检索子进程/embedding。项目识别：会话 cwd 匹配 vault-map `projects[].path`（或其子目录）或 `<vault>/Projects/<dir>`——**仅已注册项目**（map 缺失/不可解析时放行）。防双注入：会话已含 `<knowledge_base>`/`<project_context>` 块则跳过，同 agent 每会话仅一次。挂载方式（仅交互 profile，headless 自动化不加载）：
+- **Web 监控面板内置问答**：`agent-server /monitor`（Agent Town）里选中任意居民点「💬 问答」即打开聊天弹窗，直接走 `/agent/chat`——自动携带该 agent 的 `project`（首问注入项目上下文）与任务标题作 `kbQuery`，同一 agent 的多轮会话自动延续（复用 sessionId），provider/model 需在弹窗内填写（面板不内置默认路由）。改 `agent-monitor.html` 后 `make deploy` 由重启后的 daemon 拉起新 agent-server 使面板生效。**面板侧栏还内置「📊 KB 预检索」小图**（`GET /kb-stats`，每 30s 轮询）：命中率/均耗/检索次数 + 耗时直方图（累计与小时窗口，桶边界 `<100/100-500/500-1k/1-2k/2-4k/4-16k/≥16k` ms；累计跨 agent-server 重启持久化到 `~/.local/state/dsh/agent-server-kb-stats.json`，重启后自动恢复）——无需再开页面即可观测缓存命中率与 B1 超时预算的分布证据。
+- **dsh web / dsh-tui 原生聊天**（`kb-preflight` 插件）：原生交互会话不经过 agent-server，由 `deploy/dsh-plugins/kb-preflight.mjs` 在 DSH 原生 seam（`agent/pre-step`）对新会话首个用户消息注入同款两块内容——**非阻塞设计，首问只快不慢**：项目上下文为毫秒级文件读（CONTEXT 别名容错/ADR 按 mtime 倒序附 status/决策/规范）；KB 块优先命中缓存（归一化查询词，10min TTL，失败短缓存 30s），未命中时**只注入毫秒级的 INDEX 摘要（按查询词相关性排序）并在后台异步 spawn `otg kb search` 预热缓存**，绝不让首问等检索子进程/embedding。项目识别：会话 cwd 匹配 vault-map `projects[].path`（或其子目录）或 `<vault>/Projects/<dir>`——**仅已注册项目**（map 缺失/不可解析时放行）。防双注入：会话已含 `<knowledge_base>`/`<project_context>` 块则跳过，同 agent 每会话仅一次。挂载方式（仅交互 profile，headless 自动化不加载）：
   ```yaml
   # ~/.dsh/profiles/web/cordis.patch.yml（dsh-tui 同理）
   - insert:
@@ -148,7 +148,7 @@ flowchart LR
 
 ```json
 "kb_rerank": {
-  "backend": "beta",                       // beta（默认，/v1/rerank）或 llamacpp（/rerank）
+  "backend": "openai",                     // openai（默认，/v1/rerank）或 llamacpp（/rerank）
   "url": "http://127.0.0.1:11435",           // llama.cpp server 基址（Ollama 0.32.x 无 rerank 路由）
   "model": "bge-reranker-v2-m3",
   "top_n": 20                                // 精排候选数
@@ -175,9 +175,9 @@ docker run -d --name reranker --restart unless-stopped \
 
 ```json
 "kb_chat": {
-  "backend": "ollama",              // ollama（默认）或 beta（OpenAI 兼容）
+  "backend": "ollama",              // ollama（默认）或 openai（OpenAI 兼容）
   "url": "http://127.0.0.1:11434",
-  "model": "qwen3:1.7b",            // 核显甜点；需先 ollama pull
+  "model": "qwen3:1.7b",            // 小模型，低资源友好；需先 ollama pull
   "temperature": 0.2                // 低温度，检索接地回答
 }
 ```
@@ -186,7 +186,7 @@ docker run -d --name reranker --restart unless-stopped \
 
 ### 检索模式与 ollama 依赖（实测）
 
-以下数据基于 **2026-08-07 实测（53 篇语料）**，规模推演为机制分析 [INFERENCE]。
+以下数据基于 **53 篇语料实测**，规模推演为机制分析 [INFERENCE]。
 
 **三种检索模式**：
 
@@ -215,7 +215,8 @@ docker run -d --name reranker --restart unless-stopped \
 交互会话结束后，可复用经验（踩坑/验证结论/架构决策）自动沉淀进知识库，两条路径覆盖两个运行时：
 
 - **dsh 侧（web / tui / headless）**：`kb-distill.mjs`（home patch 插件）监听 `session/disposed` 与 idle 超时——确定性踩坑抽取**零 LLM token** 直接 `otg kb absorb`，语义提炼用门控小模型（`minToolResults`/`minEvents`/`maxInputBytes` 上限）。
-- **dsh 侧（主交互会话）**：`~/.dsh/plugins/kb-distill.mjs`（独立工作区维护、非本仓库部署）监听会话停止/空闲钩子，会话有实质工作（含工具调用证据门禁）时注入提炼指令，agent 委派 subagent 分析转录并按 `knowledge-base` Step 0.7 流程入库。仓库自带的旧执行器扩展（extensions/kb-session-distill.ts）已随旧执行器时代结束退役（2026-09-02 移除，deploy 不再安装/检查）。
+- **dsh 侧（主交互会话）**：`~/.dsh/plugins/kb-distill.mjs`（独立工作区维护、非本仓库部署）监听会话停止/空闲钩子，会话有实质工作（含工具调用证据门禁）时注入提炼指令；若本会话首问发生 KB miss 且已有工具成功/assistant 结论，会提前放行一次语义提炼，并把 miss query 一并交给提炼模型。仓库早期自带的会话蒸馏扩展（extensions/kb-session-distill.ts）已退役，deploy 不再安装/检查。
+- **KB 缺口观测**：agent-server 将预检索 cache miss/empty/error 记录到 `~/.local/state/dsh/kb-miss-log.jsonl`，通过 `GET /kb-gaps` 按归一化 query 聚合高频缺口；这些记录只作补知识的候选信号，不能直接等同于“知识库没有相关文档”。
 
 手动触发：直接说"提炼本次会话"。
 
@@ -230,6 +231,7 @@ docker run -d --name reranker --restart unless-stopped \
 - **任务分支绑定**：如果 TASK frontmatter 已有 `target_branch`，daemon 创建或复用 worktree 时会绑定并校验该分支；若分支不存在则通过 `git worktree add -b <target_branch>` 创建。已有 worktree 分支不匹配时拒绝执行，避免代码写入错误分支。
 - **空分支字段兼容**：尚未进入 Round 2 的任务可以保留 `target_branch: ""`。daemon 先提供任务专属 worktree，agent 在其中创建 `task/<id>-<slug>`；Round 2 完成后把实际分支写回 `target_branch`。
 - **安全边界**：Round 2 使用独立 worktree；多个 Merge 或新项目任务仍不会同时修改主工作区。Planning / Refining 阶段不使用仓库。
+- **旧版遗留 worktree 目录**：早期版本把任务 worktree 创建为仓库同级目录 `<repo>-t<任务ID>`（如 `myproject-t042`），升级后旧目录**不会自动迁移**到受管根。daemon 只自动清理受管根内的 worktree——受管根之外的目录无法与用户手动 checkout 区分，一律保留并交由人工判断（自动 `remove --force` 可能删除用户工作副本）。任务已合并且工作区干净的旧目录可人工移除：在**主 checkout** 内执行 `git worktree remove --force <旧目录路径>`；不要直接 `rm -rf`（会残留 `.git/worktrees/` 下的僵尸注册，可用 `git worktree prune` 清理）。任务仍处于 implementing 的旧目录保留。
 - **任务身份与恢复**：运行去重、PID 文件和审计日志基于任务文件路径，而非单独的 `id`；不同项目可安全使用相同任务编号。
 
 ```mermaid
@@ -259,8 +261,8 @@ flowchart TD
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `max_auto_merge_fixes` | `3` | AI 冲突/CI 修复预算（`merge_retry_count` 上限）；预算耗尽交还用户 |
-| `max_auto_fix_conflicts` | `40` | **冲突规模熔断**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；`0` = 禁用 |
-| `upstream_stall_days` | `3` | **上游未完成提醒**：`blocked_by` 上游非终态且 `updated` 超阈值 → 每日一次通知；`0` = 禁用 |
+| `max_auto_fix_conflicts` | `40` | **冲突规模熔断**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；显式 0 或缺失回退默认 40 |
+| `upstream_stall_days` | `3` | **上游未完成提醒**：`blocked_by` 上游非终态且 `updated` 超阈值 → 每日一次通知；显式 `0` = 禁用 |
 | `merge_poll_wait_ticks` | `20` | CI 轮询 ticks（30s 每次）；**push 后 mergeability 未收敛（非 MERGEABLE）也在此轮询窗口内等待**，避免 `gh pr merge` 被服务端拒绝烧重试预算 |
 
 人工在 forge UI 合并了交还任务的 PR 后，daemon 每任务 5 分钟冷却探测并自动收口 `done`（`autoCloseMergedConflictPRs`），无需手动改 frontmatter。
@@ -271,11 +273,11 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 
 | 阶段 | effort | 理由 |
 | ------ | ---------- | ------ |
-| priority | `medium` | 优先级评估（理解任务影响/依赖） |
-| refining / conventions / audit / pm | `low` | 对话/整理类，轻推理 |
-| planning | `high` | 深度思维链，提升计划质量 |
+| priority / refining | `medium` | 评估/规格作者类，推断性工作比低强度更稳 |
+| conventions / audit / pm | `low` | 确定性为主，轻推理 |
+| planning | `max`（映射 xhigh） | 计划是全任务最高杠杆产物，深度思维链提升计划质量 |
 | round2 | `max`（映射 xhigh） | 最深推理，代码质量优先 |
-| merge | `high` | 冲突解决需推理 |
+| merge（阶段本体） | `low` | 编排确定性为主；AI 冲突/CI 修复会话单独用 `high` |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
 模型声明 `low/medium/high/xhigh`（DSH 的 wire 值 `xhigh→max`）。**模型渠道由 vault-map.json 的 `models` 与 `fallback` 字段配置**（仓库无内置渠道偏好）：`fallback` 链由 daemon 在每次 dsh-embed `/agent/run` 时随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型。配额耗尽与渠道不可用时 daemon 按指数退避不盲目重试，并通知你更换 assignee 或调整 models 配置。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
@@ -340,8 +342,9 @@ curl -s http://127.0.0.1:8799/health        # agent-server 健康（自管模式
 **agent-server 的生命周期由 vault-map 的 `agent_server_managed` 决定**：
 - `true`（默认）：daemon **自管** agent-server 子进程（daemon 日志可见
   `agent-server starting (pid=…)` / `agent-server healthy`）。此时
-  `dsh-agent-server.service` 被 `make deploy` 刻意停用——**systemd 显示
-  `inactive (dead)` 是预期状态，不是故障**（2026-08-31 起根治 8799 端口
+  `dsh-agent-server.service` 被 `otg install` 刻意停用（`make deploy` 只
+  检测并提示，不再停用）——**systemd 显示
+  `inactive (dead)` 是预期状态，不是故障**（避免 8799 端口
   双实例死锁）；健康检查以 `curl /health` 与 daemon 日志为准。
 - `false`：agent-server 由外部 systemd 单元管理，`systemctl --user status
   dsh-agent-server.service` 才是权威。
@@ -349,8 +352,8 @@ curl -s http://127.0.0.1:8799/health        # agent-server 健康（自管模式
 **升级/重装 daemon**：`make deploy` —— 一条命令完成：构建（`-tags sqlite_fts5`，
 知识库必需）→ 全仓单测 → busy-safe 安装 → 同步 skill/插件到 `~/.dsh/skills/` 与
 `~/.dsh/plugins/` → **自动补齐 `~/.dsh/skills/obsidian-task-runner/config/vault-map.json`
-缺失的默认字段**（`config migrate --write` 安全追加：只补新版本新增的
-`kb_vault`/`env_cleanup` 等键，**绝不覆盖你已有的 projects/models/obsidian_vault 等
+缺失的默认字段**（`config migrate --write` 安全追加：只补缺失键，零值默认不落盘，
+**绝不覆盖你已有的 projects/models/obsidian_vault 等
 手工值**——升级后不必手动加字段）→ 写 systemd drop-in override（daemon 从此始终
 加载仓库最新 otg，每次重启/崩溃恢复自动换新代码）→ daemon-reload → 重启 watcher →
 `agent-server.mjs`/`agent-monitor.html` 有变更时由重启后的 daemon 拉起新 agent-server；
@@ -386,7 +389,7 @@ tags: [auth]
 - [ ] 无效凭证返回 401
 ```
 
-保存后 watcher 会创建对应的 `Projects/<project>/Tasks/历史任务-login.md`。打开任务文件，补齐至少这些字段：
+保存后 watcher 会创建对应的 `Projects/<project>/Tasks/TASK-001-login.md`。打开任务文件，补齐至少这些字段：
 
 ```yaml
 project: my-backend
@@ -403,7 +406,7 @@ assignee: acme
 
 Dataview 的安装、字段格式、查询解释和常见问题见：[`dataview.md`](dataview.md)。
 
-`Tasks-Dashboard.md` 由 `otg install` 自动部署到 Vault 根目录（内嵌模板，文件已存在时不覆盖）。Dataview 只负责读取和展示，不会替你修改任务状态。
+`Tasks-Dashboard.md` 由 `otg install` 部署到 Vault 根目录（内嵌基础看板模板；重复安装会刷新为模板内容，自定义过看板请先备份或在别处维护你的查询）。Dataview 只负责读取和展示，不会替你修改任务状态。
 
 ## 状态与人工操作
 
@@ -418,10 +421,10 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`dataview.
 | `plan-review` | 计划已生成 | auto_approve 默认 true → 自动批准进入实现；`auto_approve: false` 时需审阅计划 + ADR 提议，设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |
 | `review` | 本地实现已提交；auto_merge 任务先过独立完成审计（只读复核 AC 证据），通过后自动合并 | 无需操作；审计/合并失败时按通知处理 |
-| `conflict` | 合并遇到冲突（AI 已自动尝试解决一次） | 手动解决并设 `merge_approved: true` 重新授权 |
+| `conflict` | 合并遇到冲突，AI 自动修复预算已耗尽（默认每次授权最多 3 次） | 手动解决并设 `merge_approved: true` 重新授权；或 `otg update-status <id> merge_retry_count=0` 后重设 `merge_approved: true` 继续 AI 修复 |
 | `done` | 已合并完成 | 任务结束；REQ 变更时自动回 refining |
 | `closed` | 已关闭（重复/取消/不予处理） | 终态，不可恢复 |
-Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。进入 Merge Phase 需 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 在 review 阶段先跑独立只读审计（逐条 AC 复核原始证据），通过后自动授权，无需你操作；人工设 `merge_approved: true` 可跳过审计直接授权（人工门禁优先）。PR 冲突时 AI 自动解决一次，失败才通知你手动处理。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
+Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push。进入 Merge Phase 需 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 在 review 阶段先跑独立只读审计（逐条 AC 复核原始证据），通过后自动授权，无需你操作；人工设 `merge_approved: true` 可跳过审计直接授权（人工门禁优先）。PR 冲突时 AI 自动修复（默认每次授权最多 `max_auto_merge_fixes` 次 = 3），预算耗尽才通知你手动处理。Round 2 遇到阻塞时会暂停为 `needs-grilling`，等待你交互式解决问题后自动恢复。
 
 ## 常用命令
 
@@ -438,7 +441,7 @@ Round 1 和 Round 2 只在本地创建分支、改文件和提交，不会 push�
 | `otg daemon --once` | 扫描一次后退出 |
 | `otg daemon --map-file <path>` | 使用指定的 `vault-map.json` |
 | `otg status` | 查看守护进程状态、运行中任务数 |
-| `otg config show` | 显示当前配置（含来源标注） |
+| `otg config show` | 显示当前配置（`--effective` 含默认值合并结果与来源标注） |
 | `otg find-ready <vault>` | 输出可执行任务（NDJSON） |
 | `otg unregister-project <name>` | 从 vault-map 移除项目并清理其任务 worktree（checkout 与远端仓库保留） |
 | `otg on-req-changed <vault> <req>` | 手动处理需求变化 |

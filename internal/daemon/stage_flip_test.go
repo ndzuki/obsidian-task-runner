@@ -173,8 +173,8 @@ func TestApplyStageDecisionUnknownNoOp(t *testing.T) {
 
 // reviewPendingPlanTemplate mirrors the post-review shape: the PM stage-review
 // session (Mode 3 Step 4) flips the reviewed phase to review-pending, so the
-// daemon must locate it there when the user answers (2026-09-01 regression:
-// Phase 1 sat review-pending for 18 days and an answered review no-op'ed).
+// daemon must locate it there when the user answers (a Phase sat
+// review-pending for 18 days and an answered review no-op'ed).
 const reviewPendingPlanTemplate = `---
 id: "stage-plan"
 project: test
@@ -247,7 +247,7 @@ func TestApplyStageDecisionReviewStageMismatchNoOp(t *testing.T) {
 }
 
 // TestFlipStageReviewDecisionFromReviewPending is the Runner-level guard for
-// the 2026-09-01 regression: a Stage-Plan whose reviewed phase is
+// the review-pending regression: a Stage-Plan whose reviewed phase is
 // review-pending must still flip when the user answers the Stage-Review.
 func TestFlipStageReviewDecisionFromReviewPending(t *testing.T) {
 	dir := t.TempDir()

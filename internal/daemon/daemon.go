@@ -79,10 +79,10 @@ type Runner struct {
 	// designExecutor is injectable for deterministic Phase 3 tests. Production
 	// selects the same backend as phaseExecutor (see newDesignExecutor):
 	// dsh-embed under the default executor, spawn-headless under "dsh".
-	// 2026-09-02 前设计会话固定走 spawn 适配器——spawn 无法传递
-	// ReasoningEffort，PhaseSpec 的 max 从未生效（强度落在 profile 默认），
-	// 迁到 embed 后 per-request 强度 / durable resume / fallback 下发才真正
-	// 覆盖 design 会话。
+	// 设计会话曾固定走 spawn 适配器——spawn 无法传递 ReasoningEffort，
+	// PhaseSpec 的 max 从未生效（强度落在 profile 默认）；迁到 embed 后
+	// per-request 强度 / durable resume / fallback 下发才真正覆盖 design
+	// 会话。
 	designExecutor PhaseExecutor
 	// phaseExecutor is the processBatchSequential phase-dispatch backend,
 	// selected by cfg.Executor ("dsh" spawn-headless / "dsh-embed" default;
@@ -134,8 +134,8 @@ type activePlanFilesEntry struct {
 }
 
 func New(cfg *config.Config) *Runner {
-	// Off-peak readiness uses the configured windows/timezone instead of the
-	// hardcoded Beijing window.
+	// Off-peak readiness uses the configured windows/timezone instead of a
+	// hardcoded window.
 	windows := cfg.OffPeakWindows
 	tz := cfg.OffPeakTimezone
 	task.OffPeakFn = func() bool { return task.IsOffPeakWith(windows, tz) }
@@ -311,9 +311,9 @@ func (r *Runner) Run(ctx context.Context) error {
 						// The file can vanish between the fsnotify event and this
 						// read (atomic rename, editor temp cleanup, agent move):
 						// a deleted document is not a KB violation and must not
-						// fire the "知识库格式不合规" toast (observed 2026-08-21
-						// TASK-001: phantom pitfall file alerted while the real
-						// extraction was fine). Deletion still rebuilds INDEX +
+						// fire the "知识库格式不合规" toast (a phantom pitfall
+						// file once alerted while the real extraction was fine).
+						// Deletion still rebuilds INDEX +
 						// syncs the store below.
 						if os.IsNotExist(verr) {
 							r.logger.Printf("knowledge-base intake: %s skipped (file gone before validation)", filepath.Base(evt.Path))
@@ -677,8 +677,8 @@ func (r *Runner) syncStageInheritance() {
 // skipped — the task inherits them on the scan after it is created.
 // This closes the automation loop: PM writes dependencies on the REQ (split
 // distribute, manual), the daemon propagates them to tasks without manual
-// blocked_by bookkeeping (release-manager lesson: 72 tasks with empty
-// blocked_by collapsed the staging topology).
+// blocked_by bookkeeping (72 tasks with empty blocked_by once collapsed
+// the staging topology).
 func (r *Runner) syncDependencyInheritance() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
 	projects, err := os.ReadDir(projectsDir)
@@ -849,7 +849,7 @@ func toStringSlice(raw interface{}) []string {
 // the history (including manual Round 1 sessions that bypass the
 // planning-completion compact). Replan cycles append full plan/prototype
 // copies per round; without the guard a gated task can grow past 400KB
-// (TASK-066: 17 replans), and every later refining/planning/round2 session
+// (17 replans observed), and every later refining/planning/round2 session
 // re-reads the whole file into context.
 func (r *Runner) compactOversizedTasks() {
 	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
@@ -904,7 +904,7 @@ func (r *Runner) scanAndProcess() error {
 	// closed), and a pending_req blocked task is routed to refining by
 	// recoverBlockedPendingReq (below) in the SAME scan — so this sweep must
 	// run BEFORE the recovery passes, while the task is still blocked, or that
-	// block episode's k3d leftovers are never cleaned (TASK-066: k3d left
+	// block episode's k3d leftovers are never cleaned (k3d left running
 	// after a requirement-driven block).
 	r.cleanupDeadEndTaskEnvs()
 	r.fixBlockedGateErrorCodes()
@@ -960,6 +960,13 @@ func (r *Runner) scanAndProcess() error {
 		// tasks are phased in milliseconds instead of an LLM session, and
 		// the PM input shrinks to genuine disputes only.
 		r.processAutoStaging()
+		// Retrofit existing projects through a one-time PM documentation audit
+		// before applying the normal documentation closure gate.
+		r.processLegacyDocumentationAudits(r.daemonCtx)
+		// PM stage-review owns documentation completeness. Materialize any
+		// versioned documentation gap as an ordinary REQ/TASK before review
+		// distribution can complete the stage/project.
+		r.processDocumentationClosures()
 		// Deterministic archive fallback runs before PM consolidation so the
 		// distribution sees the converged list (no stale 500KB read).
 		r.autoArchiveDecisions()
@@ -1132,8 +1139,8 @@ func (r *Runner) hasPlanFileConflict(selfPath, repoDir string, files []string) b
 }
 
 // projectFromReqPath extracts the project directory from a vault-relative
-// requirement path ("Projects/002-magic-models-manager/Requirements/REQ-001.md"
-// → "002-magic-models-manager"); legacy vault-root Requirements/ paths return
+// requirement path ("Projects/002-example-project/Requirements/REQ-001.md"
+// → "002-example-project"); legacy vault-root Requirements/ paths return
 // "" (no per-project decision list).
 func projectFromReqPath(reqRel string) string {
 	parts := strings.Split(filepath.ToSlash(reqRel), "/")
@@ -1385,7 +1392,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			if transition.Status == "closed" {
 				// Closing a task freezes it; tear down disposable k3d
 				// environments left by a previously interrupted implementing
-				// session (TASK-066 blocked-residual lesson).
+				// session (blocked-residual lesson).
 				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 			}
 			if strings.Contains(transition.Reason, "auto_approve") {
@@ -1446,7 +1453,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 				// are written back to the list and the daemon's answer-hash
 				// change detection auto-distributes.
 				// Dead-end: no round2 runs here, so tear down any k3d the
-				// implementing session left (TASK-066 blocked-residual lesson).
+				// implementing session left (blocked-residual lesson).
 				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 				if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" && grillingDecisionPending(listPath) > 0 && !grillingListPaused(listPath) {
 					if gp, gm := mapDSHModel(r.cfg.Model("default")); gp != "" {
@@ -1460,7 +1467,7 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			} else {
 				// Waiting for a grilling answer is a dead-end (no round2
 				// runs); tear down any k3d the implementing session left
-				// behind (TASK-066 blocked-residual lesson).
+				// behind (blocked-residual lesson).
 				r.cleanupBlockedEnv(t.FilePath, t.ID, t.Title)
 				r.logger.Printf("task %s: waiting for grilling resolution", t.ID)
 				// Debounce: suppress repeated reminders during active grilling sessions.
@@ -1502,8 +1509,8 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			// but writes the vault Design library, so it needs no repo lock;
 			// holding the read lock for the whole 10-90 minute session
 			// starves worktree preparation (write lock) for every same-repo
-			// implementing/plan-review task (2026-08-24: TASK-015/065/058
-			// all deferred on "repo busy" while the design session ran).
+			// implementing/plan-review task (observed: they all deferred on
+			// "repo busy" while the design session ran).
 			// Gate sessions run lock-free; the ordinary planning dispatch on
 			// the NEXT scan takes the read lock as usual.
 			if t.Status == "planning" && replanGateRequired(t, r.cfg.ReplanGateThreshold) {
@@ -1531,8 +1538,8 @@ func (r *Runner) prepareBatch(tasks []task.ReadyTask) []preparedTask {
 			// write lock would stall merges behind every planning/refining
 			// read lock (up to 30-60min), freezing authorized merges.
 			// Worktree execution sessions already run lock-free for the same
-			// isolation reason. Auto-reauthorizable fallbacks (TASK-051/059:
-			// conflict + auto_merge + REQ 未变 + 预算未耗尽) take the same
+			// isolation reason. Auto-reauthorizable fallbacks (conflict +
+			// auto_merge + REQ 未变 + 预算未耗尽) take the same
 			// lock-free path — otherwise a busy repo write lock starves them
 			// before the canAutoApproveMerge gate inside runTask ever runs.
 			lockMode = repoLockNone
@@ -1893,8 +1900,8 @@ func (r *Runner) normRemember(path string) {
 
 // fixBlockedGateErrorCodes backfills the PREREQUISITE_SMOKE_FAILED code onto
 // entry-gate blocks whose round2 write-back lost the error code (observed:
-// TASK-019, 8/11 — the round2 session wrote status=blocked with an empty
-// phase_error_code, so the dependency resolver treated the gate as a generic
+// a round2 session wrote status=blocked with an empty phase_error_code, so
+// the dependency resolver treated the gate as a generic
 // phase failure and auto-resumed it repeatedly: completed → blocked → resume
 // → re-run loop, 10+ rounds of wasted execution sessions). A blocked task with a
 // non-empty blocked_phase, no error code and a non-empty blocked_by is an
@@ -1987,7 +1994,7 @@ func (r *Runner) syncReqSchemaDefaults() {
 				// The rewrite only backfills frontmatter metadata; linked
 				// tasks' stored hashes must follow the new bytes or
 				// OnReqChanged mistakes this normalization for a requirement
-				// change and reopens every task (2026-08-12: 19 tasks
+				// change and reopens every task (observed: 19 tasks
 				// batch-flipped to refining by one schema backfill).
 				newHash := r.reqHash(reqRel)
 				if refreshed := r.refreshTaskReqHashes(projDir, reqRel, oldHash, newHash); refreshed > 0 {
@@ -2008,8 +2015,8 @@ func (r *Runner) syncReqSchemaDefaults() {
 // metadata (tags/created/updated/field order) — the requirement content is
 // unchanged — so the stored hashes must follow the new bytes; otherwise
 // OnReqChanged mistakes the daemon's own normalization for a requirement
-// change and batch-reopens every linked task (2026-08-12: 19 tasks flipped
-// to refining by one schema backfill). Tasks whose stored hash predates the
+// change and batch-reopens every linked task (observed: 19 tasks flipped to
+// refining by one schema backfill). Tasks whose stored hash predates the
 // pre-write REQ keep it: their unabsorbed change is real and must still
 // trigger re-refining.
 func (r *Runner) refreshTaskReqHashes(projDir, reqRel, oldHash, newHash string) int {
@@ -2086,8 +2093,8 @@ func (r *Runner) resolveBlockedDependencies() {
 				// dependencies. Every other status (blocked / ready /
 				// refining / planning / implementing / review / ...) may be
 				// starved by a blocked upstream, so its blocked_by
-				// references participate in auto-resume (TASK-019 lesson:
-				// refining downstream of a legacy-blocked upstream sat
+				// references participate in auto-resume (lesson: a refining
+				// downstream of a legacy-blocked upstream sat
 				// stalled with no resolver).
 				continue
 			}
@@ -2102,7 +2109,7 @@ func (r *Runner) resolveBlockedDependencies() {
 				if r.prereqDepsSatisfied(projectsDir, projDir, fm) {
 					// 已熔断过的任务（round2_stall_level 达到熔断级）：上游
 					// 仅 done 不够——必须 merge_status=merged 才算事实变化，
-					// 防陈旧 frontmatter（done 但 PR 从未合入，TASK-018）造成
+					// 防陈旧 frontmatter（done 但 PR 从未合入）造成
 					// resume→门禁 FAIL→3 轮→熔断 的循环。
 					if fm.Round2StallLevel >= round2StallBlockLevel && !r.prereqDepsMerged(projectsDir, projDir, fm) {
 						continue
@@ -2121,7 +2128,7 @@ func (r *Runner) resolveBlockedDependencies() {
 				// referencing its upstream repair tasks, and without this
 				// fall-through an upstream transient failure (MODEL_FAILED
 				// after a daemon restart) sits blocked until the 24h aged
-				// fallback (TASK-066/082/083: D-108=A flow stalled a full
+				// fallback (observed: an upstream-repair flow stalled a full
 				// day because the gated task skipped upstream auto-resume).
 				// The loop is safe by construction: it only approves
 				// upstreams with transient auto-resumable errors and a
@@ -2184,14 +2191,14 @@ func (r *Runner) recoverBlockedPendingReq() {
 				continue
 			}
 			// 模型渠道退避窗口内不重路由：provider 宕机时重路由只会把任务
-			// 送回 refining→planning 再失败一次（2026-09-08 TASK-008 循环）。
+			// 送回 refining→planning 再失败一次。
 			if modelBackoffActive(fm) {
 				continue
 			}
 			// Reuse transitionToRefining so every grill/plan/merge residual is
 			// cleared atomically: a stale grill_resolution left on a task that
 			// re-enters needs-grilling would be re-consumed by nextLocalTransition
-			// and re-open the no-op replan loop (TASK-066 lesson).
+			// and re-open the no-op replan loop.
 			updates := transitionToRefining("pending requirement overrides blocked phase").Updates
 			updates["blocked_phase"] = ""
 			updates["phase_error"] = ""
@@ -2212,10 +2219,10 @@ func (r *Runner) recoverBlockedPendingReq() {
 
 // parkedFactRecovery unparks needs-grilling+parked tasks whose blocked_by
 // facts have all converged (every upstream done/closed with no phase error) —
-// the D-19 style "park until upstream changes" decision and the D-103/D-108/
-// D-111 "upstream repair tasks" handoff need an exit without a distribute
-// round-trip. Without it TASK-066 would stay parked forever after its
-// upstream PRs merge. Recovery re-enters refining when the REQ changed since
+// the "park until upstream changes" decision and the "upstream repair tasks"
+// handoff need an exit without a distribute round-trip. Without it a parked
+// task would stay parked forever after its upstream PRs merge. Recovery
+// re-enters refining when the REQ changed since
 // the last plan (pending_req), and restores the parked-out phase otherwise —
 // the maturity gate re-runs with the converged facts available in the
 // former case.
@@ -2255,15 +2262,15 @@ func (r *Runner) parkedFactRecovery() {
 			// escalated into the project-level decision list — must NOT un-park
 			// here. Its recovery gate is the list answers, which only PM
 			// distribute consumes; blocked_by convergence is irrelevant to it.
-			// TASK-068 un-parked every scan on landed blocked_by while D-88/89/90
-			// stayed unanswered, looping refining. Only prerequisite-gate parks
-			// (D-19 style, no list entry sourcing this task) exit on facts.
-			// The dispute-park signal is read from the task's OWN frontmatter
-			// (isDisputePark), NOT from parsing the decision list — D-100's
-			// placeholder "待裁决" being mis-read as answered un-parked
-			// TASK-065 four times in one day, re-routing it to planning →
-			// round2 → grilling (TASK-065 lesson). A wording drift in the
-			// list must never re-open that loop.
+			// A dispute park once un-parked every scan on landed blocked_by
+			// while the list stayed unanswered, looping refining. Only
+			// prerequisite-gate parks (no list entry sourcing this task)
+			// exit on facts. The dispute-park signal is read from the task's
+			// OWN frontmatter (isDisputePark), NOT from parsing the decision
+			// list — a placeholder entry ("待裁决") being mis-read as
+			// answered un-parked a task four times in one day, re-routing it
+			// to planning → round2 → grilling. A wording drift in the list
+			// must never re-open that loop.
 			if isDisputePark(fm) {
 				continue
 			}
@@ -2282,7 +2289,7 @@ func (r *Runner) parkedFactRecovery() {
 			// it (daemon invariant #5: pending_req is never cleared by hand).
 			// When the plan is current and already approved, restoring the phase
 			// the task was parked out of skips a no-op refining→planning churn
-			// (TASK-066's 17 zero-increment replans); everything else falls
+			// (17 zero-increment replans observed); everything else falls
 			// back to refining, whose maturity gate re-runs with the converged
 			// facts available.
 			target := "refining"
@@ -2306,28 +2313,28 @@ func (r *Runner) parkedFactRecovery() {
 // isDisputePark reports whether a needs-grilling+parked task was parked
 // because its conflicts escalated into the project-level decision list (a
 // dispute/implementation-block park), as opposed to a prerequisite-gate park
-// (D-19 style "park until upstream changes"). The two parks have different
+// ("park until upstream changes"). The two parks have different
 // recovery gates: a dispute park is recovered ONLY by PM distribute after the
 // user answers the list — never by blocked_by facts converging; a
 // prerequisite-gate park recovers exactly when every upstream lands.
 //
 // The signal comes from the task's OWN frontmatter, not from parsing the
-// decision list, so a placeholder-wording drift in the list (e.g. D-100's
-// "待裁决" being mis-read as answered) can never wrongly un-park a dispute
-// park and re-open the planning→grilling loop (TASK-065: un-parked 4× in one
-// day on landed blocked_by while D-100 stayed unanswered).
+// decision list, so a placeholder-wording drift in the list (e.g. "待裁决"
+// being mis-read as answered) can never wrongly un-park a dispute park and
+// re-open the planning→grilling loop (observed: un-parked 4× in one day on
+// landed blocked_by while the list stayed unanswered).
 //
 // Writers: PM consolidate parks implementation blocks with grill_prev_status
 // and/or "decision_required" in grill_context; refining Step 4c parks with
 // grill_context "maturity=parked; …已并入 Notes/Grilling-Decisions.md".
 //
 // An upstream-fix park (grill_resolution=blocked_by_upstream_fixes, the
-// D-103/D-108/D-111 "create upstream repair tasks and keep the downstream
-// parked on blocked_by" handoff) is NOT a dispute park: its dispute was
-// already answered, so its recovery gate is blocked_by fact convergence,
-// not decision-list answers. TASK-066 stayed parked after TASK-086/087/088
-// merged because it carried grill_prev_status + maturity=parked context and
-// was mis-read as a dispute park.
+// "create upstream repair tasks and keep the downstream parked on
+// blocked_by" handoff) is NOT a dispute park: its dispute was already
+// answered, so its recovery gate is blocked_by fact convergence, not
+// decision-list answers. A task carrying grill_prev_status +
+// maturity=parked context was once mis-read as a dispute park and stayed
+// parked after its upstream repair tasks merged.
 func isDisputePark(fm *yamlfrontmatter.Frontmatter) bool {
 	if fm == nil || !fm.GrillParked {
 		return false
@@ -2378,7 +2385,7 @@ func (r *Runner) prereqDepsSatisfied(projectsDir, projDir string, fm *yamlfrontm
 
 // prereqDepsMerged is the stricter fact check for previously capped tasks:
 // every upstream must be done (or closed) AND merge_status=merged.
-// frontmatter done with a stale/pushed/empty merge_status is the TASK-018
+// frontmatter done with a stale/pushed/empty merge_status is the known
 // lie signature (done but the PR never actually merged) that would loop a
 // capped task forever.
 func (r *Runner) prereqDepsMerged(projectsDir, projDir string, fm *yamlfrontmatter.Frontmatter) bool {
@@ -2394,8 +2401,8 @@ func (r *Runner) prereqDepsMerged(projectsDir, projDir string, fm *yamlfrontmatt
 	return true
 }
 
-// findTaskByRef resolves a blocked_by reference ("TASK-010" or
-// "project-key:TASK-010") to the upstream task frontmatter and its absolute
+// findTaskByRef resolves a blocked_by reference ("TASK-<id>" or
+// "project-key:TASK-<id>") to the upstream task frontmatter and its absolute
 // path. Unqualified references resolve within projDir; qualified ones use
 // the project directory map. Returns nil when the task does not exist or
 // the frontmatter id does not match the reference.
@@ -2449,9 +2456,9 @@ func (r *Runner) findTaskByRef(projectsDir, projDir, ref string) (*yamlfrontmatt
 // (every blocked_by upstream done AND phase_error cleared — i.e. the PR really
 // merged), never through a downstream task's generic upstream-unblock request.
 // Otherwise a refining/ready downstream re-approves the gate every scan and
-// the gated task round-trips implementing→blocked forever (TASK-019 loop:
-// 066/069 blocked_by 019 re-resumed it 6+ times in one hour while PR #51 was
-// still OPEN).
+// the gated task round-trips implementing→blocked forever (observed: a
+// downstream re-resumed its gated upstream 6+ times in one hour while the
+// upstream PR was still OPEN).
 func isAutoResumableError(code string) bool {
 	switch code {
 	case string(ErrModelFailed), string(ErrModelQuotaExhausted), string(ErrPhaseTimeout), string(ErrPhaseInterrupted),
@@ -2480,7 +2487,7 @@ func modelBackoffActive(fm *yamlfrontmatter.Frontmatter) bool {
 }
 
 // autoResumePhaseFailureBlocker looks up the task referenced by a blocked_by
-// entry ("TASK-010" or "project-key:TASK-010") and approves its resume if it
+// entry ("TASK-<id>" or "project-key:TASK-<id>") and approves its resume if it
 // is blocked on a phase failure (blocked_phase set) but not yet resumed.
 func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, downstreamTaskID, ref string) {
 	projName := ""
@@ -2497,7 +2504,7 @@ func (r *Runner) autoResumePhaseFailureBlocker(projectsDir, downstreamProjDir, d
 	}
 	// Exact dir-name pass, then suffix pass, then frontmatter-project pass are
 	// handled by findProjectDirByKey — reuse it to avoid single-pass ambiguity
-	// when both "release-manager" and "001-release-manager" directories exist.
+	// when both "alpha" and "001-alpha" directories exist.
 	if resolved := r.findProjectDirByKey(projName); resolved != "" {
 		r.autoResumeInProject(resolved, downstreamAbs, downstreamTaskID, projName, id)
 	}
@@ -2536,7 +2543,7 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 			(upstream.PhaseErrorCode != "" || len(upstream.BlockedBy) == 0) && isAutoResumableError(upstream.PhaseErrorCode) {
 			// Provider-outage backoff: MODEL_FAILED 的指数冷却窗口内不自动恢复，
 			// 否则 provider 宕机期间 blocked→auto-resume→dispatch→fail 每轮扫描
-			// 循环（2026-09-08 TASK-089 实测）。
+			// 循环。
 			if modelBackoffActive(upstream) {
 				r.logger.Printf("dependency: skip auto-resume TASK-%s — model provider backoff until %s", id, upstream.ModelBackoffUntil)
 				return
@@ -2555,7 +2562,7 @@ func (r *Runner) autoResumeInProject(projDir, downstreamProjDir, downstreamTaskI
 			// 预算在授出时递增并持久化（grant-time），而不是失败时凭
 			// auto_resume_pending 标记重算——标记在恢复消费时（restoreBlockedPhase）
 			// 就被清空，失败时永远读不到 true，旧实现每次失败都把计数写回 0，
-			// 使预算永不耗尽（2026-09-08 TASK-089：MODEL_FAILED 循环 5h+）。
+			// 使预算永不耗尽（曾观测 MODEL_FAILED 循环 5h+）。
 			attempts := upstream.AutoResumeCount + 1
 			if err := yamlfrontmatter.Update(path, map[string]interface{}{
 				"resume_approved":     true,
@@ -2627,14 +2634,14 @@ func (r *Runner) findProjectDirByKey(key string) string {
 		return ""
 	}
 	// Exact directory-name match first (covers keys that equal the dir name,
-	// including hyphenated names like "release-manager").
+	// including hyphenated names like "alpha-manager").
 	for _, projectEntry := range projects {
 		if projectEntry.IsDir() && projectEntry.Name() == key {
 			return filepath.Join(projectsDir, key)
 		}
 	}
 	// Then numeric-prefix suffix match: only dirs whose prefix is ALL digits
-	// ("001-alpha" → "alpha") qualify; "release-manager" must never map to
+	// ("001-alpha" → "alpha") qualify; "alpha-manager" must never map to
 	// "manager".
 	for _, projectEntry := range projects {
 		if !projectEntry.IsDir() {
@@ -2765,11 +2772,11 @@ func taskWorktreePath(base, repoDir, taskID string) string {
 // i.e. under the managed worktree root (worktree_base, default
 // <repo parent>/.otg-worktrees). The self-heal in ensureTaskWorktree may only
 // auto-remove worktrees the daemon created; a branch may instead be checked
-// out by a user's manual clone/worktree (e.g. release-manager-t081, a
-// standalone checkout on the task branch), which `git worktree remove
+// out by a user's manual clone/worktree (e.g. a standalone checkout on the
+// task branch), which `git worktree remove
 // --force` would DELETE. Guarding the removal keeps user working copies safe
-// (2026-08-31: TASK-081's branch was held by release-manager-t081 and merge
-// looped on the conflict — the remedy must be manual, never destructive).
+// (A user checkout once held the target branch and merge looped on the
+// conflict — the remedy must be manual, never destructive).
 func isManagedWorktreePath(p, base, repoDir string) bool {
 	root := worktreeRoot(base, repoDir)
 	rel, err := filepath.Rel(root, p)
@@ -2818,24 +2825,24 @@ func RemoveProjectWorktrees(base, repoDir string) error {
 // <repo parent>/.otg-worktrees, overridable via worktree_base). The taskID
 // must be the SAME key
 // every phase uses — taskRunKey(filePath) — so round2, audit and merge all
-// share one worktree per task (TASK-067: merge looked up TASK-<id> while
-// round2 created TASK-<runkey>, never found it, and fell back to the primary
+// share one worktree per task (merge once looked up TASK-<id> while round2
+// created TASK-<runkey>, never found it, and fell back to the primary
 // checkout, corrupting it).
 //
 // The primary checkout is NEVER used as a task workspace: it may sit on any
 // branch (or carry uncommitted user work), and merge/round2 write operations
 // there would pollute the user's working directory and merge remote history
-// into the wrong branch (TASK-051/059). A task whose target branch is checked
+// into the wrong branch. A task whose target branch is checked
 // out by the primary checkout or another worktree therefore fails loudly
 // instead of silently reusing the main checkout.
 // reuseBranchWorktree returns occupied when that worktree already sits on the
-// exact target branch (round2 created it in a sibling directory outside the
-// managed root, e.g. release-manager-t080): operating there is git-correct
+// exact target branch (a user-created sibling worktree outside the managed
+// root): operating there is git-correct
 // and non-destructive — the user worktree is never removed. The primary
-// checkout is never reused (TASK-067: merge polluted the user's working
+// checkout is never reused (merge once polluted the user's working
 // directory when the old fallback ran there). Any other state (different
 // branch, not a worktree) returns "" and the caller surfaces the original
-// error for a human decision (TASK-081 lesson: 绝不删除用户目录).
+// error for a human decision (lesson: 绝不删除用户目录).
 func reuseBranchWorktree(repoDir, occupied, targetBranch string) string {
 	if occupied == "" || targetBranch == "" {
 		return ""
@@ -2870,15 +2877,15 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 				// Detached HEAD: the worktree predates target_branch (created
 				// while the field was still empty, e.g. an early audit).
 				// Bind it to the target branch so subsequent phases operate
-				// on the feature branch (TASK-067: merge could not reuse the
-				// detached round2 worktree and fell back to the main checkout).
+				// on the feature branch (merge could not reuse the detached
+				// round2 worktree and fell back to the main checkout).
 				cmd := exec.Command("git", "-C", path, "checkout", targetBranch)
 				if output, err := cmd.CombinedOutput(); err != nil {
 					// 目标分支可能被另一个 worktree 占用：若占用者是受管残留
 					// worktree（本 daemon 创建，属安全清理），remove --force 后
 					// 重试 checkout；若是用户手动 checkout/克隆（不在受管根下），
 					// 绝不自动删除——保留错误交由 merge notify 提示人工处理
-					// （release-manager-t081 持有 task/081 的场景）。
+					// （用户手动 checkout 持有 task 分支的场景）。
 					if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
 						if isManagedWorktreePath(occupied, base, repoDir) {
 							log.Printf("task worktree: detached %s blocked by stale managed worktree %s, removing and retrying checkout", path, occupied)
@@ -2890,8 +2897,7 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 							}
 						}
 						// 占用者不在受管根下（用户/round2 同级 worktree）：若它就在
-						// 目标分支上（TASK-080 release-manager-t080），直接复用——
-						// 不删除用户目录。
+						// 目标分支上，直接复用——不删除用户目录。
 						if reused := reuseBranchWorktree(repoDir, occupied, targetBranch); reused != "" {
 							log.Printf("task worktree: reusing %s (target branch %s already checked out there)", reused, targetBranch)
 							return reused, nil
@@ -2941,9 +2947,8 @@ func ensureTaskWorktree(repoDir, taskID, targetBranch, base string) (string, err
 	// 分支占用自愈：add 失败可能是 targetBranch 被另一个残留 worktree 占用
 	// （如 merge ci-fix 的 taskxxx-cifix worktree 中断残留）。只允许自动移除
 	// 受管 worktree（本 daemon 在 worktree_root 下创建的）；分支若被用户手动
-	// checkout/克隆占用（不在受管根下，如 release-manager-t081），绝不自动
-	// remove --force——那是用户的目录，删除会造成数据丢失（2026-08-31
-	// TASK-081 分支被 release-manager-t081 占用时 merge 必须人工处理）。
+	// checkout/克隆占用（不在受管根下），绝不自动 remove --force——那是
+	// 用户的目录，删除会造成数据丢失，必须人工处理。
 	if targetBranch != "" {
 		if occupied := worktreePathFromError(string(output)); occupied != "" && occupied != path {
 			if isManagedWorktreePath(occupied, base, repoDir) {
@@ -3059,13 +3064,13 @@ func (r *Runner) ensureReqHash(taskPath, reqDoc string) {
 // round2Stall tracks consecutive no-progress Round 2 completions for one
 // task. A no-progress completion leaves the task implementing with the same
 // checkpoint_commit — the entry-gate re-verification rounds that produce no
-// code change (TASK-071: P15 gate check re-ran 20+ times/day against a stale
+// code change (observed: a gate check re-ran 20+ times/day against a stale
 // upstream, each round a full LLM session). Every such completion raises the
 // cooldown level; real progress (checkpoint written, status changed) resets
 // it. The deadline is persisted in the task frontmatter (round2_stall_until)
-// so a daemon restart does not re-arm the cooldown — TASK-071 showed
-// restarts were frequent enough that a purely in-memory stall state let the
-// loop re-dispatch immediately after every restart.
+// so a daemon restart does not re-arm the cooldown — restarts were frequent
+// enough that a purely in-memory stall state let the loop re-dispatch
+// immediately after every restart.
 type round2Stall struct {
 	until      time.Time
 	checkpoint string
@@ -3081,8 +3086,8 @@ const (
 	// round2StallBlockLevel caps consecutive no-progress Round 2 sessions.
 	// 达到该级别后不再派发任何 round2 会话（每轮都是一次全量 LLM 会话）——
 	// 任务转 blocked + PREREQUISITE_SMOKE_FAILED 门禁态，等待 blocked_by
-	// 上游交付合入后按事实自动恢复（观测：TASK-058 同一 gate FAIL 报告
-	// 空转 8+ 轮，每轮烧 token 且零进展）。
+	// 上游交付合入后按事实自动恢复（观测：同一 gate FAIL 报告空转 8+
+	// 轮，每轮烧 token 且零进展）。
 	round2StallBlockLevel = 2
 )
 
@@ -3232,7 +3237,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// 模型渠道不可用退避（中央闸门）：MODEL_FAILED 的指数冷却窗口内，
 		// 任何状态的任务都不再派发——覆盖 planning 首败重试、blocked 自恢复
 		// 与 refining 重路由三条路径，避免 provider 宕机时
-		// refine→plan→block→recover 空转循环（2026-09-08 TASK-008/089）。
+		// refine→plan→block→recover 空转循环。
 		if data, err := os.ReadFile(taskPath); err == nil {
 			if fm, err := yamlfrontmatter.Parse(data); err == nil && fm != nil && modelBackoffActive(fm) {
 				continue
@@ -3250,7 +3255,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// The implementing session may have left disposable k3d clusters /
 			// registries / networks behind when it wrote blocked (requirement
 			// change / phase failure / pending_req replan). Tear them down
-			// once per blocked episode (TASK-066: k3d left running after a
+			// once per blocked episode (k3d left running after a
 			// requirement-driven block).
 			r.cleanupBlockedEnv(taskPath, t.ID, t.Title)
 			// Cooldown: don't touch a task that was recently blocked by phase failure.
@@ -3288,7 +3293,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 						// on restart with NO manual resume_approved. Current
 						// daemons keep the phase status and only write
 						// PHASE_INTERRUPTED, but legacy daemons wrote interrupted
-						// phases as blocked (observed: TASK-015, 8/5 era). Self-heal
+						// phases as blocked (observed: legacy-era daemons). Self-heal
 						// those leftovers exactly like the API-key probe.
 						r.logger.Printf("task %s: PHASE_INTERRUPTED, restoring %s", t.ID, fm.BlockedPhase)
 						if err := r.restoreBlockedPhase(taskPath, fm.BlockedPhase, false); err != nil {
@@ -3410,8 +3415,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		// fallbacks carry phase_error_code; those that are REQ-stable and have
 		// repair budget left re-authorize automatically (a failed merge attempt
 		// — push rejected, sync conflict, interrupted session — is an execution
-		// problem, not a new human decision; TASK-051/059 lesson: a
-		// BASE_COMMIT_MISMATCH written by validateMergeAuthorization used to
+		// problem, not a new human decision; lesson: a BASE_COMMIT_MISMATCH
+		// written by validateMergeAuthorization used to
 		// strand auto_merge tasks in conflict forever because the gate required
 		// an empty phase_error_code). Permanent/conditional defects stay
 		// manual: gh unavailable (GITHUB_UNAVAILABLE), wrong remote
@@ -3492,7 +3497,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// after the last plan (pending_req, refine_req_hash !=
 			// plan_req_hash) must still reach planning to regenerate the
 			// plan; routing it back into the gate would re-run the same
-			// audit every scan forever (TASK-067: 30+ identical rounds).
+			// audit every scan forever (observed: 30+ identical rounds).
 			// The gate re-runs only when the stored audit predates the
 			// current REQ hash. ──
 			if t.Maturity == "fully_mature" && t.RefineReqHash != "" && t.RefineReqHash == r.reqHash(t.ReqDoc) {
@@ -3514,8 +3519,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			// 宿主内存门禁（REQ 声明 "MemAvailable ≥ N GiB" 或配置全局下限时
 			// 生效）：低于门禁先自动回收可恢复的 k3d 集群，仍不足则升级项目级
 			// 决策，避免烧一次 round2 会话后才在 skill 侧发现内存不足
-			// （2026-08-25 TASK-065：12GiB 门禁差 1GiB，只能人肉
-			// `k3d cluster stop`，否则 implementing/grilling 来回转）。
+			// （实测：12GiB 门禁差 1GiB，只能人肉 `k3d cluster stop`，
+			// 否则 implementing/grilling 来回转）。
 			if fm, err := readFrontmatter(t.FilePath); err == nil && fm != nil {
 				if !r.enforceMemoryGate(t.FilePath, t, fm) {
 					continue
@@ -3535,8 +3540,8 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 			} else if stallDeadline, stalled := r.round2StallActive(taskPath); stalled {
 				// No-progress cooldown: a Round 2 session that finished
 				// without advancing the task (entry-gate re-verification
-				// with no code change — TASK-071: 20+ identical gate-check
-				// rounds per day) must not re-dispatch immediately. The
+				// with no code change — 20+ identical gate-check rounds per
+				// day) must not re-dispatch immediately. The
 				// cooldown doubles per consecutive no-progress completion
 				// so a genuinely stalled task degrades to one cheap retry
 				// every ~10h instead of burning LLM sessions every scan.
@@ -3665,7 +3670,7 @@ func (r *Runner) processBatchSequential(tasks []task.ReadyTask, repoDir string) 
 		}
 		// 项目冻结守护：派发前快照决策清单 status=closed 的用户意图，阶段
 		// 会话（refining/PM 等模型写回）不得擅自改回 open（观测：用户设
-		// closed 后 TASK-002 refining 会话把清单翻成 open）。
+		// closed 后 refining 会话曾把清单翻成 open）。
 		var listGuard *decisionListStatusGuard
 		if listPath := grillingDecisionListPath(r.cfg.ObsidianVault, t.Project); listPath != "" {
 			listGuard = snapshotDecisionListStatus(listPath)
@@ -3713,7 +3718,7 @@ func canAutoApproveMerge(t task.ReadyTask, currentReqHash string, maxAutoMergeFi
 	if t.PlanReqHash == "" || currentReqHash != t.PlanReqHash {
 		return false
 	}
-	// Anti-loop（TASK-080）：机械前置条件失败（target_branch 缺失等）反复让
+	// Anti-loop：机械前置条件失败（target_branch 缺失等）反复让
 	// validate 失败时，auto-approve 会让每轮 scan 白跑一遍 merge 授权。
 	// 失败计数到上限后停止自动重试，交人工修复（设 target_branch / 清计数）。
 	if t.MergePreconditionFails >= maxAutoMergeFixes {
@@ -3799,8 +3804,8 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 	}
 	// 模型渠道不可用（MODEL_FAILED）指数退避：provider 宕机时 refine→plan→
 	// block→recover / blocked→auto-resume 各恢复路径都会立刻重派并再次失败，
-	// 形成无冷却循环（2026-09-08 TASK-008/089 实测：PI_AI_ERROR 期间两个任务
-	// 每 ~2min 各烧一轮会话）。level 持久化到 frontmatter（重启不清零），
+	// 形成无冷却循环（实测：provider 故障期间两个任务每 ~2min 各烧一轮
+	// 会话）。level 持久化到 frontmatter（重启不清零），
 	// 冷却 2m→4m→8m→…→4h 上限；成功后由 clearQuotaBackoff 一并清零。
 	if code == ErrModelFailed {
 		level := 0
@@ -3878,7 +3883,7 @@ func (r *Runner) handlePhaseFailure(taskPath, taskID, taskTitle, status, phase s
 		// 预算在 autoResumeInProject 授出时已递增（grant-time）。失败回写只
 		// 在 pending 标记仍然在案（罕见：恢复尚未被消费即失败）时 +1；标记
 		// 已清则保持现值——旧的“pending 为 false 一律写 0”会把授出预算清零，
-		// 使 MODEL_FAILED 循环永不触顶（2026-09-08 TASK-089）。
+		// 使 MODEL_FAILED 循环永不触顶。
 		updates := map[string]interface{}{
 			"status":              "blocked",
 			"blocked_phase":       "implementing",
@@ -3978,8 +3983,9 @@ func (r *Runner) clearPhaseError(taskPath, taskID string) {
 
 // clearMergeRepairBudget resets the AI merge-repair budget after a successful
 // planning round. A new plan is a fresh delivery intent: a task that replanned
-// after budget exhaustion (TASK-067: v3 spent all 3 repairs on an 18-file
-// rebase) must not inherit the previous delivery's exhaustion for its new
+// after budget exhaustion (observed: a delivery spent all 3 repairs on an
+// 18-file rebase) must not inherit the previous delivery's exhaustion for
+// its new
 // merge. Within one delivery the budget stays bounded — merge success is the
 // only other reset — preserving the anti-loop guarantee.
 func (r *Runner) clearMergeRepairBudget(taskPath, phase string) {
@@ -4000,7 +4006,7 @@ func (r *Runner) resolveRepo(t task.ReadyTask) (string, error) {
 	result := project.ResolveProject(mapFile, projectName, t.NewProject)
 
 	// If direct lookup fails, try matching Vault directory name to vault-map key
-	// e.g., "001-release-manager" → "release-manager"
+	// e.g., "001-alpha" → "alpha"
 	if result.Status == "error" {
 		if mapped := project.MatchVaultDir(mapFile, projectName); mapped != "" {
 			projectName = mapped
@@ -4295,7 +4301,7 @@ func (r *Runner) notifyFailure(taskPath, taskID, taskTitle, emoji, title, desc s
 
 // notifyReqChanged sends a 需求变更 notification debounced per task+action.
 // Grilling 写回会多次改写 REQ，每次 watcher 事件都触发 on-req-changed 并
-// 重复发同一条「需求变更」toast（观测：TASK-058 对齐后连续多次重复提醒）。
+// 重复发同一条「需求变更」toast（观测：对齐后连续多次重复提醒）。
 // 同一任务同一 action 在窗口内只发第一条。Returns whether a toast was sent.
 func (r *Runner) notifyReqChanged(taskID, action, emoji, title, desc string) bool {
 	key := taskID + ":" + action
@@ -4436,7 +4442,7 @@ func (r *Runner) maybeSyncKnowledgeDB() {
 // callers (watcher-triggered debounced syncs and the merge-extraction pipeline)
 // share kbSyncMu so two syncs never write the same SQLite store concurrently —
 // concurrent writer contention is what produced "database is locked" on the
-// merge path (watcher sync racing the extraction sync; 2026-08-21).
+// merge path (watcher sync racing the extraction sync).
 func (r *Runner) syncKnowledgeStore() (knowledge.SyncStats, error) {
 	r.kbSyncMu.Lock()
 	defer r.kbSyncMu.Unlock()
@@ -4449,8 +4455,8 @@ func (r *Runner) syncKnowledgeStore() (knowledge.SyncStats, error) {
 }
 
 // resolveVaultProjectDir resolves a project name to its vault directory.
-// Accepts both the vault-map name ("magic-models-manager") and the full
-// directory name with numeric prefix ("002-magic-models-manager") — task
+// Accepts both the vault-map name ("example-project") and the full
+// directory name with numeric prefix ("002-example-project") — task
 // frontmatter historically carries either form.
 func resolveVaultProjectDir(vaultPath, projectName string) string {
 	projectsDir := filepath.Join(vaultPath, "Projects")
@@ -4463,8 +4469,8 @@ func resolveVaultProjectDir(vaultPath, projectName string) string {
 			continue
 		}
 		// Exact directory match first (prefixed project values like
-		// "002-magic-models-manager"), then suffix match for unprefixed
-		// vault-map names ("magic-models-manager").
+		// "002-example-project"), then suffix match for unprefixed
+		// vault-map names ("example-project").
 		name := e.Name()
 		if name == projectName {
 			return filepath.Join(projectsDir, name)

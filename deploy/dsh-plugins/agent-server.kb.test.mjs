@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { _kbTest } from "./agent-server.mjs"
 
-const { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot } = _kbTest
+const { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, kbCachedEntry, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, recordKbMissForSession, getKbMissForSession, kbMissQueriesBySession, kbMissLogFileDefault, recordKbMiss, kbGaps } = _kbTest
 
 // --- summarizeKBIndex ---
 {
@@ -704,5 +704,42 @@ status: proposed
   assert.strictEqual(subagentDescriptor({ ownEvents: () => [] }), null, "no descriptor -> null")
   console.log("PASS sessionEvents/firstUserText/labelFromText/sessionCreatedAtMs/subagentDescriptor")
 }
+
+// --- session-level KB miss tracking + gap aggregation ---
+{
+  const sid = `test-${Date.now()}`
+  kbMissQueriesBySession.delete(sid)
+  recordKbMissForSession(sid, "TASK-008 默认分支推送失败")
+  recordKbMissForSession(sid, "TASK-008 默认分支推送失败")
+  const recorded = getKbMissForSession(sid)
+  assert.strictEqual(recorded.length, 1, "duplicate session miss queries are coalesced")
+  assert.deepStrictEqual(getKbMissForSession(sid), [], "session miss queries are consumed once")
+
+  const dir = mkdtempSync(join(tmpdir(), "kbgaps-"))
+  const gapFile = join(dir, "misses.jsonl")
+  const old = process.env.OTR_KB_MISS_LOG
+  try {
+    process.env.OTR_KB_MISS_LOG = gapFile
+    recordKbMiss("默认分支推送失败", "miss")
+    recordKbMiss("默认分支推送失败", "empty")
+    recordKbMiss("默认分支推送失败", "miss")
+    recordKbMiss("另一个问题", "err")
+    const gaps = kbGaps(10)
+    assert.strictEqual(gaps[0].normalized, normalizeQueryForCache("默认分支推送失败"), "gaps normalize equivalent queries")
+    assert.deepStrictEqual(
+      { misses: gaps[0].misses, empties: gaps[0].empties, errs: gaps[0].errs },
+      { misses: 2, empties: 1, errs: 0 },
+      "gaps aggregate kinds"
+    )
+    assert.strictEqual(gaps[1].errs, 1, "error gaps are retained")
+    assert.strictEqual(kbMissLogFileDefault(), gapFile, "miss log override is honored")
+  } finally {
+    if (old === undefined) delete process.env.OTR_KB_MISS_LOG
+    else process.env.OTR_KB_MISS_LOG = old
+    rmSync(dir, { recursive: true, force: true })
+  }
+  console.log("PASS session KB miss tracking/gaps")
+}
+
 
 console.log("agent-server KB-first tests: all passed")

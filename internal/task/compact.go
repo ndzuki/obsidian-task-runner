@@ -167,7 +167,7 @@ func compactPrototypeContent(content string) (string, bool, error) {
 // document (plan versions + prototype sections). It is safe to call on any
 // task at any time — the scan-level oversize guard uses it so bloated docs
 // converge even when a manual Round 1 bypassed the planning-completion
-// compact path (TASK-066: 415KB from 17 replan copies).
+// compact path (a doc once reached 415KB from 17 replan copies).
 func CompactTaskHistory(taskPath string) (bool, error) {
 	changed := false
 	for _, fold := range []func(string) (bool, error){

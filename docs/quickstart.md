@@ -131,13 +131,14 @@ assignee: acme
 | `plan-review` | 计划已生成 | `auto_approve: true`（默认）自动批准；否则审阅计划并设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支 |
 | `review` | 已提交，过独立完成审计后自动合并 | 无需操作，失败按通知处理 |
-| `conflict` | 合并冲突（已自动尝试一次） | 手动解决并设 `merge_approved: true` |
+| `conflict` | 合并冲突，AI 修复预算已耗尽（默认每次授权最多 3 次） | 手动解决并设 `merge_approved: true`；或清 `merge_retry_count` 后重设授权继续 AI 修复 |
 | `done` | 已合并 | 结束；需求变更时自动回 `refining` |
 | `closed` | 关闭（重复/取消/不予处理） | 终态 |
 
 Round 1/2 只在本地建分支、改文件、提交，不会 push；进入 Merge Phase 需要
 `merge_approved: true`——`auto_merge: true`（默认）时 daemon 先跑独立只读审计
-（逐条 AC 复核证据），通过后自动授权。
+（逐条 AC 复核证据），通过后自动授权。PR 冲突时 AI 自动修复（默认每次授权最多
+`max_auto_merge_fixes` 次 = 3），预算耗尽才交还人工。
 
 ## 8. 常用命令
 

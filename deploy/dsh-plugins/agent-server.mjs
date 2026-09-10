@@ -38,6 +38,8 @@
  *        累计 + 当前小时窗口的 hits/misses/empty/errs/skipped/searches/avgMs +
  *        耗时直方图 {boundaries,counts}——Agent Town 面板「📊 KB 预检索」小图
  *        每 30s 轮询此端点，F1 落地）
+ *   GET  /kb-gaps                     → 200 { gaps: [...] }（按归一化 query 聚合的
+ *        KB 预检索 miss/empty/err 缺口，供会话蒸馏和人工补文档使用）
  *   POST /agent/run  body: { task, provider, model, reasoningEffort?, sessionId?, status?, taskId?, toolPolicy?, fallback? }
  *     → 200 { text, outcome, sessionId, errorCode?, error? }
  *     outcome: completed | error | timeout | context_window | quota | key_unavailable | interrupted | tool_policy_violation
@@ -57,7 +59,7 @@
  */
 import { createServer } from "node:http"
 import { randomUUID } from "node:crypto"
-import { readFileSync, existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from "node:fs"
+import { readFileSync, existsSync, statSync, readdirSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs"
 import { execFile } from "node:child_process"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
@@ -300,12 +302,100 @@ const KB_STATS_SAVE_MIN_MS = 30 * 1000
 /** 累计计数字段名（序列化/恢复共用）。 */
 const KB_STATS_COUNTER_KEYS = ["hits", "misses", "empty", "errs", "skipped", "searchMs", "searchN"]
 
+/** 会话级 KB 预检索 miss 查询：sessionId → [{query, ts}]。
+ *  kb-distill 在会话结束时据此判断是否需要优先蒸馏。
+ *  通过 globalThis 与独立加载的 kb-distill 插件共享，避免插件间 import 耦合。 */
+const kbMissQueriesBySession = (() => {
+  const key = "__otrKbMissQueriesBySession"
+  if (globalThis[key] instanceof Map) return globalThis[key]
+  const value = new Map()
+  globalThis[key] = value
+  return value
+})()
+
+/** 记录一条会话级 KB miss 查询。 */
+function recordKbMissForSession(sid, query) {
+  if (!sid || !query) return
+  const text = String(query).slice(0, 200)
+  const norm = normalizeQueryForCache(text)
+  const list = kbMissQueriesBySession.get(String(sid)) || []
+  if (!list.some((entry) => normalizeQueryForCache(entry?.query) === norm)) {
+    list.push({ query: text, ts: Date.now() })
+  }
+  // Keep an abandoned session from retaining unbounded miss history.
+  kbMissQueriesBySession.set(String(sid), list.slice(-8))
+}
+
+/** 读取并清除指定会话的 KB miss 查询列表。 */
+function getKbMissForSession(sid) {
+  if (!sid) return []
+  const key = String(sid)
+  const list = kbMissQueriesBySession.get(key) || []
+  kbMissQueriesBySession.delete(key)
+  return list
+}
+
 /** 默认持久化文件路径：~/.local/state/dsh/agent-server-kb-stats.json。
  *  OTR_KB_STATS_FILE 环境变量覆盖（单测/多实例隔离用）。 */
 function kbStatsFileDefault() {
   const env = (process.env.OTR_KB_STATS_FILE || "").trim()
   if (env !== "") return env
   return join(homedir(), ".local", "state", "dsh", "agent-server-kb-stats.json")
+}
+
+/** 默认 KB miss 查询日志路径：~/.local/state/dsh/kb-miss-log.jsonl。
+ *  OTR_KB_MISS_LOG 环境变量覆盖（单测/多实例隔离用）。 */
+function kbMissLogFileDefault() {
+  const env = (process.env.OTR_KB_MISS_LOG || "").trim()
+  if (env !== "") return env
+  return join(homedir(), ".local", "state", "dsh", "kb-miss-log.jsonl")
+}
+
+/** 持久化一次 KB 预检索 miss 查询（含空/错误），供后续汇总高频缺失知识。
+ *  JSONL 每行 {ts, query, kind}，kind 为 miss|empty|err。
+ *  写失败静默降级——预检索主路径不受影响。 */
+function recordKbMiss(query, kind) {
+  try {
+    const file = kbMissLogFileDefault()
+    mkdirSync(dirname(file), { recursive: true })
+    appendFileSync(file, JSON.stringify({
+      ts: Date.now(),
+      query: String(query || "").slice(0, 200),
+      kind,
+    }) + "\n", "utf8")
+  } catch { /* noop */ }
+}
+
+/** 读取 miss 查询日志，按归一化查询聚合，返回 top gaps。
+ *  limit 控制返回条数（默认 20）。返回按 empty 优先、总次数降序排列。 */
+function kbGaps(limit = 20) {
+  const file = kbMissLogFileDefault()
+  const counts = new Map()
+  try {
+    const text = readFileSync(file, "utf8")
+    for (const line of text.split("\n")) {
+      const t = line.trim()
+      if (!t) continue
+      let rec
+      try { rec = JSON.parse(t) } catch { continue }
+      const norm = normalizeQueryForCache(rec.query)
+      if (!norm) continue
+      const cur = counts.get(norm) || {
+        query: String(rec.query || "").slice(0, 200),
+        normalized: norm,
+        misses: 0, empties: 0, errs: 0,
+        lastTs: 0,
+      }
+      if (rec.kind === "empty") cur.empties++
+      else if (rec.kind === "err") cur.errs++
+      else cur.misses++
+      if (typeof rec.ts === "number" && rec.ts > cur.lastTs) cur.lastTs = rec.ts
+      counts.set(norm, cur)
+    }
+  } catch { return [] }
+  return [...counts.values()]
+    .sort((a, b) => (b.empties - a.empties) || ((b.empties + b.misses + b.errs) - (a.empties + a.misses + a.errs)) || (b.lastTs - a.lastTs))
+    .slice(0, limit)
 }
 
 /** totals 快照（持久化用）：只序列化累计对象，不含窗口/派生值。 */
@@ -684,13 +774,18 @@ function deriveQuery(message) {
   return t
 }
 
-/** 新会话首问可立即使用的缓存命中：只读缓存，绝不同步检索。
- * 返回命中数组或 null（无缓存/空/错误缓存一律回退 INDEX 摘要）。 */
-function kbCachedHits(query) {
+/** 新会话首问可立即读取的缓存条目；只读缓存，绝不同步检索。 */
+function kbCachedEntry(query) {
   const vault = kbVaultRoot()
   const q = String(query || "").trim()
   if (!vault || !q) return null
-  const cached = kbHitsCacheGet(kbHitsCacheKey(vault, kbDbPath(), q))
+  return kbHitsCacheGet(kbHitsCacheKey(vault, kbDbPath(), q))
+}
+
+/** 新会话首问可立即使用的缓存命中：只读缓存，绝不同步检索。
+ * 返回命中数组或 null（无缓存/空/错误缓存一律回退 INDEX 摘要）。 */
+function kbCachedHits(query) {
+  const cached = kbCachedEntry(query)
   if (!cached) return null
   return cached.kind === "hits" && Array.isArray(cached.hits) ? cached.hits : null
 }
@@ -712,6 +807,7 @@ function warmKbPrecompute(query) {
   }
 
   kbStatsNote("misses")
+  recordKbMiss(q, "miss")
   const startedAt = Date.now()
   const budget = pickSearchTimeout(kbSearchTiming, startedAt)
   let settled = false
@@ -725,6 +821,7 @@ function warmKbPrecompute(query) {
     finish(durationMs, false)
     if (!Array.isArray(hits) || hits.length === 0) {
       kbStatsNote("empty")
+      recordKbMiss(q, "empty")
       kbHitsCacheSet(cacheKey, { kind: "empty" })
       return
     }
@@ -751,6 +848,7 @@ function warmKbPrecompute(query) {
         const timedOut = Boolean(err && (err.killed || err.code === "ETIMEDOUT"))
         finish(Date.now() - startedAt, timedOut)
         kbStatsNote("errs")
+        recordKbMiss(q, "err")
         kbHitsCacheSet(cacheKey, { kind: "err" })
         return
       }
@@ -1085,7 +1183,7 @@ function projectContextPreamble(project) {
 }
 
 /** 仅测试导出：纯函数摘要在独立 node 脚本中可验证（不影响插件装载）。 */
-export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, kbCachedHits, kbHitsCacheGet, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor }
+export const _kbTest = { kbVaultRoot, kbDbPath, kbIndexPath, summarizeKBIndex, deriveQuery, kbPrecomputePreamble, kbFirstPreamble, kbCachedEntry, kbCachedHits, kbHitsCacheGet, projectVaultRoot, resolveProjectDir, projectContextDigest, projectContextPreamble, normalizeQueryForCache, kbCfgFingerprint, kbHitsCacheKey, kbHitsEntryTTL, kbHitsCacheSet, isTrivialQuery, lruCacheSet, markdownSection, contextOverview, frontmatterField, adrDecisionOneLiner, adrTitles, pickSearchTimeout, noteSearchFinished, kbSearchTiming, consumedPathsFromEvents, registeredProjectNames, projectIsRegistered, kbHttpBase, kbHttpUrl, durationBucket, durationHistNote, renderDurationHist, kbStatsSnapshot, kbStatsFileDefault, kbStatsTotalsSerialize, kbStatsTotalsDeserialize, loadPersistedTotals, savePersistedTotals, sessionEvents, firstUserText, labelFromText, sessionCreatedAtMs, subagentDescriptor, recordKbMissForSession, getKbMissForSession, kbMissQueriesBySession, kbMissLogFileDefault, recordKbMiss, kbGaps }
 
 function toolPolicyViolations(agent, firstSeq, policy) {
   const allowed = parseToolPolicy(policy)
@@ -1526,8 +1624,14 @@ export function apply(ctx, config = {}) {
       if (trivial) kbStatsNote("skipped")
       // 非阻塞 KB-first：首问先用缓存命中，未命中则立即注入毫秒级 INDEX
       // 摘要，后台异步预热完整检索（hybrid-only，绕开 reranker）。
-      hits = trivial ? null : kbCachedHits(query)
-      if (!trivial) warmKbPrecompute(query)
+      const cachedEntry = trivial ? null : kbCachedEntry(query)
+      hits = cachedEntry?.kind === "hits" && Array.isArray(cachedEntry.hits) ? cachedEntry.hits : null
+      if (!trivial) {
+        warmKbPrecompute(query)
+        // 只有缓存条目不存在时才是本会话的 KB miss；已缓存 empty/error
+        // 是已知结果，不应在每个新会话重复触发 miss-driven 蒸馏。
+        if (cachedEntry === null) recordKbMissForSession(sessionKey, query)
+      }
       kbBlock = projectBlock + (trivial ? "" : kbFirstPreamble(query, hits))
     }
     agent.followup(userMessage(kbBlock + message))
@@ -1706,6 +1810,11 @@ export function apply(ctx, config = {}) {
     if (req.method === "GET" && req.url === "/kb-stats") {
       res.writeHead(200, { "content-type": "application/json" })
       res.end(JSON.stringify(kbStatsSnapshot()))
+      return
+    }
+    if (req.method === "GET" && req.url === "/kb-gaps") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ gaps: kbGaps(20) }))
       return
     }
     if (req.method === "GET" && (req.url === "/monitor" || req.url === "/")) {

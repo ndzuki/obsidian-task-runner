@@ -18,7 +18,7 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-// TestEvaluateMergeChecksWaitsForMergeableConvergence pins the TASK-067
+// TestEvaluateMergeChecksWaitsForMergeableConvergence pins the mergeability
 // lesson: GitHub computes mergeability asynchronously after a push, so a
 // SUCCESS check state with a non-MERGEABLE mergeable field must WAIT instead
 // of merging immediately (the server then rejects with "not mergeable" and
@@ -47,7 +47,7 @@ func TestEvaluateMergeChecksWaitsForMergeableConvergence(t *testing.T) {
 }
 
 // TestAutoResolveMergeConflictCircuitBreakerSkipsHugeConflicts pins the
-// TASK-067 lesson: a conflict set far beyond what an AI session can resolve
+// conflict-circuit-breaker lesson: a conflict set far beyond what an AI session can resolve
 // inside its bounded timeout must not burn the repair budget — it hands the
 // task straight back to the user with conflict-resolve-attempted.
 func TestAutoResolveMergeConflictCircuitBreakerSkipsHugeConflicts(t *testing.T) {
@@ -166,7 +166,7 @@ func writeConflictFixtureVault(t *testing.T, dir, repo string) (vault, skillDir 
 	return vault, skillDir
 }
 
-// TestAutoCloseMergedConflictPRs pins the TASK-067 manual-merge closure: a
+// TestAutoCloseMergedConflictPRs pins the manual-merge closure: a
 // conflict task (budget exhausted, handed back) whose PR was merged manually
 // on the forge converges to done automatically instead of blocking
 // downstream blocked_by chains forever.
@@ -283,7 +283,7 @@ exit 0
 // TestValidateDependencyRefsWarnsStaleUpstream pins the upstream-starvation
 // visibility: a non-terminal upstream that has not advanced for longer than
 // the threshold triggers a one-time diag notification instead of silently
-// blocking its downstream (TASK-067: 019/057/066/069 waited a month+).
+// blocking its downstream (downstreams were seen waiting a month+).
 func TestValidateDependencyRefsWarnsStaleUpstream(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

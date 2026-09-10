@@ -164,7 +164,7 @@ func TestProjectNameFromTasksFallback(t *testing.T) {
 		t.Fatalf("projectNameFromTasks = %q, want directory name %q", got, filepath.Base(dir))
 	}
 
-	// Numeric-prefixed directory: 001-release-manager → release-manager.
+	// Numeric-prefixed directory: 001-some-project → some-project.
 	prefixed := filepath.Join(dir, "001-release-manager", "Tasks")
 	if err := os.MkdirAll(prefixed, 0o755); err != nil {
 		t.Fatal(err)

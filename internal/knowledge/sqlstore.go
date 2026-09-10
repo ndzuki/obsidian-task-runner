@@ -90,7 +90,7 @@ func openKBForRebuild(dbPath string) (*sql.DB, error) {
 // database's journal-mode switch needs an exclusive lock: two concurrent
 // openRaw calls in the same process (watcher sync + merge-extraction sync)
 // raced each other and failed with "enable WAL: database is locked"
-// (observed 2026-08-21). Schema creation is serialized too — concurrent
+// (observed in production). Schema creation is serialized too — concurrent
 // ensureSchema DDL vs a sync's INSERT raced the same way. Cross-process
 // races are covered by the busy retry below.
 var kbInitMu sync.Mutex
@@ -111,7 +111,7 @@ func openRawUnlocked(dbPath string) (*sql.DB, error) {
 	// database gets the throwaway CREATE/DROP probe, an existing one a
 	// read-only probe. The DROP on every open was a schema-lock write that
 	// raced the sync loops of other openKB callers and surfaced as
-	// "insert …: database is locked" (observed 2026-08-21).
+	// "insert …: database is locked" (observed in production).
 	fresh := false
 	statPath := dbPath
 	if i := strings.IndexAny(statPath, "?"); i >= 0 {
@@ -124,7 +124,7 @@ func openRawUnlocked(dbPath string) (*sql.DB, error) {
 	// db.Exec runs on ONE pooled connection only, while mattn/go-sqlite3
 	// opens additional connections on demand — those lacked busy_timeout and
 	// failed with "database is locked" as soon as two syncs contended
-	// (observed 2026-08-21: merge-extraction sync vs watcher sync).
+	// (observed in production: merge-extraction sync vs watcher sync).
 	// _journal_mode=WAL is persistent in the file; _busy_timeout applies to
 	// every connection the pool opens.
 	db, err := sql.Open("sqlite3", kbDSN(dbPath))

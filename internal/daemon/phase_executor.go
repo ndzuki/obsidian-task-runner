@@ -32,7 +32,7 @@ func newPhaseExecutor(cfg *config.Config) PhaseExecutor {
 // durable resume + fallback forwarding) under the default dsh-embed executor,
 // spawn only when the user explicitly pinned executor="dsh" (spawn cannot
 // transmit ReasoningEffort — the effort falls to the profile default, which is
-// why design was migrated to embed on 2026-09-02).
+// why design was migrated to embed).
 func newDesignExecutor(cfg *config.Config) PhaseExecutor {
 	if cfg.Executor == "dsh" {
 		return newDSHExecutorWithProfile(cfg.DSHCmd, cfg.DSHProfile, "")
@@ -91,9 +91,9 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 	// （Failed/Quota/…——agent-server 里已无存活会话）才回退 fresh start。
 	// 超时/中断必须如实上报：daemon 侧 HTTP 等待超时不会终止 agent-server
 	// 里的会话，此时 fresh start 会让两个会话并行写同一个任务文档
-	// （TASK-058 观测：同一任务两个 planning 会话并行规划）。
+	// （线上观测：同一任务两个 planning 会话并行规划）。
 	//
-	// TASK-058 二次观测（install-force 重启变种）：旧 daemon 被 SIGKILL 时其
+	// 二次观测（重启变种）：旧 daemon 被 SIGKILL 时其
 	// 会话仍在 agent-server 中运行（busy）；新 daemon resume 该会话时
 	// agent-server 返回 500（"already has active work" 等），旧代码把一切
 	// 非 Success 都当终态失败 → fresh start → 旧会话继续跑 + 新会话并行写。
@@ -109,15 +109,15 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 				}
 				if result.Code == OutcomeTimedOutActive {
 					// 超时窗口耗尽但会话近期仍有活动（模型还在推 step/工具
-					// 调用——TASK-065：Round 2 真实冒烟远超 60 分钟窗口）。
+					// 调用——真实长任务的 Round 2 冒烟远超 60 分钟窗口）。
 					// 不 cancel、不记失败：保留 token，下一轮 scan 继续等。
 					r.logger.Printf("task %s: resumed session still active after timeout window (%s) — keeping token, next scan continues waiting", snap.TaskID, spec.Phase)
 					outcome, code, reason := mapExecOutcome(result)
 					return result, outcome, code, reason
 				}
 				if result.Code == OutcomeTimedOut || result.Code == OutcomeInterrupted {
-					// 超时：会话可能是死锁的模型 turn（gateway 挂起，TASK-079
-					// refining 观测 6.8h）——cancel 后下一轮 resume 才能落到
+					// 超时：会话可能是死锁的模型 turn（gateway 挂起，refining
+					// 线上实测曾挂 6.8h）——cancel 后下一轮 resume 才能落到
 					// fresh start，否则会永久 re-attach 同一个死 turn。
 					// 中断：daemon 停机，会话必须保留供 resume，不 cancel。
 					if result.Code == OutcomeTimedOut {
@@ -131,8 +131,8 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 				if sessionBusyEvidence(result.Error) || resumeUnknownStateEvidence(result.Error) {
 					// 会话明确仍在跑（busy），或服务器不可达（unreachable/EOF/
 					// connection refused——会话状态未知）：都可重试中断，绝不
-					// fresh start（否则两个会话并行写同一任务文档；2026-08-25
-					// TASK-065 观测：agent-server unreachable: EOF 被当 terminal
+					// fresh start（否则两个会话并行写同一任务文档；线上观测：
+					// agent-server unreachable: EOF 被当 terminal
 					// → fresh start 撞 connection refused → MODEL_FAILED 再写
 					// blocked → 状态来回变）。
 					r.logger.Printf("task %s: resume attach failed (%s), session state unknown — retrying next scan (no fresh start)", snap.TaskID, result.Error)
@@ -147,7 +147,7 @@ func (r *Runner) runDSHPhase(ctx context.Context, spec PhaseSpec, snap TaskSnaps
 				}
 				// 其余（session gone / 服务器确认 turn 已结束，如 "agent-server
 				// outcome error"）：服务器侧无活跃写者，fresh start 安全且是唯一
-				// 收敛路径（TASK-079 观测：死 turn 会让 interrupted-retry 永转）。
+				// 收敛路径（线上观测：死 turn 会让 interrupted-retry 永转）。
 				r.logger.Printf("task %s: resume terminal (%s), falling back to fresh start", snap.TaskID, result.Error)
 			} else if !sessionGoneEvidence(werr.Error()) {
 				// 传输层错误（unreachable 等）：服务器状态未知，保守重试。
@@ -249,7 +249,7 @@ func sessionBusyEvidence(errText string) bool {
 // errors, no such host) rather than confirming the session is gone. The
 // session's state is then UNKNOWN: fresh start is forbidden — the old turn
 // may still be alive server-side and would become a parallel writer the
-// moment the server returns (2026-08-25 TASK-065: unreachable: EOF 被误判
+// moment the server returns (线上观测：unreachable: EOF 被误判
 // terminal → fresh start → MODEL_FAILED → blocked → 状态来回变)。
 func resumeUnknownStateEvidence(errText string) bool {
 	lower := strings.ToLower(errText)

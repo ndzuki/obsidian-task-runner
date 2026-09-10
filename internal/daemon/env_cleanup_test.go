@@ -291,8 +291,7 @@ func TestCleanupBlockedEnvDisabledSkipsEverything(t *testing.T) {
 
 // TestProcessBatchSequentialCleansK3dOnBlockedTask wires cleanupBlockedEnv
 // into the real dispatch loop: a blocked task entering the batch must trigger
-// the k3d teardown (TASK-066: k3d containers left after a requirement-driven
-// block).
+// the k3d teardown (k3d containers left after a requirement-driven block).
 func TestProcessBatchSequentialCleansK3dOnBlockedTask(t *testing.T) {
 	deletes := 0
 	listK3dRegistries = func() ([]string, error) { return []string{"k3d-release-manager-registry"}, nil }
@@ -335,7 +334,7 @@ func TestProcessBatchSequentialCleansK3dOnBlockedTask(t *testing.T) {
 // TestCleanupDeadEndTaskEnvsCoversBlockedNeedsGrillingClosed verifies the
 // every-scan sweep reaches the dead-end states that task.IsReady filters out
 // of the dispatch batch (blocked-with-phase-failure and closed) — the
-// TASK-066 blocked/pending_req gap.
+// blocked/pending_req gap.
 func TestCleanupDeadEndTaskEnvsCoversBlockedNeedsGrillingClosed(t *testing.T) {
 	deletes := 0
 	listK3dRegistries = func() ([]string, error) { return []string{"k3d-release-manager-registry"}, nil }

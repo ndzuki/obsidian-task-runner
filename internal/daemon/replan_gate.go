@@ -25,9 +25,9 @@ func replanGateRequired(t task.ReadyTask, threshold int) bool {
 // context cancel that interrupts the design session mid-flight is a transient
 // interruption (ErrPhaseInterrupted, in the auto-resume whitelist) — mapping
 // it to DESIGN_SESSION_FAILED would leave the task blocked for the 24h aged
-// window after every daemon restart (2026-08-25 TASK-065: user restarted the
-// daemon, the in-flight replan-gate design session died with context canceled,
-// and the task sat blocked awaiting the aged window). Everything else keeps
+// window after every daemon restart (observed: the daemon restarted, the
+// in-flight replan-gate design session died with context canceled, and the
+// task sat blocked awaiting the aged window). Everything else keeps
 // the generic design-session code.
 func designGateErrorCode(err error) ErrorCode {
 	if errors.Is(err, errDesignTargetUnwritable) {

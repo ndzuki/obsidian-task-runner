@@ -14,7 +14,7 @@
                     │ Design/（glossary · contracts · decisions · waves）                │
                     │ References/（知识库 markdown + INDEX）                              │
                     └────────────────────────────────┬───────────────────────────────────┘
-                                                     │ fsnotify watcher + 每 10s scan
+                                                     │ fsnotify watcher + scan ≥10s      │
                                                      ▼
 ┌─────────────────────────── otg daemon — otg-task-watcher.service ──────────────────────────┐
 │ 每轮 scan：schema 同步 → 依赖健康 → stale-done 检测 → KB 摄入/同步 →                        │
@@ -26,12 +26,12 @@
         │ 阶段执行（cfg.executor）                              │ 模型路由（用户配置）
         ▼                                                       ▼
 ┌───────────────────────────────────┐        ┌──────────────────────────────────────────────────┐
-│ agent-server（daemon 自管，默认）    │        │ default   → acme/acme-mini（轻量） │
-│   dsh --profile headless-agent-    │        │ acme  → acme/acme-pro（重度）│
-│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ gpt/beta→ beta/beta-sol（fallback/手动） │
-│   dsh-embed executor：会话持久化，   │  RPC   │ paid→ 自费官方，仅 assignee 手动指定      │
-│   支持 executor_session_id 断点续跑 │        │ gemini/claude/minimax → 显式 assignee 可选      │
-│ （agent_server_managed=false 时     │        │ 失败降级链 = vault-map `fallback` 字段动态下发    │
+│ agent-server（daemon 自管，默认）    │        │ 无内置路由：`models` 完全由操作者配置          │
+│   dsh --profile headless-agent-    │        │ （vault-map.json）——仓库不内置任何路由         │
+│   server —— 常驻 RPC，127.0.0.1:8799│ ◄────► │ assignee key → `models` 路由；未知 key         │
+│   dsh-embed executor：会话持久化，   │  RPC   │ 回退 `default`；都缺 → 任务不派发              │
+│   支持 executor_session_id 断点续跑 │        │ fallback 链 = vault-map `fallback` 动态下发    │
+│ （agent_server_managed=false 时     │        │ quota 指数退避 2m→…→4h；渠道偏好属部署者       │
 │   改为外部 dsh-agent-server.service）│        └──────────────────────────────────────────────────┘
 └───────────────┬───────────────────┘
                 │ 或 cfg.executor="dsh"：每个阶段 spawn `dsh --profile headless`（无持久会话）
@@ -54,7 +54,7 @@
 > ⚠️ `agent_server_managed: true`（默认）时 `dsh-agent-server.service` 被
 > `make deploy` 刻意停用——**systemd 显示 `inactive (dead)` 是预期**，端口
 > 8799 由 daemon 自管子进程服务；健康检查以 `curl http://127.0.0.1:8799/health`
-> 为准（2026-08-31 起根治 8799 双实例死锁）。
+> 为准（agent-server 所有权收敛，根治 8799 双实例死锁）。
 
 关键不变量：**`make deploy` 重启 watcher 时，在飞会话不丢**——daemon 自管
 agent-server 随之重启，但阶段会话经 `executor_session_id` durable resume 从
@@ -135,10 +135,10 @@ ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jso
 | 路径 | 内容 |
 |------|------|
 | `~/.dsh/skills/obsidian-task-runner/` | 运行时 skill 包（SKILL.md/reference.md/skills/，`sync-docs` 同步） |
-| `~/.dsh/skills/…`（顶层独立 skill） | refining/round1/round2/merge/priority/pm/split/knowledge-base/kulala-http |
+| `~/.dsh/skills/…`（顶层独立 skill） | refining/round1/round2/merge/conventions/priority/pm/split/design + knowledge-base |
 | `~/.dsh/config/` | 配置（vault-map.json 在 skill 包 `config/` 下） |
 | `~/.config/systemd/user/` | 三个 user 单元 |
-| `<repo>/.otg-worktrees/` 或 `~/.otg-worktrees/` | 任务 worktree（按配置） |
+| `<repo 父目录>/.otg-worktrees/` | 任务 worktree（`worktree_base` 可覆盖） |
 
 ## 9. 迁移历史（归档）
 

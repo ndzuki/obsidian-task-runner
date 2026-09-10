@@ -84,8 +84,8 @@ type Frontmatter struct {
 	// consecutive provider-failure episodes, until = next allowed dispatch.
 	// Same ladder as quota backoff but independent fields — a provider
 	// outage is not a quota condition and must not share the quota budget
-	// (2026-09-08 TASK-008/089: refine→plan→block→recover loop with no
-	// backoff while the provider was down).
+	// (a refine→plan→block→recover loop with no backoff while the provider
+	// is down).
 	ModelBackoffLevel   int    `yaml:"model_backoff_level"`
 	ModelBackoffUntil   string `yaml:"model_backoff_until"`
 	AdrApproved         bool   `yaml:"adr_approved"`
@@ -161,8 +161,8 @@ type Frontmatter struct {
 	MergePreconditionFails int    `yaml:"merge_precondition_fails"`
 	MergeRetryNotBefore    string `yaml:"merge_retry_not_before"`
 
-	// General task metadata (display/audit; unused fields were removed in the
-	// 2026-09-04 schema cleanup — legacy docs keep them in Extra without loss).
+	// General task metadata (display/audit; unused fields were removed in a
+	// schema cleanup — legacy docs keep them in Extra without loss).
 	Created  string   `yaml:"created"`
 	Updated  string   `yaml:"updated"`
 	Reviewer string   `yaml:"reviewer"`
@@ -613,7 +613,7 @@ func NormalizeReqFrontmatter(path string) (bool, error) {
 // The whole read-modify-write runs under the same task-path flock that
 // Update/AtomicReadModifyWrite use: without it a normalizer pass that reads
 // just before a concurrent daemon/DSH session Update lands and writes just
-// after would clobber the concurrent state change (observed 2026-08-21: the schema-defaults pass
+// after would clobber the concurrent state change (observed: the schema-defaults pass
 // rewrote a TASK and the knowledge_extracted=true write raced through it,
 // flipping the marker back to false and forcing a spurious re-extraction).
 func normalizeFrontmatter(path string, order []string, defaults map[string]interface{}) (bool, error) {

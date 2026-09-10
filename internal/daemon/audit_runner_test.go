@@ -16,8 +16,8 @@ import (
 // TestAuditToolPolicy guards the completion-audit tool whitelist: it must
 // carry the harness's benign operating tools (skill/todo_write/job_*/glob/
 // read_image) or the agent-server fails every session with
-// TOOL_POLICY_VIOLATION — the 2026-08-31 TASK-081 failure that kept the task
-// stuck in review with no merge. It must stay free of worktree-mutating tools
+// TOOL_POLICY_VIOLATION, which keeps the task stuck in review with no merge.
+// It must stay free of worktree-mutating tools
 // (write/edit/str_replace_editor) so the auditor cannot plant evidence.
 func TestAuditToolPolicy(t *testing.T) {
 	assertToolPolicy(t, auditToolPolicy,
@@ -29,7 +29,7 @@ func TestAuditToolPolicy(t *testing.T) {
 	if !strings.Contains(auditPromptTemplate, "edit/write/str_replace_editor") {
 		t.Errorf("audit prompt must explicitly prohibit edit/write/str_replace_editor (excluded by auditToolPolicy)")
 	}
-	// TASK-080 hardening: the read-only rule must be a top-position iron rule
+	// Hardening: the read-only rule must be a top-position iron rule
 	// that survives even when the model sees the tools in its visible list.
 	if !strings.Contains(auditPromptTemplate, "即使工具列表里可见") {
 		t.Errorf("audit prompt must state that visible-but-disallowed tools must not be called")
@@ -37,7 +37,7 @@ func TestAuditToolPolicy(t *testing.T) {
 }
 
 // TestAuditRetryNotBefore: TOOL_POLICY_VIOLATION（会话调用白名单外工具）是
-// 模型行为问题，普通 2min 冷却会让它每 ~10min 烧一轮会话（TASK-080 观测）。
+// 模型行为问题，普通 2min 冷却会让它每 ~10min 烧一轮会话（实测观测）。
 // 违规失败用加长冷却，其他进程级失败保持原冷却。
 func TestAuditRetryNotBefore(t *testing.T) {
 	now := time.Now()

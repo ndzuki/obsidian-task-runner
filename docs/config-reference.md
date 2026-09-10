@@ -37,23 +37,23 @@ vault-map.json 也只包含最小键；示例文件
 | `scan_min_interval_seconds` | int | 10 | watcher 扫描节流下限 |
 | `agent_server_addr` | string | `127.0.0.1:8799` | agent-server RPC 地址 |
 | `agent_server_managed` | bool | true | true=daemon 拉起子进程；false=外部 systemd 管理 |
-| `executor` | string | `dsh-embed` | 阶段执行后端；`dsh` 为旧 spawn 路径 |
+| `executor` | string | `dsh-embed` | 阶段执行后端；`dsh` 为 spawn headless 路径（无按请求 reasoningEffort）；仅接受这两个值 |
 | `dsh_cmd` | string | `dsh` | DSH 可执行文件 |
 | `dsh_profile` | string | `""`（空） | 仅 `executor="dsh"`（spawn 路径）使用；空值时内置回退 `headless`；默认 `dsh-embed` 下忽略 |
 | `vault_web_addr` | string | `127.0.0.1:8787` | 只读看板 HTTP API 地址 |
 | `default_assignee` | string | `""` | 新 TASK 预写 assignee；空=等人工 |
-| `auto_resume_aged_after_hours` | int | 24 | 瞬态错误 blocked 任务的老化自动恢复窗口 |
+| `auto_resume_aged_after_hours` | int | 24 | 瞬态错误 blocked 任务的老化自动恢复窗口（≤0 回退默认 24） |
 | `max_overlap_wait_minutes` | int | 720 | 计划文件重叠串行等待上限 |
 | `max_auto_merge_fixes` | int | 3 | 每次合并授权的 AI 修复预算 |
 | `merge_poll_wait_ticks` | int | 20 | CI 轮询预算（30s/次，即 10min） |
-| `max_auto_fix_conflicts` | int | 40 | 冲突文件数熔断：超过则跳过 AI 修复 |
+| `max_auto_fix_conflicts` | int | 40 | 冲突文件数熔断：超过则跳过 AI 修复（显式 0 或缺失回退默认 40） |
 | `upstream_stall_days` | int | 3 | 上游停滞告警阈值；**显式 0 = 关闭告警** |
 | `compact_oversize_threshold_kb` | int | 60 | TASK 文档超过该体积触发历史折叠 |
 | `grilling_consolidation_batch` | int | 1 | 每轮 scan 的 PM 统筹会话数 |
 | `stage_min_per_phase` | int | 3 | 确定性分组：每阶段最少任务数 |
 | `stage_max_phases` | int | 4 | 确定性分组：阶段数上限 |
-| `replan_gate_threshold` | int | 5 | replan gate 阈值 |
-| `worktree_base` | string | repo 父目录 | 任务 worktree 根覆盖 |
+| `replan_gate_threshold` | int | 5 | replan gate 阈值（显式 0 也会回退为默认 5） |
+| `worktree_base` | string | `<repo parent>/.otg-worktrees/<repoHash>/TASK-<runKey>` | 任务 worktree 根覆盖（须绝对路径，相对路径不展开） |
 | `log_dir` | string | `~/.dsh/logs` | 日志目录 |
 | `off_peak_timezone` | string | `""` | 低峰时段时区（opt-in） |
 | `off_peak_windows` | array | nil | 低峰窗口；**未配置 = 不限制**（off_peak_only 恒可运行） |

@@ -143,7 +143,7 @@ func TestSchedulingPhasesGatedOnDependencies(t *testing.T) {
 	}
 
 	// Upstream flips away from done → ready task must NOT be dispatched into
-	// refining/planning (regression: TASK-066 ran 15 no-op replans while its
+	// refining/planning (observed regression: repeated no-op replans while
 	// upstreams were unmerged).
 	upstream := filepath.Join(dir, "Projects", "001-test", "Tasks", "TASK-010-b.md")
 	writeIdxTask(t, dir, "TASK-010-b.md", "status: implementing\n")

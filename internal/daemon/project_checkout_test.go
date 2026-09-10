@@ -166,7 +166,7 @@ func writeVaultMapWithRemote(t *testing.T, dir, name, path, gitRemote string) st
 	return skillDir
 }
 
-// TestEnsureProjectCheckoutPromotesVaultFallback covers the TASK-001-demo
+// TestEnsureProjectCheckoutPromotesVaultFallback covers the vault-fallback
 // regression: a registered project whose path is the Vault project dir (not a
 // git root) must be promoted to the conventional standalone checkout so
 // worktrees and merges stop targeting the enclosing Vault repository.
@@ -283,7 +283,8 @@ exit 1
 }
 
 // TestEnsureProjectCheckoutInitializesExistingEmptyCheckout covers the
-// dshtui regression: a project's conventional checkout may already exist as an
+// empty-checkout regression: a project's conventional checkout may already
+// exist as an
 // empty, non-git directory (user created the folder before the daemon
 // promoted it). The daemon must initialize it with a HEAD commit so Round 2
 // worktree preparation stops looping on "not a git repository" and the agent
@@ -402,8 +403,9 @@ func TestEnsureProjectCheckoutSkipsGitRoot(t *testing.T) {
 	}
 }
 
-// TestEnsureProjectCheckoutCreatesMissingRemoteOnMerge covers the dshtui
-// regression: an existing standalone checkout may have a local origin pointing
+// TestEnsureProjectCheckoutCreatesMissingRemoteOnMerge covers the
+// missing-remote regression: an existing standalone checkout may have a local
+// origin pointing
 // at a GitHub repo that does not exist yet. A merge-bound task must auto-create
 // the GitHub repo with gh, push the local default branch, and set it as the
 // remote default so the later feature-branch PR has a sane base.
@@ -517,8 +519,8 @@ func TestEnsureProjectCheckoutSkipsVaultOnlyProject(t *testing.T) {
 	}
 }
 
-// TestEnsureRemoteDefaultBranchProbeFailureSkipsPush pins the dshtui TASK-008
-// regression: when ls-remote cannot reach the remote (network flap, auth
+// TestEnsureRemoteDefaultBranchProbeFailureSkipsPush pins the default-branch
+// probe regression: when ls-remote cannot reach the remote (network flap, auth
 // error), the probe failure must be reported as errRemoteDefaultProbe and must
 // NOT fall through to a blind push. A blind push would either fail with a
 // confusing network error or be rejected non-fast-forward once connectivity
@@ -547,9 +549,9 @@ func TestEnsureRemoteDefaultBranchProbeFailureSkipsPush(t *testing.T) {
 }
 
 // TestEnsureRemoteDefaultBranchSkipsPushWhenRemoteHasMain: a remote main that
-// is DIVERGED from local main (the real dshtui state: origin/main 72 commits
-// ahead) must be left untouched — the probe reports "present" and no push is
-// attempted, because any push would be rejected non-fast-forward.
+// is DIVERGED from local main (e.g. origin/main many commits ahead) must be
+// left untouched — the probe reports "present" and no push is attempted,
+// because any push would be rejected non-fast-forward.
 func TestEnsureRemoteDefaultBranchSkipsPushWhenRemoteHasMain(t *testing.T) {
 	dir := t.TempDir()
 	repo := createRepository(t, filepath.Join(dir, "local"))

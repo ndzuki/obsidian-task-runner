@@ -14,7 +14,7 @@ import (
 
 // TestMergeRetryCooling pins the human-repair retry cooldown: while the
 // worktree conflict needs a human fix, the daemon must NOT re-attempt the
-// merge every scan (TASK-080: ~10s log spam + 5min desktop toast loop).
+// merge every scan (otherwise ~10s log spam + a 5min desktop toast loop).
 // Empty/corrupt timestamps must not block — legacy tasks retry immediately.
 func TestMergeRetryCooling(t *testing.T) {
 	now := time.Now()

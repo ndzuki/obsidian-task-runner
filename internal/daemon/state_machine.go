@@ -27,7 +27,7 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 			// list (PM distribute resets to refining once answered). The
 			// pending-req precedence rule must not yank a parked task back
 			// into refining — that re-opens the repeated-dispute loop
-			// (TASK-069: 35+ rounds) instead of waiting for the one-time
+			// (observed: 35+ rounds) instead of waiting for the one-time
 			// answer.
 			if fm.GrillParked {
 				break
@@ -133,7 +133,7 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 		// Done but never merged (PR or branch exists, merge_status != merged):
 		// the merge flow was interrupted or the PR went stale after the task
 		// was marked done — reopen it so the PR lifecycle closes on its own
-		// (TASK-067/019 PRs sat CONFLICTING for weeks because done is not a
+		// (observed: PRs sat CONFLICTING for weeks because done is not a
 		// mergeable status). auto_merge tasks re-authorize automatically;
 		// manual-gate tasks wait for merge_approved.
 		if task.DoneReopensMerge(fm) {
@@ -157,8 +157,9 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 			// Parked disputes live in the project-level Grilling-Decisions.md
 			// list. NEVER auto-transition (resume/replan) while parked — a
 			// stale grill_resolution would re-open the no-op replan loop
-			// (TASK-066: 17 rounds zero convergence on an unchanged REQ).
-			// Only PM distribute explicitly resets parked tasks to refining.
+			// (observed: 17 rounds with zero convergence on an unchanged
+			// REQ). Only PM distribute explicitly resets parked tasks to
+			// refining.
 			return localTransition{}, false
 		}
 		if !fm.GrillDone {
@@ -192,8 +193,8 @@ func nextLocalTransition(fm *yamlfrontmatter.Frontmatter) (localTransition, bool
 		// agent-server 宕机等）都先把任务写 blocked，再由本 catch-all 清掉
 		// plan_approved——恢复 implementing 时 round2 门禁（plan_approved=true）
 		// 再次失败 → 重新 grilling「请再批准同一版计划」→ 永远转圈
-		// （2026-08-25 TASK-065 观测：09:58 v21 经计划门禁批准 → 10:53 quota
-		// blocked → 11:32 catch-all 清批准 → D-102 重新批准 → 来回变状态）。
+		// （线上观测：计划经门禁批准 → quota blocked → catch-all 清批准 →
+		// 用户重新批准 → 状态来回变）。
 		// 入口门禁类 blocked（blocked_phase 为空，如 REQ_MISSING）没有可恢复
 		// 的 phase，陈旧批准照旧重置，防止泄漏进重新规划。
 		if fm.Status == "blocked" && fm.BlockedPhase != "" {

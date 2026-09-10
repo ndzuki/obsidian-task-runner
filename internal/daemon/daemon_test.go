@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	apiKeyProbe.Store(func() bool { return true })
 	// 任务临时目录（setTaskTempEnv / cleanupTaskArtifacts）与锁文件都落在
 	// XDG_CACHE_HOME；测试必须隔离，否则 dispatch 路径会污染真实
-	// ~/.cache/otg/tasks|locks（2026-08-14：全量测试在真实目录留下 269 个
+	// ~/.cache/otg/tasks|locks（全量测试会在真实目录留下大量
 	// /tmp/TestXxx 路径 hash 的空目录）。
 	cacheDir, err := os.MkdirTemp("", "otg-test-cache-")
 	if err != nil {
@@ -148,7 +148,7 @@ func TestRefiningDispatchWritesPhaseSpecificLogFile(t *testing.T) {
 // fired when refine_req_hash == plan_req_hash, so a task whose requirement
 // changed after its plan (pending_req=true, refine != plan) was re-dispatched
 // into the maturity gate on every scan forever — 30+ identical refining
-// rounds for TASK-067. The gate must route to planning once the stored audit
+// rounds. The gate must route to planning once the stored audit
 // covers the current REQ, and re-run only when the audit is stale.
 func TestRefiningEarlyOutRoutesReplanToPlanning(t *testing.T) {
 	dir := t.TempDir()
@@ -896,8 +896,8 @@ func TestEnsureTaskWorktreeReusesIsolatedWorktree(t *testing.T) {
 // worktree directory (manual disk cleanup) leaves a dangling git registration
 // that makes every `git worktree add` fail with "already registered".
 // ensureTaskWorktree must prune the stale registration and recreate the
-// worktree instead of stalling the task forever (seen live: TASK-057/077
-// stuck for hours until a manual `git worktree prune`).
+// worktree instead of stalling the task forever (observed: tasks stuck for
+// hours until a manual `git worktree prune`).
 func TestEnsureTaskWorktreeSelfHealsExternallyDeleted(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
@@ -1001,8 +1001,8 @@ func TestEnsureTaskWorktreeRejectsMismatchedTargetBranch(t *testing.T) {
 // TestEnsureTaskWorktreeBindsDetachedToTargetBranch: a worktree created
 // before target_branch existed (detached HEAD, e.g. an early audit) must be
 // bound to the target branch on the next call so merge/round2 phases operate
-// on the feature branch instead of failing (TASK-067: merge could not reuse
-// the detached round2 worktree and fell back to the main checkout).
+// on the feature branch instead of failing (merge could not reuse the
+// detached round2 worktree and fell back to the main checkout).
 func TestEnsureTaskWorktreeBindsDetachedToTargetBranch(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
@@ -1034,7 +1034,7 @@ func TestEnsureTaskWorktreeBindsDetachedToTargetBranch(t *testing.T) {
 
 // TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout pins the isolation
 // contract: when the primary checkout sits on the target branch (the old
-// fallback let merge pollute the user's working directory, TASK-067), the
+// fallback let merge pollute the user's working directory), the
 // call must FAIL loudly — git refuses to check the branch out in a second
 // worktree — instead of silently reusing the primary checkout.
 func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
@@ -1053,12 +1053,12 @@ func TestEnsureTaskWorktreeNeverReturnsPrimaryCheckout(t *testing.T) {
 	}
 }
 
-// TestEnsureTaskWorktreeReusesSiblingBranchWorktree pins the TASK-080 fix:
-// when the managed key worktree is detached and the target branch is already
-// checked out in a SIBLING worktree outside the managed root (round2 created
-// it there, e.g. release-manager-t080), the call must REUSE that worktree —
-// non-destructively — instead of failing every scan ("merge worktree
-// unavailable" loop). The user directory is never removed.
+// TestEnsureTaskWorktreeReusesSiblingBranchWorktree pins the sibling-reuse
+// fix: when the managed key worktree is detached and the target branch is
+// already checked out in a SIBLING worktree outside the managed root (round2
+// created it there, e.g. a user-side checkout), the call must REUSE that
+// worktree — non-destructively — instead of failing every scan ("merge
+// worktree unavailable" loop). The user directory is never removed.
 func TestEnsureTaskWorktreeReusesSiblingBranchWorktree(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
@@ -1096,9 +1096,9 @@ func TestEnsureTaskWorktreeReusesSiblingBranchWorktree(t *testing.T) {
 // TestIsManagedWorktreePath guards the worktree self-heal safety boundary: the
 // daemon may only auto-remove worktrees it created (under the managed
 // worktree root). A user's manual clone/checkout on the task branch (e.g.
-// release-manager-t081) lives OUTSIDE the managed root and must never be
-// considered managed — otherwise `git worktree remove --force` would delete
-// the user's directory (2026-08-31 TASK-081 branch held by release-manager-t081).
+// a sibling checkout next to the repo) lives OUTSIDE the managed root and
+// must never be considered managed — otherwise `git worktree remove --force`
+// would delete the user's directory.
 func TestIsManagedWorktreePath(t *testing.T) {
 	dir := t.TempDir()
 	repo := filepath.Join(dir, "release-manager")

@@ -47,7 +47,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 	// 一律违规。与 audit 的唯一差别是 conventions 允许 write——技能契约的
 	// 唯一写入就是审查产物 Notes/PROJECT-CONVENTIONS.md（一次性门禁标记），
 	// 该产物必须用 write 落盘；禁止 write 会让门禁永远无法完成
-	// （TASK-080 2026-08-31 CONVENTIONS_REVIEW_FAILED：disallowed write）。
+	// （线上实测：CONVENTIONS_REVIEW_FAILED 的根因正是 disallowed write）。
 	// 审查本身仍是零代码修改。
 	if phase == "conventions" {
 		spec.ToolPolicy = conventionsToolPolicy
@@ -76,7 +76,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 		// and a stale hash keeps failing the refining early-out
 		// (refine_req_hash == current REQ) on every scan — the task then
 		// re-runs the maturity gate forever instead of routing to planning
-		// (TASK-058 observed after TASK-079 merged). The skill also writes
+		// (observed in production). The skill also writes
 		// the hash itself, but the daemon must not trust the session here.
 		if phase == "refining" {
 			r.ensureReqHash(taskPath, t.ReqDoc)
@@ -100,7 +100,7 @@ func (r *Runner) runDSHPhaseDispatch(t task.ReadyTask, taskPath, repoDir, phase,
 
 	case OutcomeTimedOutActive:
 		// 超时窗口耗尽但会话仍活跃（近期有 step/工具事件——真实长任务的
-		// Round 2，如 TASK-065 的 dev-up 冒烟）：不 cancel、不计失败、
+		// Round 2，如真实冒烟任务）：不 cancel、不计失败、
 		// 不转 blocked。保留 resume token，下一轮 scan 继续等待同一会话。
 		r.logger.Printf("task %s: DSH %s still running (session active past timeout window) — next scan resumes", t.ID, phase)
 		if result != nil && result.ResumeToken != "" {

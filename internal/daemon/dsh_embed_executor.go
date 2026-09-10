@@ -121,7 +121,7 @@ func (e *dshEmbedExecutor) Resume(ctx context.Context, spec PhaseSpec, resumeTok
 // turn is cancelled and the session is disposed from the live registry, so
 // the next resume finds it gone and falls back to a fresh start. Used by the
 // daemon on phase timeout — without it, a hung turn (gateway stall, 6.8h
-// observed on TASK-079 refining) would be re-attached to forever.
+// observed in production) would be re-attached to forever.
 func (e *dshEmbedExecutor) Cancel(ctx context.Context, resumeToken string) error {
 	if resumeToken == "" {
 		return nil
@@ -495,7 +495,7 @@ func (h *embedHandle) doRequest() *ExecutionResult {
 		return &ExecutionResult{Phase: h.phase, Code: OutcomeFailed, Error: "agent-server bad response: " + err.Error()}
 	}
 	// 失败详情：errorCode（分类码）+ error（消息）都带上——只留分类码时
-	// 「agent-server outcome error」无任何可诊断信息（TASK-058 写回观测）。
+	// 「agent-server outcome error」无任何可诊断信息（线上观测）。
 	resErr := strings.TrimSpace(parsed.ErrorCode)
 	if msg := strings.TrimSpace(parsed.Error); msg != "" {
 		if resErr == "" {

@@ -11,10 +11,11 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-// TestHealTargetBranch 覆盖 TASK-079 的自愈路径：round2 会话被 daemon 重启
-// 打断后 target_branch 没写回，merge 授权永远卡在 precondition。任务 worktree
-// 已 checkout 在 task/{id}-slug 分支上——healTargetBranch 应从它恢复分支名并
-// 持久化，且只在分支带 "task/" 前缀时生效（不误写 main 等无关分支）。
+// TestHealTargetBranch 覆盖 target_branch 的自愈路径：round2 会话被 daemon
+// 重启打断后 target_branch 没写回，merge 授权永远卡在 precondition。任务
+// worktree 已 checkout 在 task/{id}-slug 分支上——healTargetBranch 应从它
+// 恢复分支名并持久化，且只在分支带 "task/" 前缀时生效（不误写 main 等无关
+// 分支）。
 func TestHealTargetBranch(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")
@@ -101,10 +102,11 @@ func mustRead(t *testing.T, path string) []byte {
 	return data
 }
 
-// TestHealTargetBranchSiblingWorktrees 覆盖 TASK-080 的失败形态：round2 会话
-// 在托管路径之外的同级 worktree（如 release-manager-t080）上 checkout 了
-// task/{id}-slug 分支，托管 key 目录是 detached HEAD（或不存在）。healTargetBranch
-// 应扫描 repo 的全部注册 worktree，按任务 ID 匹配 task/ 分支并写回 target_branch。
+// TestHealTargetBranchSiblingWorktrees 覆盖同级 worktree 的失败形态：round2
+// 会话在托管路径之外的同级 worktree（如用户侧同级目录）上 checkout 了
+// task/{id}-slug 分支，托管 key 目录是 detached HEAD（或不存在）。
+// healTargetBranch 应扫描 repo 的全部注册 worktree，按任务 ID 匹配 task/
+// 分支并写回 target_branch。
 func TestHealTargetBranchSiblingWorktrees(t *testing.T) {
 	base := t.TempDir()
 	repoDir := filepath.Join(base, "repo")

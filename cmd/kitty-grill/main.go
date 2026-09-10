@@ -89,7 +89,7 @@ func main() {
 	}
 
 	// 启动守卫：任务已离开 needs-grilling（被关闭/完成/推进）时直接退出，
-	// 不生成问卷——避免向已归档需求写回决策（观测：TASK-005 关闭后其
+	// 不生成问卷——避免向已归档需求写回决策（观测：任务关闭后其
 	// grilling tab 仍停留在交互状态）。
 	if *taskID != "" {
 		if left := taskLeftGrilling(*taskID, *vaultPath, *reqDoc); left {
@@ -103,8 +103,8 @@ func main() {
 		if v == "" {
 			// decision tab 的 prompt 依赖该环境变量；一旦未送达（kitty
 			// 远程启动不继承客户端 env），绝不能回退到无目标泛化问卷——
-			// 2026-09-01 事故：泛化问卷自选已 done 的 REQ-025 写回，
-			// 误触发 TASK-025/072/073 重开 refining。
+			// 曾发生事故：泛化问卷自选已 done 的 REQ 写回，误触发其
+			// 任务重开 refining。
 			fmt.Fprintf(os.Stderr, "kitty-grill: 环境变量 %s 未设置，拒绝生成无目标问卷\n", *promptEnv)
 			os.Exit(2)
 		}
@@ -235,7 +235,7 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
   - 本次批量问卷若所有答案都是「维持现状/与既有规格一致」，必须标 cosmetic，否则已 done 任务会被误重开`, target, '`', '`', '`')
 	// 真实任务 ID 前置：agent-server 监控面板按 prompt 里第一个 TASK-xxx
 	// 打标签，前置可避免启发式抓到 REQ 正文/预取上下文里提到的其他任务
-	// （观测：TASK-005 的 grilling 会话被误标为 TASK-058）。
+	// （观测：某任务的 grilling 会话被误标为另一个任务）。
 	if taskID != "" {
 		return fmt.Sprintf("任务 TASK-%s — %s\n\n%s", taskID, target, body)
 	}
@@ -284,9 +284,8 @@ func extractJSON(text string) (string, bool) {
 // ```json fence, but models in practice emit bare JSON or wrap it in prose.
 // Every such reply must still reach the interactive questionnaire — otherwise
 // the valid JSON is dumped raw and the tab parks at the plain-text
-// manualFill prompt, which the user cannot answer (观测 2026-09-03：
-// magic-models-manager 决策清单 D-5 的裸 JSON 问卷被整体倒进 tab，
-// 「完全不能做问答」).
+// manualFill prompt, which the user cannot answer (观测：某决策清单的
+// 裸 JSON 问卷被整体倒进 tab，「完全不能做问答」).
 func parseQuestionnaire(text string) (questionnaire, bool) {
 	if raw, ok := extractJSON(text); ok {
 		if q, ok := unmarshalQuestionnaire(raw); ok {
@@ -312,8 +311,8 @@ func parseQuestionnaire(text string) (questionnaire, bool) {
 // stripTrailingCommas removes `,` immediately before a closing `]` or `}`
 // (optionally separated by whitespace) while skipping JSON string contents.
 // encoding/json rejects such trailing commas, but models emit them in practice
-// (观测 2026-09-07：模型在 decisions 数组最后一个元素后输出尾逗号，整个
-// 合法问卷被拒并回退 manualFill 纯文本). Dropping only those commas keeps every other
+// (观测：模型在 decisions 数组最后一个元素后输出尾逗号，整个合法问卷
+// 被拒并回退 manualFill 纯文本). Dropping only those commas keeps every other
 // character byte-identical, so valid JSON is untouched and invalid JSON still
 // fails to unmarshal (truncation etc. keeps reaching manualFill).
 func stripTrailingCommas(raw string) string {
@@ -516,7 +515,7 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 		// 模型确认没有待答决策点（清单 pending 刚清零的竞态：batch 写回落地后
 		// 旧 daemon 仍开出了决策 tab）。不能回退纯文本 manualFill——那会把模型
 		// 的原始 markdown 直接倒给用户并停在「✍️ 你的决策 >」空等（观测：
-		// 2026-08-24 19:32 决策清单 tab 纯文本）。干净收尾并自动关 tab。
+		// 决策清单 tab 曾因此退回纯文本）。干净收尾并自动关 tab。
 		fmt.Println(noPendingScreen())
 		time.Sleep(noPendingCloseDelay)
 		closeChatSession(addr, sessionID)
@@ -539,15 +538,15 @@ func repl(addr, provider, model, effort, prompt, taskID, taskTitle, vaultPath, r
 	}
 
 	// 写回前复查任务状态：问卷生成 + 作答期间任务可能已被关闭/推进，
-	// 写回会落到已离开 grilling 的任务上（观测：TASK-005 关闭后其问卷
-	// tab 仍可提交）。此处阻断写回并提示用户。
+	// 写回会落到已离开 grilling 的任务上（观测：任务关闭后其问卷 tab
+	// 仍可提交）。此处阻断写回并提示用户。
 	if taskLeftGrilling(taskID, vaultPath, reqDoc) {
 		return nil
 	}
 
 	// 异步提交：detached 子进程完成写回，本进程立即退出并关 tab——不再
-	// 同步等待模型写回（观测：TASK-058 提交后卡在「写回需求文档中」，
-	// tab 不关闭，还连发重复的「需求变更」桌面提醒）。
+	// 同步等待模型写回（观测：提交后卡在「写回需求文档中」，tab
+	// 不关闭，还连发重复的「需求变更」桌面提醒）。
 	reqPath := reqDoc
 	if reqPath != "" && vaultPath != "" {
 		reqPath = filepath.Join(vaultPath, reqDoc)
@@ -650,8 +649,9 @@ const writebackMaxAttempts = 3
 var writebackRetryBackoff = 20 * time.Second
 
 // notifyWritebackFailure 是写回最终失败时的桌面提醒；测试可覆盖。
-// what 标明失败对象（如 "TASK-058" 或决策清单文件名），空串表示未知——
-// 用户只看到「Grilling 决策写回失败」无法判断是哪份决策（观测：TASK-058）。
+// what 标明失败对象（如 "TASK-<id>" 或决策清单文件名），空串表示未知——
+// 用户只看到「Grilling 决策写回失败」无法判断是哪份决策（观测：不标
+// 对象时用户无法定位失败来源）。
 var notifyWritebackFailure = func(what string, err error) {
 	if _, e := exec.LookPath("notify-send"); e != nil {
 		return
@@ -667,7 +667,7 @@ var notifyWritebackFailure = func(what string, err error) {
 // writebackContext carries everything a fresh-session fallback needs to
 // rebuild the write-back prompt when the original chat session is gone
 // (agent-server restarted between questionnaire and write-back — 观测：
-// TASK-058 决策写回 3 次重试全撞「session not found」)。
+// 决策写回 3 次重试全撞「session not found」)。
 type writebackContext struct {
 	Kind          string        `json:"kind"`             // "req" | "decision"
 	Target        string        `json:"target,omitempty"` // REQ / 决策清单绝对路径
@@ -931,7 +931,7 @@ func closeTabArgs(windowID string) []string {
 // named `*.test` — either check reliably identifies a test run. closeOwnTab()
 // must NEVER fire under tests: a `make test` run inside a kitty tab inherits
 // KITTY_WINDOW_ID/KITTY_LISTEN_ON, so the remote-control close would delete the
-// user's real tab (observed 2026-08-28: make test killed the tab running it).
+// user's real tab (observed: a make test run killed the tab running it).
 func isTestProcess() bool {
 	for _, a := range os.Args {
 		if strings.HasPrefix(a, "-test.") {
@@ -1025,8 +1025,8 @@ func chat(addr, provider, model, effort, sessionID, message string, timeout time
 	}
 	if out.Outcome != "completed" {
 		// 详情优先取 error（模型失败消息），errorCode 作为分类码缀上；两者都
-		// 空时给占位文案——「agent-server outcome error: 」空原因是 TASK-058
-		// 决策写回 3 连败时完全不可诊断的直接原因。
+		// 空时给占位文案——「agent-server outcome error: 」空原因是决策写回
+		// 3 连败时完全不可诊断的直接原因。
 		var parts []string
 		for _, p := range []string{out.Error, out.ErrorCode} {
 			if s := strings.TrimSpace(p); s != "" {

@@ -91,9 +91,9 @@ type PhaseSpec struct {
 // runs), read_image (inspect screenshots) — or the agent-server's post-hoc
 // whitelist enforcement fails EVERY session with TOOL_POLICY_VIOLATION and the
 // gate can never pass. This exact failure froze both review/merge automation
-// and the conventions gate on 2026-08-31: TASK-081 stuck in review through 14
+// and the conventions gate in production: one task stuck in review through 14
 // consecutive audit failures (disallowed skill/todo_write/job_output), and
-// TASK-080 blocked with CONVENTIONS_REVIEW_FAILED (disallowed
+// another blocked with CONVENTIONS_REVIEW_FAILED (disallowed
 // skill/todo_write/write). The worktree-mutating tools that could plant
 // evidence or alter code (edit / str_replace_editor) stay excluded from both.
 //
@@ -150,8 +150,8 @@ const (
 	// whose agent-server session shows RECENT activity (model still producing
 	// steps/tool calls — e.g. a long real-smoke Round 2). The caller keeps
 	// the durable token and re-waits on the next scan instead of cancelling
-	// a working turn (TASK-065: 60m window hit while the session was
-	// actively committing and running dev-up smoke).
+	// a working turn (observed: the 60m window hit while the session was
+	// actively committing and running a dev-up smoke).
 	OutcomeTimedOutActive ExecOutcome = "timeout_active"
 	OutcomeInterrupted    ExecOutcome = "interrupted" // daemon shutdown / cancel
 	OutcomeQuotaExhausted ExecOutcome = "quota_exhausted"
@@ -175,8 +175,8 @@ type ExecutionHandle interface {
 //     类失误证明 low 不够，但每轮 high 太贵）
 //   - audit / pm / merge / conventions：确定性为主，low
 //   - planning：跨需求规划，max（plan 是全任务最高杠杆产物，被每个 AC
-//     迭代消费；2026-09-02 从 high 上调——plan-review 人审拦方向性错误，
-//     拦不住字段契约类细节（TASK-079 D5），而 plan 缺陷在 round2 逐 AC
+//     迭代消费；曾从 high 上调——plan-review 人审拦方向性错误，
+//     拦不住字段契约类细节，而 plan 缺陷在 round2 逐 AC
 //     引爆；2-3× token 只付一次，planning 是稀有阶段，性价比最高）
 //   - round2：实现阶段，max（最复杂，需 deep reasoning 写代码）
 //   - grilling 交互在 kitty-grill 单独分级（需求详细化 high、决策清单 low）
@@ -184,7 +184,7 @@ func phaseThinking(phase string) string {
 	switch phase {
 	case "priority", "refining", "design":
 		// 规格作者与设计库修订：medium——低强度下的 spec 命名推断类失误
-		// （TASK-079 D5 字段名 vs gate fixture）证明 low 不够，但 high 对
+		// （字段名 vs gate fixture 类契约细节）证明 low 不够，但 high 对
 		// 每轮 refining 太贵。
 		return "medium"
 	case "round2", "planning":

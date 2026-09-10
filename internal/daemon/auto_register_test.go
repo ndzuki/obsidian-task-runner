@@ -64,7 +64,7 @@ func TestEnsureProjectRegisteredAutoRegisters(t *testing.T) {
 	})
 	mapFile := filepath.Join(skillDir, "config", "vault-map.json")
 	// Give the existing project a git_remote so the new entry's remote is
-	// derived from the established owner (github.com/ndzuki/...).
+	// derived from the established owner's host.
 	var vaultMap map[string]any
 	raw, err := os.ReadFile(mapFile)
 	if err != nil {

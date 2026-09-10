@@ -91,8 +91,8 @@ func runStagePlanInit(cmd *cobra.Command, args []string) error {
 // resolveProjectVaultDir resolves the vault-side project directory for a
 // project name. The vault-map Path field is used only when it actually
 // points inside the vault (some projects store the git repo path there,
-// e.g. release-manager); otherwise fall back to a directory-name match
-// ("001-release-manager" for "release-manager").
+// e.g. a standalone checkout); otherwise fall back to a directory-name match
+// ("001-example-project" for "example-project").
 func resolveProjectVaultDir(cfg *config.Config, project string) string {
 	vaultRoot := filepath.Clean(cfg.ObsidianVault)
 	for _, p := range cfg.Projects {
@@ -122,7 +122,7 @@ func projectPathField(cfg *config.Config, project string) string {
 }
 
 // findVaultProjectDir resolves the vault-side project directory for a
-// project name: matches "001-release-manager" for "release-manager" (and
+// project name: matches "001-example-project" for "example-project" (and
 // exact names). Mirrors the daemon's project-dir lookup semantics.
 func findVaultProjectDir(vaultPath, project string) string {
 	projectsDir := filepath.Join(vaultPath, "Projects")

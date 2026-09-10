@@ -14,7 +14,7 @@ import (
 
 // TestRound2StallCooldown guards the exponential no-progress cooldown used
 // to stop entry-gate re-verification rounds from re-dispatching every scan
-// (TASK-071: 20+ identical gate-check LLM sessions per day).
+// (20+ identical gate-check LLM sessions per day).
 func TestRound2StallCooldown(t *testing.T) {
 	if got := round2StallCooldown(0); got != 10*time.Minute {
 		t.Fatalf("level 0 cooldown = %v, want 10m", got)
@@ -116,7 +116,7 @@ func TestRecordRound2Completion(t *testing.T) {
 // TestRecordRound2CompletionCapsAtBlockLevel 守护无进展熔断：连续 3 轮
 // no-progress round2（level 0,1,2）后不再派发会话——任务转 blocked +
 // PREREQUISITE_SMOKE_FAILED 门禁态，等待 blocked_by 事实恢复（观测：
-// TASK-058 同一 gate FAIL 报告空转 8+ 轮，每轮一次全量 LLM 会话）。
+// 同一 gate FAIL 报告空转 8+ 轮，每轮一次全量 LLM 会话）。
 func TestRecordRound2CompletionCapsAtBlockLevel(t *testing.T) {
 	dir := t.TempDir()
 	taskPath := filepath.Join(dir, "TASK-058.md")
@@ -197,7 +197,7 @@ func TestRecordRound2CompletionCapRestartSafe(t *testing.T) {
 
 // TestPrereqDepsMergedStricterThanSatisfied 守护熔断后的事实恢复门槛：
 // prereqDepsSatisfied 接受 done+clean（历史语义），prereqDepsMerged 还要求
-// merge_status=merged——防陈旧 frontmatter（done 但 PR 从未合入，TASK-018）
+// merge_status=merged——防陈旧 frontmatter（done 但 PR 从未合入）
 // 让熔断任务恢复后再次门禁 FAIL 形成 resume→FAIL→熔断循环。
 func TestPrereqDepsMergedStricterThanSatisfied(t *testing.T) {
 	dir := t.TempDir()

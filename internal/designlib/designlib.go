@@ -3,9 +3,9 @@
 // contracts/, decisions/, waves/ and glossary.md. It is the single source of
 // truth for interface contracts, ADRs, delivery waves and domain vocabulary;
 // per-task sessions read only their relevant slice instead of re-deriving
-// global understanding (the release-manager lesson: per-task grilling
-// exploded cost, one-shot global design + persistent library + batch
-// execution keeps each task cheap).
+// global understanding (a lesson learned: per-task grilling explodes cost,
+// one-shot global design + persistent library + batch execution keeps each
+// task cheap).
 package designlib
 
 import (

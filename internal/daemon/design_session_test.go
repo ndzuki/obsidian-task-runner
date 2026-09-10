@@ -109,7 +109,7 @@ func TestRunGlobalDesignSessionSuccess(t *testing.T) {
 	}
 	// The design session's working directory is the vault Design dir itself —
 	// the workspace-write sandbox scope is exactly the artifact tree, and the
-	// repo is only passed as a read-only evidence path (TASK-065 lesson).
+	// repo is only passed as a read-only evidence path.
 	if fake.spec.WorkingDir != layout.Root {
 		t.Fatalf("design WorkingDir=%q, want Design dir %q", fake.spec.WorkingDir, layout.Root)
 	}
@@ -121,9 +121,10 @@ func TestRunGlobalDesignSessionSuccess(t *testing.T) {
 	}
 }
 
-// TestRunGlobalDesignSessionRepoIsEvidenceOnly guards the TASK-065 fix: even
-// when a repo directory is provided, the session runs inside the vault Design
-// dir (its write scope) and receives the repo as a prompt argument.
+// TestRunGlobalDesignSessionRepoIsEvidenceOnly guards the evidence-only
+// contract: even when a repo directory is provided, the session runs inside
+// the vault Design dir (its write scope) and receives the repo as a prompt
+// argument.
 func TestRunGlobalDesignSessionRepoIsEvidenceOnly(t *testing.T) {
 	runner, _, projectDir := newDesignTestRunner(t)
 	layout := designlib.ForProject(projectDir)
@@ -148,8 +149,8 @@ func TestRunGlobalDesignSessionRepoIsEvidenceOnly(t *testing.T) {
 // TestRunGlobalDesignSessionImportsStagedLibrary covers the legacy fallback:
 // sessions from before the Design-dir contract staged artifacts under
 // <repo>/.design-stage/ and the daemon must validate+import them instead of
-// failing forever on an empty real library (TASK-065: valid staging sat in
-// the repo while the gate failed three times on the vault).
+// failing forever on an empty real library (valid staging sat in the repo
+// while the gate failed three times on the vault).
 func TestRunGlobalDesignSessionImportsStagedLibrary(t *testing.T) {
 	runner, _, projectDir := newDesignTestRunner(t)
 	repoDir := t.TempDir()

@@ -194,10 +194,10 @@ type Config struct {
     Projects       []Project `mapstructure:"projects"`
     Notifications  NotifConfig `mapstructure:"notifications"`
     PollInterval   time.Duration `mapstructure:"poll_interval_minutes"`
-    OMPModelDeepseek string `mapstructure:"omp_model_deepseek"`
-    OMPModelGPT      string `mapstructure:"omp_model_gpt"`
-    OMPModelDefault  string `mapstructure:"omp_model_default"`
-    OMPCmd           string `mapstructure:"dsh_cmd"`
+    ModelDeepseek   string `mapstructure:"model_deepseek"`
+    ModelGPT        string `mapstructure:"model_gpt"`
+    ModelDefault    string `mapstructure:"model_default"`
+    ExecCmd         string `mapstructure:"exec_cmd"`
 }
 ```
 

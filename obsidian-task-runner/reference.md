@@ -327,7 +327,7 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 | 对象 | 说明 |
 | ------ | ------ |
 | `Notes/Stage-Plan.md` | 阶段权威定义。固定格式：`### Phase N: {名称}` 块 + `- 目标:` / `- tasks:` / `- status:` 行（daemon 解析契约；只由 `stageplan` 包写入，PM/agent 不得自行追加阶段块） |
-| `Notes/Stage-Review.md` | PM 阶段评审产出：四维评分（完成度/质量/一致性/用户可体验性）+ 建议 + 「评审决策: continue / supplement:{建议} / end」 |
+| `Notes/Stage-Review.md` | PM 阶段评审产出：四维评分 + 文档闭环门禁（`documentation_gate_version: 1`、`pass|gap|not_applicable`、缺口与派生 TASK）+ 建议 + 「评审决策: continue / supplement:{建议} / end」 |
 | `stage` 字段（TASK/REQ frontmatter） | 阶段归属**权威判定**（`P{N}`）。创建 TASK 时从 REQ 继承；PM 拆分落地时写入；daemon 阶段完成检测按字段聚合，不依赖 Stage-Plan 的 tasks 列表（字段跟随任务移动，永不过期） |
 | `Notes/Roadmap.md` | 项目发展历史总览（回顾性，与 Stage-Plan 前瞻性互补），daemon 在交付事件点确定性追加（阶段评审/阶段决策/收口/归档），PM 补充语义 |
 
@@ -335,7 +335,9 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 
 **贯穿型需求**（e2e/测试/环境/CI）：按阶段拆成**场景包**，只依赖同阶段或更早阶段交付——禁止一次性全量（TASK-066 17 轮 replan 死锁的教训）。
 
-**阶段完成与评审**：daemon 检测某 in-progress 阶段全部任务 done+merged（`merge_status=merged`，stale PR 不算）→ 调 PM `stage-review` 评分写 Stage-Review.md → 用户填「评审决策:」→ daemon 检测到后调 PM `distribute`：`continue`（下一阶段 in-progress）/ `supplement:{建议}`（追加到下一阶段）/ `end`（后续阶段任务 close，功能满足即结束，不维护积压）。
+**阶段完成与评审**：daemon 检测某 in-progress 阶段全部任务 done+merged（`merge_status=merged`，stale PR 不算）→ 调 PM `stage-review` 写四维评分与文档覆盖矩阵。PM 以 `documentation_gate_version: 1` 声明 `pass|gap|not_applicable`；`gap` 时 daemon 将缺口确定性物化为普通 REQ/TASK（下一阶段或新文档收口阶段），并在任务 done+merged 前持有用户的评审决策。门禁开放后再分发 `continue`（下一阶段 in-progress）/ `supplement:{建议}`（追加到下一阶段）/ `end`（后续阶段任务 close，功能满足即结束，不维护积压）。
+
+**既有项目回补**：文档门禁上线前已有的 legacy `Stage-Review.md` 不会直接被猜测为缺口。daemon 为每个带 Stage-Plan 的既有项目一次性生成 `Notes/Documentation-Audit.md`，调用 PM `documentation-audit` 盘点真实 README/docs/配置/部署/运维与已完成交付；PM 写回 `pass|gap|not_applicable` 后，daemon 将结果同步到原 Stage-Review，`gap` 再进入普通文档收口 TASK 流程。审计文件和 PM 会话按路径幂等，历史项目不会被批量覆盖。
 
 **PM 语义层职责**（机械分组已由 daemon 承担）：补充阶段目标描述、按用户意图调整阶段边界（`stage-plan init --force` 或改 stage 字段）、新需求到达时评估归入现有阶段或建议追加新阶段（写清单「阶段规划确认」区，用户拍板）。
 

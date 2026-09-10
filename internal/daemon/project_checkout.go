@@ -23,8 +23,9 @@ import (
 // fallback) resolves every phase into the enclosing Vault repository. Round 2
 // worktrees branch the Vault repo and the merge flow pushes to the Vault's
 // origin — silently merging project deliverables into the wrong repository
-// (observed: TASK-001-demo merged into the myNote Vault repo instead of
-// ndzuki/demo). Promotion restores the documented convention
+// (observed: a fallback-path project merged into the enclosing Vault
+// repository instead of its own repository). Promotion restores the
+// documented convention
 // (docs/workflow.md 6.5: "path 优先 new_project_root/<name> 的约定 checkout"):
 // the project gets its own repository, origin from git_remote, and the
 // GitHub remote is created when missing (the registered git_remote is the
@@ -52,7 +53,7 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 		// has a sane default branch before the merge flow tries to create a
 		// PR. Without this an empty newly-created GitHub repo gets its first
 		// pushed feature branch as default, which makes PR base == head and
-		// stalls the task (observed: dshtui TASK-001).
+		// stalls the task (observed in production).
 		if t.Status == "review" || t.Status == "conflict" {
 			r.ensureCheckoutRemoteRepo(t, fallbackPath, gitRemote)
 		}
@@ -97,8 +98,7 @@ func (r *Runner) ensureProjectCheckout(t task.ReadyTask, fallbackPath string) (s
 // daemon only ran `git init` when the directory did NOT exist; an existing
 // non-git checkout was returned as-is, making every subsequent
 // ensureTaskWorktree fail with "not a git repository" and leaving the task in
-// implementing with no Round 2 NPC/session started (observed:
-// Projects/005-dshtui/Tasks/TASK-001).
+// implementing with no Round 2 NPC/session started (observed in production).
 func (r *Runner) ensureCheckoutGitInitialized(t task.ReadyTask, checkout string) error {
 	// Check whether checkout is already a standalone git root.
 	top, topErr := gitTopLevel(checkout)
@@ -194,7 +194,7 @@ func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote 
 	// For merge-bound work, push the local default branch immediately and set
 	// it as the remote default so a later feature-branch PR has a proper base
 	// (otherwise the first pushed feature branch becomes default and PR
-	// base==head, as observed on dshtui TASK-001).
+	// base==head, as observed in production).
 	if t.Status == "review" || t.Status == "conflict" {
 		if err := ensureRemoteDefaultBranch(checkout, ownerRepo); err != nil {
 			r.logger.Printf("task %s: ensure remote default branch %s: %v", t.ID, ownerRepo, err)
@@ -213,7 +213,7 @@ func (r *Runner) ensureCheckoutRemoteRepo(t task.ReadyTask, checkout, gitRemote 
 // could not be determined (remote unreachable, transient network error). A
 // failed probe must never fall through to a blind push: when connectivity
 // returns, the branch is usually already there and the push would be rejected
-// non-fast-forward (observed: dshtui TASK-008 flapping on "push default
+// non-fast-forward (observed: a task flapping on "push default
 // branch main ... non-fast-forward" while origin/main was 72 commits ahead).
 var errRemoteDefaultProbe = errors.New("cannot determine remote default-branch state")
 
@@ -357,10 +357,10 @@ func projectIsTeam(mapFile, projectName string) bool {
 // than a brand-new (greenfield) scaffold: the vault-map entry exists AND its
 // path is an existing directory on disk. This mirrors ResolveProject's
 // "existing" semantics — it is the authoritative signal that the project has a
-// real checkout to review before further development (004-deployd lesson: new
-// features were developed without first reviewing the project architecture —
-// dev ran SQLite while test/prod ran MySQL, and schema field-naming drift
-// shipped as a bug).
+// real checkout to review before further development (lesson from an
+// existing-codebase project: new features were developed without first
+// reviewing the project architecture — dev ran SQLite while test/prod ran
+// MySQL, and schema field-naming drift shipped as a bug).
 //
 // Team projects are a subset (they are registered existing repos). New
 // projects are NOT existing until auto-registration materializes a path, so

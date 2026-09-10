@@ -140,7 +140,9 @@ manual`；**fork 出来开发**（推荐，团队仓库只读、由你手动向�
 - **阶段顺序调度**：daemon 对 ready 任务按 **项目内 stage 升序**（数字序，`P10` 在 `P2` 后）→ priority → created 排序拾取——低阶段任务优先消耗实现容量，P1 未收敛前 P2+ 任务不抢容量；**跨项目不做 stage 比较**（各项目阶段独立，按 priority → created → project 排序），未分阶段任务排最后（当轮即被 auto-staging 归组）。阶段只用于「顺序调度 + 完成后评审」，不阻止后阶段任务提前进入 refining/planning——依赖先后由 `blocked_by` 表达（release-manager 教训：无依赖声明的并发实现产生 57/253 冲突合并与 11 次 v2/v3 返工）。
 - **阶段完成**：daemon 检测某 in-progress 阶段全部 `stage` 任务 done+merged → 调 PM `stage-review`（四维评分 + 建议 → `Notes/Stage-Review.md`）；**防卡死放宽**——剩余任务全部 blocked/closed（无可推进任务）的阶段同样触发评审，PM 给出「继续等待 / 收窄 / 拆出」建议，阶段不会无限静默。
 - **阶段目标自动填**：auto-staging 生成阶段块时 `- 目标:` 自动派生（阶段名 + 任务数），PM 可覆盖为可演示成果——占位不退化（P4/P5/P6 空目标教训）。
-- **用户决策**：回答 Stage-Review「评审决策: continue / supplement:{建议} / end」→ daemon 分发（继续下一阶段 / 建议写入下一阶段 / 后续阶段任务 close，功能满足即结束）。
+- **文档闭环门禁**：PM stage-review 额外写 `documentation_gate_version: 1` 与 `documentation_gate: pass|gap|not_applicable`。`gap` 时逐条写 `documentation_gaps`；daemon 自动创建普通「项目交付文档收口」REQ/TASK（优先归入下一阶段，无下一阶段则追加文档收口阶段），沿用原实现 assignee/default_assignee，且在该 TASK done+merged 前不分发阶段决策。不新增 `documenting` 主状态。
+- **既有项目一次性回补**：对文档门禁上线前已有的 `Stage-Review.md`，daemon 先生成 `Notes/Documentation-Audit.md`，独立调用 PM `documentation-audit`；PM 完成 `pass|gap|not_applicable` 审计后，daemon 同步门禁到原 Stage-Review，`gap` 再进入普通文档 TASK 流程。审计文件创建与 PM 会话按路径幂等，不预设所有旧项目都有缺口。
+- **用户决策**：回答 Stage-Review「评审决策: continue / supplement:{建议} / end」→ 文档门禁开放后 daemon 分发（继续下一阶段 / 建议写入下一阶段 / 后续阶段任务 close，功能满足即结束）。
 - **阶段规模**：由配置 `stage_min_per_phase`/`stage_max_phases` 控制（daemon 分组参数）；PM 仅在新需求到达时评估归入现有阶段或**建议增/拆阶段**（写清单「阶段规划确认」区，用户拍板，不塞进进行中阶段）。
 
 ## 依赖卫生与健康诊断（Daemon Health）

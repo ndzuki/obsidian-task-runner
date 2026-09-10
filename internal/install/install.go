@@ -515,7 +515,7 @@ func ConfigureSystemd(opts Options) error {
 	}
 
 	// agent_server_managed 决定 agent-server 所有权，systemd 单元必须跟随，
-	// 否则形成死锁（2026-08-31 事故）：
+	// 否则形成死锁（线上事故）：
 	//   - managed=true（daemon 自管，默认）：watcher 不得 Requires dsh-agent-server，
 	//     也不启用该 service——否则每次 watcher 启动，systemd 强制拉起
 	//     dsh-agent-server（Requires + Restart=always）抢占 8799，daemon 自管

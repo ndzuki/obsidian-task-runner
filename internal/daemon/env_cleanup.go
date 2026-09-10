@@ -16,7 +16,7 @@ import (
 // Daemon-side environment teardown for the merge/terminal phase AND for
 // dead-end states where a task stops implementing without merging.
 //
-// Background (2026-08-28 TASK-065): the implementing session's smoke test
+// Background: the implementing session's smoke test
 // built 5 k3d clusters + 1 k3d registry and left them running after merge.
 // The completion audit saw the leftovers, classified them as "in-flight
 // audit/merge residual" (not implementation residual), and passed — so the
@@ -24,7 +24,7 @@ import (
 // audit gate can *report* residuals but cannot delete them (read-only
 // session), and cleanupTaskArtifacts only removes files/worktrees.
 //
-// Background (2026-08-28 TASK-066): an implementing session can also be cut
+// Background: an implementing session can also be cut
 // short by a requirement-driven block (status=blocked / needs-grilling /
 // closed) before any merge — the k3d clusters it created then keep running
 // indefinitely because the merge-only teardown never fires. So the teardown
@@ -131,7 +131,7 @@ func (r *Runner) cleanupBlockedEnv(taskPath, taskID, taskTitle string) {
 // dead-end tasks. blocked / needs-grilling / closed tasks are not all part
 // of the ready batch (task.IsReady filters out blocked-with-phase-failure and
 // closed), so the dispatch-loop hooks alone would never reach them — e.g. a
-// task blocked by a requirement change (pending_req=true, TASK-066) is routed
+// task blocked by a requirement change (pending_req=true) is routed
 // to refining by recoverBlockedPendingReq without ever passing through
 // processBatchSequential. This sweep enumerates every task file each scan and
 // lets cleanupBlockedEnv run once per blocked episode.

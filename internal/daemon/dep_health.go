@@ -70,8 +70,8 @@ func (r *Runner) autoCloseStaleMergedTasks() int {
 			// PR merged (incremental replan: plan_version >= 2) still owes a new
 			// delivery — the historical merge_status=merged is the baseline's
 			// evidence, not the increment's. Auto-closing it would silently drop
-			// the pending increment (observed: TASK-068 — plan v3 was written to
-			// plan-review and closed the next scan once Round 1 cleared
+			// the pending increment (observed: a newer plan written to
+			// plan-review was auto-closed the next scan once Round 1 cleared
 			// pending_req). plan_version < 2 keeps the original stale-closure
 			// semantics (single delivery whose PR merged).
 			if fm.PlanVersion >= 2 {
@@ -109,7 +109,7 @@ const conflictPRProbeInterval = 5 * time.Minute
 // evidence, but autoCloseStaleMergedTasks only sees merge_status=merged —
 // conflict tasks carry conflict-resolve-attempted/auto-fix-conflict instead
 // and would stay stuck forever, blocking downstream blocked_by chains
-// (TASK-067: PR #51 merged by hand, task kept dispatching nothing until
+// (observed: a PR merged by hand left its task dispatching nothing until the
 // frontmatter was rewritten manually). Probe the PR state at a bounded rate
 // and complete the task when it reports MERGED.
 func (r *Runner) autoCloseMergedConflictPRs() int {
@@ -208,8 +208,8 @@ func (r *Runner) autoCloseMergedConflictPRs() int {
 // while carrying a newer plan (plan_version >= 2) and a checkpoint_commit
 // that is NOT an ancestor of origin/main is an undelivered increment frozen
 // behind a terminal state — the daemon would never dispatch it again
-// (TASK-018: an external frontmatter write overwrote the reopen back to the
-// baseline done; downstream TASK-071 starved on the fake done via the
+// (observed: an external frontmatter write overwrote the reopen back to the
+// baseline done; downstream tasks starved on the fake done via the
 // dependency gate). The reopen applies the same generation reset as a
 // breaking REQ change so the merge flow later creates a fresh PR. Tasks
 // whose checkpoint is an ancestor (or whose repo cannot be resolved, or the
@@ -272,8 +272,8 @@ func (r *Runner) detectStaleDoneReopens() int {
 			// Not in the local mirror — but the mirror itself may be stale: a
 			// merge completed moments ago (gh pr merge happens on the forge;
 			// the local origin/main ref updates only on the next fetch) reads
-			// as "undelivered" here (TASK-018 2026-08-14: reopened minutes
-			// after PR #76 merged). Refresh before declaring a stale
+			// as "undelivered" here (observed: a task was reopened minutes
+			// after its PR merged). Refresh before declaring a stale
 			// terminal. A failed fetch is uncertainty — keep the task
 			// untouched and let the next scan retry (conservative: never
 			// reopen on uncertainty).
@@ -443,8 +443,8 @@ func (r *Runner) validateDependencyRefs() {
 		projDir := filepath.Join(projectsDir, projectEntry.Name())
 		// 项目决策清单 paused/closed 是用户的主动暂停开关：该项目的依赖诊断
 		// 提醒（上游长期未完成、引用失效等）本质是"催促用户推进"，而用户已
-		// 明确搁置该项目，继续提醒只会形成桌面提醒风暴（TASK-003/004/005
-		// 被 paused 项目的 needs-grilling 上游阻塞时，每次 daemon 重启都会重发
+		// 明确搁置该项目，继续提醒只会形成桌面提醒风暴（paused 项目的
+		// needs-grilling 上游阻塞会在每次 daemon 重启时重发
 		// blocked_by_stale 提醒——diagNotifyAt 是纯内存）。暂停期静默诊断，
 		// 待清单 status 改回 open 后自动恢复。
 		if listPath := filepath.Join(projDir, "Notes", grillingDecisionListName); grillingListPaused(listPath) {
@@ -493,8 +493,9 @@ func (r *Runner) validateDependencyRefs() {
 					}
 					// Upstream-starvation visibility: a non-terminal upstream
 					// that has not advanced for a long time silently blocks
-					// everything downstream (TASK-067: 019/057/066/069 waited
-					// a month+ on an unmerged PR with no signal). Notify once
+					// everything downstream (observed: several downstream tasks
+					// waited a month+ on an unmerged PR with no signal). Notify
+					// once
 					// per (project, upstream, DAY) when its last update
 					// crosses the threshold — the date suffix makes it a
 					// daily reminder instead of once per daemon process.

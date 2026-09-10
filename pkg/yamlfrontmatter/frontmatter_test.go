@@ -310,7 +310,7 @@ func TestRepair(t *testing.T) {
 	})
 
 	t.Run("recovers markdown body mistaken as frontmatter", func(t *testing.T) {
-		// Simulates the TASK-061 scenario: closing "---" delimiter is missing,
+		// Simulates a corrupted document: closing "---" delimiter is missing,
 		// the next "---" in the file is a horizontal rule in the body.
 		// Repair should detect that the discarded lines are markdown and preserve them.
 		path := filepath.Join(dir, "missing-delimiter.md")
@@ -1010,8 +1010,8 @@ func TestNormalizeTaskFrontmatterRejectsCorrupt(t *testing.T) {
 	}
 }
 
-// TestNormalizeTaskFrontmatterNumericStrings pins the 2026-09-04 cleanup
-// behavior: schema-removed keys are tolerated in Extra and must not block
+// TestNormalizeTaskFrontmatterNumericStrings pins the cleanup behavior:
+// schema-removed keys are tolerated in Extra and must not block
 // normalization.
 func TestNormalizeTaskFrontmatterNumericStrings(t *testing.T) {
 	dir := t.TempDir()

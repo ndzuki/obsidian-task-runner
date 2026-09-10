@@ -142,8 +142,8 @@ func TestCloseRequiresAuditableEvidence(t *testing.T) {
 	}
 }
 
-// TestParkedBlocksStaleReplan guards the no-op replan loop (TASK-066: 17
-// rounds zero convergence): a parked task carrying a stale
+// TestParkedBlocksStaleReplan guards the no-op replan loop (17 rounds of
+// zero convergence): a parked task carrying a stale
 // grill_done+grill_resolution=replan from before parking must NEVER
 // auto-transition back to refining — that re-opens the cycle on an
 // unchanged REQ. Only PM distribute explicitly resets parked tasks.
@@ -207,8 +207,8 @@ func TestDoneWithUnmergedPRReopensMerge(t *testing.T) {
 	}
 }
 
-// TestPrematurePlanApprovalResetSkipsPhaseBlocked guards the 2026-08-25
-// TASK-065 status-flapping fix: a phase-failure blocked task
+// TestPrematurePlanApprovalResetSkipsPhaseBlocked guards the status-flapping
+// fix: a phase-failure blocked task
 // (blocked_phase != "") resumes into the SAME phase with the SAME approved
 // plan. The catch-all "premature plan approval reset" must not wipe
 // plan_approved there, otherwise every transient infra failure

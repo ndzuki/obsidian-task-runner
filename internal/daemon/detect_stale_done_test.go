@@ -17,8 +17,8 @@ import (
 // TestDetectStaleDoneReopens guards the stale-terminal reopen loop: a done
 // task whose plan_version >= 2 carries a checkpoint_commit that is NOT an
 // ancestor of origin/main is an undelivered increment frozen behind a fake
-// terminal (TASK-018: an external frontmatter write restored the baseline
-// done; downstream TASK-071 starved on the dependency gate). Such tasks
+// terminal (an external frontmatter write restored the baseline done; the
+// downstream starved on the dependency gate). Such tasks
 // reopen to refining with a full generation reset. Tasks whose checkpoint
 // IS merged, plan < 2, no checkpoint, no merged PR, or an unresolvable
 // project stay untouched — conservative.
@@ -33,7 +33,7 @@ func TestDetectStaleDoneReopens(t *testing.T) {
 	base, checkpoint := initGitRepo(t, repoDir)
 	// A second repo whose remote main ALREADY carries the checkpoint while
 	// the local origin/main mirror is stale (pre-fetch state right after a
-	// forge-side merge) — the regression shape of TASK-018 2026-08-14.
+	// forge-side merge) — the regression shape guarded by this test.
 	mergedRepoDir := filepath.Join(dir, "merged-repo")
 	_, mergedCheckpoint := initMergedRemoteRepo(t, mergedRepoDir)
 
@@ -152,8 +152,8 @@ func initGitRepo(t *testing.T, repoDir string) (string, string) {
 // initMergedRemoteRepo builds the delivery-just-landed shape: the remote
 // main carries the checkpoint (as after a forge-side merge), but the local
 // origin/main mirror is rolled back to base — the pre-fetch state the stale
-// done detector races right after gh pr merge (TASK-018 2026-08-14: the
-// detector reopened a delivered task minutes after PR #76 merged). Returns
+// done detector races right after gh pr merge (the detector once reopened
+// a delivered task minutes after its PR merged). Returns
 // (base, checkpoint).
 func initMergedRemoteRepo(t *testing.T, repoDir string) (string, string) {
 	t.Helper()

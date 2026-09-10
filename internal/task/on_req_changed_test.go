@@ -380,7 +380,7 @@ func writeReqTaskAt(t *testing.T, vault, reqBody string, taskYAML map[string]str
 // branch: a REQ whose hash matches the task's refine_req_hash is normally
 // skipped (refining/PM self-writes must not re-open tasks) — EXCEPT when the
 // task is frozen in a stale terminal (done + plan_version>=2 + unmerged
-// checkpoint, TASK-018 lesson): absorbing would keep the undelivered
+// checkpoint): absorbing would keep the undelivered
 // increment locked, so the done branch (breaking reopen) must run.
 func TestOnReqChanged_AbsorbedSkipsExceptStaleDone(t *testing.T) {
 	reqBody, reqHash := reqContentWithType("")
@@ -503,7 +503,7 @@ func writeDependentVault(t *testing.T, changeType string) (vault, task098Path st
 // TestOnReqChanged_PropagatesToDependents guards the reverse pass: a
 // breaking change to REQ-099 marks the task of every REQ that depends_on 099
 // pending, so a merged upstream contract break cannot silently reach a later
-// audit or gate failure (TASK-058 vs TASK-079 lesson).
+// audit or gate failure (an observed failure mode).
 func TestOnReqChanged_PropagatesToDependents(t *testing.T) {
 	vault, task098Path := writeDependentVault(t, ReqChangeBreaking)
 

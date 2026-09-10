@@ -95,7 +95,7 @@ func TestTaskTemplateKeysMatchSchema(t *testing.T) {
 	}
 }
 
-// TestRemovedFieldsNotInSchema pins the 2026-09-04 cleanup: the removed keys
+// TestRemovedFieldsNotInSchema pins the cleanup contract: the removed keys
 // must stay out of struct, order and backfill table.
 func TestRemovedFieldsNotInSchema(t *testing.T) {
 	removed := []string{"template", "estimated_hours", "actual_hours", "component", "parent", "target_env", "due_date"}

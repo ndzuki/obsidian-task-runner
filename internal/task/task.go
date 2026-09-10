@@ -128,8 +128,8 @@ type fmLookup func(path string) (*yamlfrontmatter.Frontmatter, bool)
 // status "done" by scanning the specified project's Tasks/ directory.
 // References use format:
 //
-//	"TASK-010" — within current project
-//	"project-key:TASK-010" — cross-project lookup via vault-map scan
+//	"TASK-<id>" — within current project
+//	"project-key:TASK-<id>" — cross-project lookup via vault-map scan
 func AreBlockersDone(vaultPath, projectName string, blockedBy []string) bool {
 	return areBlockersDoneWith(vaultPath, projectName, blockedBy, nil)
 }
@@ -271,7 +271,7 @@ func isAutoUnblockableWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lo
 		// PHASE_INTERRUPTED tasks are self-healed the same way on restart
 		// (docs/workflow.md 3.2 promises automatic re-scheduling, no manual
 		// resume); legacy daemons wrote interrupted phases as blocked
-		// (observed: TASK-015).
+		// (observed on migrated tasks).
 		switch fm.PhaseErrorCode {
 		case PhaseErrorCodeAPIKeyUnavailable, PhaseErrorCodeInterrupted:
 			return true
@@ -335,8 +335,8 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 		// Dependency gate applies to scheduling phases too: a task whose
 		// blocked_by upstreams are not done must not be dispatched into
 		// refining/planning — otherwise unmerged upstreams drive endless
-		// no-op replans (TASK-066 regression: 15 plan versions while
-		// upstream TASK-067/065 were unmerged).
+		// no-op replans (a regression produced 15 plan versions while
+		// upstream tasks were unmerged).
 		if !isEmptyList(fm.BlockedBy) {
 			if !areBlockersDoneWith(vaultPath, fm.Project, fm.BlockedBy, lookup) {
 				return false
@@ -362,16 +362,16 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 		// auto_approve 转成 implementing + plan_approved=true（auto_approve 默认
 		// 开，Grilling 是唯一人工关卡）。只放行 plan_approved 会把 auto_approve
 		// 的 plan-review 挡在 IsReady 门外，auto-approve 永远不执行
-		// （2026-08-25 TASK-065：v22 计划停在 plan-review/plan_approved=false，
-		// daemon 每轮 scan 都看不到它）。
+		// （曾有计划停在 plan-review/plan_approved=false，daemon 每轮 scan
+		// 都看不到它）。
 		return (fm.PlanApproved || fm.AutoApprove) && (!fm.OffPeakOnly || OffPeakFn())
 	case "review":
 		// Fresh review (Round 2 completed, no failure) with auto_merge is
 		// ready so the daemon auto-approves and merges without a manual gate.
 		// Merge-failure fallbacks with repair budget left also enter the
 		// batch so the daemon's canAutoApproveMerge re-authorizes them
-		// (TASK-051/059: a strict empty-phase-error requirement stranded
-		// auto_merge tasks forever). Permanent defects (wrong remote) and
+		// (a strict empty-phase-error requirement stranded auto_merge tasks
+		// forever). Permanent defects (wrong remote) and
 		// exhausted budgets are coarse-filtered here; the gate makes the
 		// precise REQ-hash/budget decision.
 		return fm.PendingReq || fm.MergeApproved || (fm.AutoMerge && !isPermanentMergeDefect(fm.PhaseErrorCode))
@@ -401,10 +401,10 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 // from the ready batch on GITHUB_UNAVAILABLE strands it forever even after
 // the environment heals — the re-authorization gate canAutoApproveMerge
 // already handles the "still broken" case by re-checking gh auth and
-// revoking authorization when the CLI is genuinely absent (TASK-065
-// 2026-08-28: gh keyring was unavailable for one scan, the task was
-// coarse-filtered out of the batch, and never re-entered even after gh
-// auth recovered). Everything else — conflicts, CI failures, base-commit
+// revoking authorization when the CLI is genuinely absent (a transient gh
+// keyring unavailability for one scan coarse-filtered a task out of the
+// batch, and it never re-entered even after gh auth recovered). Everything
+// else — conflicts, CI failures, base-commit
 // drift — is re-attemptable while the repair budget lasts.
 func isPermanentMergeDefect(phaseErrorCode string) bool {
 	return phaseErrorCode == "REPO_MISMATCH"

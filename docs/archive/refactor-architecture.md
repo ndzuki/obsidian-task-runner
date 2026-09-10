@@ -7,18 +7,17 @@
 
 > 状态：审查完成，方案定稿，等待分阶段实施
 > 分支：`refactor/dsh-architecture`（不直接改 main）
-> 日期：2026-08-18
 
 ---
 
 ## 0. 摘要（TL;DR）
 
-`obsidian-task-runner`（otr）当前是「Go daemon 状态机 + 外部早期执行器进程执行」的架构。审查两项目（otr 工具本身 + 被它开发的 release-manager）后，确认：
+`obsidian-task-runner`（otr）当前是「Go daemon 状态机 + 外部早期执行器进程执行」的架构。审查两项目（otr 工具本身 + 一个被它开发的旗舰案例项目）后，确认：
 
 1. **otr 的 Go 调度/状态机设计是扎实的**（34.8MB 常驻、1.2% CPU、flock 原子写、82 个测试全绿）——**这部分保留，不重写成 TS**。
 2. **真正的债在执行层与决策层**：
    - 执行层深度耦合早期执行器 CLI/日志/PID 协议，无法平滑迁到 DSH；
-   - 决策层把「需求理解/设计推理」散落到 73 个任务各自的会话里，反复重规划、互相冲突——这是 release-manager 交付慢、返工多的根因。
+   - 决策层把「需求理解/设计推理」散落到 73 个任务各自的会话里，反复重规划、互相冲突——这是该旗舰案例项目交付慢、返工多的根因。
 3. **目标架构**：Go 确定性控制面 + PhaseExecutor seam（早期执行器/DSH 双 adapter）+ **一次性全局设计库**（单一事实源）+ DSH Web 看板插件。性能只升不降（实测 dsh headless 峰值 227MB / 启动 0.04s，优于早期执行器的 830MB / 3.92s）。
 
 ---
@@ -28,12 +27,12 @@
 ### 1.1 现状
 
 - `otr` 把 Obsidian Vault 当需求入口，由 `otg daemon`（Go，约 2.4 万行）调度多阶段任务（refining → planning → implementing → review → merge → done），每阶段 spawn 一个外部早期执行器 headless 进程执行。
-- release-manager 是它的旗舰案例：**67 个 REQ / 73 个 TASK / 23 个 ADR / 12.6 万行 Go 代码 / 514 commits**。
+- 一个被它开发的旗舰案例项目：**67 个 REQ / 73 个 TASK / 23 个 ADR / 12.6 万行 Go 代码 / 514 commits**。
 
 ### 1.2 目标
 
 1. **执行引擎从早期执行器平滑迁到 DeepSeek Harness**（`dsh --profile headless`，或未来 DSH 原生 agent），拿到 DSH 的模型路由/fallback、工具过滤、结构化输出、skill 集成能力。
-2. **解决 release-manager 暴露的决策层问题**：需求理解从「每任务反复会话」上移到「一次性全局设计库」。
+2. **解决该旗舰案例暴露的决策层问题**：需求理解从「每任务反复会话」上移到「一次性全局设计库」。
 3. **性能不降反升**：并发调度继续由 Go 控制面负责（34.8MB），执行进程比早期执行器更轻。
 4. **Vault 项目管理/看板以 DSH Web 插件呈现**，逐步取代打开 Obsidian。
 5. 全程**非 main 分支**推进、每步可验证、失败可回滚。
@@ -76,15 +75,15 @@ watcher 通道溢出、新目录不递归 watch、debounce map 无界、`Index.f
 - skills 清单存在 5/6/7/8 多源漂移；外部 skill 未完整登记或未 fail-fast。
 - 确定 P0 bug：`scripts/skill-doctor:261-265` 用未定义 `$symlink`，`set -u` 下阻断 discovery symlink 创建。
 
-### 2.2 release-manager（被开发项目）交付审查
+### 2.2 旗舰案例项目（被开发项目）交付审查
 
 #### 交付数据
 
 | 指标 | 数值 | 含义 |
 |---|---|---|
 | REQ / TASK / ADR | 67 / 73 / 23 | 从 1 段文字膨胀到 67 份原子需求 |
-| 最大 TASK | **1.4MB**（TASK-057） | 计划+实现+验收+审计全历史堆叠 |
-| 最大重工 | TASK-069 **plan=17**、TASK-018 plan=7 | 一个需求规划 17 版 |
+| 最大 TASK | **1.4MB**（单个任务） | 计划+实现+验收+审计全历史堆叠 |
+| 最大重工 | 单任务 **plan=17**、另一任务 plan=7 | 一个需求规划 17 版 |
 | reopen_count>0 | 6 个任务 | 交付后又被打破重开 |
 | checkpoint_commit 非空 | 22 个任务 | 22 次中途打断/重规划 |
 | 代码产出 | 446 Go 文件 / **12.6 万行** / git 505MB | 真实大型平台 |
@@ -92,9 +91,9 @@ watcher 通道溢出、新目录不递归 watch、debounce map 无界、`Index.f
 
 #### 暴露的问题
 
-1. **需求迭代成本爆炸**：67 份 REQ 是「每任务跑完整 LLM 会话 grilling」迭代出来的。需求细化本质是结构化决策，却用最贵的生成式会话去做——每次重规划重复读同样的 REQ+ADR+CONTEXT，上下文不连续导致反复推翻自己（TASK-069 plan=17、TASK-018 plan=7）。
-2. **决策无单一事实源**：23 个 ADR + 67 个 REQ 分散在 73 个任务文件，每任务会话只看到局部上下文。出现 TASK-018 被「陈旧终态 metadata 卡死」（daemon 以为 done，实际代码没合入）这类跨任务不一致。
-3. **契约定义不足导致返工**：早期无依赖声明的并发实现产生 57/253 冲突合并、11 次 v2/v3 返工（项目文档自记教训）。共享契约（REQ-009/010）放 Wave 0 的洞察对，但实现方式太贵。
+1. **需求迭代成本爆炸**：67 份 REQ 是「每任务跑完整 LLM 会话 grilling」迭代出来的。需求细化本质是结构化决策，却用最贵的生成式会话去做——每次重规划重复读同样的 REQ+ADR+CONTEXT，上下文不连续导致反复推翻自己（极端案例 plan=17、plan=7）。
+2. **决策无单一事实源**：23 个 ADR + 67 个 REQ 分散在 73 个任务文件，每任务会话只看到局部上下文。出现某任务被「陈旧终态 metadata 卡死」（daemon 以为 done，实际代码没合入）这类跨任务不一致。
+3. **契约定义不足导致返工**：早期无依赖声明的并发实现产生 57/253 冲突合并、11 次 v2/v3 返工（项目文档自记教训）。共享契约放 Wave 0 的洞察对，但实现方式太贵。
 4. **「分解」本身是对的，错在执行方式**：引入 wayfinder/grilling 的意图（结构化分解）正确，但用成了「每任务迭代的昂贵引擎」。
 
 ### 2.3 根本原因（两项目合并）
@@ -111,7 +110,7 @@ watcher 通道溢出、新目录不递归 watch、debounce map 无界、`Index.f
 ### 3.1 执行层：抽 PhaseExecutor seam（P1-1，最高优先）
 
 ```
-otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻结，回退）
+otg daemon (Go) ── PhaseExecutor 接口 ──┬─ legacyAdapter（行为冻结，回退）
                                         └─ dshAdapter（spawn dsh headless）
 ```
 
@@ -128,7 +127,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 
 ### 3.3 决策层：一次性全局设计库（本方案核心创新）
 
-> 这是对 release-manager 交付问题的最重要回应。
+> 这是对该旗舰案例项目交付问题的最重要回应。
 
 **原则**：需求理解/设计推理从「每任务会话」上移到「一次性全局设计会话」，产出**持久设计库**作为单一事实源。
 
@@ -144,7 +143,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
   - `glossary.md`（领域词汇）
 - **任务执行**（v4-flash，批量）：每任务只读设计库**相关切片** + 自己 REQ，不重复理解全局。
 - **契约先行**：并行任务必须先定义共享契约（Wave 0 强化），实现期只对接契约，减少合并冲突。
-- **粒度控制**：新增「重规划门禁」——plan_version 超阈值（如 5）自动升级为设计库修订而非单任务 replan，阻止 TASK-069 plan=17 这类空转。
+- **粒度控制**：新增「重规划门禁」——plan_version 超阈值（如 5）自动升级为设计库修订而非单任务 replan，阻止单任务 plan=17 这类空转。
 
 ### 3.4 校验层：校验失败阻断（P1-3）
 
@@ -203,7 +202,7 @@ otg daemon (Go) ── PhaseExecutor 接口 ──┬─ ompAdapter（行为冻�
 └───────────────┬─────────────────────────────────────────────────────┘
                 │ PhaseExecutor seam
         ┌───────┴────────┐
-        │ ompAdapter     │ dshAdapter
+        │ legacyAdapter │ dshAdapter
         │（回退，冻结）   │（dsh --profile headless / 未来 ctx.agents）
         └───────┬────────┘
                 │ spawn 每阶段执行进程（227MB 峰值，结束即退）
@@ -243,7 +242,7 @@ Vault 看板内存验收（Phase 4d）：`otg web serve` 作为独立 Go 进程�
 | 阶段 | 内容 | 验证门禁 | 分支 |
 |---|---|---|---|
 | **Phase 0** | 本文档 + 基线测试固化 | `make test` 全绿 | refactor/dsh-architecture |
-| **Phase 1** | PhaseExecutor seam + ompAdapter（行为冻结）+ dshAdapter（spawn headless） | 现有 daemon 测试全绿 + 新增 adapter contract 测试（Start/Resume/Cancel/Collect） | 同上 |
+| **Phase 1** | PhaseExecutor seam + legacyAdapter（行为冻结）+ dshAdapter（spawn headless） | 现有 daemon 测试全绿 + 新增 adapter contract 测试（Start/Resume/Cancel/Collect） | 同上 |
 | **Phase 2** | TaskStore.Apply + generation/attempt fencing；watcher Remove/Rename；compact 走锁；校验失败阻断 | fencing 测试（旧会话晚到写回被拒）+ P0 修复测试 | 同上 |
 | **Phase 3** | 设计库（contracts/decisions/waves/glossary）+ v4-pro 全局设计会话 + 重规划门禁 | 设计库 schema 测试 + 全局设计会话产物验证 | 同上 |
 | **Phase 4** | Vault Web 看板插件（白名单 viewId DTO + 读写分层） | DSH Web 启动 + 视图数据正确性 + 安全测试 | 独立插件仓库或本仓库 dsh.client 包 |
@@ -270,5 +269,5 @@ Vault 看板内存验收（Phase 4d）：`otg web serve` 作为独立 Go 进程�
 
 - otr 设计规范：`docs/workflow.md`（1334 行状态机/验收清单）、`obsidian-task-runner/reference.md`、`docs/dataview.md`、`docs/go-rewrite-plan.md`
 - otr 代码：`internal/daemon`（2.4 万行）、`internal/task`、`internal/knowledge`、`pkg/yamlfrontmatter`
-- 交付实例：`~/myNote/Projects/001-release-manager/`（67 REQ/73 TASK/23 ADR）、`~/release-manager/`（12.6 万行 Go）
+- 交付实例：一个 Vault 项目目录（67 REQ/73 TASK/23 ADR）与对应代码仓库（12.6 万行 Go）
 - 相关审查：本文档第 2 节汇总自 5 个领域只读审查 + 实测数据

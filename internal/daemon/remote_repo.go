@@ -50,7 +50,7 @@ func (r *Runner) ensureRemoteRepository(taskPath, repoDir string) error {
 		return fmt.Errorf("github_owner not set and no existing vault-map remote to derive owner from")
 	}
 	// Repository name uses the project name without the numeric vault prefix
-	// ("001-release-manager" → "release-manager"); explicit RepositoryName wins.
+	// ("001-example-project" → "example-project"); explicit RepositoryName wins.
 	name := fm.RepositoryName
 	if name == "" {
 		name = stripProjectPrefix(filepath.Base(repoDir))
@@ -120,8 +120,8 @@ func (r *Runner) ensureRemoteRepository(taskPath, repoDir string) error {
 	return nil
 }
 
-// stripProjectPrefix removes the numeric vault prefix ("001-release-manager" →
-// "release-manager"); returns the input unchanged when no prefix is present.
+// stripProjectPrefix removes the numeric vault prefix ("001-example-project" →
+// "example-project"); returns the input unchanged when no prefix is present.
 func stripProjectPrefix(name string) string {
 	i := 0
 	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
@@ -195,7 +195,7 @@ func firstSummaryLine(body string) string {
 }
 
 // githubOwnerFromVaultMap derives the GitHub owner from the first existing
-// project's git_remote (e.g. "github.com/ndzuki/x" → "ndzuki").
+// project's git_remote (e.g. "github.com/octocat/x" → "octocat").
 func githubOwnerFromVaultMap(mapFile string) string {
 	data, err := os.ReadFile(mapFile)
 	if err != nil {

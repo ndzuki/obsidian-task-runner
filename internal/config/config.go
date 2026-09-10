@@ -51,9 +51,9 @@ type Config struct {
 	AgentServerAddr string `json:"agent_server_addr"`
 	// AgentServerManaged controls whether the daemon starts/stops the
 	// agent-server child itself. When false, the operator is expected to run
-	// `dsh --profile headless-agent-server` as an external systemd service
-	// (dsh-agent-server.service); the daemon only waits for it to become
-	// healthy and never spawns or kills it.
+	// `dsh --profile headless-agent-server` as an external systemd service;
+	// the daemon only waits for it to become healthy and never spawns or
+	// kills it.
 	AgentServerManaged bool `json:"agent_server_managed"`
 	// VaultWebAddr is the read-only vault dashboard HTTP API address (host:port)
 	// served in-process by the daemon for the DSH web vault-dashboard plugin
@@ -88,9 +88,9 @@ type Config struct {
 	// set as a global floor. Below the floor the daemon first auto-recovers
 	// (stops restartable k3d staging clusters) and, if still short, escalates
 	// to a project-level grilling decision instead of burning a round2 session
-	// that would only discover the shortfall (2026-08-25 TASK-065: 12GiB gate
-	// 1GiB short looped between implementing/grilling and required a manual
-	// `k3d cluster stop`).
+	// that would only discover the shortfall (a gate that is just under the
+	// declared floor can loop between implementing/grilling until someone
+	// manually stops a k3d cluster).
 	MemoryGate MemoryGateConfig `json:"memory_gate"`
 
 	// EnvCleanup is the daemon-side environment teardown that runs when an
@@ -100,9 +100,9 @@ type Config struct {
 	// registries, docker networks) for smoke tests; when the session forgets
 	// to tear them down the audit gate reports "in-flight residual" and the
 	// merge completes (or the task blocks) with the environment still running
-	// (2026-08-28 TASK-065: 5 k3d clusters + 1 registry survived merge;
-	// TASK-066: k3d containers left after a requirement-driven block). This
-	// gate deletes those leftovers, bounded by Exclude and DryRun.
+	// (sessions have survived a merge with several clusters plus a registry,
+	// and requirement-driven blocks have left containers behind). This gate
+	// deletes those leftovers, bounded by Exclude and DryRun.
 	EnvCleanup *EnvCleanupConfig `json:"env_cleanup,omitempty"`
 
 	// Knowledge-base vector search (optional). When configured and the
@@ -257,9 +257,8 @@ type EnvCleanupConfig struct {
 	// merging: blocked by a phase failure, blocked by a requirement change /
 	// pending_req replan, held in needs-grilling, or closed. Implementing
 	// sessions can leave k3d clusters / registries / networks behind on these
-	// paths too (2026-08-28 release-manager TASK-066: k3d containers left
-	// running after a requirement-driven block). Same Exclude/DryRun guards
-	// as OnMerge.
+	// paths too (a requirement-driven block has left containers running).
+	// Same Exclude/DryRun guards as OnMerge.
 	OnBlock bool `json:"on_block"`
 	// Exclude holds name substrings never deleted by the teardown (persistent
 	// clusters the user wants to keep, e.g. "deployd-customer").
@@ -425,10 +424,10 @@ func Defaults() *Config {
 		MaxConcurrentTasksPerProject: 2,
 		PhaseConcurrency:             DefaultPhaseConcurrency(),
 		// round2 默认 120m：实现阶段带真实环境冒烟（k3d/镜像构建/回归），
-		// 单窗口 60m 会把活跃会话误判为 wedged 而 cancel（TASK-065 教训）；
+		// 单窗口 60m 会把活跃会话误判为 wedged 而 cancel；
 		// 配合 timeout_active 活动度续期，活跃会话不会被误杀。
-		// planning 45m：2026-09-02 planning→max 后思维链会话更长，大 REQ 的
-		// plan 生成需要余量（30m 会在活跃会话下误判 wedged 的风险升高）。
+		// planning 45m：思维链会话变长后，大 REQ 的 plan 生成需要余量
+		//（30m 会在活跃会话下误判 wedged 的风险升高）。
 		PhaseTimeoutMinutes:    map[string]int{"priority": 5, "refining": 15, "planning": 45, "round2": 120, "merge": 15, "design": 90},
 		OffPeakTimezone:        "",
 		OffPeakWindows:         nil,
@@ -441,8 +440,8 @@ func Defaults() *Config {
 		Audit:                      &AuditConfig{Enabled: true, MaxFixes: 2, TimeoutMinutes: 15},
 		MaxAutoMergeFixes:          3,
 		CompactOversizeThresholdKB: 60,
-		MaxAutoFixConflicts:        40, // TASK-067: 90+ conflicting files doomed the 15min AI session
-		UpstreamStallDays:          3,  // upstream idle warning (TASK-067: month-long silent blockage)
+		MaxAutoFixConflicts:        40, // 90+ conflicting files can doom the 15min AI session
+		UpstreamStallDays:          3,  // upstream idle warning (a silently stalled upstream can block for a month)
 		StageMinPerPhase:           3,
 		StageMaxPhases:             4,
 		GrillingConsolidationBatch: 1,

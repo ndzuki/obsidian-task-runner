@@ -182,8 +182,8 @@ func TestProjectFromReqPath(t *testing.T) {
 
 // TestResolveVaultProjectDirAcceptsPrefixedProject guards the decision-list
 // distribute/reminder path: task frontmatter historically carries the full
-// prefixed directory name ("002-magic-models-manager") while vault-map uses
-// the unprefixed name — both must resolve to the same directory, otherwise
+// prefixed directory name ("002-some-project") while vault-map uses the
+// unprefixed name — both must resolve to the same directory, otherwise
 // grillingDecisionListPath returns "" and answers never distribute.
 func TestResolveVaultProjectDirAcceptsPrefixedProject(t *testing.T) {
 	dir := t.TempDir()
@@ -385,8 +385,8 @@ func TestNeedsConsolidationGrouping(t *testing.T) {
 	}
 }
 
-// TestHasFreshDisputeExcludesUpstreamFixParks guards the TASK-066 re-verify
-// storm: an upstream-fix park (grill_resolution=blocked_by_upstream_fixes)
+// TestHasFreshDisputeExcludesUpstreamFixParks guards the upstream-fix
+// re-verify storm: an upstream-fix park (grill_resolution=blocked_by_upstream_fixes)
 // must never count as a fresh dispute, or the 4h consolidate cooldown is
 // bypassed every scan and a no-op PM session runs every ~2 minutes while the
 // repair task is still in flight.
@@ -493,7 +493,8 @@ grill_continue: true
 	}
 }
 
-// TestDecisionBlockMalformedFormsStayVisible guards the TASK-085 dead-end:
+// TestDecisionBlockMalformedFormsStayVisible guards the malformed-block
+// dead-end:
 // a heading using a non-":" separator, or a block missing its `- 决策:`
 // answer line entirely, used to parse as total=0/pending=0 (answers-hash
 // equals the empty-string hash), so the daemon neither opened the decision
@@ -568,7 +569,7 @@ func TestDecisionBlockMalformedFormsStayVisible(t *testing.T) {
 // and field copies render `（用户填写）` — all must count as UNANSWERED.
 // Otherwise a fully-placeholder list reports pending=0, the decision tab is
 // never opened, and every scan auto-distributes an empty batch (observed:
-// release-manager Grilling-Decisions.md grew 1800+ no-op distribute logs
+// one project's Grilling-Decisions.md grew 1800+ no-op distribute logs
 // and never opened its decision tab for 24h+).
 func TestDecisionAnsweredPlaceholderVariants(t *testing.T) {
 	for _, v := range []string{
@@ -583,7 +584,7 @@ func TestDecisionAnsweredPlaceholderVariants(t *testing.T) {
 		"继续 / supplement:{建议} / end",
 		"（待用户三选一回答，daemon 检测答案 hash 变更后自动分发回 TASK-079）",
 		"待用户确认后自动分发",
-		// TASK-065: D-100 曾用「待裁决」占位，旧识别当“已答”→ parkedFactRecovery
+		// 曾有占位「待裁决」被旧识别当“已答”→ parkedFactRecovery
 		// 误 un-park → 一天 4 次 planning/round2/grilling 空转。任何未决措辞都必须
 		// 视为未答。
 		"待裁决",
@@ -667,7 +668,7 @@ grill_continue: true
 // changed-since-distribute signal stays true until the session records the
 // answer hash — without the in-flight dedup every scan re-dispatches and
 // stacks concurrent sessions (observed: 5 distribute processes on one
-// release-manager list within 4 minutes, 2026-08-07).
+// decision list within 4 minutes).
 func TestDistributeInFlightDedup(t *testing.T) {
 	dir := t.TempDir()
 	withAPIKey(t)
@@ -1022,7 +1023,7 @@ func TestProcessGrillingConsolidationReconsolidatesParkedGroupWithNewDispute(t *
 	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
 	// Both tasks are parked, but the project decision list has no live block
 	// for either of them — an earlier park was archived and a new dispute
-	// appeared (the TASK-066 shape). This must consolidate again.
+	// appeared. This must consolidate again.
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-066.md"), "066", "Projects/001-test/Requirements/REQ-066.md", "test", true, 2)
 	writeGrillingTask(t, filepath.Join(tasksDir, "TASK-067.md"), "067", "Projects/001-test/Requirements/REQ-066.md", "test", true, 2)
 	listPath := filepath.Join(vault, "Projects", "001-test", "Notes", "Grilling-Decisions.md")
@@ -1078,7 +1079,7 @@ func TestParkedTaskIsNotDispatched(t *testing.T) {
 
 // TestActivatePausedDecisionListSkipsClosed 守护用户项目冻结意图：closed 是
 // 「暂时不想开始这项目开发」的显式冻结，REQ 更新不得自动翻成 open（观测：
-// magic-models-manager 用户设 closed 后被 TASK 会话写回 REQ 触发的激活逻辑
+// 用户设 closed 后被 TASK 会话写回 REQ 触发的激活逻辑
 // 改回 open，项目重新跑起来）。只有用户手动改 open 才恢复。
 func TestActivatePausedDecisionListSkipsClosed(t *testing.T) {
 	dir := t.TempDir()
@@ -1183,8 +1184,8 @@ func TestPMConcurrencyGateBoundsSessions(t *testing.T) {
 }
 
 // TestPMDependencyContextInjectsPrecedentRules 钉住 PM 职责缺口修复：
-// consolidate 注入的上下文必须携带先例沿用 + 实现缺陷路由规则（TASK-066
-// 教训：上游实现缺陷被反复当需求争议重问 A/B/C、E2E 任务反复 replan）。
+// consolidate 注入的上下文必须携带先例沿用 + 实现缺陷路由规则（教训：
+// 上游实现缺陷被反复当需求争议重问 A/B/C、E2E 任务反复 replan）。
 func TestPMDependencyContextInjectsPrecedentRules(t *testing.T) {
 	vault := t.TempDir()
 	taskPath := filepath.Join(vault, "Projects", "001-test", "Tasks", "TASK-066.md")

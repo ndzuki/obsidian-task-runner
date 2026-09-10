@@ -45,7 +45,7 @@ func nextProjectID(projects []any) string {
 }
 
 // GitRemoteFor derives the git remote for a new project from an existing
-// entry's owner (e.g. "github.com/ndzuki/release-manager" → owner "ndzuki"),
+// entry's owner (e.g. "github.com/octocat/example-project" → owner "octocat"),
 // producing "github.com/<owner>/<name>". Empty when no existing entry exists.
 func GitRemoteFor(mapFile, name string) string {
 	data, err := os.ReadFile(mapFile)
@@ -141,8 +141,8 @@ func ExtractProjectID(dirName string) string {
 }
 
 // MatchVaultDir tries to match a Vault project directory name to a vault-map project key.
-// The Vault directory uses format "<id>-<name>" (e.g., "001-release-manager") while
-// the vault-map key is typically just "<name>" (e.g., "release-manager").
+// The Vault directory uses format "<id>-<name>" (e.g., "001-example-project") while
+// the vault-map key is typically just "<name>" (e.g., "example-project").
 // Matching order: exact match → strip numeric prefix → no match.
 // Returns the matched vault-map project name, or "" if no match found.
 func MatchVaultDir(mapFile, vaultDir string) string {
@@ -165,7 +165,7 @@ func MatchVaultDir(mapFile, vaultDir string) string {
 		}
 	}
 
-	// 2. Strip numeric prefix (e.g., "001-release-manager" → "release-manager")
+	// 2. Strip numeric prefix (e.g., "001-example-project" → "example-project")
 	// The prefix is one or more digits followed by a hyphen.
 	for i, c := range vaultDir {
 		if c >= '0' && c <= '9' {

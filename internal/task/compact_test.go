@@ -79,9 +79,8 @@ ok
 }
 
 // TestCompactPrototypeHistory guards the prototype-section folding: Round 1
-// appends a full write-up per replan, and gated tasks (AC-066-17 style)
-// accumulate 8+ copies. Old copies fold to a marker; the newest survives
-// verbatim.
+// appends a full write-up per replan, and gated tasks accumulate 8+ copies.
+// Old copies fold to a marker; the newest survives verbatim.
 func TestCompactPrototypeHistory(t *testing.T) {
 	dir := t.TempDir()
 	taskPath := filepath.Join(dir, "TASK-003.md")

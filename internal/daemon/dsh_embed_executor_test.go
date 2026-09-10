@@ -258,7 +258,7 @@ func TestDSHEmbedExecutorErrorOutcome(t *testing.T) {
 
 // TestDSHEmbedExecutorErrorOutcomeCarriesMessage：agent-server 下发 error 消息
 // （errorCode 缺省）时，ExecutionResult.Error 必须携带该详情——旧契约只有
-// errorCode，失败只剩「agent-server outcome error」空原因（TASK-058 观测）。
+// errorCode，失败只剩「agent-server outcome error」空原因（实测观测）。
 func TestDSHEmbedExecutorErrorOutcomeCarriesMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -460,7 +460,8 @@ func TestDSHEmbedExecutorTimeoutPersistsResumeToken(t *testing.T) {
 	}
 }
 
-// TestDSHEmbedExecutorTimeoutActiveVsWedged guards the TASK-065 fix: when the
+// TestDSHEmbedExecutorTimeoutActiveVsWedged guards the active-vs-wedged
+// classification: when the
 // phase HTTP wait expires, the handle probes GET /agents. A session with
 // recent events is classified timeout_active (do NOT cancel — the model is
 // still working); a session idle past the window stays timeout (wedged turn,

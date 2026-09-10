@@ -15,7 +15,7 @@ import (
 // this long, the daemon re-arms it on its own. This is the safety net for
 // daemon restarts/iterations that lose the in-memory recovery state (模式 7
 // in core/daemon-stuck-task-patterns.md) and for leaf tasks with no
-// downstream to unwind the blocked_by chain (TASK-015/065: blocks=[]).
+// downstream to unwind the blocked_by chain (their blocks=[]).
 // Bounded by the same auto_resume_count budget as the dependency resolver,
 // so a persistently failing task degrades to manual resume instead of
 // looping hot.

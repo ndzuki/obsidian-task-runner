@@ -17,8 +17,8 @@ import (
 // syncReqSchemaDefaults backfills REQ frontmatter, linked tasks whose stored
 // refine/plan hashes match the pre-write REQ must follow the new bytes —
 // otherwise OnReqChanged treats the daemon's own normalization as a
-// requirement change and batch-reopens every linked task (2026-08-12: 19
-// tasks flipped to refining by a single schema backfill).
+// requirement change and batch-reopens every linked task (19 tasks flipped
+// to refining by a single schema backfill).
 func TestReqNormalizeRefreshesTaskHashes(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

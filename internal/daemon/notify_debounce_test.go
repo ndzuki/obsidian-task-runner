@@ -59,7 +59,7 @@ func TestNotifyFailureDebounce(t *testing.T) {
 
 // TestNotifyReqChangedDebounce guards the per-task+action debounce of 需求变更
 // notifications. Grilling 写回会多次改写 REQ，每次 watcher 事件都触发
-// on-req-changed 并重复发同一条 toast（观测：TASK-058 对齐后连续多次
+// on-req-changed 并重复发同一条 toast（观测：需求对齐后连续多次
 // 「需求变更」桌面提醒）。同一任务同一 action 在窗口内只发第一条；
 // 不同 action / 不同任务独立计数。
 func TestNotifyReqChangedDebounce(t *testing.T) {

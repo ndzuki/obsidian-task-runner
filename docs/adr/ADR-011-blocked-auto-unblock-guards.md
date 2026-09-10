@@ -29,6 +29,6 @@ v0.18.4 排查发现 `processBatchSequential` 将 phase-failure blocked 任务�
 ## Consequences
 
 - 彻底消除"blocked→auto-unblock→re-dispatch→fail→blocked"死循环
-- 消除 早期执行器 被杀后的重复调度风暴（027 17 次/064 6 次）
+- 消除 早期执行器 被杀后的重复调度风暴（实测曾多次重复调度）
 - 消除 grilling 通知每 30 秒重复触发
 - 缺点：2 分钟 cooldown 是硬编码，高负载时可能过于保守——后续可改为按失败次数递增冷却

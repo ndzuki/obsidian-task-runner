@@ -11,8 +11,8 @@ import (
 )
 
 // TestClearMergeRepairBudget guards the budget-reset contract: a successful
-// planning round clears merge_retry_count (fresh delivery intent, TASK-067:
-// replan must not inherit the previous delivery's exhausted repair budget),
+// planning round clears merge_retry_count (fresh delivery intent — a replan
+// must not inherit the previous delivery's exhausted repair budget),
 // while other phases leave it untouched.
 func TestClearMergeRepairBudget(t *testing.T) {
 	dir := t.TempDir()
@@ -45,7 +45,7 @@ func TestClearMergeRepairBudget(t *testing.T) {
 // (per-task 5min window) instead of a bare SendTaskAction. The user can clear
 // merge_retry_count to continue AI repair, which re-authorizes and re-runs
 // the merge every scan — without the window each round re-toasts
-// (TASK-067 notification storm).
+// (a notification storm).
 func TestAutoResolveMergeConflictBudgetExhaustedDebounces(t *testing.T) {
 	dir := t.TempDir()
 	taskPath := filepath.Join(dir, "TASK-067.md")

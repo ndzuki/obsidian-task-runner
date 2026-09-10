@@ -431,10 +431,10 @@ func TestAbsorbKnowledgeUnclassifiedArchived(t *testing.T) {
 	}
 }
 
-// TestSlugTruncateKeepsUTF8Boundary guards the TASK-065 2026-08-28 pitfall
-// filename bug: byte slicing (slug[:30]) split Chinese titles mid-character,
-// producing invalid UTF-8 filenames the KB intake watcher could not re-read
-// (spurious 知识库格式不合规 toasts). Truncation must cut on rune boundaries.
+// TestSlugTruncateKeepsUTF8Boundary guards a pitfall filename bug: byte
+// slicing (slug[:30]) split Chinese titles mid-character, producing invalid
+// UTF-8 filenames the KB intake watcher could not re-read (spurious
+// 知识库格式不合规 toasts). Truncation must cut on rune boundaries.
 func TestSlugTruncateKeepsUTF8Boundary(t *testing.T) {
 	long := strings.Repeat("内存门禁阻断", 8) // 6 runes × 8 = 48 runes
 	got := slugTruncate(long, 30)
@@ -787,9 +787,9 @@ func TestExtractTaskKnowledgePracticeNoteIdempotent(t *testing.T) {
 	}
 }
 
-// TestIncrementHitsMirrorsConfiguredStore 钉住 2026-09-02 发现的 KB 分裂
-// 根因：heat bump 曾硬编码默认 XDG 库路径，配置了 kb_db 的部署因此长出
-// 两个分叉的库（默认库 112 docs / 配置库 114 docs，配置库 hits 长期陈旧）。
+// TestIncrementHitsMirrorsConfiguredStore 钉住 KB 分裂根因：heat bump 曾
+// 硬编码默认 XDG 库路径，配置了 kb_db 的部署因此长出两个分叉的库
+// （默认库与配置库各自增长，配置库 hits 长期陈旧）。
 // 修复后 bump 必须只写传入的配置库，且绝不创建/触碰默认库。
 func TestIncrementHitsMirrorsConfiguredStore(t *testing.T) {
 	dir := t.TempDir()

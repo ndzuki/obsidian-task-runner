@@ -822,8 +822,8 @@ func appendPitfallNote(path string, p taskPitfall, projectName, taskID string) (
 // multi-byte UTF-8 character. The previous byte slicing (slug[:30]) split
 // Chinese titles mid-character and produced invalid UTF-8 filenames that the
 // KB intake watcher then could not re-read ("no such file or directory"),
-// which fired repeated 知识库格式不合规 toasts (TASK-065 2026-08-28:
-// pitfall filenames ended in broken byte sequences like 内存门禁阻断�).
+// which fired repeated 知识库格式不合规 toasts (pitfall filenames ended in
+// broken byte sequences like 内存门禁阻断�).
 func slugTruncate(slug string, max int) string {
 	if utf8.RuneCountInString(slug) <= max {
 		return slug
@@ -1070,7 +1070,7 @@ aliases: []
 // heat bump land in ~/.local/share/otg/kb.sqlite while the configured
 // kb_db (and everything that reads it: `otg kb search`, the reranker,
 // agent-server pre-retrieval) kept stale hits and drifted two docs behind
-// the corpus (observed 2026-09-02: 112 docs in the default store vs 114 in
+// the corpus (observed: 112 docs in the default store vs 114 in
 // the configured one — the direct root cause of "KB 只增量没消除、预检索
 // 数据不更新").
 //
@@ -1107,7 +1107,7 @@ func IncrementHits(vaultDir, dbPath string, refPaths []string) (int, error) {
 		}
 		// Atomic replace, not os.WriteFile: a truncate+write mid-state is
 		// observable by the daemon's References watcher as an empty/partial
-		// file and fires a bogus intake-format alert (observed 2026-08-14:
+		// file and fires a bogus intake-format alert (observed:
 		// absorb's hits bump alerted "frontmatter: no frontmatter").
 		if err := yamlfrontmatter.AtomicWrite(path, []byte(bumpHitsField(string(data), hits+1))); err != nil {
 			return bumped, fmt.Errorf("bump hits on %s: %w", ref, err)

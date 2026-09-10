@@ -29,9 +29,9 @@
         │   └── TASK-001-login.md
 ```
 
-运行 `otg install --vault <Vault路径>` 时，如果 Vault 根目录还没有 `Tasks-Dashboard.md`，安装器会自动部署一份。若文件已存在，安装器不会覆盖它。
+运行 `otg install --vault <Vault路径>` 时，安装器会把**内嵌的基础看板模板**写入 Vault 根目录的 `Tasks-Dashboard.md`（重复安装会刷新为模板内容；如果自定义过看板，请先备份或在别处维护自己的查询）。
 
-手动部署时，直接运行 `otg install`——安装器会从内嵌模板生成 `Tasks-Dashboard.md` 到 Vault 根目录（已存在时不覆盖）。
+手动部署同理：直接运行 `otg install`，安装器会从内嵌模板生成 `Tasks-Dashboard.md` 到 Vault 根目录。
 
 ## 3. 检查任务 frontmatter
 
@@ -45,8 +45,8 @@ project: my-backend
 status: plan-review
 priority: P2
 assignee: acme
-created: 2026-07-15T10:00:00+08:00
-updated: 2026-07-15T10:30:00+08:00
+created: 2024-01-15T10:00:00Z
+updated: 2024-01-15T10:30:00Z
 ---
 ```
 
@@ -62,7 +62,7 @@ updated: 2026-07-15T10:30:00+08:00
 
 ## 4. 打开任务看板
 
-在 Obsidian 的文件列表中打开 `Tasks-Dashboard.md`。正常情况下会看到九个视图：
+在 Obsidian 的文件列表中打开 `Tasks-Dashboard.md`。部署的基础模板包含一个**按项目汇总**的查询（任务数、就绪/实现中/待审阅/待合并/已完成/阻塞分列）。看板只是普通 Markdown + Dataview 查询，可以按需扩展。以下是基于任务 frontmatter 真实字段的常见视图（基础模板自带与可扩展项）：
 
 1. **按项目汇总**：每个项目的任务总数，按 `Projects/<项目>/` 前缀聚合。
 2. **按状态统计**：各状态（`ready` / `needs-grilling` / `planning` / `implementing` / `review` 等）的未完成任务数。

@@ -18,3 +18,4 @@
 | [ADR-011](ADR-011-blocked-auto-unblock-guards.md) | blocked 自动恢复护栏 |
 | [ADR-012](ADR-012-model-fallback-configuration.md) | 模型兜底配置化（fallback_models） |
 | [ADR-013](ADR-013-pm-grilling-consolidation.md) | PM 统筹 grilling 争议合并 |
+| [ADR-014](ADR-014-pm-documentation-closure-gate.md) | PM 文档闭环门禁：缺口派生普通 REQ/TASK，不新增主状态 |

@@ -8,7 +8,7 @@ import (
 	"github.com/ndzuki/obsidian-task-runner/pkg/yamlfrontmatter"
 )
 
-// TestRecoverBlockedPendingReqRoutesPhaseFailure guards the TASK-001-deployd
+// TestRecoverBlockedPendingReqRoutesPhaseFailure guards the pending-req
 // stall: a phase-failure blocked task whose REQ changed (pending_req) has no
 // downstream to unwind it via resolveBlockedDependencies, and a manual resume
 // would re-implement the stale requirement. It must route back to refining
@@ -154,7 +154,7 @@ blocked_by: []
 // gate: a MODEL_FAILED blocked task inside its model_backoff window must NOT
 // be routed back to refining, or the pending_req reroute re-enters
 // refining→planning and fails again every scan while the provider is down
-// (2026-09-08 TASK-008 loop). Once the window expires the reroute proceeds.
+// (a provider-outage loop). Once the window expires the reroute proceeds.
 func TestRecoverBlockedPendingReqRespectsModelBackoff(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

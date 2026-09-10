@@ -23,12 +23,12 @@ type mergeAuthorization struct {
 	TargetBranch  string
 }
 
-// healTargetBranch 自愈 round2 被中断后丢失的 target_branch（TASK-079）：
+// healTargetBranch 自愈 round2 被中断后丢失的 target_branch：
 // 任务 worktree 已 checkout 在 round2 分支（task/{id}-slug）上，从其恢复
 // 分支名并写回 frontmatter。只在 target_branch 为空且 worktree 分支带
 // "task/" 前缀时生效（幂等、一次写回），避免把 main 等无关分支误写进去。
 //
-// TASK-080 扩展：round2 可能使用托管路径之外的同级 worktree（用户自建或
+// 扩展：round2 可能使用托管路径之外的同级 worktree（用户自建或
 // 老版本 daemon 创建），托管 key 目录 detached/不存在 → 第一处取不到分支。
 // 此时回退扫描 repo 的全部注册 worktree（git worktree list），按任务 ID
 // 匹配 task/{id}-* 分支；无 ID 匹配时不猜（唯一 task/ 分支除外）。
@@ -212,7 +212,7 @@ func evaluateMergeChecks(approvedHead string, checks mergeChecks) mergeDecision 
 		// GitHub computes mergeability asynchronously: a freshly pushed head
 		// can report CLEAN checks while mergeable is still UNKNOWN. Merging
 		// immediately then fails server-side with "not mergeable" and burns
-		// the environmental retry budget (TASK-067: push → gh pr merge
+		// the environmental retry budget (observed: push → gh pr merge
 		// rejected DIRTY → 5 retries wasted). Wait for the server to
 		// converge instead. An empty mergeable (gh did not return the field,
 		// e.g. older gh CLI) keeps the legacy behavior: merge on SUCCESS.

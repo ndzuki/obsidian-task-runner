@@ -34,7 +34,7 @@ const auditSessionTimeoutFallback = 15 * time.Minute
 const auditRetryCooldown = 2 * time.Minute
 
 // auditRetryCooldownViolation is the longer cooldown for TOOL_POLICY_VIOLATION
-// session failures (TASK-080): the model called a whitelist-excluded tool.
+// session failures: the model called a whitelist-excluded tool.
 // The short cooldown let a misbehaving model re-burn a full session every
 // ~10 minutes indefinitely; the longer one gives the policy signal room to
 // land without weakening the read-only gate itself.
@@ -364,7 +364,7 @@ func (r *Runner) runAuditSession(parent context.Context, t task.ReadyTask, repoD
 	// Run the audit in the task worktree (same key round2 uses): the
 	// implementation lives on the feature branch checked out there, while the
 	// main checkout may sit on another branch — verifying repoDir would test
-	// the wrong code state (TASK-051/059: merges on the wrong branch corrupt
+	// the wrong code state (observed: merges on the wrong branch corrupt
 	// history). Worktree failure degrades to repoDir with a warning; the
 	// audit then verifies what it can and the result is still evidence.
 	workDir := repoDir

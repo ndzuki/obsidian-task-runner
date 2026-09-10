@@ -44,6 +44,52 @@ var errPMGateFull = errors.New("grilling pm concurrency gate full")
 // grillingDecisionListName is the project-level decision list filename.
 const grillingDecisionListName = "Grilling-Decisions.md"
 
+// processStageReviewDistributions handles answered Stage-Review files across
+// all projects. It is intentionally independent from grilling-task discovery:
+// a completed phase normally has no pending task, yet its review must advance.
+func (r *Runner) processStageReviewDistributions(ctx context.Context) int {
+	projectsDir := filepath.Join(r.cfg.ObsidianVault, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return 0
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		project := entry.Name()
+		revPath := stageReviewPath(r.cfg.ObsidianVault, project)
+		if revPath == "" || !grillingListAnswered(revPath) {
+			continue
+		}
+		projDir := filepath.Join(projectsDir, entry.Name())
+		if !documentationGateAllowsDecision(projDir, revPath) {
+			r.logger.Printf("project %s: stage review distribution held by documentation gate", project)
+			continue
+		}
+		if r.flipStageReviewDecision(ctx) {
+			r.logger.Printf("project %s: stage-plan flipped by daemon, PM session continues for annotations", project)
+		}
+		if err := r.runGrillingPM(ctx, "distribute", revPath); err != nil {
+			if errors.Is(err, errAPIKeyUnavailable) {
+				return 0
+			}
+			if errors.Is(err, errPMInFlight) {
+				r.logger.Printf("project %s: stage review distribute already in flight, skip", project)
+				continue
+			}
+			r.logger.Printf("project %s: stage review distribute: %v", project, err)
+			continue
+		}
+		r.logger.Printf("project %s: stage review distribute dispatched", project)
+		return 1
+	}
+	return 0
+}
+
 // processGrillingConsolidation dispatches the project-level PM coordinator
 // for needs-grilling tasks that share a req_doc or carry repeat disputes.
 // Runs after processBatch, once per scan, never blocking dispatched tasks
@@ -58,6 +104,23 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 	if ctx.Err() != nil {
 		return 0
 	}
+	// Retrofit the documentation gate for projects whose Stage-Review was
+	// written before this capability existed. This runs before any legacy
+	// answered review is distributed, so an old `end` cannot bypass the new
+	// documentation closure audit.
+	if r.processLegacyDocumentationAudits(ctx) > 0 {
+		return 1
+	}
+	// Stage review is project-level state and must not depend on the presence
+	// of needs-grilling/unstaged/parked tasks. A fully landed project often
+	// has none of those, which is exactly when its review must still advance.
+	if r.processStageReviewDistributions(ctx) > 0 {
+		return 1
+	}
+	if r.processStageReviews(ctx) > 0 {
+		return 1
+	}
+
 	pending, err := task.FindGrillingTasks(r.cfg.ObsidianVault)
 	if err != nil {
 		r.logger.Printf("grilling pm scan: %v", err)
@@ -155,35 +218,6 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			}
 			continue
 		}
-		revPath := stageReviewPath(r.cfg.ObsidianVault, project)
-		if revPath != "" && grillingListAnswered(revPath) {
-			// The state flip is daemon-deterministic: Stage-Plan status
-			// transitions happen here, before the PM session — the PM
-			// session still runs afterwards for REQ annotations and the
-			// knowledge sink (Mode 2.5 remainder).
-			if r.flipStageReviewDecision(ctx) {
-				r.logger.Printf("project %s: stage-plan flipped by daemon, PM session continues for annotations", project)
-			}
-			if err := r.runGrillingPM(ctx, "distribute", revPath); err != nil {
-				if errors.Is(err, errAPIKeyUnavailable) {
-					return 0 // retry next scan
-				}
-				if errors.Is(err, errPMInFlight) {
-					r.logger.Printf("project %s: stage review distribute already in flight, skip", project)
-					continue
-				}
-				r.logger.Printf("project %s: stage review distribute: %v", project, err)
-				continue
-			}
-			r.logger.Printf("project %s: stage review distribute dispatched", project)
-			return 1
-		}
-	}
-
-	// Priority 1.5: a stage whose tasks all landed (done + merged) triggers
-	// one PM stage-review — the per-stage delivery gate with user scorecard.
-	if r.processStageReviews(ctx) > 0 {
-		return 1
 	}
 
 	// Priority 2: consolidate groups that need cross-task coordination, up
@@ -208,8 +242,8 @@ func (r *Runner) processGrillingConsolidation(ctx context.Context) int {
 			// Cooldown: a group whose PM session produced no state change
 			// (e.g. no Stage-Plan yet, dispute already consolidated, unstaged
 			// task the PM chose not to attach) must not hog the per-scan
-			// batch slot forever — other projects would starve (observed:
-			// 003 re-dispatched every scan while release-manager never got a
+			// batch slot forever — other projects would starve (observed: one
+			// project re-dispatched every scan while another never got a
 			// slot). Only a genuinely fresh dispute (unparked, non-unstaged
 			// member) resets the cooldown; a parked task with no live
 			// decision block is equally fresh (new dispute after an earlier,
@@ -278,6 +312,8 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 	if mode == "distribute" && len(args) > 0 {
 		listPath = args[0]
 		inflightKey = "distribute:" + listPath
+	} else if mode == "documentation-audit" && len(args) > 0 {
+		inflightKey = "documentation-audit:" + args[0]
 	} else if mode == "consolidate" && len(args) > 0 {
 		// Group key = the first task path: directory traversal order is
 		// stable, so a req_doc group keeps the same first member across
@@ -317,8 +353,9 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 		// session can triage CROSS-REQ conflicts (who blocks whom, who owes
 		// whom a contract, whether the replan gate would swallow the next
 		// planning attempt) instead of only deduping same-REQ questions.
-		// TASK-065: D-97/98/99 answered execution gates but missed the
-		// empty Design library, which the replan gate then hard-failed on.
+		// Observed: the decision points answered execution gates but missed
+		// the empty Design library, which the replan gate then hard-failed
+		// on.
 		if depCtx := r.pmDependencyContext(args); depCtx != "" {
 			prompt = prompt + "\n\n<dependency_context>\n" + depCtx + "</dependency_context>"
 		}
@@ -395,10 +432,15 @@ func (r *Runner) runGrillingPM(ctx context.Context, mode string, args ...string)
 			} else {
 				r.logger.Printf("grilling pm distribute %s: no new answer changes, notification skipped", listPath)
 			}
+		case "documentation-audit":
+			// The audit result is consumed by the next scan, which copies the
+			// PM gate into the legacy Stage-Review and starts normal closure.
+			r.logger.Printf("documentation audit %s completed; next scan will sync the gate", strings.Join(args, " "))
 		case "consolidate":
 			// Parked tasks are silent by design — but the user must know
-			// there are decisions waiting (the D-11..D-18 pile-up root cause:
-			// nobody told them the list needed answers).
+			// there are decisions waiting (a decision pile-up once went
+			// unnoticed because nobody told the user the list needed
+			// answers).
 			proj := "?"
 			if len(args) > 0 {
 				if idx := strings.Index(args[0], "Projects/"); idx >= 0 {
@@ -569,10 +611,10 @@ func sectionAfter(content, heading string) string {
 
 // decisionBlockRE matches a decision-point heading. It deliberately anchors
 // on `### D-<n>` and does NOT require a specific separator after the
-// number: PM revisions have written `### D-8: …`, `### D-110 · …` and
-// `### D-110：…`. Requiring `:` made the alternate forms entirely invisible
+// number: PM revisions have written `### D-1: …`, `### D-2 · …` and
+// `### D-2：…`. Requiring `:` made the alternate forms entirely invisible
 // — total=0, pending=0, answers-hash==empty-hash — so the daemon neither
-// opened the decision tab nor auto-distributed (TASK-085).
+// opened the decision tab nor auto-distributed (observed in production).
 // decisionLineRE matches the answer line ("决策: <用户填写>").
 // splitLineRE matches the split-confirmation line ("拆分: <确认 / …>").
 var (
@@ -617,7 +659,7 @@ func grillingDecisionCountsContent(content string) (total, pending int) {
 		} else {
 			// A heading without any answer line is a malformed block the user
 			// can never see or answer; count it pending instead of silently
-			// treating it as answered (TASK-085: missing `- 决策:` line).
+			// treating it as answered (observed: missing `- 决策:` line).
 			pending++
 		}
 	}
@@ -647,14 +689,14 @@ func decisionAnswered(value string) bool {
 	if strings.Contains(v, "用户填写") {
 		return false
 	}
-	// PM 新式占位（2026-08-22 TASK-079 D-95 观测）：「（待用户三选一回答，
-	// daemon 检测答案 hash 变更后自动分发回 TASK-079）」——旧识别只认「用户
+	// PM 新式占位（线上观测）：「（待用户三选一回答，
+	// daemon 检测答案 hash 变更后自动分发回 TASK-<id>）」——旧识别只认「用户
 	// 填写」，导致 pending=0、决策 tab 永不打开、用户无处作答。任何「待用户」
 	// 措辞都视为未答。
 	if strings.Contains(v, "待用户") {
 		return false
 	}
-	// 未决措辞兜底（TASK-065 教训）：D-100 曾用「待裁决」占位，当时不在识别
+	// 未决措辞兜底（线上教训）：曾有决策点用「待裁决」占位，当时不在识别
 	// 集里被当成「已答」→ pending=0 → parkedFactRecovery 误 un-park → 一天
 	// 4 次 planning/round2/grilling 空转。任何「尚未裁决/待定/未答」类措辞都
 	// 是占位而非真实答案，一律按未答处理；真实答案（A/B/C、日期+用户确认、
@@ -682,9 +724,10 @@ func grillingDecisionPending(path string) int {
 // project-level list — must stay parked until PM distribute consumes the
 // answers. This is how parkedFactRecovery distinguishes a dispute park
 // (recovery gate = the decision list, answered only by PM distribute) from a
-// prerequisite-gate park (D-19 style, gate = blocked_by facts converging, no
-// list entry for the task). Without it TASK-068 un-parked every scan on its
-// landed blocked_by while D-88/89/90 stayed unanswered, looping refining.
+// prerequisite-gate park (gate = blocked_by facts converging, no list entry
+// for the task). Without this distinction a prerequisite-gate parked task
+// un-parked every scan once its blocked_by landed while its decision blocks
+// stayed unanswered, looping refining.
 func grillingDecisionPendingForTask(path, taskID string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -752,8 +795,8 @@ func grillingListPaused(path string) bool {
 // against existing disputes, planning) pick up again, and the user aligns
 // via Grilling before tasks resume.
 // closed 不在此列：它是用户的显式项目冻结（「暂时不想开始这项目开发」），
-// 只有手动改回 open 才恢复——REQ 更新不得自动解锁（观测：magic-models-
-// manager 用户设 closed 后，TASK 会话写回 REQ 触发本函数把清单翻成 open）。
+// 只有手动改回 open 才恢复——REQ 更新不得自动解锁（观测：用户设 closed 后，
+// TASK 会话写回 REQ 触发本函数把清单翻成 open）。
 // Returns true when the list existed and was paused.
 func activatePausedDecisionList(vaultPath, project string) (bool, error) {
 	path := filepath.Join(vaultPath, "Projects", project, "Notes", "Grilling-Decisions.md")
@@ -796,9 +839,9 @@ func grillingDecisionTotal(path string) int {
 // already contains a decision block sourced from the given task. A parked
 // task with a live block is already represented and must not be re-consolidated;
 // a parked task without one has a new dispute that was never appended to the
-// list (TASK-066: D-103/D-108/D-109 were archived, while the 2026-09-04
-// AC-066-17 rerun surfaced three further upstream defects that never made it
-// into the live Grilling-Decisions.md).
+// list (observed: earlier decision blocks were archived, while a later AC
+// rerun surfaced three further upstream defects that never made it into the
+// live Grilling-Decisions.md).
 func grillingDecisionHasTask(path, taskID string) bool {
 	if path == "" {
 		return false
@@ -831,8 +874,9 @@ func grillingDecisionHasTask(path, taskID string) bool {
 // Upstream-fix parks (grill_resolution=blocked_by_upstream_fixes) are
 // prerequisite-gate parks waiting on blocked_by facts, not disputes: their
 // exit is parkedFactRecovery, and re-consolidating them produces no-op
-// "保持 park" sessions forever (2026-09-08 TASK-066 re-verify loop, one
-// no-op PM session every ~2min while TASK-089 was still implementing).
+// "保持 park" sessions forever (observed: a re-verify loop produced one
+// no-op PM session every ~2min while an upstream task was still
+// implementing).
 func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 	if len(members) == 0 {
 		return false
@@ -847,9 +891,9 @@ func needsConsolidation(members []task.GrillingTask, listPath string) bool {
 		}
 		// Single-task consolidation: repeated identical disputes (grill_repeat)
 		// OR a requirement that keeps churning replans (plan_version >= 3, e.g.
-		// TASK-066's 15 no-op replans) OR an unstaged in-flight task (stage
-		// plan upkeep) escalate to the project-level decision list so the user
-		// answers once instead of per round.
+		// a churning requirement accumulated 15 no-op replans) OR an unstaged
+		// in-flight task (stage plan upkeep) escalate to the project-level
+		// decision list so the user answers once instead of per round.
 		return m.GrillRepeat >= 2 || m.PlanVersion >= 3 || m.Unstaged
 	}
 	for _, m := range members {
@@ -882,7 +926,8 @@ func hasParked(members []task.GrillingTask) bool {
 // them every scan starves other projects when the PM session cannot
 // converge (e.g. no Stage-Plan and nothing to attach). Upstream-fix parks
 // never count as fresh: they wait on blocked_by facts, and treating them as
-// fresh bypasses the 4h cooldown → no-op consolidate every scan (TASK-066).
+// fresh bypasses the 4h cooldown → no-op consolidate every scan (observed
+// in production).
 func hasFreshDispute(members []task.GrillingTask, listPath string) bool {
 	for _, m := range members {
 		if !m.GrillParked && !m.Unstaged {
@@ -930,8 +975,8 @@ func summarizeOutput(output []byte) string {
 // PM skill consumes the <dependency_context> block so cross-REQ contract
 // conflicts and machine gates surface in the decision list BEFORE another
 // round of per-task grilling — instead of being discovered afterwards as a
-// hard gate failure (TASK-065: D-97/98/99 answered, then the replan gate
-// failed on the empty Design library the same morning).
+// hard gate failure (observed: decision points were answered, then the
+// replan gate failed on the empty Design library the same morning).
 func (r *Runner) pmDependencyContext(taskPaths []string) string {
 	if len(taskPaths) == 0 {
 		return ""
@@ -986,11 +1031,11 @@ func (r *Runner) pmDependencyContext(taskPaths []string) string {
 		}
 	}
 	// Deterministic PM duty rules — injected on every consolidate so the
-	// coordinator cannot re-open closed loops (TASK-066: each prerequisite
-	// smoke surfaced new UPSTREAM implementation defects and the PM kept
-	// re-planning / re-asking A/B/C even though D-103 had already decided
-	// "new upstream repair tasks", burning 20 plan versions with zero REQ
-	// change and stalling the v1 gate).
+	// coordinator cannot re-open closed loops (observed: each prerequisite
+	// smoke surfaced new upstream implementation defects and the PM kept
+	// re-planning / re-asking A/B/C even though an earlier decision had
+	// already decided "new upstream repair tasks", burning 20 plan versions
+	// with zero REQ change and stalling the v1 gate).
 	b.WriteString("PM 强制规则（违背视为 consolidate 未完成）：\n")
 	b.WriteString("- 实现缺陷≠需求歧义：已合入上游代码/seed 的功能缺陷（非 REQ 规格问题）禁止触发下游 TASK replan/refining；归属上游修复任务（新建 TASK 承接，下游挂 blocked_by），E2E-only TASK 保持 park。\n")
 	b.WriteString("- 先例沿用：新争议与已答决策同构（同一任务、同一缺口类别、用户已有答案）时，不得重复 A/B/C 三选一——沿用先例答案（如 D-103=A 新建上游修复任务）直接落地，在清单追加已答条目并注明「沿用 D-{先例}」。仅当先例明确要求每次裁决、或缺口类别/安全边界不同，才提出新决策点。\n")

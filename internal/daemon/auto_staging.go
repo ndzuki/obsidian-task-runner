@@ -18,7 +18,7 @@ func parseLeadingNumber(s string) (int, error) {
 
 // processAutoStaging deterministically phases unstaged in-flight tasks
 // directly in the daemon — no PM session (the consolidate path took hours
-// of LLM rounds for release-manager and was unreliable; this runs in
+// of LLM rounds on large backlogs and was unreliable; this runs in
 // milliseconds and is idempotent). Runs before PM consolidation on every
 // scan, so the PM input shrinks to genuine disputes only: tasks staged here
 // disappear from FindUnstagedTasks, and the cooldown-free deterministic
@@ -65,8 +65,8 @@ func (r *Runner) processAutoStaging() int {
 
 // projectNameFromTasks extracts the project name from the first task's
 // frontmatter (frontmatter `project` is authoritative; falls back to the
-// directory name with the numeric prefix stripped, e.g. "001-release-manager"
-// → "release-manager").
+// directory name with the numeric prefix stripped, e.g. "001-example-project"
+// → "example-project").
 func projectNameFromTasks(tasksDir string) string {
 	entries, err := os.ReadDir(tasksDir)
 	if err != nil {

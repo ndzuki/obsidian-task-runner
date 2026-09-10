@@ -26,8 +26,8 @@ func lockFiles(t *testing.T) []string {
 
 // TestCleanStaleTaskLocks 覆盖三条判据：过期且无人持有 → 删除；
 // 未过期 → 保留；过期但被持有（flock 未释放）→ 保留。
-// 回归背景：acquireTaskLock 曾在 /tmp 只创建不删除，8/11-8/14 累积
-// 15325 个锁文件，无 swap 机器上直接占不可回收的 shmem 内存。
+// 回归背景：acquireTaskLock 曾在 /tmp 只创建不删除，持续累积大量
+// 锁文件，无 swap 机器上直接占不可回收的 shmem 内存。
 func TestCleanStaleTaskLocks(t *testing.T) {
 	old := time.Now().Add(-25 * time.Hour)
 

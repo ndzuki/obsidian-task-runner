@@ -20,7 +20,7 @@ systemd timer ──┘    (遍历任务)       path.py               (两轮状
 
 `auto_approve: true` 且非新项目时，Round 1 → Round 2 同一次 `claude -p` 内完成。新项目永远停在 Round 1。
 
-> ⚠️ 本行为为 2026-07-07 设计快照，**已 superseded**（v0.23+）：改为 Round 1 写 `plan_approved=true` → daemon 下一轮转 implementing，并增加 ADR 护栏。见 `reference.md`。
+> ⚠️ 本行为为早期设计快照，**已 superseded**（v0.23+）：改为 Round 1 写 `plan_approved=true` → daemon 下一轮转 implementing，并增加 ADR 护栏。见 `reference.md`。
 
 ## 目录结构（最终态）
 
@@ -66,19 +66,19 @@ template: "go-gin-microservice"   # 新项目脚手架模板
 # 状态流转（系统自动管理）
 status: ready                     # ready → plan-review → implementing → review → done
 plan_approved: false              # 👤 人工 Gate
-created: 2026-07-07T14:30:00      # 自动填充
-updated: 2026-07-07T14:30:00      # 自动更新
+created: 2024-01-15T14:30:00      # 自动填充
+updated: 2024-01-15T14:30:00      # 自动更新
 completed: ""                     # status=done 时自动填充
 
 # 优先级 & 排期
 priority: P2                      # P0-紧急 P1-高 P2-中 P3-低 P4-暂缓
-due_date: "2026-07-14"
+due_date: "2024-01-22"
 estimated_hours: 4
 actual_hours: 0
 
 # 人员 & 分工
 assignee: claude
-reviewer: ndzuki
+reviewer: yourname
 
 # 范围 & 分类
 req_doc: "Requirements/xxx.md"
@@ -99,11 +99,11 @@ target_env: staging
 {
   "projects": {
     "user-service": {
-      "path": "/home/user/src/repos/github.com/ndzuki/user-service",
-      "git_remote": "github.com/ndzuki/user-service"
+      "path": "/home/user/src/repos/github.com/you/user-service",
+      "git_remote": "github.com/you/user-service"
     }
   },
-  "new_project_root": "/home/user/src/repos/github.com/ndzuki",
+  "new_project_root": "/home/user/src/repos/github.com/you",
   "templates": {
     "go-gin-microservice": {
       "description": "Gin + Kustomize + kind 标准微服务",

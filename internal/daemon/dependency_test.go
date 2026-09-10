@@ -161,7 +161,7 @@ assignee: default
 	}
 }
 
-// TestParkedFactRecoveryKeepsDisputePark guards the TASK-068 loop: a
+// TestParkedFactRecoveryKeepsDisputePark guards the dispute-park loop: a
 // needs-grilling+parked task whose park is a DISPUTE (its conflicts escalated
 // into the project-level decision list, which still holds an unanswered
 // "来源任务: TASK-<id>" entry) must NOT un-park on blocked_by convergence —
@@ -265,12 +265,13 @@ grill_continue: true
 }
 
 // TestParkedFactRecoveryHoldsDisputeParkOnPlaceholderDrift guards the
-// TASK-065 loop: a dispute park must stay parked even when the decision
+// dispute-park loop: a dispute park must stay parked even when the decision
 // list's answer placeholder uses wording the list parser does NOT recognize
-// as unanswered. On 2026-08-24 D-100 used "待裁决" — decisionAnswered treated
-// it as ANSWERED → grillingDecisionPendingForTask returned 0 → parkedFactRecovery
-// wrongly un-parked TASK-065 on converged blocked_by, re-routing it to
-// planning → round2 → grilling (4× that day). The park-type signal must come
+// as unanswered. A placeholder like "待裁决" was treated as ANSWERED —
+// decisionAnswered accepted it → grillingDecisionPendingForTask returned 0 →
+// parkedFactRecovery wrongly un-parked the parked task on converged
+// blocked_by, re-routing it to planning → round2 → grilling (4× that day).
+// The park-type signal must come
 // from the task's OWN frontmatter (isDisputePark), never from list text
 // parsing, so a placeholder wording drift can't re-open the loop.
 func TestParkedFactRecoveryHoldsDisputeParkOnPlaceholderDrift(t *testing.T) {
@@ -295,7 +296,7 @@ assignee: default
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// TASK-065-style implementation-block dispute park (PM consolidate set
+	// Implementation-block dispute park (PM consolidate set
 	// grill_prev_status=implementing + grill_context decision_required).
 	parked := filepath.Join(tasksDir, "TASK-065-dev-env.md")
 	writeFile(t, parked, `---
@@ -312,7 +313,7 @@ assignee: default
 ---
 # Dev env
 `)
-	// The list carries D-100 sourced from TASK-065 with the OLD buggy
+	// The list carries D-100 sourced from the parked task with the OLD buggy
 	// placeholder "待裁决" — which decisionAnswered() (before the hardening)
 	// mis-read as answered, i.e. the exact condition that used to un-park.
 	listPath := filepath.Join(notesDir, "Grilling-Decisions.md")
@@ -350,14 +351,14 @@ grill_continue: false
 	}
 }
 
-// TestParkedFactRecoveryUnparksUpstreamFixPark guards the D-103/D-108/D-111
+// TestParkedFactRecoveryUnparksUpstreamFixPark guards the upstream-fix
 // handoff exit: a needs-grilling+parked task resolved as
 // grill_resolution=blocked_by_upstream_fixes (create upstream repair tasks +
 // keep this task parked on blocked_by) must un-park automatically once every
 // blocked_by upstream landed — including closed upstreams, which are terminal
-// like done. TASK-066 carried grill_prev_status=implementing +
-// maturity=parked context, so it was mis-read as a dispute park and stayed
-// parked after TASK-086/087/088 merged; with pending_req=true (REQ changed
+// like done. An upstream-fix park carrying grill_prev_status=implementing +
+// maturity=parked context was mis-read as a dispute park and stayed parked
+// after its repair upstreams merged; with pending_req=true (REQ changed
 // since the last plan) recovery must re-enter refining and preserve
 // pending_req (daemon invariant #5).
 func TestParkedFactRecoveryUnparksUpstreamFixPark(t *testing.T) {
@@ -390,7 +391,7 @@ assignee: default
 ---
 # Up
 `)
-	// TASK-066 shape: upstream-fix park pulled out of implementing, with the
+	// Upstream-fix park pulled out of implementing, with the
 	// REQ changed since the last plan (pending_req).
 	parked := filepath.Join(tasksDir, "TASK-066-e2e.md")
 	writeFile(t, parked, `---
@@ -468,7 +469,7 @@ assignee: default
 // TestParkedFactRecoveryRestoresParkedPhase guards the plan-current branch:
 // an upstream-fix park whose REQ did not change since the last plan and whose
 // plan is approved returns to implementing directly — no refining→planning
-// churn on an unchanged REQ (TASK-066's 17 zero-increment replans).
+// churn on an unchanged REQ (17 zero-increment replans).
 func TestParkedFactRecoveryRestoresParkedPhase(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -527,8 +528,8 @@ assignee: default
 
 // TestPrereqDepsAcceptClosedUpstreams guards closed handling in the prereq
 // fact gates: closed is terminal like done (resolveBlockedDependencies
-// precedent). TASK-066's blocked_by carries closed 021/037/063, which kept
-// every fact check shut until closed was accepted.
+// precedent). A blocked_by carrying closed upstreams kept every fact check
+// shut until closed was accepted.
 func TestPrereqDepsAcceptClosedUpstreams(t *testing.T) {
 	dir := t.TempDir()
 	projDir := filepath.Join(dir, "Projects", "001-test")
@@ -660,7 +661,7 @@ func writeFile(t *testing.T, path, content string) {
 // recovery: a blocked task with PREREQUISITE_SMOKE_FAILED resumes ONLY when
 // every blocked_by upstream is done with a cleared phase error (PR merged).
 // A stale done with an unresolved error (PR never merged) keeps the gate
-// shut — this is what ends the 17-round replan loop (TASK-066).
+// shut — this is what ends the 17-round replan loop.
 func TestPrerequisiteGateResumesOnFactChange(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -760,12 +761,13 @@ assignee: default
 	}
 }
 
-// TestDownstreamDoesNotAutoResumePrereqGate guards the TASK-019 loop: a
-// refining/ready downstream referencing a PREREQUISITE_SMOKE_FAILED upstream
-// must NOT re-approve its resume through the generic upstream-unblock path —
-// the entry gate opens only when the gated task's own blocked_by facts
-// converge (upstream done + cleared phase error). Before this guard, 066/069
-// re-resumed 019 every scan while PR #51 was still OPEN.
+// TestDownstreamDoesNotAutoResumePrereqGate guards the entry-gate re-resume
+// loop: a refining/ready downstream referencing a PREREQUISITE_SMOKE_FAILED
+// upstream must NOT re-approve its resume through the generic upstream-unblock
+// path — the entry gate opens only when the gated task's own blocked_by facts
+// converge (upstream done + cleared phase error). Before this guard, the
+// downstream re-resumed the gated upstream every scan while its PR was still
+// OPEN.
 func TestDownstreamDoesNotAutoResumePrereqGate(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -774,7 +776,7 @@ func TestDownstreamDoesNotAutoResumePrereqGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Upstream: entry-gate blocked (PR #51 still OPEN in the real world).
+	// Upstream: entry-gate blocked (its PR still OPEN in the real world).
 	upstream := filepath.Join(tasksDir, "TASK-019-gated.md")
 	if err := os.WriteFile(upstream, []byte(`---
 id: "019"
@@ -1198,7 +1200,7 @@ assignee: default
 }
 
 // TestResolveBlockedDependenciesRefiningDownstreamResumesUpstream guards the
-// TASK-019 lesson: a refining (non-blocked, non-terminal) downstream whose
+// refining-downstream case: a refining (non-blocked, non-terminal) downstream whose
 // upstream is legacy phase-failure blocked must trigger the upstream
 // auto-resume — the resolver previously only scanned blocked downstreams,
 // so a refining task stalled behind a blocked upstream had no resolver.
@@ -1251,7 +1253,7 @@ assignee: default
 func TestResolveBlockedDependenciesHyphenatedDirExactMatch(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
-	// Project dir named exactly "release-manager" (no numeric prefix).
+	// Project dir named exactly "some-project" (no numeric prefix).
 	otherTasks := filepath.Join(vault, "Projects", "release-manager", "Tasks")
 	curTasks := filepath.Join(vault, "Projects", "001-current", "Tasks")
 	if err := os.MkdirAll(otherTasks, 0o755); err != nil {
@@ -1547,7 +1549,7 @@ assignee: default
 func TestResolveBlockedDependenciesDuplicateDirsPreferExact(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
-	// Both "release-manager" and "001-release-manager" exist.
+	// Both "some-project" and "001-some-project" exist.
 	exactTasks := filepath.Join(vault, "Projects", "release-manager", "Tasks")
 	prefixedTasks := filepath.Join(vault, "Projects", "001-release-manager", "Tasks")
 	curTasks := filepath.Join(vault, "Projects", "002-current", "Tasks")
@@ -1736,7 +1738,7 @@ assignee: default
 
 	// First grant: budget increments at grant time. The old failure-time
 	// accounting never grew the count (the pending marker is consumed by the
-	// resume before the retry dispatch fails) — TASK-089's 5h MODEL_FAILED
+	// resume before the retry dispatch fails) — a 5h MODEL_FAILED
 	// blocked→auto-resume→fail loop.
 	runner.resolveBlockedDependencies()
 	fm := mustParse(t, upstream)
@@ -1861,7 +1863,7 @@ assignee: default
 // a MODEL_FAILED failure persists an escalating model_backoff_until that
 // every recovery path (dependency auto-resume, pending_req reroute) respects,
 // so a sustained provider outage cools down instead of looping
-// dispatch→fail→resume every scan (2026-09-08 TASK-008/089).
+// dispatch→fail→resume every scan.
 func TestModelFailedBackoffPersistsAndGates(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -2152,7 +2154,7 @@ stage: "P1"
 
 // TestScanAndProcessAutoResumesInterruptedBlockedTask guards the
 // PHASE_INTERRUPTED self-heal: legacy daemons wrote shutdown-interrupted
-// phases as blocked (observed: TASK-015, 8/5 era), while the skill contract
+// phases as blocked (observed with legacy daemons), while the skill contract
 // (docs/workflow.md 3.2) promises automatic re-scheduling on restart with NO
 // manual resume_approved. The scan must restore the blocked_phase exactly
 // like the API-key probe does.
@@ -2415,13 +2417,13 @@ assignee: default
 	}
 }
 
-// TestGatedTaskStillAutoResumesTransientUpstream guards the D-108=A flow
-// (TASK-066/082/083): a prerequisite-gated task is often the ONLY task
-// referencing its upstream repair tasks. An upstream transient failure
-// (MODEL_FAILED after a daemon restart kills the in-flight session) must
-// still be auto-resumed through the gated task's blocked_by loop — the gate
-// only controls the gated task's own resume. Without this, the repair tasks
-// sat blocked for the 24h aged fallback (observed 2026-09-02 16:43).
+// TestGatedTaskStillAutoResumesTransientUpstream guards the upstream-repair
+// handoff flow: a prerequisite-gated task is often the ONLY task referencing
+// its upstream repair tasks. An upstream transient failure (MODEL_FAILED
+// after a daemon restart kills the in-flight session) must still be
+// auto-resumed through the gated task's blocked_by loop — the gate only
+// controls the gated task's own resume. Without this, the repair tasks sat
+// blocked for the 24h aged fallback.
 func TestGatedTaskStillAutoResumesTransientUpstream(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

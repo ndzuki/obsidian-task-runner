@@ -66,8 +66,8 @@ func ensureGitRemote(cfg *config.Config, repoDir, projectName string) error {
 // sameGitRepo reports whether two remote URLs reference the same repository,
 // normalizing transport spellings (https://, git@…:, ssh://git@…/,
 // scp-style), trailing slashes, ".git" suffixes and case:
-// "git@github.com:ndzuki/demo.git" and "https://github.com/NDZUKI/demo"
-// both normalize to "github.com/ndzuki/demo".
+// "git@github.com:octocat/demo.git" and "https://github.com/OCTOCAT/demo"
+// both normalize to "github.com/octocat/demo".
 func sameGitRepo(a, b string) bool {
 	return normalizeGitRepo(a) == normalizeGitRepo(b)
 }
@@ -156,11 +156,12 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 			// checkpoint. A same-branch legacy PR merged in an earlier
 			// generation carries old commits: converging would freeze the new
 			// increment behind a fake done, and detectStaleDoneReopens reopens
-			// it on the next scan — a done→refining loop (TASK-069: PR #46
-			// merged 2026-07-20 for v1, the v16 checkpoint was never delivered;
-			// observed loop 08-18 17:10 converge → 17:18 reopen). A stale PR
-			// falls through to the normal merge path, which creates a fresh PR
-			// for the current branch head.
+			// it on the next scan — a done→refining loop (a same-branch
+			// legacy PR merged for an earlier generation, the later
+			// checkpoint was never delivered; observed loop: converge →
+			// reopen minutes later). A stale PR falls through to the normal
+			// merge path, which creates a fresh PR for the current branch
+			// head.
 			if fm.CheckpointCommit != "" && !prDeliversCheckpoint(r.daemonCtx, repoDir, prURL, fm.CheckpointCommit) {
 				r.logger.Printf("task %s: PR %s merged but predates checkpoint %s, continuing to normal merge", candidate.ID, prURL, fm.CheckpointCommit)
 				prURL = ""
@@ -175,7 +176,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	if !filepath.IsAbs(reqPath) {
 		reqPath = filepath.Join(r.cfg.ObsidianVault, reqPath)
 	}
-	// target_branch 自愈（TASK-079）：round2 会话被 daemon 重启/超时打断时，
+	// target_branch 自愈：round2 会话被 daemon 重启/超时打断时，
 	// 分支建好了但 frontmatter 的 target_branch 没写回——merge 授权于是永远
 	// 卡在 "precondition: target_branch is required"，且每次 scan 都把用户刚设
 	// 的 merge_approved 清掉。任务 worktree 本来就 checkout 在 round2 分支上，
@@ -212,7 +213,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 			updates["status"] = "refining"
 			updates["pending_req"] = true
 		}
-		// Anti-loop（TASK-080）：机械前置失败计数，预算耗尽停止自动重试并通知。
+		// Anti-loop：机械前置失败计数，预算耗尽停止自动重试并通知。
 		// 修复方向明确（补 target_branch / 清 pending_req），人工恢复后计数清零。
 		if isMergePreconditionError(err.Error()) {
 			fails := fm.MergePreconditionFails + 1
@@ -236,8 +237,8 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		}
 		// gh 存在但可能未登录：push 走 gh credential helper，PR create/merge
 		// 也直接用 gh——未登录会阻塞全部远程步骤。先本地预检并把精确补救
-		// 指引（`gh auth login`）交给用户，而不是烧光重试预算（TASK-004：
-		// 5/5 次 push 重试全部失败 "could not read Username"）。预检是本地
+		// 指引（`gh auth login`）交给用户，而不是烧光重试预算（实例：5/5
+		// 次 push 重试全部失败 "could not read Username"）。预检是本地
 		// 操作（读 gh config/keyring，无网络）；写回撤销授权，daemon 扫描
 		// 保持安静，直到用户登录后重新批准。
 		if err := checkGHAuth(r.daemonCtx); err != nil {
@@ -270,15 +271,16 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// the target branch): syncMergeBranch's three-way merge must execute on
 	// the target branch — running it on the main checkout while another
 	// branch is checked out merges remote feature history into the wrong
-	// branch and corrupts both (TASK-051/059: the main checkout sat on
-	// task/067; sync merged origin/task/051 into it, a 14-file conflict, and
-	// budget exhaustion then left a stale MERGE_HEAD polluting later runs).
+	// branch and corrupts both (observed: the main checkout sat on one task
+	// branch; sync merged another task's remote branch into it, a large
+	// conflict, and budget exhaustion then left a stale MERGE_HEAD polluting
+	// later runs).
 	// The worktree is keyed by taskRunKey(filePath), the SAME key round2 and
 	// audit use — a merge must reuse the round2 worktree, never look up a
-	// TASK-<id> directory that does not exist (TASK-067: merge fell back to
-	// the main checkout, the AI session polluted its index with another
-	// task's staged files, and `git merge --abort` spun forever on
-	// "Entry ... not uptodate").
+	// TASK-<id> directory that does not exist (merge once fell back to the
+	// main checkout, the AI session polluted its index with another task's
+	// staged files, and `git merge --abort` spun forever on "Entry ... not
+	// uptodate").
 	if wd, wdErr := ensureTaskWorktree(repoDir, taskRunKey(candidate.FilePath), fm.TargetBranch, r.cfg.WorktreeBase); wdErr != nil {
 		// Never fall back to the main checkout: merge performs write
 		// operations (sync three-way merge, checkout, commit, push). A
@@ -313,7 +315,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// updated it), or the local history may have been rewritten by a fresh
 	// implementation. Pushing without syncing then fails with a
 	// non-fast-forward rejection, which the retry loop burns all 5 attempts
-	// on (TASK-067: local behind remote by 1 commit, 6+ rejected pushes).
+	// on (observed: local behind remote by 1 commit, 6+ rejected pushes).
 	// syncMergeBranch reconciles by ancestry: fast-forward when the remote
 	// is an ancestor, three-way merge when the local is an ancestor (the
 	// conflict is resolved in-place by the AI auto-fix session, same budget
@@ -356,7 +358,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 		// Daemon shutdown raced the push (SIGTERM kills the git child via
 		// mergeCommand's context): keep the merge authorized so it resumes
 		// after restart instead of stranding the task in conflict with the
-		// authorization revoked (TASK-059: a shutdown-killed push burned the
+		// authorization revoked (observed: a shutdown-killed push burned the
 		// retry budget and ended with merge_approved=false forever).
 		if r.daemonCtx.Err() != nil {
 			r.logger.Printf("task %s: push interrupted by daemon shutdown, merge resumes after restart", candidate.ID)
@@ -443,8 +445,8 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 	// merge succeeds OR a new planning round completes (fresh delivery intent
 	// — see clearMergeRepairBudget); user re-approval does not re-spend the
 	// budget, and replanning does not inherit the previous delivery's
-	// exhaustion (TASK-067: v3 budget spent on a large rebase left v4 without
-	// AI repair).
+	// exhaustion (a budget spent on a large rebase once left the next
+	// delivery without AI repair).
 	// CI polling budget: while checks are pending the merge waits in this
 	// goroutine (30s per tick) instead of returning and depending on an
 	// external watcher/timer scan to re-evaluate once CI settles. After the
@@ -533,7 +535,7 @@ func (r *Runner) processMergeTask(candidate task.ReadyTask, repoDir string) erro
 			// Debounced (failNotifyBlocked — most severe tier): budget
 			// exhaustion hands back to the user, but clearing the count
 			// re-authorizes and re-runs the merge; without a window every
-			// round re-toasts (TASK-067 notification storm).
+			// round re-toasts (notification storm).
 			r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "❌", "合并被拒绝",
 				decision.Reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 大范围改动建议重出计划（rework_resolution=replan）由 Round 2 重做", failNotifyBlocked)
 			return updateErr
@@ -611,7 +613,7 @@ func (r *Runner) forkMergeDelivery(candidate task.ReadyTask, repoDir string, fm 
 	// be checked out in the primary checkout or another task worktree, and git
 	// refuses to bind the same branch in two worktrees at once. Pushing
 	// HEAD:<default> below delivers the same fork-merge result without needing
-	// that branch to be free (self-healing TASK-005 2026-09-07).
+	// that branch to be free (self-healing).
 	if out, err := exec.Command("git", "-C", repoDir, "checkout", "--detach", "origin/"+defaultBranch).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout fork default branch: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -711,8 +713,8 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	// Refresh the local origin/main mirror BEFORE writing done: the merge
 	// itself happened on the forge (gh pr merge), so the local ref updates
 	// only on the next fetch. A scan racing that window would read the
-	// freshly-done task as an undelivered increment and reopen it (TASK-018
-	// 2026-08-14: reopened minutes after PR #76 merged). Failure is silent —
+	// freshly-done task as an undelivered increment and reopen it (observed:
+	// reopened minutes after the PR merged). Failure is silent —
 	// detectStaleDoneReopens re-fetches before reopening anyway.
 	fetchOriginMain(r.daemonCtx, repoDir)
 
@@ -727,9 +729,9 @@ func (r *Runner) completeMerge(candidate task.ReadyTask, repoDir, prURL string) 
 	// the PR). Round 2's checkpoint can be a commit that later rebases
 	// dropped, and detectStaleDoneReopens then misreads the freshly-merged
 	// task as an undelivered increment and reopens it seconds after merge
-	// (TASK-065 2026-08-28: PR #89 merged → "stale done reopened to
-	// refining" 10s later because checkpoint 581b371 was abandoned by the
-	// rebase that produced the delivered head). approved_head is in
+	// (observed: PR merged → "stale done reopened to refining" 10s later
+	// because the recorded checkpoint was abandoned by the rebase that
+	// produced the delivered head). approved_head is in
 	// origin/main by construction after `gh pr merge --merge`, so the
 	// ancestry re-check passes. When approved_head is missing (legacy
 	// tasks), keep the old checkpoint — conservative, no worse than before.
@@ -810,9 +812,9 @@ func findAnyPR(parent context.Context, repoDir, targetBranch string) string {
 // task checkpoint in its ancestry — i.e. the PR actually carried this task's
 // code. Merged PRs always expose a merge commit; any lookup or ancestry
 // failure resolves conservatively to false so a legacy PR can never fake a
-// delivery the local repository does not confirm (TASK-069: a same-branch v1
-// PR converged the v16 generation to done without delivering its checkpoint,
-// and the stale-done detector reopened it — done→refining loop).
+// delivery the local repository does not confirm (observed: a same-branch
+// legacy PR converged a later generation to done without delivering its
+// checkpoint, and the stale-done detector reopened it — done→refining loop).
 func prDeliversCheckpoint(parent context.Context, repoDir, prURL, checkpoint string) bool {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
@@ -928,14 +930,15 @@ func mergeCommand(parent context.Context, dir, name string, args ...string) (*ex
 // 与创建/合并 PR 使用同一 GitHub 身份，而不是依赖 ambient git 凭据。
 // 仅通过 gh keyring（或 SSH）认证的机器没有 https credential helper：
 // 裸 `git push` 到 https origin 会报 "could not read Username" 并烧光
-// 全部重试预算（实例：TASK-004 卡在 review，merge 重试 1/5..5/5 全部
+// 全部重试预算（实例：任务卡在 review，merge 重试 1/5..5/5 全部失败
+// "could not read Username"）。
 // syncMergeBranch brings the local worktree branch up to date with the
 // remote feature branch before push. Returns forcePush=true when the local
 // branch was rewritten (fresh Round 2 implementation / rebase) and the stale
 // remote head's exclusive changes are all re-implemented locally — a plain
 // push would be rejected as non-fast-forward and three-way-merging the stale
-// head back would resurrect discarded WIP (TASK-051/059: remote head was the
-// old WIP snapshot, local was the v4 re-implementation).
+// head back would resurrect discarded WIP (observed: remote head was the
+// old WIP snapshot, local was the re-implementation).
 // Conflicts surface as ErrGitConflict with the conflict state preserved so
 // the caller can route straight into auto-fix-conflict.
 func syncMergeBranch(ctx context.Context, repoDir, branch string) (bool, error) {
@@ -945,7 +948,7 @@ func syncMergeBranch(ctx context.Context, repoDir, branch string) (bool, error) 
 	// A stale in-progress merge from an earlier failed run (AI session
 	// failure, budget exhaustion) must be rolled back before any new merge:
 	// merging onto an unresolved MERGE_HEAD would stack conflict state and
-	// pollute the branch (TASK-051/059: the main checkout carried a stale
+	// pollute the branch (observed: the main checkout carried a stale
 	// MERGE_HEAD for a day, corrupting every sync that ran on it).
 	if mergeInProgress(repoDir) {
 		if out, err := exec.Command("git", "-C", repoDir, "merge", "--abort").CombinedOutput(); err != nil {
@@ -980,9 +983,9 @@ func syncMergeBranch(ctx context.Context, repoDir, branch string) (bool, error) 
 	//   push), three-way merge the remote head in.
 	// - neither (history rewritten by the new implementation): force-push
 	//   when the stale remote head's exclusive changes are all re-implemented
-	//   by the local branch (TASK-051/059: the remote WIP snapshot predates
-	//   the v4 plan; three-way merging it back would resurrect discarded
-	//   code). The file-level check protects genuine remote-only work (an
+	//   by the local branch (observed: the remote WIP snapshot predates the
+	//   new plan; three-way merging it back would resurrect discarded code).
+	//   The file-level check protects genuine remote-only work (an
 	//   AI-fix commit touching files the local branch never changed) — never
 	//   guess about clobbering changes local does not own.
 	if isAncestor(ctx, repoDir, "origin/"+branch, branch) {
@@ -1280,7 +1283,7 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 		})
 		// Debounced (failNotifyBlocked): the user may clear merge_retry_count
 		// to continue AI repair, which re-authorizes and re-runs the merge —
-		// a bare toast would re-fire every round (TASK-067 storm).
+		// a bare toast would re-fire every round (notification storm).
 		r.notifyFailure(candidate.FilePath, candidate.ID, candidate.Title, "⚠️", "合并冲突待处理",
 			reason+"；自动修复已达上限（"+fmt.Sprint(r.cfg.MaxAutoMergeFixes)+" 次）。① 继续 AI 修复：otg update-status "+candidate.ID+" merge_retry_count=0 后重设 merge_approved=true；② 连续失败多为需求歧义：在 REQ 文档中追加歧义裁决并保存（建议含变更类型行：> 变更类型: breaking），daemon 自动转 refining 重出计划——仅需修改需求文档，无需手动改任务状态", failNotifyBlocked)
 		return updateErr
@@ -1288,7 +1291,7 @@ func (r *Runner) autoResolveMergeConflict(candidate task.ReadyTask, repoDir stri
 	// Conflict-size circuit breaker: an AI session cannot realistically
 	// resolve a very large conflict set inside its bounded timeout, and the
 	// attempt only burns the repair budget and session time before failing
-	// (TASK-067: 90+ conflicting files → 15min session timeout exit 143;
+	// (observed: 90+ conflicting files → 15min session timeout exit 143;
 	// ~22 files resolved in 5min). When the local worktree carries more
 	// conflicting files than the configured threshold, hand the task
 	// straight back to the user instead of starting a doomed session.
@@ -1423,7 +1426,7 @@ func (r *Runner) runMergeAISession(candidate task.ReadyTask, repoDir string, mod
 	// Inject the same project context (constraints / domain terms / ADRs)
 	// that refining/planning sessions get: conflict and CI-fix resolution
 	// must reason from the requirement's intent, not raw code structure
-	// (TASK-067: 18-file semantic merges failed 3 repair rounds because the
+	// (observed: 18-file semantic merges failed 3 repair rounds because the
 	// session lacked the domain/ADR picture).
 	if projDir := resolveVaultProjectDir(r.cfg.ObsidianVault, candidate.Project); projDir != "" {
 		reqPath := filepath.Join(r.cfg.ObsidianVault, candidate.ReqDoc)
@@ -1897,8 +1900,8 @@ func (r *Runner) extractProjectKnowledge(projectName, taskPath string) {
 	// idempotent pipeline — but only after the retry backoff deadline
 	// (release-time retry storm lesson: a persistent "database is locked"
 	// failure used to re-run extraction + INDEX + sync EVERY scan with no
-	// bound; 2026-08-21 TASK-001 first observed the sync failure, the
-	// missing backoff turned it into an infinite storm at release).
+	// bound; the missing backoff once turned a single sync failure into an
+	// infinite storm at release).
 	stats, serr := r.syncKnowledgeStore()
 	if serr != nil {
 		r.logger.Printf("knowledge-base store sync failed: %v", serr)

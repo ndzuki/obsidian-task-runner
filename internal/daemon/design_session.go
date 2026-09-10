@@ -47,7 +47,7 @@ func checkDesignTargetWritable(root string) error {
 // REAL vault Design directory is a failure: no revision is bumped and later
 // task sessions must not consume a partial library.
 //
-// Contract (TASK-065 lesson, 2026-08-24): the session's working directory is
+// Contract: the session's working directory is
 // the vault Design directory itself, so the workspace-write sandbox scope
 // covers exactly the artifact tree. Sessions from before this contract staged
 // artifacts under <repo>/.design-stage/ when the vault was outside their

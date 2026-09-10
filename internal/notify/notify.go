@@ -240,7 +240,7 @@ func SendGrillingReminder(taskID, taskTitle, reqDoc, vaultPath, addr, provider, 
 
 // kittyDebounceDir 返回 grilling debounce 文件目录（XDG cache 下）。
 // 与任务 frontmatter 锁一致：不放在 /tmp——tmpfs 挂载且无 swap 时，
-// 残留文件占不可回收内存（2026-08-14 实测系统 OOM 的直接推手之一）。
+// 残留文件占不可回收内存（线上实测系统 OOM 的直接推手之一）。
 func kittyDebounceDir() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil || cacheDir == "" {
@@ -509,8 +509,8 @@ func TryKittyDecisionTab(project, listPath, vaultPath, addr, provider, model str
 	// 决策 tab 的 prompt 必须在被启动的 bash 脚本内导出，不能依赖
 	// `kitty @ launch` 客户端进程的环境变量：kitty 远程启动的子进程继承
 	// 的是 kitty 服务端的环境，而不是 `kitty @` 客户端进程的 env
-	// （2026-09-01 事故：KITTY_GRILL_PROMPT 丢失 → kitty-grill 回退到
-	// 无目标泛化问卷 → 模型自行选中已 done 的 REQ-025 写回，误触发
+	// （线上事故：KITTY_GRILL_PROMPT 丢失 → kitty-grill 回退到
+	// 无目标泛化问卷 → 模型自行选中一个已 done 的 REQ 写回，误触发
 	// done 任务重开）。heredoc 带引号定界符（'PROMPT_EOF'）保证 prompt
 	// 中的反引号/引号原样传入，不做任何 shell 展开。
 	script := decisionTabScript(project, listPath, prompt, addr, provider, model)

@@ -162,8 +162,8 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 			// refining/PM session writing back its own audit records). Skip
 			// so those self-writes do not re-open tasks or re-notify —
 			// unless the task is frozen in a stale terminal (done + newer
-			// plan + unmerged checkpoint, TASK-018): absorbing would keep
-			// the undelivered increment locked forever, so route it through
+			// plan + unmerged checkpoint): absorbing would keep the
+			// undelivered increment locked forever, so route it through
 			// the done branch (breaking reopen) instead.
 			if reqHash != "" && fm.RefineReqHash != "" && fm.RefineReqHash == reqHash {
 				if fm.Status != "done" || fm.PlanVersion < 2 || fm.CheckpointCommit == "" {
@@ -183,8 +183,8 @@ func OnReqChanged(vaultPath, reqRelPath, defaultAssignee string) []AffectedResul
 	// REQ consumes its contracts. A breaking (or unannotated) change to
 	// REQ-A must therefore re-open REQ-B's tasks for re-alignment — without
 	// this, a merged upstream contract change is only discovered later by an
-	// audit or a gate failure (TASK-058: REQ-058 vs merged TASK-079
-	// canonical contracts diverged until the audit caught it).
+	// audit or a gate failure (canonical contracts can silently diverge from
+	// the merged tasks until an audit catches it).
 	affected = append(affected, propagateReqChangeToDependents(vaultPath, reqID, reqChangeType, processed)...)
 
 	// Fallback: auto-create task if no existing task matched
@@ -429,8 +429,8 @@ func requirementChangeUpdates(status string) map[string]interface{} {
 // delivered task's generation facts when a breaking requirement change (or a
 // REQ rename) reopens it for a new delivery round. The old PR/branch facts
 // must not be reused: an already-MERGED old PR makes the merge flow converge
-// to done immediately, so the new delivery could never be merged (TASK-018
-// lesson). Round 2 writes the new branch afterwards and the merge flow
+// to done immediately, so the new delivery could never be merged. Round 2
+// writes the new branch afterwards and the merge flow
 // creates a fresh PR.
 func generationResetUpdates(fm *yamlfrontmatter.Frontmatter) map[string]interface{} {
 	gen := fm.Generation
@@ -746,14 +746,14 @@ repository_description: ""
 }
 
 // deriveProjectDir extracts the project directory name from a requirement path.
-// New structure: "Projects/001-release-manager/Requirements/REQ-002-demo.md" → "001-release-manager"
+// New structure: "Projects/001-example-project/Requirements/REQ-002-demo.md" → "001-example-project"
 // Old structure: "Requirements/REQ-001-demo.md" → "001-demo" (backward compatible)
 func deriveProjectDir(reqRelPath, id, slug string) string {
 	// Require "Projects/" prefix for the new structure
 	projPrefix := "Projects/"
 	if strings.HasPrefix(reqRelPath, projPrefix) {
 		rest := strings.TrimPrefix(reqRelPath, projPrefix)
-		// rest = "001-release-manager/Requirements/REQ-002-demo.md"
+		// rest = "001-example-project/Requirements/REQ-002-demo.md"
 		idx := strings.Index(rest, string(filepath.Separator))
 		if idx > 0 {
 			return rest[:idx]

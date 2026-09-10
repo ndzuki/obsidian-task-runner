@@ -24,7 +24,7 @@ func writeTeamVaultMap(t *testing.T, dir, name, path string) string {
 // manual-mode delivery path (push, default-branch probe, ancestor check) runs
 // against genuine git semantics. The PRIMARY checkout sits on main while the
 // feature branch lives in the task worktree (mirroring the round2 worktree
-// convention — merge never runs on the main checkout, TASK-067).
+// convention — merge never runs on the main checkout).
 func newManualMergeFixture(t *testing.T) (repo, origin, taskPath string, runner *Runner, candidate task.ReadyTask, head string) {
 	t.Helper()
 	dir := t.TempDir()

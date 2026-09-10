@@ -20,7 +20,8 @@ hide: true
   - `Grilling-Decisions.md`：**全部决策点已填即自动分发**（daemon 按答案区 hash 变更检测，无需 `grill_continue`）；`grill_continue=true` 仅用于**部分/修订批次**手动分发。
   - `Stage-Review.md`：**必须 `grill_continue=true`** 才分发（daemon 只按该标志触发；阶段状态翻转由 daemon 先行完成）。
   输入是清单路径（按文件名识别处理类型）。
-- `stage-review {stage_plan_path}` — daemon 检测到某项目某阶段**可评审**时调用：阶段 TASK 全部完成（done+merged），**或剩余任务全部 blocked/closed（无可推进任务，防卡死放宽）**。输入是 `Notes/Stage-Plan.md` 路径。产出阶段评分与建议（Mode 3）。
+- `stage-review {stage_plan_path}` — daemon 检测到某项目某阶段**可评审**时调用：阶段 TASK 全部完成（done+merged），**或剩余任务全部 blocked/closed（无可推进任务，防卡死放宽）**。输入是 `Notes/Stage-Plan.md` 路径。产出阶段评分、文档覆盖矩阵与建议（Mode 3）。
+- `documentation-audit {audit_path}` — daemon 为启用文档闭环前已存在的项目生成一次性兼容审计文件时调用。PM 不预设缺口，先盘点现有用户可见能力与文档入口，再写回 `documentation_gate: pass|gap|not_applicable`；审计完成后 daemon 同步到 Stage-Review，`gap` 走普通文档收口 TASK。
 
 ## 共享输入
 
@@ -340,6 +341,43 @@ updated: {ISO8601}
 2. **更新**：每次 `stage-review`（Mode 3）完成时追加当前阶段里程碑；`distribute` 阶段决策后更新「当前状态」；consolidate 发现重大状态变化（新阶段、新需求追加）时补记。
 3. **只追加不重写**：历史里程碑保留（审计），仅「当前状态」段可刷新。
 
+## Mode 2.75: documentation-audit（既有项目文档回补审计）
+
+**输入**：`Notes/Documentation-Audit.md` 路径。**角色**：兼容回补审计者。
+
+该模式只用于文档闭环能力上线前已经存在的项目。不要把旧项目默认判为缺口，也不要替用户填写 Stage-Review 的「评审决策:」。
+
+### Step 1: 全量盘点现状
+
+读取项目 README、docs、配置参考、部署/运维说明、已完成 TASK 的交付摘要和当前 Stage-Plan。建立「用户可见能力 → 文档入口 → 验证证据」矩阵。
+
+### Step 2: 产出门禁结论
+
+仅允许三种结果：
+
+- `pass`：现有文档足以支持陌生用户完成主要体验；
+- `gap`：逐条列出缺口，不能使用泛化描述；
+- `not_applicable`：项目没有用户可见交付面，正文必须解释原因。
+
+回写 `Notes/Documentation-Audit.md` frontmatter：
+
+```yaml
+documentation_gate_version: 1
+documentation_gate: pass # pass | gap | not_applicable
+documentation_gaps: []
+documentation_batch: ""
+documentation_task: ""
+```
+
+同时在正文保存覆盖矩阵和核对依据。不要修改用户的 Stage-Review 决策。
+
+### 完成标准
+
+- [ ] 已读取实际项目文档与交付摘要，不凭项目名称猜测
+- [ ] 覆盖矩阵包含入口、证据和结论
+- [ ] gate 值合法；`gap` 有逐条缺口
+- [ ] 没有填写用户的 `评审决策:`
+
 ## Mode 3: stage-review（阶段评审评分）
 
 **输入**：`Notes/Stage-Plan.md` 路径。**角色**：阶段评审者——评估已交付阶段，产出评分与建议，带决策点交用户。
@@ -353,6 +391,12 @@ updated: {ISO8601}
 2. **质量**：读取各 TASK 的 Review Bundle 摘要（测试统计、code-review/test-quality 计数、风险自评）、`## 验收记录` 与 REQ 验收标准对照——不重跑测试，只审计已有证据。
 3. **一致性**：ADR 是否沉淀、知识库是否提取、领域术语是否回写 CONTEXT.md。
 4. **用户可体验性**：该阶段交付物用户能否直接体验（demo 标准）——不能则标注为评审风险。
+5. **文档闭环**：建立「用户可见能力 → README/docs 入口」覆盖矩阵，核对安装/构建、配置、运行、验证、部署运维、主要故障恢复、安全边界与回滚。PM 对完整性负责；技术事实仍由原实现 assignee 或普通工程 TASK 负责，PM 不在评审会话里代写大篇技术文档。
+
+文档闭环裁决只有三种：
+- `pass`：本阶段文档足以支撑陌生使用者完成对应体验；
+- `gap`：存在明确缺口。逐条写入 `documentation_gaps`，daemon 自动派生普通「项目交付文档收口」REQ/TASK，复用完整任务生命周期；
+- `not_applicable`：纯内部/报告型交付且确实没有用户使用面，必须在评审正文写明理由。
 
 ### Step 3: 评分与建议
 写 `Notes/Stage-Review.md`：
@@ -364,6 +408,11 @@ project: {project}
 stage: Phase N
 status: open
 grill_continue: false
+documentation_gate_version: 1
+documentation_gate: <pass / gap / not_applicable>
+documentation_gaps: []        # gap 时必须逐条填写
+documentation_batch: ""      # daemon 按 stage+gaps hash 回写稳定批次 ID
+documentation_task: ""       # daemon 派生后写 TASK-nnn
 created: {ISO8601}
 updated: {ISO8601}
 ---
@@ -394,6 +443,15 @@ updated: {ISO8601}
 > deepening 候选作为下一阶段 backlog（用户决定，不进入自动流程）」。
 > 无信号 → 写「暂无明显结构信号」。
 
+## 文档闭环
+| 用户可见能力 | 文档入口 | 验证证据 | 结论 |
+|---|---|---|---|
+| {能力} | {README/docs 路径或缺失} | {已核对命令/配置/入口} | pass/gap |
+
+- 门禁: {pass / gap / not_applicable}
+- 理由: {覆盖充分说明 / 缺口列表 / 不适用理由}
+- 执行边界: PM 只审计完整性；`gap` 由 daemon 派生普通文档 TASK，工程 assignee 补齐并验证技术事实。
+
 ## 建议（可带往下一阶段）
 - **S1**: {建议 + 理由 + 涉及 REQ/TASK}
 - **S2**: ...
@@ -403,13 +461,14 @@ updated: {ISO8601}
 - 评审决策: <continue / supplement:{建议} / end>
 ```
 
-> **daemon 只消费「评审决策:」行**（`stage_flip` 按 continue/supplement/end 翻转 Stage-Plan 状态机）；上方四维评分表是**PM 自评估指南**（帮助用户判断决策），daemon 不解析评分/总分——评分仅供参考，用户决策仍以「评审决策:」为准。
+> **daemon 消费两类确定性字段**：① `documentation_gate_version: 1` + `documentation_gate`；若为 `gap`，先根据 `documentation_gaps` 派生普通 REQ/TASK，并在其 done+merged 前阻止 stage decision 分发；②「评审决策:」行，文档门禁开放后由 `stage_flip` 按 continue/supplement/end 翻转 Stage-Plan。四维评分/总分仍仅供用户参考。
 
 ### Step 4: 更新阶段状态
 Stage-Plan.md 中该阶段 `status: in-progress → review-pending`（防 daemon 重复触发评审；实际状态机翻转由 daemon `flipStageReviewDecision` 在分发前确定性完成，本步为语义记录）。daemon 在用户回答后按本文件 frontmatter `stage:` 字段定位 review-pending 阶段完成翻转（in-progress 与 review-pending 两种形态均兼容）。
 
 ### 完成标准
-- [ ] Stage-Review.md 已创建（评分四维 + 建议 + 决策区）
+- [ ] Stage-Review.md 已创建（评分四维 + 文档覆盖矩阵 + 建议 + 决策区）
+- [ ] `documentation_gate_version: 1` 且门禁值合法；`gap` 时 `documentation_gaps` 非空
 - [ ] Stage-Plan.md 该阶段 review-pending
 - [ ] 未替用户填「评审决策:」
 

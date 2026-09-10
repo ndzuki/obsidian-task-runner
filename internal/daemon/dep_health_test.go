@@ -73,8 +73,9 @@ func TestValidateDependencyRefsSkipsUnparsableRefs(t *testing.T) {
 	vault := filepath.Join(dir, "vault")
 	tasksDir := filepath.Join(vault, "Projects", "001-test", "Tasks")
 	writeHealthTask(t, tasksDir, "TASK-001-a.md", "---\nid: \"001\"\nstatus: ready\nblocked_by:\n  - \"068\"\n---\n# A\n")
-	// TASK-068 exists but its frontmatter is currently unparsable (duplicate
-	// mapping key) — the exact failure mode of an interrupted write-back.
+	// The referenced task exists but its frontmatter is currently unparsable
+	// (duplicate mapping key) — the exact failure mode of an interrupted
+	// write-back.
 	writeHealthTask(t, tasksDir, "TASK-068-x.md", "---\nid: \"068\"\nrefine_version: 4\nrefine_version: 7\nstatus: ready\n---\n# X\n")
 
 	runner := healthRunner(t, vault)
@@ -95,7 +96,7 @@ func TestValidateDependencyRefsSkipsUnparsableRefs(t *testing.T) {
 // TestValidateDependencyRefsFlagsClosedRefs guards the closed-reference
 // signal: a blocked_by referencing a closed task can never be satisfied
 // (closed is a terminal state), so it must be reported once instead of
-// starving the gated task silently (TASK-069 blocked_by 011/070 lesson).
+// starving the gated task silently.
 func TestValidateDependencyRefsFlagsClosedRefs(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
@@ -316,9 +317,9 @@ func TestCheckVaultMapHealth(t *testing.T) {
 // user's explicit project-level pause switch), ALL dependency-health
 // diagnostics for that project must be silent — broken refs, closed refs and
 // upstream-stall reminders are "push the project forward" nudges the user
-// has explicitly opted out of (2026-08-31 002-magic-models-manager: TASK-003/
-// 004/005 blocked by a paused needs-grilling upstream produced a blocked_by
-// reminder every daemon restart because diagNotifyAt is in-memory).
+// has explicitly opted out of (a paused needs-grilling upstream otherwise
+// produced a blocked_by reminder every daemon restart because diagNotifyAt
+// is in-memory).
 func TestValidateDependencyRefsSkipsPausedProject(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")

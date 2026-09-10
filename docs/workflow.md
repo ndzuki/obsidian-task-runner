@@ -78,9 +78,6 @@ flowchart TD
     REFINE -.->|会话级失败| FB[DSH fallback.mjs 会话内降级<br/>或 handlePhaseFailure]
     PLAN -.->|进程级失败| FB
     R2 -.->|进程级失败| FB
-    REFINE -.->|空响应×2（10min 窗口）| FB
-    PLAN -.->|空响应×2（10min 窗口）| FB
-    R2 -.->|空响应×2（10min 窗口）| FB
     FB -->|可恢复| REFINE
     FB -->|不可恢复| BLK[blocked + resume 门禁]
 ```
@@ -93,19 +90,19 @@ flowchart TD
 | 1.5 | 默认委派 | vault-map 顶层 `default_assignee`（如 `"default"`）非空 | `createTaskForReq` 将 TASK `assignee` 预写为对应 models key（`models` 映射到具体模型 ID）——新任务直接可调度，跳过人工补 assignee；**空值恢复旧行为**（blocked 等人工填 assignee） | 无（纯 Go） | TASK `assignee=<default_assignee>`、状态提醒显示已委派 | 创建即生效 |
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
-| 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；DSH 阶段会话（models.default，thinking low）；**会话成功后 daemon 按当前 REQ bytes 兜底重写 `refine_req_hash`** | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
+| 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；DSH 阶段会话（models.default，thinking medium）；**会话成功后 daemon 按当前 REQ bytes 兜底重写 `refine_req_hash`** | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
 | 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | Kitty 内 requirement-elaborator / grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
 | 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 DSH 阶段会话（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；**单任务触发扩展：`grill_repeat≥2` 或 `plan_version≥3`（反复 replan）也进统筹**；**新项目/大 REQ 附加拆分建议（split skill）与技术栈建议**；distribute：清单答案写回 REQ + 拆分落地（子 REQ 创建）+ 任务重置 refining | `grill_parked/grill_repeat/plan_version`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
 | 6.6 | 自动阶段化 | scan 开始（每轮，PM 统筹前） | `processAutoStaging`：未分阶段（stage 空）的进行中任务按 `blocked_by` 拓扑确定性分层 → 合并为阶段（`stage_min_per_phase`/`stage_max_phases`）→ Stage-Plan.md 追加 + 批量写 `stage` 字段。秒级幂等，编号接续，零 LLM 会话 | 无（纯 Go） | `stage: "P{N}"`、`Notes/Stage-Plan.md` | 已分阶段任务从 PM 输入中消失，PM 只剩真争议 |
-| 7 | planning | maturity 成熟 | DSH 阶段会话（重型阶段模型 v4-pro，thinking max/xhigh）；**REQ hash 由 daemon 预写（`refine_req_hash`）** | `/obsidian-task-runner-round1 <task>`：Step -1 知识图谱 → 版本化计划 + Prototype 建议；**命中的知识文档写入 `knowledge_refs`（引用链）**；**成功完成后 daemon 自动折叠 `## 实现计划` 历史（keep=3，防文档膨胀）** | `plan_version`、`status=plan-review`、`plan_approved=false`（批准由 daemon 按 auto_approve 决定）、`adr_proposed`、`knowledge_refs` | plan-review；auto_approve（默认 true）时 daemon 同轮直接转 implementing |
+| 7 | planning | maturity 成熟 | DSH 阶段会话（assignee 模型，thinking max）；**REQ hash 由 daemon 预写（`refine_req_hash`）** | `/obsidian-task-runner-round1 <task>`：Step -1 知识图谱 → 版本化计划 + Prototype 建议；**命中的知识文档写入 `knowledge_refs`（引用链）**；**成功完成后 daemon 自动折叠 `## 实现计划` 历史（keep=3，防文档膨胀）** | `plan_version`、`status=plan-review`、`plan_approved=false`（批准由 daemon 按 auto_approve 决定）、`adr_proposed`、`knowledge_refs` | plan-review；auto_approve（默认 true）时 daemon 同轮直接转 implementing |
 
-> **auto_approve（默认开启，全自动）**：`auto_approve` 缺失或为 true 时（frontmatter 解析默认 true、模板已写入），plan-review 任务由 daemon scan 自动批准——`plan_approved=true` 并直接转 implementing，**Grilling 是唯一人工关卡**（全自动链路：ready → refining → planning → implementing → review → 自动合并 → done）。显式 `auto_approve: false` 恢复人工审计划。**ADR 护栏**：`adr_proposed` 非空时 `adr_approved=false` 保持（架构决策由人工批准），不阻断实现自动进入。
-| 8 | plan-review | auto_approve（默认 true）或 `plan_approved=true`（人工） | `nextLocalTransition` → implementing；auto_approve 路径自动 `plan_approved=true`、`adr_approved=<adr_proposed 为空>`；预热 worktree | 无 | `status=implementing` | Round 2 |
-| 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；DSH 阶段会话（assignee 模型，thinking max，60min 超时）；**无进展完成（仍 implementing + 无 `checkpoint_commit`）→ 指数退避冷却（10m→…→~10.7h）不重派** | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining；无进展 → implementing（冷却中） |
+> **auto_approve（默认开启，全自动）**：`auto_approve` 缺失或为 true 时（frontmatter 解析默认 true、模板已写入），plan-review 任务由 daemon scan 自动批准——`plan_approved=true` 并直接转 implementing，**Grilling 是唯一人工关卡**（全自动链路：ready → refining → planning → implementing → review → 自动合并 → done）。显式 `auto_approve: false` 恢复人工审计划。**ADR 护栏**：`adr_proposed` 非空时自动置 `adr_approved=true`（Round 2 全部 AC 完成后自动写入 ADR，无需人工干预），不阻断实现自动进入。
+| 8 | plan-review | auto_approve（默认 true）或 `plan_approved=true`（人工） | `nextLocalTransition` → implementing；auto_approve 路径自动 `plan_approved=true`、`adr_approved=<adr_proposed 非空>`；预热 worktree | 无 | `status=implementing` | Round 2 |
+| 9 | 实现 | `status=implementing` | worktree 准备（`task/<id>-<slug>` 分支）；DSH 阶段会话（assignee 模型，thinking max，120min 超时）；**无进展完成（仍 implementing + 无 `checkpoint_commit`）→ 指数退避冷却（10m→…→~10.7h）不重派** | `/obsidian-task-runner-round2 <task>`：Prototype Gate（高风险 Step 先验证）→ Tracer Bullet 逐 AC → Scope Hammering → test-quality/code-review/task-verifier → ADR 写入 → Review Bundle | 实现记录、AC 证据、`status=review`、`target_branch` | review；阻塞 → needs-grilling；pending_req → checkpoint+refining；无进展 → implementing（冷却中） |
 | 10 | 完成审计与自动合并 | `status=review` + auto_merge（默认 true） | **① 完成审计**（§7.4）：`merge_approved=false` + `audit_status!=passed` 时先跑独立只读审计会话（受限工具面 read/grep/bash，无写工具；assignee 模型 / `audit.model` 覆盖；任务 worktree 内逐条 AC 复核原始证据）——pass 写 `audit_status=passed` 继续；fail implementation → `AUDIT_FAILED` 转 implementing（round2 自动修复，连续 `audit.max_fixes` 次升级 grilling 决策）；fail requirement → 直接 needs-grilling 决策；会话失败保持 review 待重试。**② 合并授权**：审计通过或人工已授权后 daemon 自动设 `merge_approved=true`；**merge 失败回退自动重授权**（`canAutoApproveMerge`：REQ 未变 + `merge_retry_count < max_auto_merge_fixes` + 非 `GITHUB_UNAVAILABLE`/`REPO_MISMATCH` 永久缺陷，conflict 同样适用；失败回退保持 `audit_status=passed`，不重复审计）；`processMergeTaskWithRetry` 纯 Go：校验（pending_req/REQ hash/target_branch/**origin==git_remote 目标仓库守卫，REPO_MISMATCH 硬失败**）→ 在任务 worktree 上 sync（祖先关系分流：fast-forward / 三路 merge / 文件级覆盖确认后 `--force-with-lease`）→ push（git 侧快速失败：connectTimeout 15s + lowSpeed 20s，命令 60s 上限兜底代理链路）→ PR 创建/复用 → CI checks 轮询；环境性失败 2min 退避自动重试 ×5；`pr_url` ...
 | 11 | 交付 | merge 成功（或团队模式交付完成） | 写 done；异步 `ExtractTaskKnowledge`（按任务提取 adr_written 的 ADR → 分类写入/未分类归档 → verified 翻转 → 重分类 → INDEX 重建） | 无（Go） | `status=done, completed, merge_status=merged` | 终态（breaking 需求变更则回 refining 新一轮交付）。**团队模式差异**：manual = 远端探测到人工合入后 done（无 PR URL）；fork-merge = 本地 merge 进 fork 默认分支并推送后 done，通知用户手动向团队项目发 PR |
 | 12 | 失败与恢复 | DSH 会话非零退出 / 阶段超时 / key 缺失 / 网关 5xx（MODEL_FAILED）/ quota | DSH fallback.mjs 会话内跨模型降级 → `handlePhaseFailure` 按阶段策略：refining/planning 重试一次再 block、round2 fallback→block、merge conflict/review；quota 指数退避；**24h 老化兜底自动恢复**（`autoResumeAgedBlocks` + `blocked_at`）；`AppendFailurePattern` 知识库沉淀 | 无 | `phase_error_code/phase_error/blocked_at/blocked_phase/auto_resume_count` | 见 [architecture.md §5](architecture.md) 与 §10 |
-| 13 | 阶段评审 | 某阶段全部任务 done+merged（`merge_status=merged`）或剩余全 blocked/closed | `processStageReviews` 检测（每轮 ≤1）→ PM stage-review 四维评分写 `Notes/Stage-Review.md`；用户填「评审决策:」后 **daemon 先确定性翻转 Stage-Plan 状态机**（`flipStageReviewDecision`：continue→delivered+下阶段 in-progress/completed；supplement→+补充行；end→后续阶段 ended+任务 close）→ PM distribute 只做 REQ 标注/知识沉淀并写 answered | `/obsidian-task-runner-pm stage-review` / distribute | `Notes/Stage-Review.md`、Stage-Plan 阶段状态（delivered/ended/completed/in-progress） | continue → 下一阶段 in-progress；supplement:{建议} → 追加下一阶段；end → 后续阶段 ended + 任务 close（不维护积压） |
+| 13 | 阶段评审 + 文档闭环 | 某阶段全部任务 done+merged（`merge_status=merged`）或剩余全 blocked/closed | `processStageReviews` → PM stage-review 四维评分 + 文档覆盖矩阵；`documentation_gate=gap` 时 `processDocumentationClosures` 自动派生普通文档 REQ/TASK（下一阶段或新增收口阶段），其 done+merged 前持有评审决策；门禁开放后 daemon 确定性翻转 Stage-Plan，再由 PM distribute 做标注/知识沉淀 | `/obsidian-task-runner-pm stage-review` / 普通 Round1/2 / distribute | `Notes/Stage-Review.md`、文档收口 REQ/TASK、Stage-Plan 状态 | pass/not_applicable → 原决策路径；gap → 文档任务交付后再 continue/supplement/end；不新增主状态 |
 
 ## 1. 架构边界
 
@@ -175,6 +172,7 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 - `domain-modeling`
 - `diagnosing-bugs`
 - `test-quality`
+- `knowledge-base`
 
 安装器必须 fail-fast 检查外部依赖。缺失时安装失败，并输出明确的 `skill-doctor install <name>` 指令，不允许警告后继续。
 
@@ -192,24 +190,24 @@ stateDiagram-v2
     ready --> refining: daemon 拾取（blocked_by 上游未 done 不调度；priority 评估并行，scan 末尾每轮≤2）
 
     refining --> planning: maturity=fully_mature（含 fact/auto 处置后成熟）
-    refining --> needs_grilling: 仅剩 dispute，或大型需求 (AC>10 / 3+服务) → Wayfinder Map 决策地图作为焦点
-    refining --> needs_grilling: dispute 重复 grill_repeat≥2 → grill_parked=true（并入项目级 Grilling-Decisions.md）
+    refining --> needs-grilling: 仅剩 dispute，或大型需求 (AC>10 / 3+服务) → Wayfinder Map 决策地图作为焦点
+    refining --> needs-grilling: dispute 重复 grill_repeat≥2 → grill_parked=true（并入项目级 Grilling-Decisions.md）
     refining --> blocked: 自动恢复一次后再次失败
 
-    needs_grilling --> needs_grilling: owner 有效 / Kitty 不可用 / resolution 为空 / grill_parked=true 等清单回答
-    needs_grilling --> implementing: grill_done=true and grill_resolution=resume
-    needs_grilling --> refining: grill_done=true and grill_resolution=replan
-    needs_grilling --> refining: PM distribute 分发清单答案（grill_parked=false, grill_repeat=0）
+    needs-grilling --> needs-grilling: owner 有效 / Kitty 不可用 / resolution 为空 / grill_parked=true 等清单回答
+    needs-grilling --> implementing: grill_done=true and grill_resolution=resume
+    needs-grilling --> refining: grill_done=true and grill_resolution=replan
+    needs-grilling --> refining: PM distribute 分发清单答案（grill_parked=false, grill_repeat=0）
 
     planning --> refining: REQ hash 在 planning 期间变化
-    planning --> plan_review: 新计划成功写入
+    planning --> plan-review: 新计划成功写入
     planning --> blocked: 自动恢复一次后再次失败
 
-    plan_review --> implementing: plan_approved=true
-    plan_review --> plan_review: 等待人工批准
-    plan_review --> closed: [*] rework_resolution=close + close_approved=true + closure_reason/note 完整（duplicate 还需 replacement_task）
+    plan-review --> implementing: plan_approved=true
+    plan-review --> plan-review: 等待人工批准
+    plan-review --> closed: [*] rework_resolution=close + close_approved=true + closure_reason/note 完整（duplicate 还需 replacement_task）
 
-    implementing --> needs_grilling: 实现阻塞需要用户决策 (含 Prototype FAIL)
+    implementing --> needs-grilling: 实现阻塞需要用户决策 (含 Prototype FAIL)
     implementing --> refining: pending_req，在当前 AC 完成并 checkpoint 后
     implementing --> blocked: 阶段失败（自动恢复 2 次后停止）
     implementing --> review: 全部 AC、测试和验收完成
@@ -217,7 +215,7 @@ stateDiagram-v2
 
     review --> review: 独立完成审计（audit_status=pending，会话失败重试）
     review --> implementing: 审计 fail implementation（连续 max_fixes 次 → needs-grilling）
-    review --> needs_grilling: 审计 fail requirement / 连续失败超预算
+    review --> needs-grilling: 审计 fail requirement / 连续失败超预算
     review --> done: 审计通过 (audit_status=passed) + auto_merge 自动授权 and pending_req=false (含 checks 等待)
     review --> conflict: Merge 冲突（AI 自动修复，预算内多次自动重试，耗尽后人工决策）
     review --> review: 失败回退自动重授权（auto_merge + REQ 未变 + 预算未耗尽）
@@ -361,11 +359,13 @@ grill_done: false
 
 ### 5.2 本机原子性
 
-修改 owner 前必须获取 task-path hash 对应的文件锁：
+修改 owner 前必须获取 task-path hash 对应的文件锁（`WithLockedFrontmatter`）：
 
 ```text
-${TMPDIR}/otg-grill-<task-path-sha256>.lock
+${用户缓存目录}/otg/locks/otg-task-<task-path-sha256>.lock
 ```
+
+（用户缓存目录不可用时回退 `${TMPDIR}`）
 
 锁内执行 read → check timeout → write frontmatter，避免本机两个进程同时获得 owner。
 
@@ -486,7 +486,7 @@ plan_version: <old + 1>
 `auto_approve` **默认 `true`**：frontmatter 缺失该字段时按 true 解析（与 `auto_merge` 对称），模板已显式写入 `auto_approve: true`。plan-review 任务在 daemon scan 时自动 `plan_approved=true` 并直接转 implementing——**Grilling 是唯一人工关卡**。
 
 1. 显式 `auto_approve: false` 恢复人工审计划：任务停在 plan-review，等待 `plan_approved=true`（`otg update-status`）。
-2. **ADR 护栏**：`adr_proposed` 非空时保持 `adr_approved=false`——架构决策由人工批准（`otg update-status adr_approved=true`），不阻断实现自动进入。
+2. **ADR 护栏**：`adr_proposed` 非空时自动置 `adr_approved=true`——Round 2 全部 AC 完成后自动写入 ADR（无需人工干预），不阻断实现自动进入。
 3. 不跳过 maturity gate、Grilling 或 Merge Gate；pending_req 仍优先回 refining。
 4. 新项目与 replan 同样自动批准（`new_project` 仅影响目录创建时机，Round 2 才创建）。
 5. 自动批准在 daemon 日志与桌面通知标注来源（`auto_approve 默认开启`），TASK 变更记录由 daemon 写入，区分自动/人工。
@@ -640,12 +640,12 @@ daemon 在阶段会话成功后调用 `validateChangedDocs`：
 `auto_merge: true` 的任务进入 `review` 后、合并授权前，daemon 会运行**独立只读审计会话**（受限工具面 `auditToolPolicy` = `read,grep,glob,bash,skill,todo_write,job_output,job_list,job_kill,read_image`，无 write/edit——实现者不能自证完成，也不能修改工作区"种植证据"）：
 
 1. **触发**：`status=review` + `auto_merge=true` + `merge_approved=false` + `audit_status != passed`。人工已设 `merge_approved=true` 的任务跳过审计（人工门禁优先）。
-2. **会话契约**：审计 prompt 要求逐条 AC 独立复核，输出 strict JSON `{"verdict":"pass|fail","failure_type":"implementation|requirement","summary":"...","ac_results":[...]}`，每条 AC 附原始证据（测试输出/命令输出/文件+行号）。模型取任务 assignee（可用 `audit.model` 覆盖），`--thinking off` 控成本，超时 `audit.timeout_minutes`（默认 15）。审计在**任务 worktree** 内运行（与 round2 同一分支状态——主 checkout 可能停在别的分支，验证错代码状态），worktree 不可用降级主 checkout 并告警。
+2. **会话契约**：审计 prompt 要求逐条 AC 独立复核，输出 strict JSON `{"verdict":"pass|fail","failure_type":"implementation|requirement","summary":"...","ac_results":[...]}`，每条 AC 附原始证据（测试输出/命令输出/文件+行号）。模型取任务 assignee（可用 `audit.model` 覆盖），thinking low 控成本，超时 `audit.timeout_minutes`（默认 15）。审计在**任务 worktree** 内运行（与 round2 同一分支状态——主 checkout 可能停在别的分支，验证错代码状态），worktree 不可用降级主 checkout 并告警。
 3. **pass** → 写 `audit_status=passed`，清 `audit_fail_count`，继续正常合并授权流程（auto_approve/人工）。
 4. **fail + `implementation`**（代码/测试缺陷，修复方向明确）→ 清合并授权，写 `phase_error_code=AUDIT_FAILED` + 审计摘要（`audit_log` 存完整会话），任务转 `implementing`——round2 会话加载 `skill://diagnosing-bugs` 按审计报告自动修复，修复后 re-review 再审计（自动修复循环）。连续失败达 `audit.max_fixes`（默认 2）→ **升级为 grilling 决策**（非 blocked）：`grill_context` 附审计报告，用户 resume → 回 implementing 继续修复并重置预算，replan → 回 refining。
 5. **fail + `requirement`**（AC 歧义/矛盾/不可验证，实现与需求理解冲突）→ 直接转 `needs-grilling` 决策，`grill_context` 附审计报告与两个方向（resume 按审计修正 / replan 调整需求），**不消耗实现修复预算**。
 6. **会话失败/中断**（模型崩溃、API key 不可用、daemon 重启）→ 保持 `review` + `audit_status=pending`，下一轮 scan 自动重试，不惩罚实现；进程级失败有 2 分钟冷却防烧 token。
-7. **配置**：`audit.enabled/max_fixes/timeout_minutes/model`（vault-map.json，默认开启）；并发由 `phase_concurrency["audit"]`（默认 1）控制（`audit.concurrency` 已随 2026-09-04 字段清理移除）。
+7. **配置**：`audit.enabled/max_fixes/timeout_minutes/model`（vault-map.json，默认开启）；并发由 `phase_concurrency["audit"]`（默认 1）控制（`audit.concurrency` 已随字段清理移除）。
 
 `audit_status` 取值：`""`（未审计 / 失败路由后清空待重审）、`pending`（审计中或会话失败待重试）、`passed`（已通过）。fail 路由时清空——实现修复后重新进入 review 会触发新一轮审计；merge 失败回退（CI 失败/冲突修复后）保持 `passed`，不重复审计。
 
@@ -721,10 +721,10 @@ blocked_by:
 
 ```yaml
 blocked_by:
-  - release-manager:历史任务
+  - example-project:历史任务
 ```
 
-`release-manager` 是 vault-map 的 `projects[].name`。解析时只访问该项目映射，禁止扫描全 Vault 后取任意同 ID 任务。
+`example-project` 是 vault-map 的 `projects[].name`。解析时只访问该项目映射，禁止扫描全 Vault 后取任意同 ID 任务。
 
 ### 9.3 REQ 关联
 
@@ -802,10 +802,10 @@ flowchart TD
 
 `max_concurrent_tasks`（可选全局总封顶，0=不限）与 `max_concurrent_tasks_per_project`（每项目上限，默认 2）只限制 implementing；其它启动 DSH 会话的阶段由 `phase_concurrency` 按阶段限并发（默认 `refining: 3 / planning: 2 / merge: 1 / priority: 1 / pm: 1 / audit: 1`）：
 
-- **动机**：一轮 scan 可能同时拉起 20+ 个 DSH 会话（release-manager 实测），造成 token 快速消耗、API 限速、会话启动互相拖慢与 CPU/内存抢占。
+- **动机**：一轮 scan 可能同时拉起 20+ 个 DSH 会话（线上实测），造成 token 快速消耗、API 限速、会话启动互相拖慢与 CPU/内存抢占。
 - **机制**：调度循环对每个待调度任务按阶段 tryAcquire 非阻塞槽位（`phaseGate`）；满员任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度，与 implementationGate 同语义。
-- **范围（2026-08-25 全部接线）**：`refining`/`planning` 按任务状态映射；`priority` 映射到 ready+priority pending；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。`needs-grilling`（Kitty 交互）不限。
-- **配置**：key 置 `0` 或删除 = 该阶段不限并发；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限，缺失/0 回落默认 2）+ `max_concurrent_tasks`（可选全局总封顶，0 = 不限）控制；修改后重启 daemon 生效。
+- **范围**：`refining`/`planning` 按任务状态映射；`priority` 映射到 ready+priority pending；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。`needs-grilling`（Kitty 交互）不限。
+- **配置**：key 显式置 `0` = 该阶段不限并发（缺失 key 回填默认值，见 config-reference）；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限，缺失/0 回落默认 2）+ `max_concurrent_tasks`（可选全局总封顶，0 = 不限）控制；修改后重启 daemon 生效。
 
 ```mermaid
 flowchart TD

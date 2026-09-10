@@ -10,7 +10,7 @@ import (
 )
 
 func TestGrillDoneTransition_PlanApproved(t *testing.T) {
-	// Simulates TASK-069: needs-grilling + plan_approved=true
+	// Simulates a grilling-done task: needs-grilling + plan_approved=true
 	vault := t.TempDir()
 	tasksDir := filepath.Join(vault, "Projects", "001-release-manager", "Tasks")
 	if err := os.MkdirAll(tasksDir, 0755); err != nil {

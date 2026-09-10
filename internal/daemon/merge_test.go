@@ -164,7 +164,7 @@ func TestPrURLFromCreateError(t *testing.T) {
 // a vault with an authorized review task, a git repo whose PRIMARY checkout
 // sits on main while the target branch lives in the task worktree (the real
 // daemon layout — merge must run in the round2 worktree, never the main
-// checkout, TASK-067), and a Runner wired to them. gh/git fakes are installed
+// checkout), and a Runner wired to them. gh/git fakes are installed
 // separately per test so each scenario controls its own remote behavior.
 type mergeFixture struct {
 	repo      string
@@ -338,8 +338,8 @@ func gitRevParse(t *testing.T, repo, rev string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// TestProcessMergeTaskReusesExistingPR covers the recovery loop that kept
-// TASK-064 stuck in review: frontmatter pr_url empty while the remote already
+// TestProcessMergeTaskReusesExistingPR covers the pr_url recovery loop:
+// frontmatter pr_url empty while the remote already
 // has an open PR for the branch. The merge must adopt the existing PR, record
 // its URL, and complete without ever calling gh pr create.
 func TestProcessMergeTaskReusesExistingPR(t *testing.T) {
@@ -673,8 +673,8 @@ exit 0
 // immediately without backoff retries.
 func TestProcessMergeTaskWithRetryStopsOnHardFailure(t *testing.T) {
 	f := newMergeFixture(t)
-	// The TASK-079 heal recovers a missing target_branch from a live task
-	// worktree, so remove the worktree first: only then does the cleared
+	// The target_branch heal recovers a missing target_branch from a live
+	// task worktree, so remove the worktree first: only then does the cleared
 	// target_branch surface as a precondition failure, which must not be
 	// retried.
 	if output, err := exec.Command("git", "-C", f.repo, "worktree", "remove", "--force", f.worktree).CombinedOutput(); err != nil {
@@ -762,8 +762,8 @@ exit 0
 	}
 }
 
-// TestCompleteMergeRefreshesCheckpointFromApprovedHead guards the TASK-065
-// 2026-08-28 reopen: completeMerge writes done with the checkpoint_commit
+// TestCompleteMergeRefreshesCheckpointFromApprovedHead guards the
+// stale-checkpoint reopen: completeMerge writes done with the checkpoint_commit
 // carried forward to approved_head (the head that actually merged). Round 2's
 // checkpoint may be a commit a later rebase dropped; leaving it behind makes
 // detectStaleDoneReopens misread the freshly-merged task as an undelivered
@@ -887,7 +887,7 @@ exit 0
 }
 
 // TestProcessMergeTaskStaleLegacyPRDoesNotConverge guards the done→refining
-// loop of TASK-069: a merged PR for the same branch from an EARLIER
+// loop: a merged PR for the same branch from an EARLIER
 // generation (v1, merged before this task's checkpoint existed) must not
 // converge the task to done. The early-convergence path verifies the PR's
 // merge commit contains the checkpoint; when it does not, the merge falls
@@ -992,7 +992,7 @@ exit 0
 // TestMergePushUsesGHCredential 钉住 push 凭据契约：merge 流程的 git push
 // 必须经 gh CLI credential helper（`gh auth git-credential`）认证——与
 // 创建/合并 PR 使用同一身份。仅通过 gh keyring/SSH 认证的机器没有
-// ambient https 凭据，裸 push 会烧光重试预算（TASK-004：5/5 次重试
+// ambient https 凭据，裸 push 会烧光重试预算（实测：5/5 次重试
 // 全部失败 "could not read Username"）。
 func TestMergePushUsesGHCredential(t *testing.T) {
 	f := newMergeFixture(t)
@@ -1055,11 +1055,11 @@ exit 0
 }
 
 // TestSyncMergeBranch guards the pre-push sync: a local branch behind its
-// remote counterpart must be merged so the push is a fast-forward (TASK-067:
-// non-fast-forward rejections burned all 5 retries); a rewritten local
-// history whose stale remote head is absorbed into main force-pushes
-// (TASK-051/059: remote held the old WIP snapshot while local carried the
-// v4 re-implementation); a stale MERGE_HEAD from a failed run is aborted
+// remote counterpart must be merged so the push is a fast-forward
+// (non-fast-forward rejections burned all 5 retries); a rewritten local
+// history whose stale remote head is absorbed into main force-pushes (the
+// remote held the old WIP snapshot while local carried the
+// re-implementation); a stale MERGE_HEAD from a failed run is aborted
 // before any new merge. First-push (no remote branch) and already-in-sync
 // cases are no-ops; conflicting merges surface as ErrGitConflict with the
 // conflict state preserved for the AI auto-fix session.

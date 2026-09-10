@@ -12,8 +12,8 @@ import (
 
 // customOptionID 是每个决策点选项列表首位的合成选项：选中后进入自由文本
 // 输入框，让用户填写自己的答案（如粘贴 curl 原文），而不限于模型给出的
-// A/B/C 选项——2026-09-03 观测：magic-models-manager D-5 的答案是「粘贴
-// 权威 curl」，纯选项问卷无法承载，用户要求增加自填入口。
+// A/B/C 选项——线上观测：有决策点的答案是「粘贴权威 curl」，纯选项问卷
+// 无法承载，用户要求增加自填入口。
 const (
 	customOptionID    = "CUSTOM"
 	customOptionLabel = "填写你的答案（自由文本）"

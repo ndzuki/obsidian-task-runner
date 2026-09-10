@@ -5,7 +5,7 @@
 
 # obsidian-task-runner × DSH 完整融合（embed）方案
 
-> 2026-08-19。从「spawn 短命进程」迁移到「长驻 agent-server + RPC」，
+> 从「spawn 短命进程」迁移到「长驻 agent-server + RPC」，
 > 解决三个 spawn 模式的已知限制：推理强度失效、无 durable resume、每阶段启动开销。
 
 ## 1. 背景与目标
@@ -51,17 +51,17 @@ POST /agent/run
     status?: string               // 任务 frontmatter 状态（供 /agents 监控面板按
                                   // 真实状态动画：refining/plan-review/implementing/
                                   // review/...；模型运行时忽略该字段）
-    taskId?: string               // 精确任务标识（2026-08-28 会话残留修复新增）：
+    taskId?: string               // 精确任务标识（会话残留修复新增）：
                                   // agent-server 经 /agents 回传，daemon 重启后
                                   // fresh Start 前据此 cancel 上一代残留的 working
                                   // 会话，保证同一任务同一时刻只有一个活跃写者
     toolPolicy?: string           // 工具白名单（如 auditToolPolicy /
-                                  // conventionsToolPolicy，2026-08-31 起含
+                                  // conventionsToolPolicy，后续起含
                                   // read,grep,glob,bash,skill,todo_write,
                                   // job_*,read_image；conventions 额外 write）：
                                   // 只读审查会话（conventions/audit）注入硬约束
                                   // preamble；事后校验白名单外 tool/call →
-                                  // outcome=tool_policy_violation（2026-08-25 接线）
+                                  // outcome=tool_policy_violation（已接线）
   }
   → 200 { text, outcome, sessionId, errorCode? }
     outcome: success | failed | timeout | interrupted | quota | key_unavailable | tool_policy_violation
@@ -100,13 +100,13 @@ POST /agent/run
 
 | 步 | 内容 | 验证 | 状态 |
 |---|---|---|---|
-| E1 | DSH 侧 agent-server.mjs 插件 + profile | `curl POST /agent/run` 跑通一个任务，断言 reasoningEffort 生效 + sessionId 持久化 | ✅ **已完成（2026-08-20）** |
-| E2 | Go 侧 dshEmbedExecutor（HTTP client） | 单测（httptest stub server）+ 与 E1 联调 | ✅ **已完成（2026-08-20）** |
-| E3 | daemon 生命周期（启动/关闭 agent-server） | daemon 启停冒烟 | ✅ **已完成（2026-08-20）** |
+| E1 | DSH 侧 agent-server.mjs 插件 + profile | `curl POST /agent/run` 跑通一个任务，断言 reasoningEffort 生效 + sessionId 持久化 | ✅ **已完成** |
+| E2 | Go 侧 dshEmbedExecutor（HTTP client） | 单测（httptest stub server）+ 与 E1 联调 | ✅ **已完成** |
+| E3 | daemon 生命周期（启动/关闭 agent-server） | daemon 启停冒烟 | ✅ **已完成** |
 | E4 | resume 路径（sessionId 持久化到 frontmatter executor_session_id） | 中断后 resume 一致 | ⏸️ 暂缓（见下） |
-| E5 | 默认切 dsh-embed + planning 复测（验证推理强度解决跑偏） | planning 真实冒烟 | ✅ **planning 复测通过（2026-08-20）** |
+| E5 | 默认切 dsh-embed + planning 复测（验证推理强度解决跑偏） | planning 真实冒烟 | ✅ **planning 复测通过** |
 
-### E5 planning 复测记录（2026-08-20，里程碑）
+### E5 planning 复测记录（里程碑）
 
 用隔离 smoke-vault 的合法 TASK-001（独立 REQ-001，status=planning + maturity=
 fully_mature）经 agent-server `/agent/run` 跑 round1，`reasoningEffort=high`：
@@ -124,7 +124,7 @@ fully_mature）经 agent-server `/agent/run` 跑 round1，`reasoningEffort=high`
 `agentOptions.reasoningEffort` 完整还原早期执行器`--thinking` per-阶段语义，planning
 在 dsh-embed 下可靠收敛。可以推进「默认切 dsh-embed + 替换早期执行器」。
 
-### round2 冒烟记录（2026-08-20，dsh-embed 全阶段验证闭环）
+### round2 冒烟记录（dsh-embed 全阶段验证闭环）
 
 用同一个 smoke-vault TASK-001（plan-review + plan_approved=true + plan_files=
 go.mod/main.go/main_test.go）经 agent-server `/agent/run` 跑 round2，
@@ -134,15 +134,15 @@ go.mod/main.go/main_test.go）经 agent-server `/agent/run` 跑 round2，
   （`normalize` 纯函数：TrimSpace + Fields/Join 折叠空白 + `ErrEmptyInput`/
   `ErrInputTooLong` + `maxInputRunes=256`）+ `main_test.go`（table-driven）。
 - ✅ **测试通过**：`go test ./...` → `ok demo`。
-- ✅ **commit + 写回**：`ea72999 feat: ...`；status `implementing → review`。
+- ✅ **commit + 写回**：`<commit sha> feat: ...`；status `implementing → review`。
 - 耗时约 4 分钟（xhigh 深度实现：Pre-flight → Tracer Bullet → AC 实现 → commit）。
 
 **结论**：dsh-embed 全阶段验证闭环——refining（spawn 时代已验证）+ priority
 （spawn 已验证）+ planning（E5，high）+ **round2（xhigh，本轮）** 全部在 dsh 下
-可靠工作。per-阶段推理强度（`ompPhaseThinking` → `mapDSHEffort`）完整生效，
+可靠工作。per-阶段推理强度（`legacyPhaseThinking` → `mapDSHEffort`）完整生效，
 dsh-embed 具备生产可用性。
 
-### E3 验证记录（2026-08-20）
+### E3 验证记录
 
 - config 新增 `agent_server_addr`（默认 `127.0.0.1:8799`）+ executor 取值加
   `dsh-embed`（validate/mergeDefaults/defaults 三处）。
@@ -151,7 +151,7 @@ dsh-embed 具备生产可用性。
   `dsh --profile headless-agent-server` + 30s 健康检查；stopAgentServer SIGTERM
   →10s→SIGKILL。Run/RunOnce 挂载（dsh-embed 时启动/收口，其他 executor no-op）。
 
-### E4 完成状态：Resume 核心 + sessionId 持久化 ✅（2026-08-20）
+### E4 完成状态：Resume 核心 + sessionId 持久化 ✅
 
 - **dshEmbedExecutor.Resume 实现**：JSON token（sessionId + provider/model/
   skillPrompt/effort）解码后重新发 `/agent/run` 带 sessionId，agent-server
@@ -166,12 +166,12 @@ dsh-embed 具备生产可用性。
 的接通（属 scan 流程改动）。round2 有 checkpoint 复用，重派发已能从断点继续，
 故 resume 接通是省 token + 保持上下文，非正确性前提。
 
-### E1 验证记录（2026-08-20，rc.8）
+### E1 验证记录（rc.8）
 
 - `GET /health` → `{"ok":true}`；`POST /agent/run`（无 effort）→ `completed` + sessionId。
-- reasoningEffort 传递链路（agent/request prepend → llm-pi-ai）实测生效：
+- reasoningEffort 传递链路（agent/request prepend → DSH 模型接入层）实测生效：
   - 前提：settings.yaml 的模型须配 `reasoningEfforts`（THINKING_LEVELS → wire），
-    否则 llm-pi-ai 报 `UNSUPPORTED_REASONING_EFFORT`（模型 `reasoning: false`）。
+    否则模型接入层报 `UNSUPPORTED_REASONING_EFFORT`（模型 `reasoning: false`）。
   - 已配 `low/medium/high/xhigh` → wire `low/medium/high/max`（对齐早期执行器
     `reasoningEffortMap`）。`off` 不支持（未声明），Go 侧映射为「不传 effort」。
 - 实测：`low`/`high`/`xhigh` 均 `completed`；`off` 需 Go 侧跳过。
@@ -184,49 +184,49 @@ dsh-embed 具备生产可用性。
 3. **并发**——agent-server 需支持并发 agent（agents service 天然多 agent；Go 侧连接池）。
 4. **内存**——长驻 agent-server ≈ 单次 spawn 峰值（227MB）+ 会话残留；相比 spawn 每阶段峰值相同，但长驻不释放。可接受（对比 web 653MB）。
 
-## 8. 真实生产验证（2026-08-20）
+## 8. 真实生产验证
 
-把 dsh-embed 部署到真实 daemon（release-manager 73 任务 vault），观察真实工作：
+把 dsh-embed 部署到真实 daemon（一个 73 个任务的既有 vault），观察真实工作：
 
 - ✅ **接替早期执行器**：新 otg（dsh-embed 默认）安装 + daemon 重启，agent-server 正常
   拉起，真实任务走 dsh 派发。
-- ✅ **TASK-057 真实流程**：audit 会话通过（`audit_status=passed`）→ merge 会话
+- ✅ **一个真实任务的完整流程**：audit 会话通过（`audit_status=passed`）→ merge 会话
   深度执行（`auto-fix-ci`，CI 修复诊断中，正常耗时）。
-- ✅ **deployd 项目**：split / pm / refining 会话在派发（新项目首 REQ 拆分等）。
+- ✅ **另一个既有项目**：split / pm / refining 会话在派发（新项目首 REQ 拆分等）。
 - 🔧 **发现并修复 agent-server 端口冲突**：daemon 重启时旧 agent-server 残留占用
   8799，新 agent-server 的 `server.listen` EADDRINUSE 失败但 dsh 进程不退出，健康
   检查连到旧实例造成假健康。修复：`server.on("error", EADDRINUSE → process.exit(1))`，
   让 daemon 健康检查失败并重试。（`~/.dsh/plugins/agent-server.mjs`，非 git）
-- ⏳ 观察中：057 merge 会话（CI 修复）完成 + 写回；其他 ready 任务持续派发。
+- ⏳ 观察中：该任务 merge 会话（CI 修复）完成 + 写回；其他 ready 任务持续派发。
 
-## 9. reasoning effort 审查（2026-08-20，对照官方 handbook）
+## 9. reasoning effort 审查（对照官方 handbook）
 
-参考 `sandbaseai/deepseek-harness-handbook` 的 headless-reasoning-effort 指南，
+参考 DSH 官方 handbook 的 headless-reasoning-effort 指南，
 审查 otg 各阶段映射：
 
 | 阶段 | 早期执行器 --thinking | mapDSHEffort | 审查结论 |
 |---|---|---|---|
-| priority | medium | `medium` | ✅（DSH 无 off 选择；low 不够，TASK-079 后上调） |
+| priority | medium | `medium` | ✅（DSH 无 off 选择；low 不够，后上调） |
 | round2 | max | `xhigh` | ✅ xhigh wire=max，对齐早期执行器 |
-| planning | max | `xhigh` | ✅ 2026-09-02 high→max（plan 高杠杆，见 ADR-008 Updates） |
-| refining | medium | `medium` | ✅（同上 TASK-079 上调） |
+| planning | max | `xhigh` | ✅ 后续 high→max（plan 高杠杆，见 ADR-008 Updates） |
+| refining | medium | `medium` | ✅（同上，后上调） |
 | merge（冲突解决） | high（PhaseSpec 显式） | `high` | ✅ |
 | pm / conventions | low（PhaseSpec 显式） | `low` | ✅ |
 | audit | low（PhaseSpec 显式） | `low` | ✅（原先不传已被显式 low 取代） |
-| design（全局设计） | max（PhaseSpec 显式） | `xhigh` | ✅ 2026-09-02 起真实生效——此前 design 经 spawn 适配器派发（spawn 无法传 reasoningEffort），强度落在 settings.yaml agent-default-model 的 profile 默认（当时恰为 xhigh，纯属巧合）；design 已随 newDesignExecutor 迁入 dsh-embed |
+| design（全局设计） | max（PhaseSpec 显式） | `xhigh` | ✅ 后续起真实生效——此前 design 经 spawn 适配器派发（spawn 无法传 reasoningEffort），强度落在 settings.yaml agent-default-model 的 profile 默认（当时恰为 xhigh，纯属巧合）；design 已随 newDesignExecutor 迁入 dsh-embed |
 
 **官方要点**（对照后确认）：
 - DSH headless 无 `--thinking` flag——embed 用 `agentOptions.reasoningEffort`
   （request/selection 层）是**正确**的 per-请求方案。
 - `reasoningEfforts` 是**声明**（模型支持的 levels），`reasoning` 是 provider
   默认，`reasoningEffort` 是 selection——三层语义已正确区分。
-- **off 不是可选择 effort**：实测 `off: null` 声明后仍 UNSUPPORTED（llm-pi-ai
-  的 thinkingLevelMap 不含 off）。off（关闭推理）只能通过 provider `reasoning:
+- **off 不是可选择 effort**：实测 `off: null` 声明后仍 UNSUPPORTED（模型接入层的
+  thinkingLevelMap 不含 off）。off（关闭推理）只能通过 provider `reasoning:
   false` 或不传（omission 用默认）实现。当前 `mapDSHEffort(off)=""` 是**合理
   近似**（不传用默认），但语义是「用默认」而非「关闭推理」——priority/audit
   若需真正关闭推理省 token，需 provider 级 `reasoning` 配置（后续 backlog）。
 
-## 10. systemd 服务名 + 日志路径去早期执行器化（2026-08-20）
+## 10. systemd 服务名 + 日志路径去早期执行器化
 
 - **systemd**：停用 + 禁用 + 删除 `otg-task-runner.service/timer` 与
   `早期执行器-task-watcher.service`（旧名，5.8 已改 install.go 的 unit 名为 otg-*，
@@ -236,7 +236,7 @@ dsh-embed 具备生产可用性。
 - **注释**：`~/.dsh/get-api-key.sh` 历史引用移除。
 - 代码层 `~/.dsh` 引用清零。
 
-## 11. grilling 交互平替 + effort 分级（2026-08-20）
+## 11. grilling 交互平替 + effort 分级
 
 ### grilling 交互（kitty tab 光标问卷）
 
@@ -253,8 +253,8 @@ dsh-embed 具备生产可用性。
   作为上下文注入 prompt——勘察从 10-20 轮 read 降到 0 轮，省 60-70% 时间。
 - **prompt-env**：决策清单 prompt 经环境变量传（避免 bash 反引号转义）。
 - daemon 集成：tryKittyTab（需求详细化）/TryKittyDecisionTab（决策清单）从
-  `exec 早期执行器` 改为 `exec kitty-grill`；ompExecPath → grillExecPath。
-- **提交后异步写回 + 自动关 tab**（2026-08-22，TASK-058 对齐体验修复）：
+  `exec 早期执行器` 改为 `exec kitty-grill`；legacyExecPath → grillExecPath。
+- **提交后异步写回 + 自动关 tab**（后续对齐体验修复）：
   回答提交后 spawn detached 子进程（setsid，`--writeback` 模式）重新挂接
   session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，写回请求
   10 分钟超时），主进程 `kitty @ close-window --match id:$KITTY_WINDOW_ID`
@@ -264,7 +264,7 @@ dsh-embed 具备生产可用性。
   （closed/done 等）阻止写回（防僵尸 tab 写回已归档需求）。
 - **prompt 任务 ID 前置**：问卷 prompt 以 `任务 TASK-<id>` 开头，agent-server
   监控面板按第一个 `TASK-xxx` 打标签时命中真实任务（观测：REQ 正文引用其他
-  任务时标签被误标，如 TASK-005 问卷误标 TASK-058）。
+  任务时标签被误标，如 A 任务的问卷被误标为 B 任务）。
 
 ### reasoning effort 分级
 
@@ -273,9 +273,9 @@ low/medium/high/xhigh 四档）：
 
 | 阶段 | effort | 性质 |
 | --- | --- | --- |
-| priority / refining | medium | 评估判断 / 规格作者（TASK-079 后上调） |
+| priority / refining | medium | 评估判断 / 规格作者（后上调） |
 | conventions/audit/pm | low | 对话/整理 |
-| planning | max（xhigh） | 深度规划（2026-09-02 从 high 上调） |
+| planning | max（xhigh） | 深度规划（后续从 high 上调） |
 | round2 | max（xhigh） | 最深实现 |
 | merge | high | 冲突解决 |
 | design | max | 全局设计 |
@@ -292,9 +292,9 @@ low/medium/high/xhigh 四档）：
   完整 PATH 含 mise shims；不硬编码 KITTY_LISTEN_ON，kittyLaunchEnv 动态扫描
   /tmp/kitty-*）。
 
-### E4 durable resume 完整闭环（2026-08-20 实测补齐）
+### E4 durable resume 完整闭环（实测补齐）
 
-真实生产验证（deployd TASK-001）暴露两个 durable resume 边界，已修复：
+真实生产验证（一个真实任务）暴露两个 durable resume 边界，已修复：
 
 1. **中断瞬间 sessionId 持久化**：原 sessionId 由 agent-server 内部生成，中断
    （/agent/run 响应未返回）时 daemon 拿不到 sessionId → executor_session_id 空
@@ -309,9 +309,9 @@ low/medium/high/xhigh 四档）：
    - Go `runDSHPhase`：resume 只有 `OutcomeSuccess` 才复用结果，否则回退
      fresh start（不再把「会话已失效」当阶段失败）。
 
-实测：TASK-001 resume → 不再 MODEL_FAILED → implementing 正常重派发 round2。
+实测：该任务 resume → 不再 MODEL_FAILED → implementing 正常重派发 round2。
 
-### E4 残余缺陷修复：同进程 re-attach + resume 句柄 + 超时/断连 token（2026-08-22）
+### E4 残余缺陷修复：同进程 re-attach + resume 句柄 + 超时/断连 token
 
 监控面板「多个 agent 图标显示在工作」实查暴露三个 durable resume 残余缺陷：
 
@@ -331,7 +331,7 @@ low/medium/high/xhigh 四档）：
 配套：re-attach 时 inbox 已有相同任务文本则跳过重复投递（只等它跑完收集结果）；
 已完成的 run 会话 10 分钟后 dispose 回收内存，resume 从持久层重载。
 
-## 12. Agent 并发监控面板（2026-08-20）
+## 12. Agent 并发监控面板
 
 token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
 
@@ -343,7 +343,7 @@ token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
   每 2 秒，DiceBear Bottts SVG 机器人（seed=sessionId，每 agent 一个独特角色）
   + Emoji 状态 + CSS 动画（呼吸/脉冲/弹跳）。
 - **vault.mjs 加 `/agents` 命令**：dsh web 对话里输入 `/agents` 打开监控面板。
-- **面板只列活跃会话（2026-08-22 修复）**：`/agents` 仅返回进行中的 run 会话 +
+- **面板只列活跃会话（后续修复）**：`/agents` 仅返回进行中的 run 会话 +
   存活中的 chat 会话；已完成的 run 会话 10 分钟后 dispose（resume 仍可从持久
   层重载），数量经 `x-agents-finished` 响应头暴露（面板显示「N 活跃 · M 最近
   完成」）。此前已完成会话永久驻留面板，造成「多个 agent 图标显示在工作」
@@ -351,7 +351,7 @@ token 消费无实感 → 加 headless agent 并发监控（dsh web 可见）：
 - 资源占用：面板单文件 ~5KB + 每活跃 agent 一个 ~1KB SVG（懒加载）+ 几行 CSS，
   无前端框架、无大图、无重动画循环；轮询只在面板打开时进行。
 
-## 13. systemd 独立管理 dsh web / agent-server（2026-08-21）
+## 13. systemd 独立管理 dsh web / agent-server
 
 headless-agent-server 不再由 otg daemon 作为子进程拉起，改为独立 user
 systemd 服务；dsh web 也纳入 systemd：

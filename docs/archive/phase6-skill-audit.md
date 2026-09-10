@@ -1,6 +1,6 @@
 # Phase 6 skill 审计报告
 
-> 2026-08-19，审查 37 个 `~/.dsh/skills` 中自建/迁移 skills 的 frontmatter、
+> 审查 37 个 `~/.dsh/skills` 中自建/迁移 skills 的 frontmatter、
 > 描述质量、早期执行器残留与结构化输出契约。参考 `skill://config-reviewer` 与
 > `skill://writing-for-agents` 标准。
 

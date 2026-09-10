@@ -110,8 +110,8 @@ func TestReplanGateDefaultThreshold(t *testing.T) {
 // unwritable target must not fall into the transient DESIGN_SESSION_FAILED
 // bucket that the 24h aged auto-resume blindly re-arms; a daemon-shutdown
 // context cancel must map to the transient-interruption code so the task
-// auto-resumes immediately instead of waiting the aged window (2026-08-25
-// TASK-065: restart killed the in-flight replan-gate design session).
+// auto-resumes immediately instead of waiting the aged window (a restart
+// killing the in-flight replan-gate design session).
 func TestDesignGateErrorCode(t *testing.T) {
 	if got := designGateErrorCode(fmt.Errorf("probe: %w", errDesignTargetUnwritable)); got != ErrDesignTargetUnwritable {
 		t.Fatalf("designGateErrorCode(unwritable)=%s, want %s", got, ErrDesignTargetUnwritable)

@@ -16,7 +16,7 @@ import (
 // TestMain 防御：测试进程永远不允许继承真实 kitty 的窗口/套接字环境变量。
 // 否则任何触发 closeOwnTab() 的测试（如 repl 零决策分支）都会用
 // `kitty @ close-window --match id:<KITTY_WINDOW_ID>` 关闭用户正在跑
-// `make test` 的那个 tab（2026-08-28 观测：make test 卡死 + kitty tab 被删）。
+// `make test` 的那个 tab（曾观测到测试卡死且用户 kitty tab 被删）。
 func TestMain(m *testing.M) {
 	_ = os.Unsetenv("KITTY_WINDOW_ID")
 	_ = os.Unsetenv("KITTY_LISTEN_ON")
@@ -67,12 +67,12 @@ func TestExtractJSONUppercaseFence(t *testing.T) {
 	}
 }
 
-// TestParseQuestionnaireBareJSON guards the 2026-09-03 regression: the model
+// TestParseQuestionnaireBareJSON guards a regression: the model
 // (acme / acme-mini → acme-flash) answered the
 // decision-list questionnaire with a bare JSON object and no ```json fence.
 // extractJSON 因此失败，repl 把合法问卷原文倒进 tab 并停在
 // 「✍️ 你的决策 >」纯文本回退——用户看到的是无法作答的原始 JSON。
-// reply 为事故现场抓取的真实模型回复原文（session-5fc0f291…）。
+// reply 为触发该回归的模型回复样本（裸 JSON 问卷原文）。
 func TestParseQuestionnaireBareJSON(t *testing.T) {
 	reply := `{"decisions":[{"id":"D-5","question":"REQ-002 平台 API 契约缺实际 curl 正文（AC-1 阻塞）——请提供权威 curl 以回填请求体字段表/鉴权头/查询接口契约","options":[{"id":"A","label":"提供国内测试环境完整页面请求 curl（目标 https://magic-web.internal.example/admin/platform/model/llm，建议的最小权威契约）"},{"id":"B","label":"提供三环境（国内测试/国内预发布/国外预发布）的完整 curl 各一份"},{"id":"C","label":"暂无法提供完整 curl，改为提供请求体字段表 + 鉴权头（header/cookie/token）摘要"}],"recommended":"A","reason":"建议行明确指定国内测试环境完整 curl 为最小权威契约，可解除 AC-1 阻塞并由 PM 据此回填 REQ-002 契约、D-6 查询接口块"}]}`
 	q, ok := parseQuestionnaire(reply)
@@ -134,10 +134,10 @@ func TestParseQuestionnaireEmptyDecisionsOK(t *testing.T) {
 	}
 }
 
-// TestParseQuestionnaireTrailingComma guards the 2026-09-07 regression:
+// TestParseQuestionnaireTrailingComma guards a regression:
 // 模型在 decisions 数组最后一个元素后输出了 `,`（D-44 之后 `},` 直接
 // 接 `]`），encoding/json 拒绝尾逗号，完整可用的问卷被整体倒进 tab 并回退
-// manualFill 纯文本。reply 为事故现场真实模型回复（fenced 多行 JSON）。
+// manualFill 纯文本。reply 为触发该回归的模型回复样本（fenced 多行 JSON）。
 func TestParseQuestionnaireTrailingComma(t *testing.T) {
 	reply := "```json\n{\"decisions\":[\n" +
 		"  {\"id\":\"D-38\",\"question\":\"V0.4 交付形态？\",\"options\":[{\"id\":\"A\",\"label\":\"保持单 REQ\"},{\"id\":\"B\",\"label\":\"拆分多个子 REQ\"}],\"recommended\":\"A\",\"reason\":\"r38\"},\n" +
@@ -188,7 +188,7 @@ func TestStripTrailingCommasPreservesStrings(t *testing.T) {
 
 // TestReplZeroDecisionsExitsCleanly guards the decision-list tab regression:
 // when the model returns an empty questionnaire (all decisions answered
-// between tab launch and questionnaire generation — 2026-08-24 19:32 观测),
+// between tab launch and questionnaire generation — an observed failure),
 // repl must NOT fall into the plain-text manualFill (which dumped the model's
 // raw markdown and parked the tab at "✍️ 你的决策 >"). It shows the clean
 // no-pending screen, recycles the chat session, and returns without reading
@@ -254,7 +254,7 @@ func TestQModelRecommendedCursor(t *testing.T) {
 	}
 }
 
-// TestQModelCustomOptionFirst guards the 2026-09-03 feature request: every
+// TestQModelCustomOptionFirst guards a feature request: every
 // decision's option list must start with the free-text entry so users can
 // write their own answer (e.g. paste a curl) instead of being forced into
 // A/B/C choices.
@@ -415,8 +415,8 @@ func TestQModelAllAnswered(t *testing.T) {
 
 func TestBuildGrillingPromptPrefixesTaskID(t *testing.T) {
 	// 任务 ID 必须出现在 prompt 最前：agent-server 监控面板按第一个
-	// TASK-xxx 打标签，后文即使引用其他任务也不能抢占标签（观测：
-	// TASK-005 的 grilling 会话被误标为 TASK-058）。
+	// TASK-xxx 打标签，后文即使引用其他任务也不能抢占标签（曾观测
+	// 某任务的 grilling 会话被后文引用的其他任务 ID 抢占标签）。
 	prompt := buildGrillingPrompt("005", "规划阶段重复会话防护",
 		"Projects/003-obsidian-task-runner/Requirements/REQ-005-no-duplicate-planning-sessions.md", "/vault")
 	prompt += "\n\n以下是需求文档全文…TASK-058 双会话…TASK-078 已关闭…"
@@ -524,7 +524,7 @@ func TestCloseTabArgs(t *testing.T) {
 	}
 }
 
-// TestCloseOwnTabNoopUnderTest 守护 make test 卡死 + kitty tab 被删的回归：
+// TestCloseOwnTabNoopUnderTest 守护「测试进程误关用户 kitty tab」的回归：
 // closeOwnTab() 在 go test 进程里必须是硬 no-op——即使 PATH 里有 kitty、环境
 // 注入了 KITTY_WINDOW_ID（用户在 kitty tab 里跑 make test 就是这种状态），也
 // 绝不能执行 `kitty @ close-window` 去关用户正在跑测试的那个 tab。
@@ -624,7 +624,7 @@ func TestCloseChatSession(t *testing.T) {
 }
 
 // TestRunWritebackRetriesThenSucceeds：模型级失败（outcome error）应重试同一
-// 会话，第二次成功后返回 nil（观测：TASK-058 决策写回一次失败即丢答案）。
+// 会话，第二次成功后返回 nil（曾观测决策写回一次失败即丢答案）。
 func TestRunWritebackRetriesThenSucceeds(t *testing.T) {
 	old := writebackRetryBackoff
 	writebackRetryBackoff = 0
@@ -699,7 +699,7 @@ func TestRunWritebackExhaustsRetriesAndNotifies(t *testing.T) {
 }
 
 // TestRunWritebackOutcomeErrorCarriesDetail：outcome=error 时错误必须携带
-// 服务端下发的 error 详情（观测：TASK-058 写回日志只有
+// 服务端下发的 error 详情（曾观测写回日志只有
 // 「agent-server outcome error: 」空原因，失败不可诊断）。
 func TestRunWritebackOutcomeErrorCarriesDetail(t *testing.T) {
 	old := writebackRetryBackoff
@@ -818,7 +818,7 @@ func TestRunWritebackSessionGoneViaOutcomeErrorFallsBackFresh(t *testing.T) {
 
 // TestRunWritebackSessionGoneFallsBackFresh：session not found 是永久性错误，
 // 重试同一会话无意义——应降级为全新会话（ctx 重建 prompt）完成写回。
-// 观测：TASK-058 决策写回 3 次重试全撞 session not found，答案丢失。
+// 曾观测决策写回 3 次重试全撞 session not found，答案丢失。
 func TestRunWritebackSessionGoneFallsBackFresh(t *testing.T) {
 	old := writebackRetryBackoff
 	writebackRetryBackoff = 0
@@ -916,10 +916,10 @@ func TestWritebackContextFreshPrompt(t *testing.T) {
 	}
 }
 
-// TestBuildGrillingPromptRequiresChangeType guards the 2026-09-01 regression:
-// the questionnaire model wrote confirmation-only decisions back into REQ-025
-// without a `> 变更类型:` annotation, so the daemon treated the change as
-// breaking and reopened three done tasks.
+// TestBuildGrillingPromptRequiresChangeType guards a regression:
+// the questionnaire model wrote confirmation-only decisions back into a
+// requirement without a `> 变更类型:` annotation, so the daemon treated the
+// change as breaking and reopened three done tasks.
 func TestBuildGrillingPromptRequiresChangeType(t *testing.T) {
 	prompt := buildGrillingPrompt("001", "标题", "Projects/001-demo/Requirements/REQ-001-demo.md", "/vault")
 	for _, want := range []string{"> 变更类型: breaking|additive|cosmetic", "cosmetic"} {

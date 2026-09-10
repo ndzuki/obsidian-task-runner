@@ -1,8 +1,8 @@
 // Package stageplan deterministically derives delivery phases from task
-// dependency topology — no LLM round-trip (release-manager first staging
-// took hours of PM sessions; this runs in milliseconds). The core invariant
-// is acyclic ordering: a phase-N task may only depend on tasks in phases
-// ≤ N-1 (or already-done tasks), which is what kills the TASK-066 deadlock
+// dependency topology — no LLM round-trip (a manual LLM-driven staging pass
+// can take hours of PM sessions; this runs in milliseconds). The core
+// invariant is acyclic ordering: a phase-N task may only depend on tasks in
+// phases ≤ N-1 (or already-done tasks), which prevents staging deadlocks
 // (e2e scenarios always land after the features they exercise).
 package stageplan
 
@@ -161,7 +161,7 @@ func deriveName(ids []string, tasks []TaskInfo) string {
 		}
 		return best
 	}
-	// Fall back to a compressed member list: "TASK-018/019 等".
+	// Fall back to a compressed member list: "TASK-<id-a>/<id-b> 等".
 	compact := make([]string, 0, len(ids))
 	compact = append(compact, ids...)
 	return fmt.Sprintf("TASK-%s 等", strings.Join(compact, "/"))

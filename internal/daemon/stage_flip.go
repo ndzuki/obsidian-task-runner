@@ -29,9 +29,9 @@ var stageSupplementRE = regexp.MustCompile(`(?i)^supplement:\s*(.+)$`)
 // The "current phase" is the in-progress phase when one exists, otherwise
 // the review-pending phase named by the Stage-Review frontmatter `stage`
 // field (the PM stage-review session flips the phase to review-pending in
-// Mode 3 Step 4, so an answered review must locate it there — 2026-09-01:
-// Phase 1 sat review-pending for 18 days and every answered review would
-// have no-op'ed under the old in-progress-only lookup).
+// Mode 3 Step 4, so an answered review must locate it there — a phase once
+// sat review-pending for 18 days and every answered review would have
+// no-op'ed under the old in-progress-only lookup).
 //
 // The Stage-Review is then marked answered (grill_continue=false,
 // status=answered) so neither the daemon nor the PM session re-processes it.
@@ -65,6 +65,26 @@ func (r *Runner) flipStageReviewDecision(ctx context.Context) bool {
 			continue
 		}
 		decision := strings.TrimSpace(string(m[1]))
+
+		// Versioned Stage-Reviews carry a deterministic documentation gate.
+		// A declared gap must first become an ordinary REQ/TASK; until that
+		// work lands, the reviewed phase/project cannot be marked complete.
+		gate, gateErr := readDocumentationGate(revPath)
+		if gateErr == nil && gate.Version == documentationGateVersion {
+			if gate.Status == "gap" {
+				if gate.TaskID == "" {
+					r.logger.Printf("project %s: stage-review documentation gap not materialized yet, holding decision", projectEntry.Name())
+					continue
+				}
+				if !documentationTaskLanded(projDir, gate.TaskID) {
+					r.logger.Printf("project %s: stage-review held by documentation TASK-%s", projectEntry.Name(), gate.TaskID)
+					continue
+				}
+			} else if gate.Status != "pass" && gate.Status != "not_applicable" {
+				r.logger.Printf("project %s: invalid documentation_gate %q, holding decision", projectEntry.Name(), gate.Status)
+				continue
+			}
+		}
 
 		// The review's own stage (e.g. "Phase 1") locates the phase when the
 		// plan no longer has an in-progress phase (PM flipped it to

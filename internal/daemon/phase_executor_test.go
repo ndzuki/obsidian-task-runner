@@ -156,7 +156,7 @@ func TestRunDSHPhaseFreshStartWhenNoToken(t *testing.T) {
 	}
 }
 
-// TestRunDSHPhaseResumeTimeoutDoesNotFreshStart 守护 TASK-058 重复会话回归：
+// TestRunDSHPhaseResumeTimeoutDoesNotFreshStart 守护 resume 超时重复会话回归：
 // resume 超时只表示 daemon 侧 HTTP 等待超时，agent-server 里的会话可能仍在
 // 运行；此时 fresh start 会让两个会话并行写同一个任务文档（观测到同一任务
 // 两个 planning 会话同时规划）。超时必须如实上报，由阶段重试策略接管，下轮
@@ -252,8 +252,8 @@ func TestRunDSHPhaseResumeTerminalFailureFallsBackToFreshStart(t *testing.T) {
 	}
 }
 
-// TestRunDSHPhaseResumeBusyDoesNotFreshStart 守护 TASK-058 二次观测
-// （install-force 重启变种）：旧 daemon 被 SIGKILL 时其会话仍在 agent-server
+// TestRunDSHPhaseResumeBusyDoesNotFreshStart 守护 resume-busy 的变种：
+// 旧 daemon 被 SIGKILL 时其会话仍在 agent-server
 // 运行；新 daemon resume 拿到 500（"already has active work"）——不得把挂接
 // 失败当终态失败 fresh start，否则旧会话继续跑 + 新会话并行写同一任务文档。
 // 挂接失败按可重试中断上报，下轮 scan 用同一 token 再 resume。
@@ -290,8 +290,8 @@ func TestRunDSHPhaseResumeBusyDoesNotFreshStart(t *testing.T) {
 	}
 }
 
-// TestRunDSHPhaseResumeUnreachableDoesNotFreshStart 守护 2026-08-25
-// TASK-065 观测：resume 结果错误为「agent-server unreachable: … EOF」
+// TestRunDSHPhaseResumeUnreachableDoesNotFreshStart 守护 unreachable 分类：
+// resume 结果错误为「agent-server unreachable: … EOF」
 // 时，会话状态未知——不得判 terminal 回退 fresh start（fresh start 又会
 // 撞 connection refused → MODEL_FAILED → blocked → 状态来回变）。按可重试
 // 中断上报，下轮 scan 用同一 token 再 resume。
@@ -380,7 +380,7 @@ func TestRunDSHPhaseResumeForwardsCurrentSpec(t *testing.T) {
 
 // TestRunDSHPhaseTimeoutCancelsWedgedSession 守护阶段超时后的会话回收：
 // resume/Start 超时只表示 daemon 侧等待超时，agent-server 里的 model turn
-// 可能已死锁（TASK-079 refining 观测 6.8h 挂起）——必须 Cancel 掉，否则
+// 可能已死锁（refining 阶段实测 6.8h 挂起）——必须 Cancel 掉，否则
 // 下一轮 resume 永远 re-attach 同一个死 turn。
 func TestRunDSHPhaseTimeoutCancelsWedgedSession(t *testing.T) {
 	dir := t.TempDir()
@@ -431,7 +431,7 @@ func TestRunDSHPhaseInterruptedDoesNotCancel(t *testing.T) {
 
 // TestRunDSHPhaseResumeServerEndedTurnFallsBackFresh 守护分类边界：
 // resume 返回服务器确认的 turn 结束错误（"agent-server outcome error"——
-// TASK-079 观测：卡死会话被 agent-server 重启清掉后，持久层的旧 turn
+// 观测：卡死会话被 agent-server 重启清掉后，持久层的旧 turn
 // 立即 error）时，会话侧已无活跃写者——必须 fresh start 收敛，否则
 // interrupted-retry 会永远对着同一个死 turn 空转。
 func TestRunDSHPhaseResumeServerEndedTurnFallsBackFresh(t *testing.T) {

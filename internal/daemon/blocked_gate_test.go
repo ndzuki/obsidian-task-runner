@@ -7,9 +7,9 @@ import (
 )
 
 // TestFixBlockedGateErrorCodes guards the empty-error-code backfill: an
-// entry-gate block whose round2 write-back lost the error code (TASK-019,
-// 8/11 — blocked + implementing + no code + blocked_by, then the resolver
-// auto-resumed it into a completed→blocked→resume loop) must be re-stamped
+// entry-gate block whose round2 write-back lost the error code (blocked +
+// implementing + no code + blocked_by, then the resolver auto-resumed it
+// into a completed→blocked→resume loop) must be re-stamped
 // PREREQUISITE_SMOKE_FAILED so the fact-based recovery branch owns it.
 // Legacy phase-failure blocks (empty code, no blocked_by) and tasks that
 // already carry a code stay untouched.
@@ -53,9 +53,9 @@ func TestFixBlockedGateErrorCodes(t *testing.T) {
 // TestAutoResumeSkipsEmptyCodeGate guards the resolver side: an upstream
 // blocked with an empty error code AND a non-empty blocked_by is an entry
 // gate (its own dependencies must converge first), so the generic
-// upstream-unblock path must NOT approve it — that was the TASK-019 loop
-// (resolver kept re-resuming the gate while PR #51 was still open). Legacy
-// phase-failure blocks without blocked_by keep auto-resume.
+// upstream-unblock path must NOT approve it — that was the re-resume loop
+// (the resolver kept re-resuming the gate while its PR was still open).
+// Legacy phase-failure blocks without blocked_by keep auto-resume.
 func TestAutoResumeSkipsEmptyCodeGate(t *testing.T) {
 	dir := t.TempDir()
 	vault := filepath.Join(dir, "vault")
