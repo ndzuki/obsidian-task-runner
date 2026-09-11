@@ -93,6 +93,8 @@ otg install --vault "$HOME/Documents/Obsidian/MainVault" --new-project-root "$HO
 | [`docs/workflow.md`](docs/workflow.md) | 规范性工作流：状态机、双门禁、阶段模型、知识流 |
 | [`docs/config-reference.md`](docs/config-reference.md) | vault-map.json 配置单一事实源 |
 | [`docs/agent-town-design-spec.md`](docs/agent-town-design-spec.md) | Agent Town 监控面板视觉规范 |
+| [`docs/agent-town-iso-redesign.md`](docs/agent-town-iso-redesign.md) | Agent Town 等距预渲染重设计（已实施：生成器 + 面板已替换） |
+| [`tools/isocity98/`](tools/isocity98/) | 等距预渲染管线 + 复古城市沙盒；`make agenttown` 生成 Agent Town 面板的全部美术 |
 | [`docs/adr/`](docs/adr/) | 架构决策记录（13 篇） |
 | [`obsidian-task-runner/SKILL.md`](obsidian-task-runner/SKILL.md) | Agent 执行规则（含知识库格式规范） |
 | [`obsidian-task-runner/reference.md`](obsidian-task-runner/reference.md) | 状态、字段（含全量字段附录）、故障排查 |

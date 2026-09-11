@@ -34,4 +34,8 @@ models/
 
 # local scratch / test reference assets (never commit)
 tmp/
-tools/
+tools/*
+# 例外：isocity98 不是草稿 —— 它是 Agent Town 面板的资产生成器（等距预渲染管线），
+# 同时也是那个可直接运行的复古等距城市沙盒。产物在 deploy/dsh-plugins/agent-monitor.html，
+# 源码必须随仓库走，否则「产物可改、源不可维护」。
+!tools/isocity98/

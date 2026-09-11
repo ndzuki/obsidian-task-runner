@@ -156,7 +156,8 @@ sync-plugins:
 	mkdir -p $(HOME)/.dsh/plugins
 	@for f in deploy/dsh-plugins/*; do \
 		b=$$(basename $$f); \
-		case "$$b" in *.test.mjs) echo "  skip test file: $$b"; continue;; esac; \
+		case "$$b" in *.test.mjs) echo "  skip test file: $$b"; continue;; \
+		              *.classic.html) echo "  skip rollback copy: $$b"; continue;; esac; \
 		-rm -f $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
 		-mv $(HOME)/.dsh/plugins/$$b $(HOME)/.dsh/plugins/$$b.old 2>/dev/null || true; \
 		cp $$f $(HOME)/.dsh/plugins/$$b; \

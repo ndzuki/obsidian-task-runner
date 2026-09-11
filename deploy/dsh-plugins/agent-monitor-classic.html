@@ -1,0 +1,2331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Town · 像素小镇</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115; --panel: #161a22; --panel-2: #1c212b; --border: #262c37;
+    --text: #e5e9f0; --dim: #8b94a3; --accent: #5eead4; --green: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+
+  header {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+    padding: 12px 18px; background: rgba(20,24,32,.92);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: .05em; font-size: 16px; }
+  .brand .logo { font-size: 20px; }
+  .brand .sub { color: var(--dim); font-size: 12px; font-weight: 400; margin-left: 4px; }
+  .stats { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .stat { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 4px 10px; color: var(--dim); font-size: 12px; }
+  .stat b { color: var(--text); }
+  .stat.live b { color: var(--green); }
+  .iconbtn { background: var(--panel); border: 1px solid var(--border); color: var(--dim); border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; }
+  .iconbtn:hover { color: var(--text); border-color: var(--accent); }
+  .legend { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: rgba(16,20,28,.8); }
+  .legend span { color: var(--dim); font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; background: #121722; }
+  .legend b { color: var(--text); }
+
+  .layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 14px; padding: 14px 16px 28px; max-width: 1680px; margin: 0 auto; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+  .town-panel { background: #12151d; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 16px 44px rgba(0,0,0,.5); position: relative; min-height: 520px; }
+  .town { position: relative; width: 100%; height: clamp(600px, 84vh, 960px); overflow: hidden; background: #78c8f0; }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #fullscreenBtn { position: absolute; top: 12px; right: 14px; z-index: 20; background: rgba(12,16,24,.85); color: #fff; border: 1px solid #3a4358; border-radius: 6px; padding: 3px 10px; font-size: 13px; cursor: pointer; }
+  #fullscreenBtn:hover { border-color: var(--accent); color: var(--accent); }
+  #empty { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgba(12,16,24,.9); border: 1px solid #3a4358; color: var(--dim); border-radius: 999px; padding: 6px 16px; z-index: 8; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+
+  .agent-hit { position: absolute; transform: translate(-50%,-100%); pointer-events: auto; cursor: pointer; z-index: 5; width: 26px; height: 32px; }
+  .agent-hit .ab { position: absolute; left: 50%; bottom: 42px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #e5e9f0; padding: 3px 7px; font-size: 11px; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,.4); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .agent-hit .at { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #9bbc0f; padding: 1px 6px; font-size: 10px; border-radius: 4px; pointer-events: none; font-family: ui-monospace, monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  .agent-hit .heart { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); font-size: 16px; opacity: 0; pointer-events: none; }
+  .building-sign { position: absolute; transform: translate(-50%,-50%); font-size: 18px; line-height: 1; pointer-events: none; z-index: 3; text-shadow: 0 1px 2px rgba(0,0,0,.5), 0 1px 1px rgba(0,0,0,.35); }
+  .agent-hit .heart.show { animation: heartUp 1s ease-out forwards; }
+  @keyframes heartUp { 0% { opacity: 0; transform: translate(-50%,0) scale(.6); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-46px) scale(1.4); } }
+  .agent-hit.visible .ab { opacity: 1; }
+  .agent-hit:hover .ab { opacity: 1; }
+
+  .side { display: flex; flex-direction: column; gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  .panel h3 { margin: 0 0 8px; font-size: 12px; color: var(--dim); letter-spacing: .06em; }
+  .roster { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+  .roster-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  .roster-item:hover { border-color: var(--accent); }
+  .roster-item .ava { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; font-size: 15px; }
+  .roster-item .info { min-width: 0; flex: 1; }
+  .roster-item .name { font-size: 12px; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
+  .roster-item .rel { background: #334155; color: #cbd5e1; border-radius: 4px; padding: 0 4px; font-size: 9px; line-height: 14px; font-family: ui-monospace, monospace; flex: none; }
+  .roster-item .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .roster-item .task { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .roster-item .meta { color: var(--dim); font-size: 10px; margin-top: 2px; }
+  .empty { color: var(--dim); text-align: center; padding: 18px 8px; font-size: 12px; }
+  .log { display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow-y: auto; }
+  .log-item { font-size: 11px; color: var(--dim); border-left: 3px solid #3a4358; padding: 1px 0 1px 8px; }
+  .log-item b { color: var(--text); }
+  .log-item .time { color: #5b6b85; font-size: 9px; margin-right: 6px; }
+
+  #detail { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-46%) scale(.96); opacity: 0; pointer-events: none; width: min(400px, calc(100vw - 32px)); background: #12151d; border: 1px solid #3a4358; border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,.7); z-index: 80; padding: 16px; transition: opacity .2s, transform .2s; }
+  #detail.show { opacity: 1; pointer-events: auto; transform: translate(-50%,-50%) scale(1); }
+  #detail .d-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  #detail .d-ava { width: 42px; height: 42px; border-radius: 8px; display: grid; place-items: center; font-size: 22px; background: var(--panel-2); border: 1px solid var(--border); }
+  #detail .d-title { font-weight: 800; font-size: 15px; }
+  #detail .d-sub { color: var(--dim); font-size: 11px; word-break: break-all; }
+  #detail .d-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: #2e6b4f; border-color: #3e8f6a; color: #fff; }
+  .btn.close { margin-left: auto; }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; font-size: 12px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; color: var(--text); word-break: break-word; }
+
+  /* KB 预检索小图（/kb-stats） */
+  .kb-summary { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+  .kb-summary b { color: var(--text); }
+  .kb-bars { display: flex; gap: 2px; align-items: flex-end; height: 36px; }
+  .kb-bar { flex: 1; min-width: 0; background: #2e6b4f; border-radius: 2px 2px 0 0; position: relative; }
+  .kb-bar.dim { background: #1d2733; }
+  .kb-bar .v { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--dim); white-space: nowrap; }
+  .kb-bar:hover { background: var(--accent); }
+  .kb-x { display: flex; gap: 2px; font-size: 8px; color: #5b6b85; margin-top: 2px; }
+  .kb-x span { flex: 1; text-align: center; overflow: hidden; }
+  .kb-note { font-size: 10px; color: #5b6b85; margin-top: 4px; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(16px); background: #12151d; border: 1px solid var(--accent); color: var(--text); padding: 6px 16px; border-radius: 999px; font-size: 12px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 90; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 问答弹窗（接入 agent-server /agent/chat，KB-first + 项目上下文自动注入） */
+  #chat { position: fixed; right: 20px; bottom: 20px; width: min(560px, calc(100vw - 32px)); height: min(540px, calc(100vh - 32px)); background: #12151d; border: 1px solid #3a4358; border-radius: 14px; display: flex; flex-direction: column; z-index: 85; box-shadow: 0 18px 60px rgba(0,0,0,.7); overflow: hidden; }
+  #chat.hidden { display: none; }
+  .c-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .c-title { font-weight: 800; font-size: 14px; white-space: nowrap; }
+  .c-sub { color: var(--dim); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .c-body { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 86%; padding: 6px 10px; border-radius: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+  .msg.user { align-self: flex-end; background: #2e6b4f; color: #fff; }
+  .msg.ai { align-self: flex-start; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .msg.err { align-self: flex-start; background: #3a2020; color: #fca5a5; border: 1px solid #5b3030; }
+  .c-config { display: flex; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  .c-config input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 8px; font-size: 11px; }
+  .c-config input:focus { outline: none; border-color: var(--accent); }
+  .c-input-row { display: flex; gap: 8px; padding: 0 12px 10px; }
+  .c-input-row input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .c-input-row input:focus { outline: none; border-color: var(--accent); }
+  .c-status { padding: 0 14px 8px; color: var(--dim); font-size: 11px; min-height: 16px; }
+  #cSending { display: none; }
+  #cSending.show { display: inline; }
+  .c-hint { color: var(--dim); font-size: 10px; padding: 0 12px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">🏘️</span>AGENT TOWN <span class="sub">俯视 RPG 像素小镇 · 实时工作流</span></div>
+  <div class="stats">
+    <button class="iconbtn" id="nightBtn" title="昼夜开关">🌙 夜</button>
+    <button class="iconbtn" id="rainBtn" title="雨天开关">🌧️ 雨</button>
+    <span class="stat">季 <b id="season">春</b></span>
+    <span class="stat">时 <b id="clock">--:--</b></span><span class="stat">段 <b id="period">—</b></span><span class="stat"><b id="sun">☀</b></span>
+    <span class="stat live">活跃 <b id="count">0</b></span>
+    <span class="stat">完工 <b id="finished">0</b></span>
+  </div>
+</header>
+<div class="legend" id="legend"></div>
+<main class="layout">
+  <section class="town-panel">
+    <div class="town" id="town">
+      <canvas id="townCanvas" width="960" height="540"></canvas>
+      <button id="fullscreenBtn" title="全屏观看小镇">⛶</button>
+      <div id="empty">🌆 小镇空闲 — 等待 agent 上工…</div>
+    </div>
+  </section>
+  <aside class="side">
+    <div class="panel"><h3>🧑‍🤝‍🧑 在镇居民</h3><div class="roster" id="roster"><div class="empty">暂无 agent</div></div></div>
+    <div class="panel"><h3>📊 KB 预检索</h3><div id="kbStats"><div class="empty">等待数据…</div></div></div>
+    <div class="panel"><h3>📡 小镇动态</h3><div class="log" id="log"><div class="empty">等待第一条动态…</div></div></div>
+  </aside>
+</main>
+
+<div id="detail">
+  <div class="d-head"><div class="d-ava" id="dAva">🤖</div><div><div class="d-title" id="dTitle">Agent</div><div class="d-sub" id="dSub">session</div></div></div>
+  <dl class="kv" id="dKv"></dl>
+  <div class="d-actions">
+    <button class="btn primary" id="dCheer">💗 加油</button>
+    <button class="btn" id="dGrill">💬 问答</button>
+    <button class="btn" id="dLocate">📍 定位</button>
+    <button class="btn close" id="dClose">关闭</button>
+  </div>
+</div>
+
+<div id="chat" class="hidden">
+  <div class="c-head">
+    <div class="c-title">💬 问答</div>
+    <div class="c-sub" id="cSub">选择居民发起提问</div>
+    <button class="btn close" id="cClose">关闭</button>
+  </div>
+  <div class="c-body" id="cBody">
+    <div class="empty">向该 agent 发起提问。首问会自动注入<b>项目上下文</b>（CONTEXT/ADR/规范）与<b>全局知识库预检索</b>，命中即引用、未命中才自行推理。</div>
+  </div>
+  <div class="c-config">
+    <input id="cProvider" placeholder="provider" title="模型供应商（改后作用于新会话）">
+    <input id="cModel" placeholder="model" title="模型名（改后作用于新会话）">
+  </div>
+  <div class="c-input-row">
+    <input id="cInput" placeholder="输入你的问题…（Enter 发送）" autocomplete="off">
+    <button class="btn primary" id="cSend">发送</button>
+  </div>
+  <div class="c-status"><span id="cSending">⏳ 思考中…</span></div>
+  <div class="c-hint">provider/model 需在输入框填写；同一 agent 的会话自动延续（多轮上下文），新会话才重新预检索。</div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+ * Agent Town —— 参考 demo_game_town_1920 的俯视 RPG 小镇画风
+ * 逻辑画布 960x540，image-rendering:pixelated 放大。
+ * 四季 + 昼夜（实时太阳角度/影子）+ 季节粒子 + A* 寻路 + 装饰居民互动。
+ * 数据：agent-server /agents，每 2s 轮询。
+ * ========================================================================== */
+
+const W = 960, H = 540;
+const POLL_MS = 2000;
+const DAY_MS = 600000;
+const SEASON_DAYS = 8;
+const TIME_OFFSET = (7.5 / 24) * DAY_MS;
+
+const STAGE = {
+  refining:      { label: '需求精炼', occupation: '需求精炼师', building: '需求精炼坊', zone: '北文职区', color: '#a78bfa', emoji: '📖', icon: '📖', symbol: '📚', action: '研读需求', bubble: '提炼需求…' },
+  planning:      { label: '方案规划', occupation: '规划设计师', building: '规划院', zone: '北文职区', color: '#38bdf8', emoji: '🧭', icon: '🧭', symbol: '🗺️', action: '绘制路线', bubble: '推演方案…' },
+  'plan-review': { label: '计划评审', occupation: '评审官', building: '评审厅', zone: '北文职区', color: '#facc15', emoji: '⚖️', icon: '⚖️', symbol: '⚖️', action: '核对计划', bubble: '查漏洞…' },
+  implementing:  { label: '实现建造', occupation: '开发工程师', building: '开发工厂', zone: '东工业区', color: '#3b82f6', emoji: '🏭', icon: '🏭', symbol: '🔨', action: '敲码建造', bubble: '动手实现…' },
+  review:        { label: '验收检查', occupation: '验收工程师', building: '验收场', zone: '东工业区', color: '#4ade80', emoji: '🎯', icon: '🎯', symbol: '🛡️', action: '逐条验收', bubble: '核对 AC…' },
+  merge:         { label: '合并交付', occupation: '发布工程师', building: '合并发布站', zone: '东工业区', color: '#06b6d4', emoji: '🛰️', icon: '🛰️', symbol: '🔀', action: '合并发布', bubble: '打包发布…' },
+  audit:         { label: '独立审计', occupation: '审计师', building: '审计塔', zone: '西知识区', color: '#fb923c', emoji: '🔍', icon: '🔍', symbol: '📜', action: '独立复核', bubble: '独立复核…' },
+  priority:      { label: '优先级', occupation: '优先级评估师', building: '优先级塔', zone: '北文职区', color: '#f87171', emoji: '🚩', icon: '🚩', symbol: '🚩', action: '排定优先级', bubble: '该先做…' },
+  pm:            { label: '统筹问答', occupation: '统筹 PM', building: '统筹议事厅', zone: '中央广场', color: '#f472b6', emoji: '🏛️', icon: '🏛️', symbol: '🗣️', action: '访谈统筹', bubble: '聊聊决策…' },
+  design:        { label: '设计蓝图', occupation: '架构设计师', building: '设计工坊', zone: '北文职区', color: '#c084fc', emoji: '🎨', icon: '🎨', symbol: '📐', action: '绘制蓝图', bubble: '画架构…' },
+  split:         { label: '任务拆分', occupation: '任务拆分师', building: '拆分工作台', zone: '东北区', color: '#14b8a6', emoji: '🧩', icon: '🧩', symbol: '🧩', action: '拆分任务', bubble: '拆小块…' },
+  conflict:      { label: '冲突处理', occupation: '仲裁员', building: '仲裁庭', zone: '东工业区', color: '#f43f5e', emoji: '⚔️', icon: '⚔️', symbol: '🛠️', action: '解决冲突', bubble: '要仲裁…' },
+  blocked:       { label: '阻塞等待', occupation: '阻塞等待者', building: '阻塞等待亭', zone: '中央广场', color: '#ef4444', emoji: '🚧', icon: '🚧', symbol: '⛔', action: '等待解除', bubble: '卡住了…' },
+  'needs-grilling': { label: '待访谈', occupation: '待访谈者', building: '访谈茶馆', zone: '南自然区', color: '#facc15', emoji: '💬', icon: '💬', symbol: '❓', action: '等待访谈', bubble: '不清楚…' },
+  done:          { label: '已完成', occupation: '交付庆祝者', building: '凯旋广场', zone: '中央广场', color: '#84cc16', emoji: '🏆', icon: '🏆', symbol: '✅', action: '交付庆祝', bubble: '完成！' },
+  closed:        { label: '已关闭', occupation: '归档管理员', building: '归档小馆', zone: '西知识区', color: '#64748b', emoji: '🗄️', icon: '🗄️', symbol: '🔒', action: '归档封存', bubble: '已归档…' },
+  ready:         { label: '待命出发', occupation: '待命者', building: '待命驿站', zone: '中央广场', color: '#94a3b8', emoji: '⏳', icon: '⏳', symbol: '🕐', action: '等待派发', bubble: '随时出发…' },
+  conventions:   { label: '规范审查', occupation: '规范审查员', building: '规范文书房', zone: '北文职区', color: '#34d399', emoji: '📏', icon: '📏', symbol: '📏', action: '检查规范', bubble: '对规范…' },
+  knowledge:     { label: '知识归档', occupation: '知识管理员', building: '知识树馆', zone: '西知识区', color: '#60a5fa', emoji: '🌳', icon: '🌳', symbol: '📚', action: '提炼知识', bubble: '沉淀知识…' },
+  idle:          { label: '休息', occupation: '休息居民', building: '休息草坪', zone: '南自然区', color: '#64748b', emoji: '🍃', icon: '🍃', symbol: '☕', action: '恢复体力', bubble: '休息中…' },
+  working:       { label: '工作中', occupation: '综合工作者', building: '综合工位', zone: '中央广场', color: '#94a3b8', emoji: '⚙️', icon: '⚙️', symbol: '⚙️', action: '执行中', bubble: '忙碌中…' }
+};
+
+const STATION_POS = {};
+/* ---------- 四季色板（宝可梦金银调） ---------- */
+const SEASONS = [
+  { name: "春", emoji: "🌸", sky: "#78c8f0", sky2: "#b8ecff", M: "#48a848", L: "#7bc86a", H: "#e8c880", W: "#fff8ec", Y: "#ffd858", D: "#1a1c2c", B: "#5888e0", G: "#58b858", K: "#6b4423", R: "#e85040", P: "#f48fb0", particle: "petal" },
+  { name: "夏", emoji: "☀️", sky: "#60b0f0", sky2: "#a8e0ff", M: "#3c9c40", L: "#78d05e", H: "#f0d080", W: "#fffaf0", Y: "#ffd24a", D: "#1a1c2c", B: "#4a8ee8", G: "#58b858", K: "#6b4423", R: "#e85040", P: "#f07098", particle: "rain" },
+  { name: "秋", emoji: "🍂", sky: "#a8c8e0", sky2: "#f0e0b8", M: "#a08040", L: "#d0b058", H: "#e8c880", W: "#faf0da", Y: "#e8a828", D: "#2a2418", B: "#9fb8d8", G: "#8a8a4a", K: "#6e4a1f", R: "#d06040", P: "#e09070", particle: "leaf" },
+  { name: "冬", emoji: "❄️", sky: "#90b8d8", sky2: "#e0ecf8", M: "#78a0a8", L: "#d0e0e8", H: "#f0e8e0", W: "#ffffff", Y: "#f2c94c", D: "#2c4458", B: "#7fa4d8", G: "#8ab8c8", K: "#5d4a35", R: "#b85048", P: "#e0b0c0", particle: "snow" }
+];
+
+function hexRGB(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
+function mix(c, t, f) { return c + (t - c) * f; }
+function shade(hex, bright, nightF, duskF, warmF) {
+  let [r, g, b] = hexRGB(hex);
+  const nt = nightF * 0.5, ot = duskF * 0.25, wt = (warmF || 0) * 0.35;
+  r = mix(r, 0x18, nt); g = mix(g, 0x22, nt); b = mix(b, 0x40, nt);
+  r = mix(r, 0xe0, ot); g = mix(g, 0x84, ot); b = mix(b, 0x3c, ot);
+  r = mix(r, 0xe8, wt); g = mix(g, 0x90, wt); b = mix(b, 0x48, wt);
+  r = Math.min(255, Math.round(r * bright));
+  g = Math.min(255, Math.round(g * bright));
+  b = Math.min(255, Math.round(b * bright));
+  return ((0xff000000) | (r << 16) | (g << 8) | b) >>> 0;
+}
+function daylight(min) { if (min < 330 || min > 1050) return 0; return Math.sin(((min - 330) / 720) * Math.PI); }
+
+/* ---------- 绘制基元 ---------- */
+function makeBuf() { return new Uint32Array(W * H); }
+function px(b, x, y, c) { x |= 0; y |= 0; if (x >= 0 && x < W && y >= 0 && y < H) b[y * W + x] = c; }
+function rect(b, x, y, w, h, c) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) px(b, x + i, y + j, c); }
+function fillEllipse(b, cx, cy, rx, ry, c) {
+  for (let j = -Math.ceil(ry); j <= Math.ceil(ry); j++) {
+    const t = Math.max(0, 1 - (j * j) / (ry * ry));
+    const w = Math.round(rx * Math.sqrt(t));
+    for (let i = -w; i <= w; i++) px(b, Math.round(cx + i), Math.round(cy + j), c);
+  }
+}
+function spr(b, rows, x, y, colors, flip) {
+  const h = rows.length, w = rows[0].length;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const ch = rows[j][i];
+    if (ch === '.' || ch === ' ') continue;
+    const c = (colors && colors[ch]) || 0xff1a1c2c;
+    px(b, x + (flip ? w - 1 - i : i), y + j, c);
+  }
+}
+
+/* ---------- 精灵 ---------- */
+const HOUSE = [
+  "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+  "DDDDWWWWWWWWWWWWWWWWWWWWWWWWDDDD",
+  "DDDDWWWWWWWWWWWWWWWWWWWWWWWWDDDD",
+  "DDDDWWWWWWWWWWWWWWWWWWWWWWWWDDDD",
+  "DDDDWWWYYYYYYYYYYYYYYYYYYYWWDDDD",
+  "DDDDWWWYYYYYYYYYYYYYYYYYYYWWDDDD",
+  "DDDDPPPPPPPPPPPPPPPPPPPPPPPPWDDD",
+  "DDDDPPPWWWWWWWWWWWWWWWWWWWPPWDDD",
+  "DDDDPPPWWWWWWWWWWWWWWWWWWWPPWDDD",
+  "DDDDPPPWWWWWWWWWWWWWWWWWWWPPWDDD",
+  "DDDDPPPWWYKYYKWWWWWWKYYKYYWWPDDD",
+  "DDDDPPPWWYKYYKWWWWWWKYYKYYWWPDDD",
+  "DDDDPPPWWWKKKKWWWWWWKKKKKKWWPDDD",
+  "DDDDPPPWWWKKKKWWWWWWKKKKKKWWPDDD",
+  "DDDDPPPWWWWWWWWWWWWWWWWWWWWWPDDD",
+  "DDDDPPPWWWWWWWWWWWWWWWWWWWWWPDDD",
+  "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+];
+const NPC = {
+  stand: {
+    hat0: [
+    '....RRRRRRRRR......',
+    '...RRRRRRRRRRR.....',
+    '..RRRRRRRRRRRRR....',
+    '..RRRRRRRRRRRRR....',
+    '..RRHHHHHHHHHRR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTTTT.AA...',
+    '..A..TTT..TTT..A...',
+    '..A.BBBB..BBBB.A...',
+    '..A.BBBB..BBBB.A...'
+  ],
+    hat1: [
+    '.....RRRRRRRRR.....',
+    '....RRRRRRRRRRR....',
+    '...RRRRRRRRRRRRR...',
+    '...RRRRRRRRRRRRR...',
+    '..RRRRHHHHHHHHHRR..',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTTTT.AA...',
+    '..A..TTT..TTT..A...',
+    '..A.BBBB..BBBB.A...',
+    '..A.BBBB..BBBB.A...'
+  ],
+    hat2: [
+    '....NNNNNNNNNN.....',
+    '...NNNNNNNNNNNN....',
+    '..NNNNNNNNNNNNNN...',
+    '..NNHHHHHHHHHHNN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHHFFFFFFFFHHN...',
+    '..NNHHHHHHHHHHNN...',
+    '...NNNNNNNNNNNN....',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTTTT.AA...',
+    '..A..TTT..TTT..A...',
+    '..A.BBBB..BBBB.A...',
+    '..A.BBBB..BBBB.A...'
+  ],
+  },
+  walk1: {
+    hat0: [
+    '....RRRRRRRRR......',
+    '...RRRRRRRRRRR.....',
+    '..RRRRRRRRRRRRR....',
+    '..RRRRRRRRRRRRR....',
+    '..RRHHHHHHHHHRR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTT..TTTT.AA..',
+    '..A..TTT....TTT.A..',
+    '..A.BBBB.....BBBB..',
+    '..A.BBBB.....BBBB..'
+  ],
+    hat1: [
+    '.....RRRRRRRRR.....',
+    '....RRRRRRRRRRR....',
+    '...RRRRRRRRRRRRR...',
+    '...RRRRRRRRRRRRR...',
+    '..RRRRHHHHHHHHHRR..',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTT..TTTT.AA..',
+    '..A..TTT....TTT.A..',
+    '..A.BBBB.....BBBB..',
+    '..A.BBBB.....BBBB..'
+  ],
+    hat2: [
+    '....NNNNNNNNNN.....',
+    '...NNNNNNNNNNNN....',
+    '..NNNNNNNNNNNNNN...',
+    '..NNHHHHHHHHHHNN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHHFFFFFFFFHHN...',
+    '..NNHHHHHHHHHHNN...',
+    '...NNNNNNNNNNNN....',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTT..TTTT.AA..',
+    '..A..TTT....TTT.A..',
+    '..A.BBBB.....BBBB..',
+    '..A.BBBB.....BBBB..'
+  ],
+  },
+  walk2: {
+    hat0: [
+    '....RRRRRRRRR......',
+    '...RRRRRRRRRRR.....',
+    '..RRRRRRRRRRRRR....',
+    '..RRRRRRRRRRRRR....',
+    '..RRHHHHHHHHHRR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTT..TT.AA.',
+    '..A.TTTT....TTT.A..',
+    '..A.BBBB......BBBB.',
+    '..A.BBBB......BBBB.'
+  ],
+    hat1: [
+    '.....RRRRRRRRR.....',
+    '....RRRRRRRRRRR....',
+    '...RRRRRRRRRRRRR...',
+    '...RRRRRRRRRRRRR...',
+    '..RRRRHHHHHHHHHRR..',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTT..TT.AA.',
+    '..A.TTTT....TTT.A..',
+    '..A.BBBB......BBBB.',
+    '..A.BBBB......BBBB.'
+  ],
+    hat2: [
+    '....NNNNNNNNNN.....',
+    '...NNNNNNNNNNNN....',
+    '..NNNNNNNNNNNNNN...',
+    '..NNHHHHHHHHHHNN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHHFFFFFFFFHHN...',
+    '..NNHHHHHHHHHHNN...',
+    '...NNNNNNNNNNNN....',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A..SSSSSSSS..A...',
+    '..AA.TTTTTT..TT.AA.',
+    '..A.TTTT....TTT.A..',
+    '..A.BBBB......BBBB.',
+    '..A.BBBB......BBBB.'
+  ],
+  },
+  cheer: {
+    hat0: [
+    '....RRRRRRRRR......',
+    '...RRRRRRRRRRR.....',
+    '..RRRRRRRRRRRRR....',
+    '..RRRRRRRRRRRRR....',
+    '..RRHHHHHHHHHRR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..AA.TTTTTTTTT.AA..',
+    '..A..TTTTTTTTT..A..',
+    '..A.BBBBB..BBBBB.A.',
+    '..A.BBBB....BBBB.A.'
+  ],
+    hat1: [
+    '.....RRRRRRRRR.....',
+    '....RRRRRRRRRRR....',
+    '...RRRRRRRRRRRRR...',
+    '...RRRRRRRRRRRRR...',
+    '..RRRRHHHHHHHHHRR..',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFFFFFFFFHR....',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFEEEEEEFFHR...',
+    '..RHFFFFFFFFFHR....',
+    '..RHHFFFFFFFFHHR...',
+    '..RRHHHHHHHHHHRR...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..AA.TTTTTTTTT.AA..',
+    '..A..TTTTTTTTT..A..',
+    '..A.BBBBB..BBBBB.A.',
+    '..A.BBBB....BBBB.A.'
+  ],
+    hat2: [
+    '....NNNNNNNNNN.....',
+    '...NNNNNNNNNNNN....',
+    '..NNNNNNNNNNNNNN...',
+    '..NNHHHHHHHHHHNN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFFFFFFFFHN....',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFEEEEEEFFHN...',
+    '..NHFFFFFFFFFHN....',
+    '..NHHFFFFFFFFHHN...',
+    '..NNHHHHHHHHHHNN...',
+    '...NNNNNNNNNNNN....',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSTTSSSS.A..',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..A.SSSSSSSSSS.A...',
+    '..AA.TTTTTTTTT.AA..',
+    '..A..TTTTTTTTT..A..',
+    '..A.BBBBB..BBBBB.A.',
+    '..A.BBBB....BBBB.A.'
+  ],
+  },
+};
+
+const $ = (s) => document.querySelector(s);
+const canvas = $('#townCanvas');
+const ctx = canvas.getContext('2d');
+const agentsLayer = $('#town');
+const rosterEl = $('#roster');
+const logEl = $('#log');
+const emptyEl = $('#empty');
+
+let agents = new Map();
+let lastStage = new Map();
+let finishedCount = 0;
+let selectedId = null;
+let agentsConnected = false;
+let toastTimer = null;
+let nightMode = false;
+let rainMode = false;
+let curPal = null;
+
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function stageKey(a) {
+  const ts = String(a.taskStatus || '').trim();
+  const ph = String(a.phase || '').trim();
+  const map = { 'round1': 'planning', 'round2': 'implementing', 'plan_review': 'plan-review' };
+  if (ts) { if (map[ts]) return map[ts]; if (STAGE[ts]) return ts; }
+  if (ph) { if (map[ph]) return map[ph]; if (STAGE[ph]) return ph; }
+  return a.status === 'idle' ? 'idle' : 'working';
+}
+function shortSession(sid) { if (!sid) return 'agent'; if (sid.startsWith('session-')) return sid.slice(8, 14); return sid.slice(0, 6); }
+function fmtElapsed(sec) { sec = Number(sec || 0); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; return h > 0 ? h + 'h' + m + 'm' : (m > 0 ? m + 'm' + s + 's' : s + 's'); }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function agentName(a) {
+  const d = a && a.data || {};
+  const label = String(d.label || '').trim();
+  if (label) return label;
+  const task = String(d.task || '').split('\n')[0].trim();
+  if (task) return task.length > 26 ? task.slice(0, 26) + '…' : task;
+  return shortSession(d.sessionId);
+}
+function agentRootInfo(a) {
+  const seen = new Set();
+  let cur = a;
+  while (cur && cur.data) {
+    const d = cur.data;
+    if (d.taskId) return { sessionId: d.sessionId, taskId: d.taskId, task: String(d.task || '').split('\n')[0], project: d.project || '' };
+    const pid = d.parentSessionId;
+    if (!pid || seen.has(pid)) break;
+    seen.add(pid);
+    cur = agents.get(pid);
+  }
+  return null;
+}
+function agentParentName(a) {
+  const pid = a && a.data && a.data.parentSessionId;
+  if (!pid) return '';
+  const p = agents.get(pid);
+  return p ? agentName(p) : shortSession(pid);
+}
+
+function palNow(now) {
+  const t = now + TIME_OFFSET;
+  const day = Math.floor(t / DAY_MS);
+  const min = ((t % DAY_MS) / DAY_MS) * 1440;
+  const season = SEASONS[Math.floor(day / SEASON_DAYS) % SEASONS.length];
+  const dayF = daylight(min);
+  const dl = nightMode ? dayF : Math.max(0.45, dayF);
+  let bright = 0.55 + 0.45 * Math.max(0, dayF);
+  const duskF = dayF < 0.30 ? (0.30 - dayF) / 0.30 : 0;
+  const nightF = dayF < 0.10 ? (0.10 - dayF) / 0.10 : 0;
+  const rainF = rainMode ? 0.25 : 0;
+  if (rainMode) bright = Math.max(0.45, bright * 0.85);
+  // Sunrise/sunset warm tint: high in 05:30-08:00 and 16:30-19:30.
+  const warmF = ((min >= 300 && min < 480) ? 0.5 - Math.abs((min - 390) / 180 - 0.5) * 0.4
+                : (min >= 960 && min < 1140) ? 0.5 - Math.abs((min - 1050) / 180 - 0.5) * 0.4 : 0);
+  // Sun geometry: azimuth east->south->west; elevation 0 at horizon, 1 at noon.
+  const dayProg = Math.max(0, Math.min(1, (min - 330) / 720));
+  const sunElev = Math.max(0, dayF);
+  const sunAz = dayProg * Math.PI; // 0 east, PI west
+  const shadowLen = (1.55 - sunElev * 0.9) * 24;
+  const shadowDx = -Math.cos(sunAz) * shadowLen;
+  const shadowDy = -Math.sin(sunAz) * shadowLen * 0.42;
+  const sh = (h) => shade(h, bright, nightF, duskF, warmF);
+  const shadowColor = shade('#1d2130', Math.max(0.45, bright - 0.35), nightF, duskF);
+  return { season, day, min, dayF, dl, bright, nightF, duskF, warmF, rainF,
+           sunElev, sunAz, shadowLen, shadowDx, shadowDy, shadowColor,
+           skyTop: sh(season.sky), skyBot: sh(season.sky2),
+           M: sh(season.M), L: sh(season.L), H: sh(season.H), W: sh(season.W), Y: sh(season.Y),
+           D: sh(season.D), B: sh(season.B), G: sh(season.G), K: sh(season.K), R: sh(season.R), P: sh(season.P) };
+}
+/* ---------- 场景 / A* / 建筑 ---------- */
+const TILE = 12;
+const GW = Math.ceil(W / TILE);
+const GH = Math.ceil(H / TILE);
+const walkGrid = new Uint8Array(GW * GH);
+for (let i = 0; i < GW * GH; i++) walkGrid[i] = 1;
+
+function gx(x) { return Math.max(0, Math.min(GW - 1, Math.floor(x / TILE))); }
+function gy(y) { return Math.max(0, Math.min(GH - 1, Math.floor(y / TILE))); }
+function markRect(grid, x, y, w, h, val) {
+  const x0 = gx(x), y0 = gy(y), x1 = gx(x + w - 1), y1 = gy(y + h - 1);
+  for (let j = y0; j <= y1; j++) for (let i = x0; i <= x1; i++) grid[j * GW + i] = val;
+}
+function isWalkPx(x, y) { return walkGrid[gy(y) * GW + gx(x)] === 1; }
+
+const BUILDING_DEFS = [
+  // 北文职区（左上，竖路左侧）
+  { key: 'refining',      x: 40,  y: 62, w: 86, h: 60, roof: '#a78bfa', wall: '#f2edf8', door: 'south' , style: 'library' },
+  { key: 'planning',      x: 142, y: 62, w: 84, h: 60, roof: '#38bdf8', wall: '#e8f4fb', door: 'south' , style: 'cottage' },
+  { key: 'plan-review',   x: 242, y: 62, w: 82, h: 60, roof: '#facc15', wall: '#fbf5e2', door: 'south' , style: 'hall' },
+  { key: 'design',        x: 342, y: 62, w: 80, h: 58, roof: '#c084fc', wall: '#f4ecf8', door: 'south' , style: 'studio' },
+  // 北文职区右上
+  { key: 'conventions',   x: 560, y: 62, w: 72, h: 58, roof: '#34d399', wall: '#eaf8f0', door: 'south' , style: 'school' },
+  { key: 'knowledge',     x: 650, y: 62, w: 82, h: 60, roof: '#60a5fa', wall: '#ecf3fb', door: 'south' , style: 'tower' },
+  { key: 'priority',      x: 760, y: 62, w: 72, h: 58, roof: '#f87171', wall: '#fcecec', door: 'south' , style: 'office' },
+  { key: 'pm',            x: 860, y: 62, w: 70, h: 58, roof: '#f472b6', wall: '#fcedf5', door: 'south' , style: 'tower' },
+  // 东侧上排（竖路右侧，横路之上）
+  { key: 'split',         x: 580, y: 140, w: 70, h: 56, roof: '#14b8a6', wall: '#e8faf8', door: 'west' , style: 'shed' },
+  { key: 'closed',        x: 680, y: 140, w: 70, h: 56, roof: '#64748b', wall: '#eef1f5', door: 'west' , style: 'gate' },
+  { key: 'ready',         x: 640, y: 200, w: 56, h: 36, roof: '#94a3b8', wall: '#f1f4f8', door: 'south' , style: 'greenhouse' },
+  // 西知识区（横路之下，竖路左侧）
+  { key: 'audit',         x: 40,  y: 300, w: 70, h: 78, roof: '#fb923c', wall: '#fdf1e7', door: 'east' , style: 'office' },
+  { key: 'needs-grilling',x: 130, y: 330, w: 82, h: 60, roof: '#facc15', wall: '#fdf6e0', door: 'north' , style: 'cafe' },
+  { key: 'idle',          x: 40,  y: 430, w: 90, h: 58, roof: '#84cc16', wall: '#f1faec', door: 'north' , style: 'cottage' },
+  // 东工业区（横路之下，竖路右侧）
+  { key: 'implementing',  x: 580, y: 310, w: 120, h: 88, roof: '#3b82f6', wall: '#e8eef7', door: 'west' , style: 'factory' },
+  { key: 'review',        x: 710, y: 310, w: 84,  h: 64, roof: '#4ade80', wall: '#ebfaeb', door: 'west' , style: 'lab' },
+  { key: 'merge',         x: 820, y: 310, w: 72,  h: 64, roof: '#06b6d4', wall: '#e8fafb', door: 'west' , style: 'gate' },
+  { key: 'conflict',      x: 580, y: 430, w: 92, h: 64, roof: '#f43f5e', wall: '#fdecef', door: 'north' , style: 'hazard' },
+  { key: 'done',          x: 700, y: 430, w: 70, h: 44, roof: '#84cc16', wall: '#f1faec', door: 'south' , style: 'hall' },
+  { key: 'working',       x: 810, y: 430, w: 56, h: 42, roof: '#94a3b8', wall: '#f1f4f8', door: 'south' , style: 'shed' },
+  { key: 'blocked',       x: 520, y: 430, w: 56, h: 38, roof: '#ef4444', wall: '#fce9e9', door: 'north' , style: 'hazard' }
+];
+
+function buildingDoor(bd) {
+  const cx = bd.x + bd.w / 2;
+  const cy = bd.y + bd.h / 2;
+  if (bd.door === 'south') return { x: Math.round(cx), y: Math.round(bd.y + bd.h - 2) };
+  if (bd.door === 'north') return { x: Math.round(cx), y: Math.round(bd.y + 2) };
+  if (bd.door === 'east')  return { x: Math.round(bd.x + bd.w - 2), y: Math.round(cy) };
+  return { x: Math.round(bd.x + 2), y: Math.round(cy) };
+}
+function buildStationMap() {
+  for (const bd of BUILDING_DEFS) {
+    markRect(walkGrid, bd.x - 3, bd.y - 3, bd.w + 6, bd.h + 6, 0);
+    const door = buildingDoor(bd);
+    // keep a small walkable apron in front of the door
+    if (bd.door === 'south') markRect(walkGrid, door.x - 7, door.y + 1, 14, 8, 1);
+    else if (bd.door === 'north') markRect(walkGrid, door.x - 7, door.y - 9, 14, 8, 1);
+    else if (bd.door === 'east') markRect(walkGrid, door.x + 1, door.y - 7, 8, 14, 1);
+    else markRect(walkGrid, door.x - 9, door.y - 7, 8, 14, 1);
+    STATION_POS[bd.key] = door;
+  }
+}
+
+/* 建筑标牌：用 STAGE 自带的彩色 emoji 代替低分辨率像素图标，不再画黑框。 */
+function initBuildingSigns() {
+  for (const bd of BUILDING_DEFS) {
+    const meta = STAGE[bd.key] || STAGE.working;
+    const el = document.createElement('div');
+    el.className = 'building-sign';
+    el.textContent = meta.emoji || meta.symbol || '🏠';
+    el.style.left = ((bd.x + bd.w / 2) / W * 100) + '%';
+    const signTop = (bd.key === 'blocked') ? bd.y + bd.h / 2 : bd.y + Math.max(16, Math.round(bd.h * 0.40));
+    el.style.top = (signTop / H * 100) + '%';
+    el.title = (meta.building || meta.label || '') + ' — ' + (meta.occupation || '');
+    agentsLayer.appendChild(el);
+  }
+}
+
+/* 顶部图例：从 BUILDING_DEFS 动态生成，确保与小镇建筑图标一一对应、不缺项。 */
+function initLegend() {
+  const legendEl = $('#legend');
+  if (!legendEl) return;
+  legendEl.innerHTML = BUILDING_DEFS.map((bd) => {
+    const meta = STAGE[bd.key] || STAGE.working;
+    return '<span>' + (meta.emoji || meta.symbol || '🏠') + ' ' + esc(meta.label || '') + '</span>';
+  }).join('') + '<span><b>💡 点击居民查看任务</b></span>';
+}
+
+/* 静态自然障碍：初始化时一次性写入 walkGrid，避免每帧重复标记 */
+const TREE_SPOTS = [
+  // 西北树林
+  [28,44],[48,36],[66,48],[86,30],[106,44],
+  // 北侧小树林
+  [180,34],[200,28],[218,44],[300,32],[318,42],
+  // 东北树林
+  [520,30],[540,42],[560,28],[620,34],[642,46],[720,32],[740,40],
+  // 西门 / 西侧
+  [18,160],[36,172],[18,220],[38,228],[24,380],[44,392],
+  // 东南
+  [838,218],[858,208],[878,226],[898,168],[918,178],[900,470],[918,482],
+  // 南侧花田边
+  [230,352],[250,344],[268,356],[400,392],[420,384]
+];
+const NATURE_RECTS = [
+  { x: 160, y: 460, w: 130, h: 52 },  // 南侧池塘
+  { x: 850, y: 8,   w: 86,  h: 44 },  // 东北池塘
+  { x: 220, y: 390, w: 120, h: 44 },  // 南区花田
+  { x: 300, y: 300, w: 76,  h: 40 },  // 西侧花田
+  { x: 790, y: 150, w: 76,  h: 44 },  // 东侧花田
+  { x: 360, y: 420, w: 90,  h: 46 },  // 农田
+  { x: 460, y: 248, w: 40,  h: 40 }   // 中央喷泉
+];
+function buildNatureMap() {
+  for (const nr of NATURE_RECTS) markRect(walkGrid, nr.x - 2, nr.y - 2, nr.w + 4, nr.h + 4, 0);
+  for (const [tx, ty] of TREE_SPOTS) markRect(walkGrid, tx - 9, ty - 6, 18, 14, 0);
+}
+
+function nearestWalkable(x, y) {
+  const x0 = gx(x), y0 = gy(y);
+  let best = null, bestD = 1e9;
+  for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) {
+    if (!walkGrid[j * GW + i]) continue;
+    const d = (i - x0) * (i - x0) + (j - y0) * (j - y0);
+    if (d < bestD) { bestD = d; best = { x: i * TILE + TILE / 2, y: j * TILE + TILE / 2 }; }
+  }
+  return best || { x: W / 2, y: H / 2 };
+}
+
+/* 二进制最小堆：让 A* open list 从 O(n) 线性扫描降为 O(log n) */
+class MinHeap {
+  constructor() { this.a = []; }
+  get size() { return this.a.length; }
+  push(node) {
+    const a = this.a; a.push(node);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p].f <= a[i].f) break;
+      [a[p], a[i]] = [a[i], a[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const a = this.a, top = a[0], last = a.pop();
+    if (a.length && last !== top) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1; let m = i;
+        if (l < a.length && a[l].f < a[m].f) m = l;
+        if (r < a.length && a[r].f < a[m].f) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+function findPath(sx, sy, tx, ty) {
+  sx = Math.max(0, Math.min(W - 1, sx)); sy = Math.max(0, Math.min(H - 1, sy));
+  tx = Math.max(0, Math.min(W - 1, tx)); ty = Math.max(0, Math.min(H - 1, ty));
+  let gsx = gx(sx), gsy = gy(sy);
+  let gtx = gx(tx), gty = gy(ty);
+  if (!walkGrid[gsy * GW + gsx]) { const n = nearestWalkable(sx, sy); gsx = gx(n.x); gsy = gy(n.y); }
+  if (!walkGrid[gty * GW + gtx]) { const n = nearestWalkable(tx, ty); gtx = gx(n.x); gty = gy(n.y); }
+  const key = (x, y) => y * GW + x;
+  const came = new Int32Array(GW * GH); came.fill(-1);
+  const g = new Float64Array(GW * GH); g.fill(Infinity);
+  const f = new Float64Array(GW * GH); f.fill(Infinity);
+  const closed = new Uint8Array(GW * GH);
+  const open = new MinHeap();
+  open.push({ x: gsx, y: gsy, key: key(gsx, gsy), f: Math.abs(gtx - gsx) + Math.abs(gty - gsy) });
+  g[key(gsx, gsy)] = 0;
+  f[key(gsx, gsy)] = open.a[0].f;
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  let iter = 0;
+  while (open.size && iter++ < 12000) {
+    const cur = open.pop();
+    if (closed[cur.key]) continue;
+    if (cur.x === gtx && cur.y === gty) break;
+    closed[cur.key] = 1;
+    for (const [dx, dy] of dirs) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      if (nx < 0 || nx >= GW || ny < 0 || ny >= GH) continue;
+      const nk = key(nx, ny);
+      if (closed[nk] || !walkGrid[nk]) continue;
+      if (dx !== 0 && dy !== 0 && (!walkGrid[key(cur.x + dx, cur.y)] || !walkGrid[key(cur.x, cur.y + dy)])) continue;
+      const ng = g[cur.key] + (dx !== 0 && dy !== 0 ? 1.414 : 1);
+      if (ng < g[nk]) {
+        came[nk] = cur.key;
+        g[nk] = ng;
+        f[nk] = ng + Math.abs(gtx - nx) + Math.abs(gty - ny);
+        open.push({ x: nx, y: ny, key: nk, f: f[nk] });
+      }
+    }
+  }
+  if (came[key(gtx, gty)] === -1 && !(gsx === gtx && gsy === gty)) return [];
+  const path = [];
+  let ck = key(gtx, gty);
+  const steps = [];
+  while (ck !== -1) {
+    const cx = ck % GW, cy = Math.floor(ck / GW);
+    steps.push({ x: cx * TILE + TILE / 2, y: cy * TILE + TILE / 2 });
+    if (cx === gsx && cy === gsy) break;
+    ck = came[ck];
+  }
+  steps.reverse();
+  path.push(...steps);
+  return path;
+}
+
+function drawShadow(b, x, y, w, h, pal, scale) {
+  const k = scale == null ? 1 : scale;
+  const sx = Math.round(x + pal.shadowDx * k), sy = Math.round(y + pal.shadowDy * k);
+  rect(b, sx, sy, w, h, pal.shadowColor);
+}
+
+function drawTree(b, pal, x, y) {
+  const v = ((x * 7 + y * 13) % 3);
+  rect(b, x - 2, y - 2, 4, 8, pal.K);
+  drawShadow(b, x - 8, y + 3, 18, 8, pal, 0.55);
+  if (v === 0) { // 圆冠树
+    rect(b, x - 9, y - 7, 18, 12, pal.G);
+    rect(b, x - 7, y - 12, 14, 9, pal.L);
+    rect(b, x - 4, y - 16, 8, 6, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 8, y - 4, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 8, y - 4, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    if (pal.season.emoji !== '❄️') px(b, x - 2, y - 11, pal.R);
+  } else if (v === 1) { // 大圆冠树
+    rect(b, x - 11, y - 9, 22, 13, pal.G);
+    rect(b, x - 9, y - 15, 18, 8, pal.L);
+    rect(b, x - 5, y - 19, 10, 5, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 10, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 10, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    if (pal.season.emoji !== '❄️') { px(b, x - 3, y - 13, pal.R); px(b, x + 3, y - 10, pal.R); }
+  } else { // 松针树
+    rect(b, x - 7, y - 4, 14, 7, pal.G);
+    rect(b, x - 6, y - 10, 12, 7, pal.L);
+    rect(b, x - 4, y - 16, 8, 7, pal.L);
+    rect(b, x - 2, y - 21, 4, 6, shade('#a8e092', pal.bright, pal.nightF, pal.duskF));
+    px(b, x - 7, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+    px(b, x + 7, y - 5, shade('#2f6a34', pal.bright, pal.nightF, pal.duskF));
+  }
+}
+function drawPond(b, pal, x, y, w, h) {
+  const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2;
+  const t = performance.now() / 1000;
+  const sand = shade('#d8b26a', pal.bright, pal.nightF, pal.duskF);
+  const deep = shade('#3f6d9c', pal.bright, pal.nightF, pal.duskF);
+  const water = shade('#6aa8f0', pal.bright, pal.nightF, pal.duskF);
+  const light = shade('#8cc8f8', pal.bright, pal.nightF, pal.duskF);
+  fillEllipse(b, cx, cy, rx + 3, ry + 3, sand);
+  fillEllipse(b, cx, cy, rx + 1, ry + 1, shade('#a5c9f0', pal.bright, pal.nightF, pal.duskF));
+  fillEllipse(b, cx, cy, rx - 1, ry - 1, deep);
+  fillEllipse(b, cx, cy - 1, rx - 4, ry - 4, water);
+  fillEllipse(b, cx - 2, cy - 3, Math.max(3, rx - 8), Math.max(2, ry - 7), light);
+  // 动态水光：缓慢移动的高光
+  const glow = Math.sin(t * 1.7) * rx * 0.35;
+  px(b, Math.round(cx + glow), Math.round(cy - ry / 4), 0xfffff0c0);
+  px(b, Math.round(cx - rx / 3 + glow * 0.5), Math.round(cy + ry / 3), 0xfffff0c0);
+  px(b, Math.round(cx + rx / 3 - glow * 0.7), Math.round(cy - ry / 5), 0xfffff0c0);
+  // 水波纹：横向波动线，更像水面而非烟花
+  const lineN = rainMode ? 5 : 3;
+  const lineColor = rainMode ? 0xeeffffff : 0xbbffffff;
+  for (let i = 0; i < lineN; i++) {
+    const baseY = cy + ((i - lineN / 2) / lineN) * ry * 1.3 + Math.sin(t * 0.9 + i * 1.7) * 2;
+    for (let xo = -rx + 5; xo < rx - 5; xo += 3) {
+      const wob = Math.sin(xo * 0.16 + t * 1.8 + i) * 1.6;
+      const py = Math.round(baseY + wob);
+      if (py > cy - ry && py < cy + ry) px(b, Math.round(cx + xo), py, lineColor);
+    }
+  }
+  // 两三颗小亮点
+  for (let i = 0; i < 3; i++) {
+    px(b, Math.round(cx + Math.sin(t * 1.3 + i * 2.1) * rx * 0.5), Math.round(cy + Math.cos(t * 1.1 + i) * ry * 0.5), 0xfffff0c0);
+  }
+  // 睡莲 / 荷叶
+  fillEllipse(b, Math.round(cx - rx * 0.45), Math.round(cy + ry * 0.25), 3, 2, shade('#2f8a3f', pal.bright, pal.nightF, pal.duskF));
+  fillEllipse(b, Math.round(cx + rx * 0.35), Math.round(cy - ry * 0.35), 2, 1.5, shade('#2f8a3f', pal.bright, pal.nightF, pal.duskF));
+}
+function drawFlowerField(b, pal, x, y, w, h) {
+  const bg = shade('#3c8c4c', pal.bright, pal.nightF, pal.duskF);
+  const dark = shade('#2c6c3c', pal.bright, pal.nightF, pal.duskF);
+  rect(b, x, y, w, h, bg);
+  const petals = [pal.P, pal.Y, shade('#ff9fb0', pal.bright, pal.nightF, pal.duskF), shade('#c8a0ff', pal.bright, pal.nightF, pal.duskF), shade('#a0e8ff', pal.bright, pal.nightF, pal.duskF)];
+  for (let i = 0; i < w * h / 24; i++) {
+    const fx = x + 3 + ((i * 53) % (w - 6)), fy = y + 3 + ((i * 31) % (h - 6));
+    const petal = petals[i % petals.length];
+    const center = shade((i % 2 ? '#fff0a0' : '#c05a2a'), pal.bright, pal.nightF, pal.duskF);
+    drawFlower(b, fx, fy, petal, center, pal.G);
+    if (i % 4 === 0) drawGrassTuft(b, fx + 4, fy + 8, pal.H, pal.G, dark);
+  }
+  for (let i = 0; i < w / 26; i++) {
+    drawGrassTuft(b, x + 4 + i * 26, y + h - 8, pal.G, pal.H, dark);
+  }
+}
+function drawFarm(b, pal, x, y, w, h) {
+  rect(b, x, y, w, h, shade('#a57a42', pal.bright, pal.nightF, pal.duskF));
+  for (let j = 4; j < h - 4; j += 7) {
+    rect(b, x + 3, y + j, w - 6, 2, shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF));
+    for (let i = 4; i < w - 6; i += 9) {
+      if ((i + j) % 3 === 0) px(b, x + i, y + j - 3, pal.L);
+    }
+  }
+}
+/* 职业特色建筑小徽记 */
+/* 建筑标志改用 DOM emoji（initBuildingSigns），不再直接画像素图标。 */
+
+function drawBuilding(b, bd, pal) {
+  const roof = shade(bd.roof, pal.bright, pal.nightF, pal.duskF);
+  const wall = shade(bd.wall, pal.bright, pal.nightF, pal.duskF);
+  const dark = shade('#1a1c2c', pal.bright, pal.nightF, pal.duskF);
+  const roofDark = shade('#1d2430', pal.bright, pal.nightF, pal.duskF);
+  const win = shade('#ffd858', pal.bright, pal.nightF, pal.duskF);
+  const door = shade('#6b4423', pal.bright, pal.nightF, pal.duskF);
+  const wood = shade('#8a5a2f', pal.bright, pal.nightF, pal.duskF);
+  const glass = shade('#b8e0f0', pal.bright, pal.nightF, pal.duskF);
+  const cx = bd.x + bd.w / 2;
+  const key = bd.key;
+  const W = bd.w, H = bd.h, X = bd.x, Y = bd.y;
+
+  drawShadow(b, X + 3, Y + H - 7, W - 6, 12, pal, 0.3);
+
+  switch (key) {
+    case 'refining': { // 图书馆：三角山墙 + 两翼 + 方柱
+      rect(b, X + 1, Y + 14, W - 2, H - 14, wall);
+      rect(b, X - 4, Y + 10, 10, H - 10, wall); rect(b, X + W - 6, Y + 10, 10, H - 10, wall);
+      const rh = 12;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      rect(b, X + 1, Y + 12, W - 2, 3, roofDark);
+      rect(b, X + 16, Y + 20, 5, H - 22, wood);
+      rect(b, X + 30, Y + 20, 5, H - 22, wood);
+      rect(b, X + W - 21, Y + 20, 5, H - 22, wood);
+      rect(b, X + 8, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'planning': { // 圆规：圆形大楼 + 罗盘指针屋顶
+      fillEllipse(b, cx, Y + Math.round(H * 0.58), Math.round(W / 2 - 3), Math.round(H * 0.42), wall);
+      rect(b, X + 2, Y + 10, W - 4, H - 10, wall);
+      rect(b, cx - 1, Y + 2, 2, H - 8, dark);
+      for (let i = 0; i < 8; i++) {
+        const xa = X + 12 + i * (W - 24) / 7, ya = Y + 12 + ((i * 5) % 9);
+        rect(b, Math.round(xa), Math.round(ya), 6, 3, glass);
+      }
+      // 罗盘指针
+      for (let i = 0; i < 8; i++) rect(b, Math.round(cx - i * 0.4), Y - 6 + i, 2, 1, i < 4 ? win : roof);
+      rect(b, Math.round(cx - 1), Y - 10, 2, 5, win);
+      break;
+    }
+    case 'plan-review': { // 法槌/公正：三角挑檐 + 中央天平纹章
+      rect(b, X, Y + 10, W, H - 10, wall);
+      const rh = 10;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      rect(b, cx - 1, Y + 16, 2, H - 18, wood);
+      rect(b, cx - 8, Y + 18, 16, 2, wood);
+      rect(b, cx - 7, Y + 22, 6, 4, wood); rect(b, cx + 1, Y + 22, 6, 4, wood);
+      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+      break;
+    }
+    case 'design': { // 设计工作室：A 字三角画室 + 大画窗
+      const rh = Math.min(18, Math.round(H * 0.42));
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      for (let i = 0; i < H - rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (H - rh - i) / (H - rh)));
+        rect(b, Math.round(cx - half), Y + rh + i, half * 2, 1, wall);
+      }
+      rect(b, X + 6, Y + 24, W - 12, 10, glass);
+      px(b, X + 10, Y + 28, 0xffff5050); px(b, X + 16, Y + 28, 0xff58a0e8); px(b, X + 22, Y + 28, 0xff58d858); px(b, X + 28, Y + 28, 0xffffd858);
+      break;
+    }
+    case 'conventions': { // 规范文书房：柱廊 + 三角楣
+      rect(b, X, Y + 10, W, H - 10, wall);
+      const rh = 9;
+      for (let i = 0; i < rh; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / rh));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      for (let i = 0; i < 4; i++) rect(b, X + 6 + i * (W - 12) / 3, Y + 18, 6, H - 22, wood);
+      rect(b, X + 8, Y + 22, W - 16, 6, win);
+      break;
+    }
+    case 'knowledge': { // 知识树馆：塔身 + 树冠屋顶
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 7, pal.G);
+      fillEllipse(b, cx - 6, Y + 5, 5, 4, pal.L); fillEllipse(b, cx + 6, Y + 5, 5, 4, pal.L);
+      fillEllipse(b, cx, Y + 2, 3, 3, roof);
+      rect(b, cx - 4, Y + 20, 8, H - 22, wood);
+      rect(b, X + 14, Y + 24, 8, 6, win); rect(b, X + W - 22, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'priority': { // 优先级塔：CBD 高塔 + 顶部红旗
+      for (let i = 0; i < H; i++) {
+        const half = Math.round(W / 2 * (1.1 - 0.4 * i / H));
+        rect(b, Math.round(cx - Math.max(3, half)), Y + i, Math.max(6, half * 2), 1, i % 6 === 0 ? wall : shade(bd.wall, pal.bright, pal.nightF, pal.duskF));
+      }
+      rect(b, cx - 1, Y + 4, 2, 14, dark);
+      rect(b, cx - 1, Y + 4, 14, 6, roof);
+      px(b, cx + 13, Y + 6, roofDark);
+      rect(b, X + 10, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'pm': { // 统筹议事厅：圆顶大厅
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 2), 12, roof);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 5), 7, roofDark);
+      rect(b, cx - 2, Y - 2, 4, 2, roofDark);
+      rect(b, X + 8, Y + 24, 8, 6, win); rect(b, X + W - 16, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'split': { // 拆分工作台：斜切剪刀造型
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      for (let i = 0; i < 12; i++) rect(b, X + 2 + i, Y + 4 + Math.floor(i / 2), 1, 12 - Math.floor(i / 2), i % 2 ? roof : roofDark);
+      for (let i = 0; i < 12; i++) rect(b, X + W - 3 - i, Y + 4 + Math.floor(i / 2), 1, 12 - Math.floor(i / 2), i % 2 ? roofDark : roof);
+      rect(b, X + 8, Y + 22, 8, 6, win); rect(b, X + W - 16, Y + 22, 8, 6, win);
+      break;
+    }
+    case 'closed': { // 归档小馆：保险库圆形门
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 8), 20, dark);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 12), 17, roof);
+      for (let r = 0; r < 3; r++) fillEllipse(b, cx, Y + 28, Math.round((W / 2 - 12) * (r + 1) / 3.2), Math.round(17 * (r + 1) / 3.4), shade(['#8a5a2f','#b07a46','#e0b06a'][r], pal.bright, pal.nightF, pal.duskF));
+      break;
+    }
+    case 'ready': { // 待命驿站：胶囊发射塔
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 4), 8, roof);
+      rect(b, cx - 1, Y - 8, 2, 10, dark); px(b, cx, Y - 10, 0xffffe0a0);
+      rect(b, X + 10, Y + 24, 8, 6, win); rect(b, X + W - 18, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'audit': { // 审计塔：广州塔式渐变细腰塔
+      const topY = Y + 6, botY = Y + H;
+      for (let i = 0; i < H; i++) {
+        const t = i / H;
+        const r = 3 + Math.round((W / 2 - 4) * (1 - Math.abs(t - 0.5) * 1.4));
+        rect(b, Math.round(cx - r), Y + i, r * 2, 1, i % 3 === 0 ? roofDark : wall);
+      }
+      rect(b, Math.round(cx - 1), topY - 16, 2, 18, dark);
+      px(b, cx, topY - 18, 0xffffe0a0);
+      for (let i = 0; i < 4; i++) rect(b, Math.round(cx - 5), Y + 18 + i * 12, 10, 2, glass);
+      break;
+    }
+    case 'needs-grilling': { // 聊天会话室：圆顶 + 大对话屏 + 讨论桌
+      rect(b, X + 2, Y + 14, W - 4, H - 14, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 2), 8, roof);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 2 - 5), 4, roofDark);
+      rect(b, X + 6, Y + 18, W - 12, 10, glass);
+      px(b, X + 12, Y + 22, 0xff58a0e8); px(b, X + 20, Y + 22, 0xffffd858); px(b, X + 28, Y + 22, 0xffff5050);
+      rect(b, X + 14, Y + H - 14, W - 28, 4, wood); // 讨论桌
+      rect(b, X + 10, Y + H - 12, 5, 4, wood); rect(b, X + W - 15, Y + H - 12, 5, 4, wood); // 椅子
+      break;
+    }
+    case 'idle': { // 咖啡休息厅：条纹雨棚 + 咖啡吧台 + 户外桌椅
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      rect(b, X + 2, Y + 2, W - 4, 12, roof);
+      for (let i = 0; i < W - 4; i += 6) {
+        px(b, X + 2 + i, Y + 1, 0xffff5050); px(b, X + 2 + i + 3, Y + 1, 0xffffd858);
+        px(b, X + 2 + i, Y + 7, 0xffffd858); px(b, X + 2 + i + 3, Y + 7, 0xffff5050);
+      }
+      rect(b, X + 2, Y + 14, W - 4, 2, roofDark);
+      rect(b, X + 8, Y + 20, 8, 6, wood); px(b, X + 11, Y + 18, win); // 吧台咖啡杯
+      rect(b, X + 14, Y + H - 14, W - 28, 4, wood); // 户外桌
+      rect(b, X + 10, Y + H - 12, 4, 3, wood); rect(b, X + W - 14, Y + H - 12, 4, 3, wood); // 椅子
+      break;
+    }
+    case 'implementing': { // 开发工厂：锯齿厂房 + 传送带齿轮
+      for (let i = 0; i < Math.ceil(W / 12); i++) {
+        const sx = X + 2 + i * 12;
+        rect(b, sx, Y + 2, 10, 3, roof);
+        rect(b, sx + 5, Y + 2, 5, 1, roofDark);
+        rect(b, sx + 10, Y + 5, 1, 4, roofDark);
+        rect(b, sx, Y + 5, 10, 2, roofDark);
+      }
+      rect(b, X + 2, Y + 8, W - 4, H - 8, wall);
+      rect(b, X + 12, Y - 8, 8, 12, roofDark); rect(b, X + 13, Y - 10, 6, 3, roof);
+      px(b, X + 14, Y - 9, 0xffdddddd);
+      // 传送带
+      rect(b, X + 10, Y + H - 10, W - 20, 4, dark);
+      for (let i = 0; i < (W - 20) / 10; i++) rect(b, X + 12 + i * 10, Y + H - 9, 2, 2, roof);
+      // 齿轮
+      fillEllipse(b, X + 14, Y + 22, 7, 7, pal.Y);
+      px(b, X + 7, Y + 22, pal.Y); px(b, X + 21, Y + 22, pal.Y); px(b, X + 14, Y + 15, pal.Y); px(b, X + 14, Y + 29, pal.Y);
+      px(b, X + 9, Y + 17, pal.Y); px(b, X + 19, Y + 17, pal.Y); px(b, X + 9, Y + 27, pal.Y); px(b, X + 19, Y + 27, pal.Y);
+      fillEllipse(b, X + 14, Y + 22, 3, 3, win);
+      break;
+    }
+    case 'review': { // 验收场：圆形靶场
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 16), 18, pal.G);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 20), 14, win);
+      fillEllipse(b, cx, Y + 28, Math.round(W / 2 - 24), 10, pal.G);
+      fillEllipse(b, cx, Y + 28, 3, 3, dark);
+      rect(b, X + 10, Y + 24, 8, 6, win);
+      break;
+    }
+    case 'merge': { // 合并发布站：双道汇流拱门
+      rect(b, X + 2, Y + 12, W - 4, H - 12, wall);
+      for (let i = 0; i < 10; i++) rect(b, X + 4 + i, Y + 3 + Math.floor(i / 2), W - 8 - i * 2, 1, i % 2 ? roof : roofDark);
+      rect(b, cx - 8, Y + 14, 16, 14, glass);
+      rect(b, cx - 10, Y + 28, 20, 5, dark);
+      rect(b, X + 4, Y + 20, 10, 4, roof); rect(b, X + W - 14, Y + 20, 10, 4, roof);
+      break;
+    }
+    case 'conflict': { // 仲裁庭：警告三角塔
+      rect(b, X + 2, Y + 16, W - 4, H - 16, wall);
+      for (let i = 0; i < 10; i++) {
+        const half = Math.max(2, Math.round(W / 2 * (i + 1) / 10));
+        rect(b, Math.round(cx - half), Y + i, half * 2, 1, i % 2 ? roof : roofDark);
+      }
+      px(b, cx, Y + 6, win); px(b, cx, Y + 10, win); px(b, cx, Y + 14, win);
+      rect(b, X + 8, Y + 26, 8, 6, win); rect(b, X + W - 16, Y + 26, 8, 6, win);
+      break;
+    }
+    case 'done': { // 凯旋广场：凯旋门
+      rect(b, X + 2, Y + 12, 10, H - 12, wall); rect(b, X + W - 12, Y + 12, 10, H - 12, wall);
+      rect(b, X + 2, Y + 12, W - 4, 12, roof);
+      fillEllipse(b, cx, Y + 12, Math.round(W / 2 - 2), 7, roof); fillEllipse(b, cx, Y + 18, Math.round(W / 2 - 14), 6, wall);
+      rect(b, cx - 7, Y + 26, 14, H - 28, wall);
+      break;
+    }
+    case 'working': { // 综合工位：小齿轮屋
+      rect(b, X + 4, Y + 12, W - 8, H - 12, wall);
+      fillEllipse(b, cx, Y + 8, Math.round(W / 4), 6, roof);
+      fillEllipse(b, cx, Y + 25, Math.round(W / 4 - 1), 8, pal.Y);
+      fillEllipse(b, cx, Y + 25, 3, 4, wall);
+      px(b, cx - 7, Y + 25, pal.Y); px(b, cx + 7, Y + 25, pal.Y); px(b, cx, Y + 18, pal.Y); px(b, cx, Y + 32, pal.Y);
+      break;
+    }
+    case 'blocked': { // 阻塞等待：不画建筑，只用警示围栏围住
+      const fx = X + 2, fy = Y + 2, fw = W - 4, fh = H - 4;
+      for (let i = 0; i < Math.ceil(fw / 10); i++) {
+        rect(b, fx + i * 10, fy, 3, fh, roofDark);
+        rect(b, fx + i * 10, fy, 3, 4, roof);
+      }
+      rect(b, fx, fy + 2, fw, 2, roofDark);
+      rect(b, fx, fy + fh - 4, fw, 2, roofDark);
+      for (let i = 0; i < fw; i += 6) {
+        px(b, fx + i, fy + 2, 0xffff5050); px(b, fx + i + 2, fy + 2, 0xffffd858);
+        px(b, fx + i, fy + fh - 4, 0xffffd858); px(b, fx + i + 2, fy + fh - 4, 0xffff5050);
+      }
+      break;
+    }
+    default: { // 通用平顶
+      rect(b, X, Y, W, H, wall);
+      rect(b, X + 2, Y + 2, W - 4, 12, roof);
+      rect(b, X + 2, Y + 14, W - 4, 3, roofDark);
+    }
+  }
+
+  // 普通窗户兜底：没有单独点窗的建筑补两个
+  if (!['refining','planning','plan-review','design','conventions','knowledge','priority','pm','split','closed','ready','audit','needs-grilling','idle','implementing','review','merge','conflict','done','working','blocked'].includes(key)) {
+    rect(b, X + 6, Y + 24, 8, 6, win); rect(b, X + W - 14, Y + 24, 8, 6, win);
+  }
+
+  // 大门（保留 door 方向，功能不变；围栏没有门）
+  if (key !== 'blocked') {
+    if (bd.door === 'south') { rect(b, cx - 5, Y + H - 13, 10, 12, door); }
+    else if (bd.door === 'north') { rect(b, cx - 5, Y + 1, 10, 12, door); }
+    else if (bd.door === 'east') { rect(b, X + W - 12, Y + H / 2 - 5, 11, 10, door); }
+    else { rect(b, X + 1, Y + H / 2 - 5, 11, 10, door); }
+  }
+}
+
+function drawFountain(b, pal, cx, cy) {
+  const t = performance.now() / 1000;
+  const stone = shade('#cbb89a', pal.bright, pal.nightF, pal.duskF);
+  const stoneDark = shade('#a08b70', pal.bright, pal.nightF, pal.duskF);
+  const water = shade('#6aa8f0', pal.bright, pal.nightF, pal.duskF);
+  const waterLight = shade('#8cc8f8', pal.bright, pal.nightF, pal.duskF);
+  const pedestal = shade('#b8a88a', pal.bright, pal.nightF, pal.duskF);
+  const rim = shade('#d8d0c0', pal.bright, pal.nightF, pal.duskF);
+  fillEllipse(b, cx, cy, 27, 21, stone);
+  fillEllipse(b, cx, cy, 24, 18, stoneDark);
+  fillEllipse(b, cx, cy - 1, 21, 14, water);
+  fillEllipse(b, cx, cy - 3, 16, 10, waterLight);
+  // 水面动态微光
+  const wob = Math.sin(t * 2.2) * 2;
+  px(b, Math.round(cx + 6 + wob), Math.round(cy - 2), 0xffffffff);
+  px(b, Math.round(cx - 6 - wob), Math.round(cy + 3), 0xffffffff);
+  // 中央水柱
+  rect(b, cx - 2, cy - 19, 4, 14, waterLight);
+  rect(b, cx - 1, cy - 26, 2, 9, water);
+  rect(b, cx, cy - 28, 1, 5, 0xffffffff);
+  // 喷溅水珠：抛物线小点
+  for (let i = 0; i < 8; i++) {
+    const ph = (t * 1.1 + i * 0.31) % 1;
+    const dir = i % 2 ? 1 : -1;
+    const dx = dir * (3 + ph * 13);
+    const dy = -22 + Math.sin(ph * Math.PI) * 20;
+    const size = ph < 0.45 ? 1 : 0;
+    if (size) {
+      px(b, Math.round(cx + dx), Math.round(cy + dy), i % 3 ? 0xffffffff : 0xffdff5ff);
+      if (i % 2) px(b, Math.round(cx + dx + 1), Math.round(cy + dy), 0xffffffff);
+    }
+  }
+  // 基座
+  rect(b, cx - 3, cy - 7, 6, 9, pedestal);
+  rect(b, cx - 2, cy - 13, 4, 7, rim);
+  // 水面涟漪
+  for (let i = 0; i < 3; i++) {
+    const ph = (t * 0.7 + i * 0.37) % 1;
+    const rr = 3 + ph * 18;
+    const alpha = ph < 0.8 ? 0xffffffff : 0;
+    if (alpha) {
+      px(b, Math.round(cx + rr), cy - 2, alpha);
+      px(b, Math.round(cx - rr), cy - 2, alpha);
+      px(b, cx, Math.round(cy - 2 + rr * 0.45), alpha);
+      px(b, cx, Math.round(cy - 2 - rr * 0.45), alpha);
+    }
+  }
+}
+
+/* 花草多样性：草簇、花朵小形状 */
+function drawGrassTuft(b, x, y, c1, c2, c3) {
+  px(b, x, y, c1); px(b, x, y - 1, c1);
+  px(b, x + 1, y, c2); px(b, x + 2, y - 1, c2);
+  px(b, x - 1, y - 2, c3 || c1); px(b, x + 1, y - 3, c3 || c2);
+}
+function drawFlower(b, x, y, petal, center, stem) {
+  px(b, x, y + 1, stem);
+  px(b, x - 1, y, petal); px(b, x + 1, y, petal);
+  px(b, x, y - 1, petal); px(b, x, y + 1, stem);
+  px(b, x, y, center);
+}
+function drawRain(b, pal, now) {
+  if (!rainMode) return;
+  const wet = shade('#6a7a9a', pal.bright, pal.nightF, pal.duskF);
+  const t = (now || performance.now()) / 1000;
+  for (let i = 0; i < 130; i++) {
+    const x = (i * 97 + ((t * 260) % 960)) % W;
+    const y = (i * 53 + ((t * 420) % 540)) % H;
+    const len = 5 + (i % 4);
+    rect(b, Math.round(x), Math.round(y), 1, len, wet);
+    px(b, Math.round(x - 1), Math.round(y + len), 0xffcfe2ff);
+  }
+  // 地面雨点圈
+  for (let i = 0; i < 22; i++) {
+    const rx = (i * 149) % W, ry = ((i * 97 + Math.floor(t * 3) * 37) % H);
+    if (isWalkPx(rx, ry)) {
+      px(b, rx, ry, 0xffffffff);
+      px(b, rx - 1, ry, 0xffffffff); px(b, rx + 1, ry, 0xffffffff);
+      px(b, rx, ry - 1, 0xffffffff); px(b, rx, ry + 1, 0xffffffff);
+    }
+  }
+  // 街面湿感
+  if (Math.floor(t * 1.5) % 2 === 0) {
+    rect(b, 50, 255, 130, 8, wet); rect(b, 470, 130, 20, 8, wet); rect(b, 700, 290, 90, 6, wet);
+  }
+}
+
+function drawScene(b, pal) {
+  rect(b, 0, 0, W, H, pal.M);
+  const grassDark = shade('#3c8c4c', pal.bright, pal.nightF, pal.duskF);
+  const grassLight = shade('#8cd890', pal.bright, pal.nightF, pal.duskF);
+  for (let i = 0; i < 32; i++) {
+    const gx2 = (i * 83) % (W - 30), gy2 = 10 + ((i * 67) % (H - 20));
+    rect(b, gx2, gy2, 22 + (i % 3) * 7, 7 + (i % 2) * 4, (i % 2) ? grassDark : grassLight);
+  }
+  for (let i = 0; i < 140; i++) {
+    const gx2 = (i * 73) % W, gy2 = 8 + ((i * 41) % (H - 16));
+    if (!isWalkPx(gx2, gy2)) continue;
+    const c1 = (i % 3 === 0) ? pal.H : pal.L;
+    const c2 = (i % 4 === 0) ? pal.G : pal.L;
+    drawGrassTuft(b, gx2, gy2, c1, c2, pal.H);
+  }
+  const road = shade('#c9b18e', pal.bright, pal.nightF, pal.duskF);
+  const roadDark = shade('#8f7352', pal.bright, pal.nightF, pal.duskF);
+  rect(b, 0, 248, W, 34, road);
+  for (let i = 0; i < 170; i++) { const rx = (i * 37) % W, ry = 252 + ((i * 17) % 26); px(b, rx, ry, roadDark); }
+  rect(b, 456, 0, 48, H, road);
+  for (let i = 0; i < 140; i++) { const rx = 460 + ((i * 23) % 40), ry = (i * 53) % H; px(b, rx, ry, roadDark); }
+  const plaza = road; // 与十字路同色，融合成一体
+  rect(b, 396, 180, 168, 176, plaza);
+  for (let i = 0; i < 90; i++) { const rx = 400 + ((i * 29) % 160), ry = 184 + ((i * 47) % 168); px(b, rx, ry, roadDark); }
+  drawFountain(b, pal, 480, 268);
+  drawPond(b, pal, 160, 460, 130, 52);
+  drawPond(b, pal, 850, 8, 86, 44);
+  drawFlowerField(b, pal, 220, 390, 120, 44);
+  drawFlowerField(b, pal, 300, 300, 76, 40);
+  drawFlowerField(b, pal, 790, 150, 76, 44);
+  drawFarm(b, pal, 360, 420, 90, 46);
+  for (const [tx, ty] of TREE_SPOTS) drawTree(b, pal, tx, ty);
+  for (let i = 0; i < 90; i++) {
+    const fx = (i * 89) % W, fy = 10 + ((i * 59) % (H - 20));
+    if (isWalkPx(fx, fy)) {
+      const petal = (i % 3 === 0) ? pal.P : (i % 3 === 1) ? pal.Y : shade('#ff9fb0', pal.bright, pal.nightF, pal.duskF);
+      const center = (i % 2) ? shade('#fff0a0', pal.bright, pal.nightF, pal.duskF) : shade('#c05a2a', pal.bright, pal.nightF, pal.duskF);
+      drawFlower(b, fx, fy, petal, center, pal.L);
+    }
+  }
+}
+function drawStations(b, pal) {
+  for (const bd of BUILDING_DEFS) drawBuilding(b, bd, pal);
+}
+
+buildStationMap();
+buildNatureMap();
+initLegend();
+initBuildingSigns();
+/* ---------- NPC ---------- */
+const VILLAGER_PALETTES = ['#e85d3a', '#f4a7b9', '#58a858', '#5c8af0', '#f0c858', '#b06ad0', '#4ad0b0', '#e07050', '#70c8e0', '#d080c0'];
+
+/* 装饰角色（路人 / 小孩 / 野生宝可梦）——不占 agent 名额，纯小镇生气 */
+const PASSER_SPRITE = {
+  adult_stand: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..AA.TTT..TT.AA...',
+    '..A..TTT..TT..A...',
+    '..A.BBBB..BBBB.A..'
+  ],
+  adult_walk1: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..AA.TT...TT.AA...',
+    '..A..TT...TT..A...',
+    '..A.BBBB...BBBB.A.'
+  ],
+  adult_walk2: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..AA.TT..TT..AA...',
+    '..A..TT..TT..A....',
+    '..A.BBBB..BBBB.A..'
+  ],
+  child_stand: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..A.TTT..TTT.A....',
+    '..A.BBBB..BBBB.A..'
+  ],
+  child_walk1: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..A.TTT..TT.AA....',
+    '..A.BBBB..BBBB.A..'
+  ],
+  child_walk2: [
+    '....RRRRRRRR......',
+    '...RRRRRRRRRR.....',
+    '..RRRRRRRRRRRR....',
+    '..RRRRRRRRRRRR....',
+    '..RRHHHHHHHHRR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFEEEEFFHR....',
+    '..RHFFFFFFFFHR....',
+    '..RHHFFFFFFHHR....',
+    '..RRHHHHHHHHRR....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSTTSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A.SSSSSSSS.A....',
+    '..A..SSSSSS..A....',
+    '..A.TTT..TTT.A....',
+    '..A.BBBB..BBBB.A..'
+  ],
+  pokemon1: [ // 圆尾小精灵（皮卡丘系小黄）
+    "......YYYY....",
+    ".....YYYYYY...",
+    "....YYYYYYYY..",
+    "....YEYYEYY...",
+    "....YYYYYYYY..",
+    ".....YYYYYY...",
+    "......YYYY....",
+    "...RR....RR...",
+    "..RRR....RRR..",
+    "...RR....RR..."
+  ],
+  pokemon2: [ // 水蓝圆球（水系）
+    "...BBBBBB...",
+    "..BBBBBBBB..",
+    "..BBEEEEBB..",
+    "..BBEEEEBB..",
+    "...BBBBBB...",
+    "....BBBB....",
+    "....B..B...."
+  ],
+  pokemon3: [ // 草绿带叶（草系）
+    "......GG....",
+    "....GGGGGG..",
+    "...GGGGGGGG.",
+    "...GEEGGEEG.",
+    "...GGGGGGGG.",
+    "....GGGGGG..",
+    ".....GGGG...",
+    "......GG....",
+    ".....GGG...."
+  ],
+  pokemon4: [ // 绿虫（草虫系）
+    ".....G.......",
+    "....GG.......",
+    "...GGGG......",
+    "...GEEG......",
+    "....GG.......",
+    "...GGG.......",
+    "..GGG.GG.....",
+    "..G.....G...."
+  ],
+  pokemon5: [ // 粉色兔
+    "....RRR.....",
+    "...RRRRR....",
+    "..RRRRRRR...",
+    "..RERRERR...",
+    "..RRRRRRR...",
+    "...RRRRR....",
+    "...RR.RR....",
+    "..RR...RR...",
+    "..R.....R..."
+  ],
+  pokemon6: [ // 蓝色小鸟
+    "...BBB....",
+    "..BBBBB...",
+    "..BEEBB...",
+    "..BBBBB...",
+    "...BBB....",
+    ".B..B..B..",
+    ".BB.BB.BB.",
+    "..B...B..."
+  ],
+  cat: [ // 橘猫
+    "..OO.....OO..",
+    "..O.......O...",
+    ".OO.......OO..",
+    ".OOO.....OOO..",
+    "..OOOOOOOOO...",
+    "...OOOOOOOO...",
+    "....OO.OO.....",
+    "....O...O.....",
+    "...O.....O...."
+  ],
+  bird: [ // 天上飞鸟
+    "..W...W..",
+    "..W.W.W..",
+    "...WWW...",
+    "..........",
+    "..W...W..",
+    "..W.W.W..",
+    "...WWW..."
+  ],
+  butterfly: [ // 蝴蝶
+    ".P...P.",
+    "..P.P..",
+    "...P...",
+    "..P.P..",
+    ".P...P."
+  ]
+};
+
+/* 装饰角色数组 —— 行为状态机：idle / walk / chat / hop / follow / flee / fly */
+let passers = [];
+let passerSeq = 0;
+function createPasserHit(p) {
+  if (p.kind === 'bird') return null;
+  const hit = document.createElement('div');
+  hit.className = 'agent-hit passer-hit';
+  hit.innerHTML = '<div class="ab"></div><div class="at"></div><div class="heart">💗</div>';
+  hit.addEventListener('click', (e) => { e.stopPropagation(); interactPasser(p); });
+  agentsLayer.appendChild(hit);
+  p.hit = hit;
+  hit.style.left = ((p.cx) / W * 100) + '%';
+  hit.style.top = ((p.cy - 14) / H * 100) + '%';
+  return hit;
+}
+function spawnPassers() {
+  if (passers.length) for (const p of passers) if (p.hit) p.hit.remove();
+  passers = [];
+  const humans = [
+    { kind: 'human', type: 'adult', name: '木匠阿良', speed: 26 },
+    { kind: 'human', type: 'adult', name: '花匠小满', speed: 24 },
+    { kind: 'human', type: 'adult', name: '铁匠大锤', speed: 23 },
+    { kind: 'human', type: 'adult', name: '渔夫老黄', speed: 27 },
+    { kind: 'human', type: 'adult', name: '药师小铃', speed: 25 },
+    { kind: 'human', type: 'child', name: '豆豆', speed: 30 },
+    { kind: 'human', type: 'child', name: '米粒', speed: 28 }
+  ];
+  const spirits = [
+    { kind: 'pokemon', type: 'pokemon1', name: '皮皮' },
+    { kind: 'pokemon', type: 'pokemon2', name: '水灵' },
+    { kind: 'pokemon', type: 'pokemon3', name: '草芽' },
+    { kind: 'pokemon', type: 'pokemon4', name: '虫虫' },
+    { kind: 'pokemon', type: 'pokemon5', name: '雪球' },
+    { kind: 'pokemon', type: 'pokemon6', name: '啾啾' },
+    { kind: 'pokemon', type: 'cat', name: '橘猫' }
+  ];
+  const make = (base) => {
+    const p = Object.assign({}, base);
+    const start = nearestWalkable(100 + Math.random() * 760, 60 + Math.random() * 420);
+    p.cx = start.x; p.cy = start.y; p.tx = start.x; p.ty = start.y;
+    p.path = []; p.frame = 0; p.state = 'idle'; p.stateT = 1 + Math.random() * 2; p.dir = 1;
+    p.hopT = 0; p.chatWith = null;
+    p.clothesColor = VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)];
+    p.hairColor = ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)];
+    p.speed = base.speed || 26;
+    p.hit = null;
+    p.lastX = start.x; p.lastY = start.y; p.stallT = 0; p.seq = passerSeq++;
+    return p;
+  };
+  for (const h of humans) passers.push(make(h));
+  for (const s of spirits) passers.push(make(s));
+  for (let i = 0; i < 3; i++) passers.push({ kind: 'bird', type: 'bird', name: '小鸟', cx: -20, cy: 10 + i * 12, tx: 0, ty: 0, path: [], frame: i, state: 'fly', stateT: 0, dir: 1, speed: 50, hit: null });
+  for (const p of passers) createPasserHit(p);
+}
+function pickTownPoint() {
+  for (let i = 0; i < 40; i++) {
+    const x = 30 + Math.random() * (W - 60), y = 40 + Math.random() * (H - 70);
+    if (isWalkPx(x, y)) return { x, y };
+  }
+  return { x: W / 2, y: H / 2 };
+}
+function moveAlongPath(e, dt, speed) {
+  if (!e.path || !e.path.length) { e.moving = false; return; }
+  const wp = e.path[0];
+  const dx = wp.x - e.cx, dy = wp.y - e.cy, dist = Math.hypot(dx, dy);
+  if (dist < 3) { e.cx = wp.x; e.cy = wp.y; e.path.shift(); e.moving = false; return; }
+  const step = speed * dt;
+  e.cx += (dx / dist) * step; e.cy += (dy / dist) * step;
+  e.moving = true; e.dir = dx >= 0 ? 1 : -1; e.frame += dt * 8;
+}
+/* 动态分离：地面角色（路人/小精灵/agent）双向推开，不与附近其他单位重叠，且不挤进建筑 */
+function separateGround(e) {
+  const crowd = [];
+  for (const q of passers) if (q !== e && q.kind !== 'bird') crowd.push(q);
+  for (const a of agents.values()) if (a !== e) crowd.push(a);
+  for (const q of crowd) {
+    const dx = e.cx - q.cx, dy = e.cy - q.cy, d = Math.hypot(dx, dy);
+    if (d > 0 && d < 14) {
+      const f = (14 - d) * 0.5;
+      const ux = dx / d, uy = dy / d;
+      let ex = e.cx + ux * f, ey = e.cy + uy * f;
+      let qx = q.cx - ux * f, qy = q.cy - uy * f;
+      if (!isWalkPx(ex, ey)) { ex = e.cx + ux * f * 0.5; ey = e.cy + uy * f * 0.5; }
+      if (!isWalkPx(qx, qy)) { qx = q.cx - ux * f * 0.5; qy = q.cy - uy * f * 0.5; }
+      if (isWalkPx(ex, ey)) { e.cx = ex; e.cy = ey; }
+      if (isWalkPx(qx, qy)) { q.cx = qx; q.cy = qy; }
+    }
+  }
+}
+
+function updatePassers(dt) {
+  for (const p of passers) {
+    if (p.kind === 'bird') {
+      p.frame += dt * 6;
+      if (p.dir === 1) { p.cx += p.speed * dt; if (p.cx > W + 20) { p.cx = -20; p.cy = 8 + Math.random() * 30; p.dir = -1; } }
+      else { p.cx -= p.speed * dt; if (p.cx < -20) { p.cx = W + 20; p.cy = 8 + Math.random() * 30; p.dir = 1; } }
+      p.cy = Math.max(4, Math.min(42, p.cy + Math.sin(p.frame * 2) * dt * 3));
+      continue;
+    }
+    if (p.kind === 'human') {
+      p.stateT -= dt;
+      if (p.state === 'walk' && (!p.path || !p.path.length)) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      if (p.state === 'walk') {
+        moveAlongPath(p, dt, p.speed);
+        if (!p.path || !p.path.length) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      } else if (p.state === 'idle' && p.stateT <= 0) {
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) { p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y; }
+        else p.stateT = 1 + Math.random() * 2;
+      } else if (p.state === 'idle') {
+        const other = passers.find(q => q !== p && q.kind === 'human' && q.state === 'idle' && Math.hypot(q.cx - p.cx, q.cy - p.cy) < 20);
+        if (other && Math.random() < dt * 0.25) { p.state = 'chat'; p.stateT = 1.6 + Math.random() * 1.2; p.chatWith = other; other.state = 'chat'; other.stateT = p.stateT; other.chatWith = p; }
+      } else if (p.state === 'chat') { if (p.stateT <= 0) { p.state = 'idle'; p.stateT = 1 + Math.random() * 2; if (p.chatWith) { p.chatWith.chatWith = null; p.chatWith.state = 'idle'; p.chatWith.stateT = 1 + Math.random() * 2; p.chatWith = null; } } }
+      else if (p.state === 'wave') { if (p.stateT <= 0) p.state = 'idle'; }
+    } else if (p.kind === 'pokemon') {
+      if (p.state === 'sparkle') { p.stateT -= dt; p.hopT -= dt; if (p.stateT <= 0) p.state = 'idle'; continue; }
+      p.stateT -= dt;
+      // 优先跟随人类/真实 agent，避免小精灵互相追成一团；空闲超时后改为独立随机游走
+      let near = null, nearD = 70;
+      for (const q of passers) if (q !== p && q.kind === 'human') {
+        const d = Math.hypot(q.cx - p.cx, q.cy - p.cy);
+        if (d < nearD) { near = q; nearD = d; }
+      }
+      for (const a of agents.values()) {
+        const d = Math.hypot(a.cx - p.cx, a.cy - p.cy);
+        if (d < nearD) { near = a; nearD = d; }
+      }
+      if (p.state === 'follow' && !near) { p.state = 'idle'; p.stateT = 0.5 + Math.random() * 1.5; }
+      // 跟随停止距离带抖动：多只小精灵不再叠在同一点
+      const stopDist = 18 + (p.seq % 12);
+      if (near && p.state !== 'walk') {
+        const dx = near.cx - p.cx, dy = near.cy - p.cy, dist = Math.hypot(dx, dy);
+        if (dist > stopDist) {
+          const step = Math.min(p.speed * 2, dist) * dt;
+          p.cx += (dx / dist) * step; p.cy += (dy / dist) * step;
+          p.frame += dt * 6; p.dir = dx >= 0 ? 1 : -1; p.state = 'follow';
+        } else { p.state = 'idle'; p.frame += dt * 4; }
+      }
+      if (p.state === 'walk') {
+        moveAlongPath(p, dt, p.speed);
+        if (!p.path || !p.path.length) { p.state = 'idle'; p.stateT = 1.5 + Math.random() * 3; }
+      } else if (p.state === 'idle' && p.stateT <= 0) {
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) { p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y; }
+        else p.stateT = 1 + Math.random() * 2;
+      } else if (p.state === 'hop') {
+        p.hopT -= dt;
+        if (p.hopT <= 0) { p.state = 'idle'; p.stateT = 0.5 + Math.random() * 1.5; }
+      }
+    }
+    if (p.kind !== 'bird') {
+      // 卡住兜底：非聊天/挥手/闪烁状态下长时间几乎不动 → 重新随机游走，避免聚集后无法散开
+      const moved = Math.hypot(p.cx - p.lastX, p.cy - p.lastY);
+      if (moved < 1 && p.state !== 'chat' && p.state !== 'wave' && p.state !== 'sparkle') {
+        p.stallT += dt;
+      } else {
+        p.stallT = 0;
+      }
+      p.lastX = p.cx; p.lastY = p.cy;
+      if (p.stallT > 5) {
+        p.stallT = 0;
+        const target = pickTownPoint();
+        p.path = findPath(p.cx, p.cy, target.x, target.y);
+        if (p.path && p.path.length) {
+          p.state = 'walk'; p.stateT = 4 + Math.random() * 5; p.tx = target.x; p.ty = target.y;
+        } else {
+          p.state = 'idle'; p.stateT = 1 + Math.random() * 2;
+        }
+      }
+      separateGround(p);
+    }
+  }
+}
+function drawPasser(b, p, pal) {
+  if (p.kind === 'bird') {
+    const frame = Math.floor(p.frame) % 2;
+    const rows = PASSER_SPRITE.bird;
+    const colors = { W: 0xffe0e0e0 };
+    spr(b, rows, Math.round(p.cx - 4), Math.round(p.cy - 3 + frame), colors);
+    return;
+  }
+  const x = Math.round(p.cx), y = Math.round(p.cy);
+  let rows, colors;
+  if (p.kind === 'human') {
+    const stand = p.type + '_stand', w1 = p.type + '_walk1', w2 = p.type + '_walk2';
+    const isWalk = p.state === 'walk';
+    const frame = Math.floor(p.frame) % 2;
+    rows = isWalk ? (frame ? PASSER_SPRITE[w1] : PASSER_SPRITE[w2]) : PASSER_SPRITE[stand];
+    colors = { R: shade(p.clothesColor, pal.bright, pal.nightF, pal.duskF), H: shade(p.hairColor, pal.bright, pal.nightF, pal.duskF), F: shade('#f2c6a0', pal.bright, pal.nightF, pal.duskF), E: 0xff20242b, S: shade(p.clothesColor, pal.bright, pal.nightF, pal.duskF), T: shade('#2f3a4a', pal.bright, pal.nightF, pal.duskF), B: shade('#20242b', pal.bright, pal.nightF, pal.duskF), A: shade('#20242b', pal.bright, pal.nightF, pal.duskF) };
+    drawShadow(b, p.cx - 6, p.cy, 12, 3, pal, 0.2);
+    const lift = p.state === 'wave' ? (Math.sin(performance.now() / 80) > 0 ? -2 : 0) : (p.state === 'chat' ? 1 : 0);
+    spr(b, rows, x - 9, y - rows.length + 1 + lift, colors, p.dir < 0);
+    if (p.state === 'chat' || p.state === 'wave') { if (p.hit) { const bb = p.hit.querySelector('.ab'); if (bb) bb.textContent = p.state === 'chat' ? '💬 ' + (p.chatWith ? p.chatWith.name : '你好') + '！' : '👋 你好！'; } }
+  } else if (p.kind === 'pokemon') {
+    rows = PASSER_SPRITE[p.type];
+    colors = p.type === 'pokemon1' ? { Y: 0xfff0d050, E: 0xff20242b, R: 0xffc04040 }
+      : p.type === 'pokemon2' ? { B: 0xff58a0e8, E: 0xff20242b }
+      : p.type === 'pokemon3' ? { G: 0xff58c058, E: 0xff20242b }
+      : p.type === 'pokemon4' ? { G: 0xff88c050, E: 0xff20242b }
+      : p.type === 'pokemon5' ? { R: 0xffe0a0a0, E: 0xff20242b }
+      : p.type === 'pokemon6' ? { B: 0xff70a8e0, E: 0xff20242b }
+      : { O: 0xffd08050, E: 0xff20242b };
+    drawShadow(b, p.cx - 4, p.cy, 8, 3, pal, 0.2);
+    const hop = p.state === 'hop' || p.state === 'sparkle' ? -Math.max(0, p.hopT || 0.4) * 5 : 0;
+    spr(b, rows, x - 5, y - rows.length + 1 + hop, colors, p.dir < 0);
+    if (p.state === 'sparkle') { px(b, x + 4, y - 12, 0xfffff0a0); px(b, x - 6, y - 9, 0xfffff0a0); px(b, x, y - 16, 0xfffff0a0); }
+  }
+  if (p.hit) {
+    const tag = p.hit.querySelector('.at');
+    if (tag) tag.textContent = p.name || '';
+    const bb = p.hit.querySelector('.ab');
+    if (bb && p.state !== 'chat' && p.state !== 'wave') bb.textContent = '';
+  }
+}
+function interactPasser(p) {
+  if (p.kind === 'bird') return;
+  if (p.kind === 'human') { p.state = 'wave'; p.stateT = 1.2; p.path = []; }
+  else if (p.kind === 'pokemon') { p.state = 'sparkle'; p.stateT = 0.9; p.hopT = 0.5; p.path = []; }
+  if (p.hit) {
+    const h = p.hit.querySelector('.heart');
+    if (h) { h.classList.remove('show'); void h.offsetWidth; h.classList.add('show'); }
+  }
+  showToast('✨ 与 ' + (p.name || '小精灵') + ' 互动');
+}
+function updateAgent(a, dt) {
+  a.working = a.data.status !== 'idle' && a.key !== 'idle';
+  if (a.working && !a.assigned) {
+    const pos = STATION_POS[a.key] || STATION_POS.working || { x: W / 2, y: H / 2 };
+    a.tx = pos.x; a.ty = pos.y;
+    a.path = findPath(a.cx, a.cy, a.tx, a.ty);
+    a.assigned = true; a.state = 'toWork';
+    if (!a.path || !a.path.length) a.state = 'working';
+  }
+  if (a.working && a.assigned) {
+    if (a.state !== 'working' && a.path && a.path.length) {
+      moveAlongPath(a, dt, 30);
+      if (!a.path.length) { a.state = 'working'; a.moving = false; a.cx = a.tx; a.cy = a.ty; }
+    } else {
+      a.state = 'working'; a.moving = false;
+    }
+  } else {
+    a.assigned = false;
+    a.path = [];
+    a.stateT -= dt;
+    if (a.state === 'toWork' || a.state === 'working') { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
+    if (a.state === 'idle' && a.stateT <= 0) {
+      const target = pickTownPoint();
+      a.path = findPath(a.cx, a.cy, target.x, target.y);
+      if (a.path && a.path.length) { a.state = 'walk'; a.stateT = 5 + Math.random() * 4; a.tx = target.x; a.ty = target.y; }
+      else a.stateT = 1 + Math.random() * 2;
+    } else if (a.state === 'walk') {
+      if (a.path && a.path.length) moveAlongPath(a, dt, 26);
+      else { a.state = 'idle'; a.stateT = 1.5 + Math.random() * 3; }
+    }
+  }
+  // 卡住兜底：空闲 agent 长时间几乎不动 → 重新随机游走
+  if (!a.working) {
+    const moved = Math.hypot(a.cx - a.lastX, a.cy - a.lastY);
+    if (moved < 1) a.stallT += dt; else a.stallT = 0;
+    a.lastX = a.cx; a.lastY = a.cy;
+    if (a.stallT > 5) {
+      a.stallT = 0;
+      const target = pickTownPoint();
+      a.path = findPath(a.cx, a.cy, target.x, target.y);
+      if (a.path && a.path.length) { a.state = 'walk'; a.stateT = 5 + Math.random() * 4; a.tx = target.x; a.ty = target.y; }
+      else { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
+    }
+  }
+  separateGround(a);
+}
+function drawNPC(b, a, pal) {
+  const meta = STAGE[a.key] || STAGE.working;
+  const x = a.cx | 0, y = a.cy | 0;
+  const moving = a.state === 'walk' || a.state === 'toWork';
+  const frame = (a.frame | 0) % 2;
+  const pose = a.cheering ? 'cheer' : (moving ? (frame ? 'walk1' : 'walk2') : 'stand');
+  const hatKey = 'hat' + (a.hatStyle || 0);
+  const rows = (NPC[pose] && NPC[pose][hatKey]) || NPC.stand.hat0;
+  const flip = a.dir < 0;
+  const shirt = a.working ? shade(meta.color, pal.bright, pal.nightF, pal.duskF) : shade((a.palette || VILLAGER_PALETTES[0]), pal.bright, pal.nightF, pal.duskF);
+  const hat = shade((a.hatColor || '#e85d3a'), pal.bright, pal.nightF, pal.duskF);
+  const hair = shade((a.hairColor || '#5a3a26'), pal.bright, pal.nightF, pal.duskF);
+  const face = shade('#f2c6a0', pal.bright, pal.nightF, pal.duskF);
+  const pants = shade((a.pantsColor || '#2f3a4a'), pal.bright, pal.nightF, pal.duskF);
+  const shoe = shade((a.shoeColor || '#20242b'), pal.bright, pal.nightF, pal.duskF);
+  drawShadow(b, x - 9, y - 1, 18, 3, pal, 0.2);
+  const cl = { R: hat, H: hair, F: face, E: 0xff20242b, S: shirt, T: pants, B: shoe, A: shade('#20242b', pal.bright, pal.nightF, pal.duskF), N: shade((a.scarfColor || '#e85d3a'), pal.bright, pal.nightF, pal.duskF) };
+  spr(b, rows, x - 9, y - 25, cl, flip);
+  if (a.working && !moving && !reducedMotion) {
+    const bob = Math.sin(performance.now() / 120) > 0 ? 1 : 0;
+    if (bob) spr(b, rows, x - 9, y - 26, cl, flip);
+  }
+  a.footY = y;
+}
+/* ---------- 粒子 ---------- */
+let particles = [];
+let lastSeasonKey = '';
+function buildParticles(season) {
+  particles = [];
+  const n = 30;
+  for (let i = 0; i < n; i++) {
+    particles.push({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .3, vy: 0.3 + Math.random() * .5, tw: Math.random() * Math.PI * 2, type: season.particle });
+  }
+  lastSeasonKey = season.name;
+}
+function drawParticles(b, pal, season, now) {
+  if (reducedMotion) return;
+  if (lastSeasonKey !== season.name) buildParticles(season);
+  const t = now / 1000;
+  for (const p of particles) {
+    p.y += p.vy; p.x += p.vx;
+    if (p.y > H + 4) { p.y = -4; p.x = Math.random() * W; }
+    if (p.x < -4) p.x = W + 4; if (p.x > W + 4) p.x = -4;
+    switch (p.type) {
+      case 'petal': { const a = 0.7 + 0.3 * Math.sin(t * 3 + p.tw); rect(b, p.x, p.y, 2, 1, 0xfff48fb0); break; }
+      case 'rain': { rect(b, p.x, p.y, 1, 3, 0xff9fd8ef); break; }
+      case 'leaf': { rect(b, p.x, p.y, 2, 1, 0xffe8a828); break; }
+      case 'snow': { px(b, p.x, p.y, 0xffffffff); break; }
+      default: { const a = 0.25 + 0.2 * Math.sin(t * 2 + p.tw); px(b, p.x, p.y, 0xfffff4b4); }
+    }
+  }
+}
+
+let lastT = 0;
+function phaseName(min) {
+  if (min < 330 || min >= 1170) return '深夜';
+  if (min < 450) return '清晨';
+  if (min < 1050) return '白天';
+  if (min < 1170) return '黄昏';
+  return '夜晚';
+}
+function updateHeader(pal) {
+  const el = $('#period');
+  if (el) el.textContent = phaseName(pal.min) + ' · ' + pal.season.name + '季';
+  const sunEl = $('#sun');
+  if (sunEl) {
+    const deg = Math.round((pal.sunAz * 180 / Math.PI) - 90);
+    sunEl.textContent = '☀ ' + deg + '°';
+  }
+}
+function tick(now) {
+  const dt = Math.min(0.05, (now - lastT) / 1000 || 0.016);
+  lastT = now;
+  curPal = palNow(now);
+  const b = makeBuf();
+  drawScene(b, curPal);
+  drawStations(b, curPal);
+  for (const a of agents.values()) {
+    updateAgent(a, dt);
+    drawNPC(b, a, curPal);
+  }
+  updatePassers(dt);
+  for (const p of passers) drawPasser(b, p, curPal);
+  drawParticles(b, curPal, curPal.season, now);
+  drawRain(b, curPal, now);
+  const img = ctx.createImageData(W, H);
+  const out = img.data;
+  for (let i = 0; i < W * H; i++) {
+    const v = b[i];
+    out[i * 4] = (v >> 16) & 255;
+    out[i * 4 + 1] = (v >> 8) & 255;
+    out[i * 4 + 2] = v & 255;
+    out[i * 4 + 3] = (v >>> 24) & 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  syncOverlay();
+  updateHeader(curPal);
+  $('#season').textContent = curPal.season.emoji + curPal.season.name;
+  requestAnimationFrame(tick);
+}
+/* ---------- 覆盖层 ---------- */
+function ensureHit(a) {
+  if (a.hit) return;
+  const hit = document.createElement('div');
+  hit.className = 'agent-hit';
+  hit.innerHTML = '<div class="ab"></div><div class="at"></div><div class="heart">💗</div>';
+  hit.addEventListener('click', () => showDetail(a.sid));
+  agentsLayer.appendChild(hit);
+  a.hit = hit;
+}
+function syncOverlay() {
+  for (const a of agents.values()) {
+    ensureHit(a);
+    const meta = STAGE[a.key] || STAGE.working;
+    a.hit.style.left = ((a.cx) / W * 100) + '%';
+    a.hit.style.top = ((a.cy - 16) / H * 100) + '%';
+    const bubble = a.hit.querySelector('.ab');
+    const tag = a.hit.querySelector('.at');
+    if (bubble) bubble.textContent = meta.bubble + ' ' + meta.symbol;
+    if (tag) tag.textContent = (a.data.status === 'idle' ? '☕ ' : '') + (agentName(a) || meta.label).slice(0, 22);
+    a.hit.title = (agentRootInfo(a) ? '[' + agentRootInfo(a).task + '] ' : '') + agentName(a) + ' · ' + meta.label;
+  }
+  for (const p of passers) {
+    if (!p.hit) continue;
+    p.hit.style.left = ((p.cx) / W * 100) + '%';
+    p.hit.style.top = ((p.cy - 14) / H * 100) + '%';
+    const tag = p.hit.querySelector('.at');
+    if (tag) tag.textContent = p.name || '';
+  }
+}
+function removeAgent(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  if (a.hit) a.hit.remove();
+  agents.delete(sid);
+  lastStage.delete(sid);
+  if (selectedId === sid) closeDetail();
+}
+
+/* ---------- 轮询 ---------- */
+async function poll() {
+  try {
+    const resp = await fetch('/agents');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    finishedCount = parseInt(resp.headers.get('x-agents-finished') || '0', 10) || 0;
+    const list = await resp.json();
+    agentsConnected = true;
+    updateEmpty();
+    const seen = new Set();
+    for (const d of Array.isArray(list) ? list : []) {
+      seen.add(d.sessionId);
+      const key = stageKey(d);
+      let a = agents.get(d.sessionId);
+      if (!a) {
+        const pos = STATION_POS[key] || STATION_POS.working;
+        a = { sid: d.sessionId, data: d, key, cx: 480, cy: 300, tx: 480, ty: 300, frame: 0, moving: false, working: false, cheering: false, hit: null, roamT: 0, assigned: false, lastX: 480, lastY: 300, stallT: 0, palette: VILLAGER_PALETTES[Math.floor(Math.random() * VILLAGER_PALETTES.length)], state: 'idle', stateT: 0, dir: 1, hatStyle: Math.floor(Math.random() * 3), scarfColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hatColor: ['#e85d3a', '#4a8ee8', '#58b858', '#f0c858', '#d06ad0', '#e07050', '#70c8e0', '#d080c0'][Math.floor(Math.random() * 8)], hairColor: ['#5a3a26', '#2a2a3a', '#e0a050', '#000000', '#6a3a50'][Math.floor(Math.random() * 5)], pantsColor: ['#2f3a4a', '#4a3a5a', '#3a5a3a', '#5a3a3a', '#3a3a6a'][Math.floor(Math.random() * 5)], shoeColor: ['#20242b', '#402020', '#204020', '#202040'][Math.floor(Math.random() * 4)] };
+        agents.set(d.sessionId, a);
+        lastStage.set(d.sessionId, key);
+        logEvent('👋', d, '进入小镇');
+      } else {
+        a.data = d;
+        const prev = lastStage.get(d.sessionId);
+        if (prev !== key) { lastStage.set(d.sessionId, key); if (prev) logEvent('🔀', d, STAGE[prev]?.label + ' → ' + STAGE[key].label); a.assigned = false; }
+        a.key = key;
+      }
+    }
+    for (const sid of Array.from(agents.keys())) if (!seen.has(sid)) removeAgent(sid);
+    $('#count').textContent = String(agents.size);
+    $('#finished').textContent = String(finishedCount);
+    renderRoster();
+  } catch (e) {
+    agentsConnected = false;
+    updateEmpty();
+  }
+}
+
+/* ---------- KB 预检索小图（/kb-stats） ---------- */
+function renderKBStats(s) {
+  const el = $('#kbStats');
+  if (!s || !s.totals) { el.innerHTML = '<div class="empty">暂无统计</div>'; return; }
+  const t = s.totals;
+  const total = t.hits + t.misses;
+  const ratio = total > 0 ? Math.round(t.hits / total * 100) : 0;
+  const counts = t.hist.counts;
+  const max = Math.max.apply(null, counts);
+  const bars = counts.map((c, i) => {
+    const h = c > 0 ? Math.max(3, Math.round(c / max * 30)) : 2;
+    return '<div class="kb-bar' + (c > 0 ? '' : ' dim') + '" style="height:' + h + 'px" title="' + t.hist.boundaries[i] + 'ms: ' + c + '">' +
+      (c > 0 ? '<span class="v">' + c + '</span>' : '') + '</div>';
+  }).join('');
+  const labels = t.hist.boundaries.map((b, i) => '<span title="' + b + 'ms">' + (i === 0 ? '&lt;' + t.hist.boundaries[1] : i === t.hist.boundaries.length - 1 ? '&gt;=' + b : b) + '</span>').join('');
+  el.innerHTML =
+    '<div class="kb-summary"><span>命中 <b>' + t.hits + '</b>/' + total + '</span><span>命中率 <b>' + ratio + '%</b></span><span>均耗 <b>' + t.avgMs + 'ms</b></span><span>检索 <b>' + t.searches + '</b>次</span></div>' +
+    '<div class="kb-bars">' + bars + '</div>' +
+    '<div class="kb-x">' + labels + '</div>' +
+    '<div class="kb-note">累计' + (s.restored ? '（已恢复上次数据）' : '') + ' · 跨重启持久化 · 单位 ms · 命中=缓存命中 · 空/失败不计入命中</div>';
+}
+async function pollKBStats() {
+  try {
+    const resp = await fetch('/kb-stats');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    renderKBStats(await resp.json());
+  } catch (e) {
+    const el = $('#kbStats');
+    if (el && el.querySelector('.empty')) el.innerHTML = '<div class="empty">agent-server 无 /kb-stats</div>';
+  }
+}
+
+/* ---------- 名单 / 详情 / 交互 ---------- */
+function renderRoster() {
+  const items = Array.from(agents.values()).sort((a, b) => a.key.localeCompare(b.key));
+  if (!items.length) { rosterEl.innerHTML = '<div class="empty">暂无 agent</div>'; return; }
+  rosterEl.innerHTML = items.map((a) => {
+    const meta = STAGE[a.key] || STAGE.working;
+    const root = agentRootInfo(a);
+    const ownTask = String(a.data.task || '').split('\n')[0].trim();
+    const task = root ? root.task : (ownTask || '未知任务');
+    const proj = root && root.project ? root.project : (a.data.project || '');
+    return '<div class="roster-item" onclick="showDetail(\'' + esc(a.sid) + '\')">' +
+      '<div class="ava">' + meta.emoji + '</div>' +
+      '<div class="info"><div class="name"><span class="dot" style="background:' + meta.color + '"></span>' + esc(agentName(a)) + (a.data.delegationDepth ? '<span class="rel">#' + a.data.delegationDepth + '</span>' : '') + '</div>' +
+      '<div class="task">' + esc(task) + (proj ? ' · ' + esc(proj) : '') + '</div>' +
+      '<div class="meta">' + esc(meta.label) + ' · ' + esc(a.data.status === 'idle' ? '休息中' : '工作中') + ' · ' + esc(fmtElapsed(a.data.elapsed)) + '</div></div></div>';
+  }).join('');
+}
+function logEvent(icon, data, text) {
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const div = document.createElement('div');
+  div.className = 'log-item';
+  div.innerHTML = '<span class="time">' + time + '</span>' + icon + ' <b>' + esc(shortSession(data.sessionId)) + '</b> ' + esc(text);
+  logEl.prepend(div);
+  while (logEl.children.length > 30) logEl.lastChild.remove();
+  if (logEl.querySelector('.empty')) logEl.querySelector('.empty').remove();
+}
+function updateEmpty() {
+  if (agents.size > 0) { emptyEl.style.display = 'none'; return; }
+  emptyEl.style.display = '';
+  emptyEl.textContent = agentsConnected ? '🌆 小镇空闲 — 等待 agent 上工…' : '📡 Agent server 未连接，请确认 dsh-agent-server 正在运行';
+}
+function showToast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800); }
+function showDetail(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  selectedId = sid;
+  const meta = STAGE[a.key] || STAGE.working;
+  const task = String(a.data.task || '').split('\n')[0] || '未知任务';
+  const root = agentRootInfo(a);
+  const parentName = agentParentName(a);
+  $('#dAva').textContent = meta.emoji;
+  $('#dTitle').textContent = (agentName(a) || meta.label) + ' · ' + meta.label;
+  $('#dSub').textContent = a.data.sessionId || '';
+  const bname = meta.building || '—';
+  const occ = meta.occupation || meta.label;
+  const zone = meta.zone || '—';
+  const ownerTask = root ? root.task + (root.project ? ' · ' + root.project : '') : '';
+  $('#dKv').innerHTML =
+    '<dt>名称</dt><dd>' + esc(agentName(a)) + '</dd>' +
+    '<dt>阶段</dt><dd>' + esc(meta.label) + ' ' + meta.emoji + ' ' + esc(a.data.phase || '') + '</dd>' +
+    '<dt>归属任务</dt><dd>' + esc(ownerTask || task) + '</dd>' +
+    (a.data.delegationDepth ? '<dt>层级</dt><dd>子会话 #' + a.data.delegationDepth + '</dd>' : '<dt>层级</dt><dd>主会话</dd>') +
+    (a.data.parentSessionId ? '<dt>上级</dt><dd>' + esc(parentName || a.data.parentSessionId) + '</dd>' : '') +
+    '<dt>职业</dt><dd>' + esc(occ) + '</dd>' +
+    '<dt>工位</dt><dd>' + esc(bname) + '</dd>' +
+    '<dt>分区</dt><dd>' + esc(zone) + '</dd>' +
+    '<dt>项目</dt><dd>' + esc(root && root.project ? root.project : (a.data.project || '—')) + '</dd>' +
+    (a.data.model ? '<dt>模型</dt><dd>' + esc(a.data.model) + '</dd>' : '') +
+    '<dt>状态</dt><dd>' + esc(a.data.status === 'idle' ? '休息' : '工作中') + '</dd>' +
+    '<dt>动作</dt><dd>' + esc(a.state === 'working' ? '正在工位' : (a.state === 'toWork' ? '前往工位' : (a.state === 'walk' ? '小镇游走' : '空闲'))) + '</dd>' +
+    '<dt>时长</dt><dd>' + esc(fmtElapsed(a.data.elapsed)) + '</dd>';
+  $('#detail').classList.add('show');
+}
+function closeDetail() { selectedId = null; $('#detail').classList.remove('show'); }
+function cheer(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  a.cheering = true; setTimeout(() => { a.cheering = false; }, 900);
+  if (a.hit) { const h = a.hit.querySelector('.heart'); if (h) { h.classList.remove('show'); void h.offsetWidth; h.classList.add('show'); } }
+  showToast('💗 已给 ' + shortSession(sid) + ' 加油！');
+}
+function locate(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  closeDetail();
+  if (a.hit) { a.hit.style.transition = 'none'; a.hit.style.left = (a.cx / W * 100) + '%'; a.hit.style.top = ((a.cy - 16) / H * 100) + '%'; void a.hit.offsetWidth; }
+}
+/* ---------- 问答（/agent/chat，KB-first + 项目上下文自动注入） ---------- */
+const CHAT_DEFAULT_PROVIDER = ''; // 面板不再内置 provider/model——由用户填写
+const CHAT_DEFAULT_MODEL = '';
+let chatState = new Map(); // sid -> { sessionId, provider, model, msgs: [] }
+let chatCurrentSid = null;
+
+function appendChatMsg(st, who, text) {
+  st.msgs.push({ who, text });
+  const body = $('#cBody');
+  if (body.querySelector('.empty')) body.querySelector('.empty').remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + who;
+  div.textContent = text;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+function openChat(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  chatCurrentSid = sid;
+  let st = chatState.get(sid);
+  if (!st) {
+    st = { sessionId: '', provider: CHAT_DEFAULT_PROVIDER, model: CHAT_DEFAULT_MODEL, msgs: [] };
+    chatState.set(sid, st);
+  }
+  const task = String(a.data.task || '').split('\n')[0] || '';
+  $('#cSub').textContent = (a.data.project ? a.data.project + ' · ' : '') + (task || shortSession(sid)) + (st.sessionId ? '（多轮）' : '（新会话）');
+  $('#cProvider').value = st.provider;
+  $('#cModel').value = st.model;
+  $('#cBody').innerHTML = st.msgs.length
+    ? ''
+    : '<div class="empty">向该 agent 发起提问。首问会自动注入<b>项目上下文</b>与<b>全局知识库预检索</b>。</div>';
+  for (const m of st.msgs) appendChatMsg(st, m.who, m.text);
+  $('#chat').classList.remove('hidden');
+  $('#cInput').focus();
+}
+function closeChat() {
+  $('#chat').classList.add('hidden');
+  $('#cSending').classList.remove('show');
+  chatCurrentSid = null;
+}
+function chatBusy() { return $('#cSending').classList.contains('show'); }
+async function sendChat() {
+  if (chatBusy() || !chatCurrentSid) return;
+  const a = agents.get(chatCurrentSid);
+  if (!a) return;
+  const st = chatState.get(chatCurrentSid);
+  const text = $('#cInput').value.trim();
+  if (!text) return;
+  st.provider = $('#cProvider').value.trim();
+  st.model = $('#cModel').value.trim();
+  if (!st.provider || !st.model) { appendChatMsg(st, 'system', '请先填写 provider 与 model（面板不内置默认路由）'); return; }
+  $('#cInput').value = '';
+  appendChatMsg(st, 'user', text);
+  $('#cSending').classList.add('show');
+  try {
+    // 首条（新会话）带 kbQuery（任务标题）+ project；多轮复用 sessionId。
+    const body = {
+      message: text,
+      provider: st.provider,
+      model: st.model,
+      reasoningEffort: 'medium',
+      sessionId: st.sessionId || undefined,
+      project: a.data.project || undefined,
+      kbQuery: st.sessionId ? undefined : (String(a.data.task || '').split('\n')[0] || undefined)
+    };
+    const resp = await fetch('/agent/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => '');
+      throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : ''));
+    }
+    const out = await resp.json();
+    if (out.sessionId) st.sessionId = out.sessionId;
+    appendChatMsg(st, 'ai', out.text || '(无回复)');
+    if (out.error) appendChatMsg(st, 'err', '⚠️ ' + out.error);
+    $('#cSub').textContent = (a.data.project ? a.data.project + ' · ' : '') + (String(a.data.task || '').split('\n')[0] || shortSession(chatCurrentSid)) + '（多轮）';
+  } catch (e) {
+    appendChatMsg(st, 'err', '❌ 发送失败：' + e.message + '（确认 dsh-agent-server 运行中）');
+  }
+  $('#cSending').classList.remove('show');
+  chatState.set(chatCurrentSid, st);
+}
+function grill(sid) { openChat(sid); }
+
+function clock() { $('#clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+function toggleNight() { nightMode = !nightMode; $('#nightBtn').textContent = nightMode ? '☀️ 昼' : '🌙 夜'; }
+function toggleRain() { rainMode = !rainMode; $('#rainBtn').textContent = rainMode ? '☀️ 晴' : '🌧️ 雨'; }
+
+/* ---------- 全屏 ---------- */
+function toggleFullscreen() { const t = $('#town'); if (document.fullscreenElement) { document.exitFullscreen(); return; } if (t && t.requestFullscreen) t.requestFullscreen(); }
+
+/* ---------- 初始化 ---------- */
+buildParticles(SEASONS[0]);
+spawnPassers();
+clock();
+setInterval(clock, 1000);
+poll();
+setInterval(poll, POLL_MS);
+pollKBStats();
+setInterval(pollKBStats, 30000);
+requestAnimationFrame(tick);
+
+$('#nightBtn').addEventListener('click', toggleNight);
+$('#rainBtn').addEventListener('click', toggleRain);
+$('#fullscreenBtn').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', () => { $('#fullscreenBtn').textContent = document.fullscreenElement ? '✕' : '⛶'; });
+$('#dCheer').addEventListener('click', () => { if (selectedId) cheer(selectedId); });
+$('#dGrill').addEventListener('click', () => { if (selectedId) grill(selectedId); });
+$('#dLocate').addEventListener('click', () => { if (selectedId) locate(selectedId); });
+$('#dClose').addEventListener('click', closeDetail);
+$('#cClose').addEventListener('click', closeChat);
+$('#cSend').addEventListener('click', sendChat);
+$('#cInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('#chat').classList.contains('hidden')) closeChat(); else closeDetail(); } });
+</script>
+</body>
+</html>

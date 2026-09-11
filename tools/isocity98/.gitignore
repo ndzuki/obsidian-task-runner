@@ -1,0 +1,9 @@
+# 构建产物与本地缓存
+build/
+# 游戏的可直接运行资产（由 make assets 生成，4MB；面板那份已内联进 agent-monitor.html）
+web/assets/
+.cache/
+.chrome/
+
+# 无头浏览器临时 profile
+node_modules/

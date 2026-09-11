@@ -1,0 +1,1404 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 空白 favicon：避免浏览器请求 /favicon.ico 产生 404（会污染验证日志） -->
+<link rel="icon" href="data:,">
+<title>Agent Town · 等距预渲染像素小镇</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115; --panel: #161a22; --panel-2: #1c212b; --border: #262c37;
+    --text: #e5e9f0; --dim: #8b94a3; --accent: #5eead4; --green: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+
+  header {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px;
+    padding: 10px 18px; background: rgba(20,24,32,.92);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: .05em; font-size: 16px; }
+  .brand .logo { font-size: 20px; }
+  .brand .sub { color: var(--dim); font-size: 12px; font-weight: 400; margin-left: 4px; }
+  .envbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .envbar label { display: flex; align-items: center; gap: 4px; color: var(--dim); font-size: 12px; }
+  .envbar select {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 7px; padding: 3px 6px; font-size: 12px; cursor: pointer;
+  }
+  .envbar select:focus { outline: none; border-color: var(--accent); }
+  .iconbtn { background: var(--panel); border: 1px solid var(--border); color: var(--dim); border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; }
+  .iconbtn:hover { color: var(--text); border-color: var(--accent); }
+  .iconbtn.on { color: #0b1f1a; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+  .stats { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .stat { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 4px 10px; color: var(--dim); font-size: 12px; }
+  .stat b { color: var(--text); }
+  .stat.live b { color: var(--green); }
+  .stat.api { font-family: ui-monospace, monospace; font-size: 11px; }
+  .legend { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: rgba(16,20,28,.8); }
+  .legend span { color: var(--dim); font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; background: #121722; }
+  .legend b { color: var(--text); }
+
+  .layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 14px; padding: 14px 16px 28px; max-width: 1680px; margin: 0 auto; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+  .town-panel { background: #12151d; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 16px 44px rgba(0,0,0,.5); position: relative; }
+  /* 等距地图是 16:9；保持比例显示并用 pixelated 放大，避免拉伸糊掉像素 */
+  .town { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #0a0f16; }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; }
+  #fullscreenBtn { position: absolute; top: 12px; right: 14px; z-index: 20; background: rgba(12,16,24,.85); color: #fff; border: 1px solid #3a4358; border-radius: 6px; padding: 3px 10px; font-size: 13px; cursor: pointer; }
+  #fullscreenBtn:hover { border-color: var(--accent); color: var(--accent); }
+  #empty { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgba(12,16,24,.9); border: 1px solid #3a4358; color: var(--dim); border-radius: 999px; padding: 6px 16px; z-index: 8; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+  /* 悬停默认居民时的轻量提示（真实 agent 用下面的 .agent-hit 气泡） */
+  #hint { position: absolute; z-index: 9; pointer-events: none; transform: translate(-50%,-100%); white-space: nowrap;
+          background: #10131a; border: 1px solid #39435a; color: #e5e9f0; padding: 3px 7px; font-size: 11px;
+          border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,.4); opacity: 0; transition: opacity .15s; }
+  #hint.show { opacity: 1; }
+
+  .agent-hit { position: absolute; transform: translate(-50%,-100%); pointer-events: none; z-index: 5; width: 26px; height: 32px; }
+  .agent-hit .ab { position: absolute; left: 50%; bottom: 42px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #e5e9f0; padding: 3px 7px; font-size: 11px; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,.4); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .agent-hit .at { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); white-space: nowrap; background: #10131a; border: 1px solid #39435a; color: #9bbc0f; padding: 1px 6px; font-size: 10px; border-radius: 4px; pointer-events: none; font-family: ui-monospace, monospace; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  .agent-hit .heart { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); font-size: 16px; opacity: 0; pointer-events: none; }
+  .agent-hit .heart.show { animation: heartUp 1s ease-out forwards; }
+  @keyframes heartUp { 0% { opacity: 0; transform: translate(-50%,0) scale(.6); } 20% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-46px) scale(1.4); } }
+  .agent-hit.visible .ab { opacity: 1; }
+  .agent-hit:hover .ab { opacity: 1; }
+
+  .side { display: flex; flex-direction: column; gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  .panel h3 { margin: 0 0 8px; font-size: 12px; color: var(--dim); letter-spacing: .06em; }
+  .roster { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+  .roster-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  .roster-item:hover { border-color: var(--accent); }
+  .roster-item .ava { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; font-size: 15px; }
+  .roster-item .info { min-width: 0; flex: 1; }
+  .roster-item .name { font-size: 12px; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
+  .roster-item .rel { background: #334155; color: #cbd5e1; border-radius: 4px; padding: 0 4px; font-size: 9px; line-height: 14px; font-family: ui-monospace, monospace; flex: none; }
+  .roster-item .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .roster-item .task { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .roster-item .meta { color: var(--dim); font-size: 10px; margin-top: 2px; }
+  .empty { color: var(--dim); text-align: center; padding: 18px 8px; font-size: 12px; }
+  .log { display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow-y: auto; }
+  .log-item { font-size: 11px; color: var(--dim); border-left: 3px solid #3a4358; padding: 1px 0 1px 8px; }
+  .log-item b { color: var(--text); }
+  .log-item .time { color: #5b6b85; font-size: 9px; margin-right: 6px; }
+
+  #detail { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-46%) scale(.96); opacity: 0; pointer-events: none; width: min(400px, calc(100vw - 32px)); background: #12151d; border: 1px solid #3a4358; border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,.7); z-index: 80; padding: 16px; transition: opacity .2s, transform .2s; }
+  #detail.show { opacity: 1; pointer-events: auto; transform: translate(-50%,-50%) scale(1); }
+  #detail .d-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  #detail .d-ava { width: 42px; height: 42px; border-radius: 8px; display: grid; place-items: center; font-size: 22px; background: var(--panel-2); border: 1px solid var(--border); }
+  #detail .d-title { font-weight: 800; font-size: 15px; }
+  #detail .d-sub { color: var(--dim); font-size: 11px; word-break: break-all; }
+  #detail .d-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .btn { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: #2e6b4f; border-color: #3e8f6a; color: #fff; }
+  .btn.close { margin-left: auto; }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; font-size: 12px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; color: var(--text); word-break: break-word; }
+
+  /* KB 预检索小图（/kb-stats） */
+  .kb-summary { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+  .kb-summary b { color: var(--text); }
+  .kb-bars { display: flex; gap: 2px; align-items: flex-end; height: 36px; }
+  .kb-bar { flex: 1; min-width: 0; background: #2e6b4f; border-radius: 2px 2px 0 0; position: relative; }
+  .kb-bar.dim { background: #1d2733; }
+  .kb-bar .v { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-size: 9px; color: var(--dim); white-space: nowrap; }
+  .kb-bar:hover { background: var(--accent); }
+  .kb-x { display: flex; gap: 2px; font-size: 8px; color: #5b6b85; margin-top: 2px; }
+  .kb-x span { flex: 1; text-align: center; overflow: hidden; }
+  .kb-note { font-size: 10px; color: #5b6b85; margin-top: 4px; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(16px); background: #12151d; border: 1px solid var(--accent); color: var(--text); padding: 6px 16px; border-radius: 999px; font-size: 12px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 90; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 问答弹窗（接入 agent-server /agent/chat，KB-first + 项目上下文自动注入） */
+  #chat { position: fixed; right: 20px; bottom: 20px; width: min(560px, calc(100vw - 32px)); height: min(540px, calc(100vh - 32px)); background: #12151d; border: 1px solid #3a4358; border-radius: 14px; display: flex; flex-direction: column; z-index: 85; box-shadow: 0 18px 60px rgba(0,0,0,.7); overflow: hidden; }
+  #chat.hidden { display: none; }
+  .c-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .c-title { font-weight: 800; font-size: 14px; white-space: nowrap; }
+  .c-sub { color: var(--dim); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .c-body { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 86%; padding: 6px 10px; border-radius: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+  .msg.user { align-self: flex-end; background: #2e6b4f; color: #fff; }
+  .msg.ai { align-self: flex-start; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .msg.err { align-self: flex-start; background: #3a2020; color: #fca5a5; border: 1px solid #5b3030; }
+  .c-config { display: flex; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  .c-config input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 8px; font-size: 11px; }
+  .c-config input:focus { outline: none; border-color: var(--accent); }
+  .c-input-row { display: flex; gap: 8px; padding: 0 12px 10px; }
+  .c-input-row input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .c-input-row input:focus { outline: none; border-color: var(--accent); }
+  .c-status { padding: 0 14px 8px; color: var(--dim); font-size: 11px; min-height: 16px; }
+  #cSending { display: none; }
+  #cSending.show { display: inline; }
+  .c-hint { color: var(--dim); font-size: 10px; padding: 0 12px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">🏘️</span>AGENT TOWN <span class="sub">等距预渲染小镇 · 实时工作流</span></div>
+  <div class="envbar">
+    <label>季 <select id="selSeason" title="季节（改变会重算色板重映射）"></select></label>
+    <label>时段 <select id="selTod" title="时段（夜晚使用烘焙的 #n 夜间档）"></select></label>
+    <label>天气 <select id="selWeather" title="天气（色板重映射 + 粒子）"></select></label>
+    <button class="iconbtn on" id="autoBtn" title="自动推进：季节/时段跟随真实时间，天气跟随季节">⏩ 自动</button>
+    <button class="iconbtn" id="nightBtn" title="昼夜快捷开关">🌙 夜</button>
+    <button class="iconbtn" id="rainBtn" title="雨天快捷开关">🌧️ 雨</button>
+  </div>
+  <div class="stats">
+    <span class="stat">季 <b id="season">春</b></span>
+    <span class="stat">日期 <b id="date">--</b></span>
+    <span class="stat">时 <b id="clock">--:--</b></span>
+    <span class="stat">段 <b id="period">—</b></span>
+    <span class="stat live">活跃 <b id="count">0</b></span>
+    <span class="stat">完工 <b id="finished">0</b></span>
+    <span class="stat api" id="apiInfo" style="display:none"></span>
+  </div>
+</header>
+<div class="legend" id="legend"></div>
+<main class="layout">
+  <section class="town-panel">
+    <div class="town" id="town">
+      <canvas id="townCanvas" width="960" height="540"></canvas>
+      <button id="fullscreenBtn" title="全屏观看小镇">⛶</button>
+      <div id="hint"></div>
+      <div id="empty">🌆 小镇空闲 — 等待 agent 上工…</div>
+    </div>
+  </section>
+  <aside class="side">
+    <div class="panel"><h3>🧑‍🤝‍🧑 在镇居民</h3><div class="roster" id="roster"><div class="empty">暂无 agent</div></div></div>
+    <div class="panel"><h3>📊 KB 预检索</h3><div id="kbStats"><div class="empty">等待数据…</div></div></div>
+    <div class="panel"><h3>📡 小镇动态</h3><div class="log" id="log"><div class="empty">等待第一条动态…</div></div></div>
+  </aside>
+</main>
+
+<div id="detail">
+  <div class="d-head"><div class="d-ava" id="dAva">🤖</div><div><div class="d-title" id="dTitle">Agent</div><div class="d-sub" id="dSub">session</div></div></div>
+  <dl class="kv" id="dKv"></dl>
+  <div class="d-actions">
+    <button class="btn primary" id="dCheer">💗 加油</button>
+    <button class="btn" id="dGrill">💬 问答</button>
+    <button class="btn" id="dLocate">📍 定位</button>
+    <button class="btn close" id="dClose">关闭</button>
+  </div>
+</div>
+
+<div id="chat" class="hidden">
+  <div class="c-head">
+    <div class="c-title">💬 问答</div>
+    <div class="c-sub" id="cSub">选择居民发起提问</div>
+    <button class="btn close" id="cClose">关闭</button>
+  </div>
+  <div class="c-body" id="cBody">
+    <div class="empty">向该 agent 发起提问。首问会自动注入<b>项目上下文</b>（CONTEXT/ADR/规范）与<b>全局知识库预检索</b>，命中即引用、未命中才自行推理。</div>
+  </div>
+  <div class="c-config">
+    <input id="cProvider" placeholder="provider" title="模型供应商（改后作用于新会话）">
+    <input id="cModel" placeholder="model" title="模型名（改后作用于新会话）">
+  </div>
+  <div class="c-input-row">
+    <input id="cInput" placeholder="输入你的问题…（Enter 发送）" autocomplete="off">
+    <button class="btn primary" id="cSend">发送</button>
+  </div>
+  <div class="c-status"><span id="cSending">⏳ 思考中…</span></div>
+  <div class="c-hint">provider/model 需在输入框填写；同一 agent 的会话自动延续（多轮上下文），新会话才重新预检索。</div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+ * Agent Town · 等距预渲染版
+ *
+ * 与旧版（agent-monitor-classic.html，俯视逐像素程序化绘制）的唯一区别是
+ * 「画布怎么画」：本版把 Go 离线管线烘焙好的等距精灵图贴到 Canvas2D 上，
+ * 数据层与交互层（/agents、/kb-stats、/agent/chat、STAGE 表、详情、
+ * roster、加油/定位/问答、空态、全屏）逐条保留。
+ *
+ * 资源全部 base64/JSON 内联，仍是「单文件、零外部请求」。
+ *
+ * 分区：
+ *   0. 资源解码        1. 调色板与重映射      2. 场景静态层（画家算法）
+ *   3. 寻路 A*         4. 居民 / agent 状态机 5. 天气粒子
+ *   6. 渲染主循环      7. 拾取与覆盖层        8. 环境（季节/时段/天气）
+ *   9. API 轮询        10. UI 绑定（roster/log/detail/chat/toast）
+ * ========================================================================== */
+
+/* ─────────────────────────── 0. 资源（构建时内联） ─────────────────────────── */
+const ATLAS_B64 = "@@ATLAS_B64@@";
+const SPRITES = @@SPRITES_JSON@@;   // sprites.json：1880 项精简精灵表
+const TOWN = @@TOWN_JSON@@;         // town.json：布局 + 97 色板 + 80 张查表
+
+/* 画布与等距投影常量：与 Go 侧 sheet.Cam 完全一致
+ *   project(x,y,z) = (OX + (x-y)*TW/2, OY + (x+y)*TH/2 - z*TZ)
+ * 30x30 格在 1x 下宽 (30+30)*16=960、高 (30+30)*8=480，南北角正好铺满画布。 */
+const W = 960, H = 540;
+const TW = 32, TH = 16, TZ = 8;       // tile 宽/高/每级高度像素
+const OX = W / 2 + TW / 2;            // 496：格 (0,0) 北角在画布上的 x
+const OY = H - 30 * TH;               //  60：南角落在画布底部
+const GW = TOWN.w, GH = TOWN.h;       // 30 x 30
+const MAXH = 1;                       // town.json 里陆地高度恒为 1、水面为 -1
+
+const POLL_MS = 2000;
+const KB_POLL_MS = 30000;
+const DAY_MS = 600000;                // 一个虚拟「天」= 10 分钟
+const SEASON_DAYS = 8;                // 8 天一个季节
+const TIME_OFFSET = (7.5 / 24) * DAY_MS;
+
+/* 相邻格中心在屏幕上的距离 = hypot(TW/2, TH/2) ≈ 17.9px。
+ * 需求要求「速度约 30 逻辑像素/秒」，换算成格/秒。 */
+const SPEED_TILES = 30 / Math.hypot(TW / 2, TH / 2);
+
+const SEASON_KEYS = ['spring', 'summer', 'autumn', 'winter'];
+const SEASON_LABEL = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
+const TOD_KEYS = ['dawn', 'day', 'dusk', 'night'];
+const TOD_LABEL = { dawn: '清晨', day: '白天', dusk: '黄昏', night: '夜晚' };
+const WEATHER_KEYS = ['clear', 'rain', 'snow', 'fog', 'petals'];
+const WEATHER_LABEL = { clear: '晴', rain: '雨', snow: '雪', fog: '雾', petals: '花信风' };
+/* 天气跟季节走（气候而非开关），与 Go 侧 seasonWeather() 一致 */
+const SEASON_WEATHER = { spring: 'petals', summer: 'rain', autumn: 'fog', winter: 'snow' };
+
+/* STAGE 表：21 个阶段元数据（原样搬运自旧面板，交互/文案契约不变） */
+const STAGE = {
+  refining:      { label: '需求精炼', occupation: '需求精炼师', building: '需求精炼坊', zone: '北文职区', color: '#a78bfa', emoji: '📖', icon: '📖', symbol: '📚', action: '研读需求', bubble: '提炼需求…' },
+  planning:      { label: '方案规划', occupation: '规划设计师', building: '规划院', zone: '北文职区', color: '#38bdf8', emoji: '🧭', icon: '🧭', symbol: '🗺️', action: '绘制路线', bubble: '推演方案…' },
+  'plan-review': { label: '计划评审', occupation: '评审官', building: '评审厅', zone: '北文职区', color: '#facc15', emoji: '⚖️', icon: '⚖️', symbol: '⚖️', action: '核对计划', bubble: '查漏洞…' },
+  implementing:  { label: '实现建造', occupation: '开发工程师', building: '开发工厂', zone: '东工业区', color: '#3b82f6', emoji: '🏭', icon: '🏭', symbol: '🔨', action: '敲码建造', bubble: '动手实现…' },
+  review:        { label: '验收检查', occupation: '验收工程师', building: '验收场', zone: '东工业区', color: '#4ade80', emoji: '🎯', icon: '🎯', symbol: '🛡️', action: '逐条验收', bubble: '核对 AC…' },
+  merge:         { label: '合并交付', occupation: '发布工程师', building: '合并发布站', zone: '东工业区', color: '#06b6d4', emoji: '🛰️', icon: '🛰️', symbol: '🔀', action: '合并发布', bubble: '打包发布…' },
+  audit:         { label: '独立审计', occupation: '审计师', building: '审计塔', zone: '西知识区', color: '#fb923c', emoji: '🔍', icon: '🔍', symbol: '📜', action: '独立复核', bubble: '独立复核…' },
+  priority:      { label: '优先级', occupation: '优先级评估师', building: '优先级塔', zone: '北文职区', color: '#f87171', emoji: '🚩', icon: '🚩', symbol: '🚩', action: '排定优先级', bubble: '该先做…' },
+  pm:            { label: '统筹问答', occupation: '统筹 PM', building: '统筹议事厅', zone: '中央广场', color: '#f472b6', emoji: '🏛️', icon: '🏛️', symbol: '🗣️', action: '访谈统筹', bubble: '聊聊决策…' },
+  design:        { label: '设计蓝图', occupation: '架构设计师', building: '设计工坊', zone: '北文职区', color: '#c084fc', emoji: '🎨', icon: '🎨', symbol: '📐', action: '绘制蓝图', bubble: '画架构…' },
+  split:         { label: '任务拆分', occupation: '任务拆分师', building: '拆分工作台', zone: '东北区', color: '#14b8a6', emoji: '🧩', icon: '🧩', symbol: '🧩', action: '拆分任务', bubble: '拆小块…' },
+  conflict:      { label: '冲突处理', occupation: '仲裁员', building: '仲裁庭', zone: '东工业区', color: '#f43f5e', emoji: '⚔️', icon: '⚔️', symbol: '🛠️', action: '解决冲突', bubble: '要仲裁…' },
+  blocked:       { label: '阻塞等待', occupation: '阻塞等待者', building: '阻塞等待亭', zone: '中央广场', color: '#ef4444', emoji: '🚧', icon: '🚧', symbol: '⛔', action: '等待解除', bubble: '卡住了…' },
+  'needs-grilling': { label: '待访谈', occupation: '待访谈者', building: '访谈茶馆', zone: '南自然区', color: '#facc15', emoji: '💬', icon: '💬', symbol: '❓', action: '等待访谈', bubble: '不清楚…' },
+  done:          { label: '已完成', occupation: '交付庆祝者', building: '凯旋广场', zone: '中央广场', color: '#84cc16', emoji: '🏆', icon: '🏆', symbol: '✅', action: '交付庆祝', bubble: '完成！' },
+  closed:        { label: '已关闭', occupation: '归档管理员', building: '归档小馆', zone: '西知识区', color: '#64748b', emoji: '🗄️', icon: '🗄️', symbol: '🔒', action: '归档封存', bubble: '已归档…' },
+  ready:         { label: '待命出发', occupation: '待命者', building: '待命驿站', zone: '中央广场', color: '#94a3b8', emoji: '⏳', icon: '⏳', symbol: '🕐', action: '等待派发', bubble: '随时出发…' },
+  conventions:   { label: '规范审查', occupation: '规范审查员', building: '规范文书房', zone: '北文职区', color: '#34d399', emoji: '📏', icon: '📏', symbol: '📏', action: '检查规范', bubble: '对规范…' },
+  knowledge:     { label: '知识归档', occupation: '知识管理员', building: '知识树馆', zone: '西知识区', color: '#60a5fa', emoji: '🌳', icon: '🌳', symbol: '📚', action: '提炼知识', bubble: '沉淀知识…' },
+  idle:          { label: '休息', occupation: '休息居民', building: '休息草坪', zone: '南自然区', color: '#64748b', emoji: '🍃', icon: '🍃', symbol: '☕', action: '恢复体力', bubble: '休息中…' },
+  working:       { label: '工作中', occupation: '综合工作者', building: '综合工位', zone: '中央广场', color: '#94a3b8', emoji: '⚙️', icon: '⚙️', symbol: '⚙️', action: '执行中', bubble: '忙碌中…' }
+};
+
+/* ─────────────────────────────── 通用小工具 ─────────────────────────────── */
+const $ = (s) => document.querySelector(s);
+const canvas = $('#townCanvas');
+const ctx = canvas.getContext('2d');
+const agentsLayer = $('#town');
+const rosterEl = $('#roster');
+const logEl = $('#log');
+const emptyEl = $('#empty');
+const hintEl = $('#hint');
+
+const reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+const QS = new URLSearchParams(location.search);
+/* API 地址可配置：?api=http://host:port 覆盖，默认同源相对路径 */
+const API_BASE = (QS.get('api') || '').replace(/\/+$/, '');
+const api = (p) => API_BASE + p;
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function hexRGB(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
+function shortSession(sid) { if (!sid) return 'agent'; if (sid.startsWith('session-')) return sid.slice(8, 14); return sid.slice(0, 6); }
+function fmtElapsed(sec) { sec = Number(sec || 0); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; return h > 0 ? h + 'h' + m + 'm' : (m > 0 ? m + 'm' + s + 's' : s + 's'); }
+
+/* 8x8 有序抖动矩阵（与 Go 侧 art.Bayer8 一致）：天空渐变用 */
+const BAYER8 = new Uint8Array([
+  0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26,
+  12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22,
+  3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25,
+  15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+]);
+function bayer(x, y) { return (BAYER8[((y & 7) << 3) | (x & 7)] + 0.5) / 64 - 0.5; }
+
+/* ─────────────────────────── 1. 调色板与重映射 ─────────────────────────── */
+const PALETTE = TOWN.palette.map(c => [c.r, c.g, c.b]);
+const RGB2IDX = new Map();   // packedRGB -> 色板下标（精确或最近色），跨环境复用
+
+/* 最近色：与 isocity98 web 端 palette.js 同一套加权度量（2,4,3）。
+ * 图集里有约 20% 像素是有序抖动混出的中间色（不在 97 色板里），
+ * 必须走最近色回退，否则夜晚重映射会留下一片没被改色的亮噪点。 */
+function nearestPalIdx(r, g, b) {
+  r = clamp(Math.round(r), 0, 255); g = clamp(Math.round(g), 0, 255); b = clamp(Math.round(b), 0, 255);
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < PALETTE.length; i++) {
+    const c = PALETTE[i];
+    const dr = r - c[0], dg = g - c[1], db = b - c[2];
+    const d = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+function palIdxOf(r, g, b) {
+  const k = (r << 16) | (g << 8) | b;
+  let idx = RGB2IDX.get(k);
+  if (idx === undefined) { idx = nearestPalIdx(r, g, b); RGB2IDX.set(k, idx); }
+  return idx;
+}
+function b64ToU8(b64) { const bin = atob(b64); const n = bin.length; const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return u; }
+
+/* 图集离线画布：原始像素只取一次，之后每次换档只做「查表 + 写回」 */
+let atlasImg = null;                     // 原始 ImageBitmap/Image
+let baseData = null;                     // 原始 RGBA（只读）
+let stageCanvas = null, stageCtx = null, stageImgData = null;  // 重着色后的图集
+let atlasW = 0, atlasH = 0;
+
+async function loadAtlas() {
+  const bytes = b64ToU8(ATLAS_B64);
+  const blob = new Blob([bytes], { type: 'image/png' });
+  const url = URL.createObjectURL(blob);
+  let img;
+  try {
+    if (window.createImageBitmap) img = await createImageBitmap(blob);
+    else img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('atlas decode failed')); im.src = url; });
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 0); }
+  atlasImg = img;
+  atlasW = SPRITES.sheets[0][0]; atlasH = SPRITES.sheets[0][1];
+  const src = document.createElement('canvas'); src.width = atlasW; src.height = atlasH;
+  const sx = src.getContext('2d', { willReadFrequently: true });
+  sx.drawImage(img, 0, 0);
+  baseData = sx.getImageData(0, 0, atlasW, atlasH).data;
+  stageCanvas = document.createElement('canvas'); stageCanvas.width = atlasW; stageCanvas.height = atlasH;
+  stageCtx = stageCanvas.getContext('2d');
+  stageImgData = stageCtx.createImageData(atlasW, atlasH);
+}
+
+/* 把整张图集过一遍色板重映射（LUT: 97 字节，旧色板下标 -> 新色板下标）。
+ * 透明像素保持透明；半透明像素（阴影）保留 alpha 只改 RGB。
+ * 调用一次约 20~60ms，只在切换季节/时段/天气时发生，主循环里只贴图。 */
+function recolorAtlas(lut) {
+  const d = baseData, o = stageImgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    if (a === 0) continue;                       // 透明：保持（ImageData 初值即 0）
+    const idx = palIdxOf(d[i], d[i + 1], d[i + 2]);
+    const c = PALETTE[lut[idx]];
+    o[i] = c[0]; o[i + 1] = c[1]; o[i + 2] = c[2]; o[i + 3] = a;
+  }
+  stageCtx.putImageData(stageImgData, 0, 0);
+}
+
+/* 天空：复刻 Go 侧 sheet.Sky（天空色阶 + 有序抖动），再走同一张 LUT，
+ * 保证天光与小镇一起换季/换时段/换天气。 */
+const SKY_RAMP = ['#3f5f80', '#5c7f9e', '#7ba0bb', '#9dc0d4', '#c2dbe8'].map(hexRGB);
+let skyCanvas = null;
+function lerpRamp(ramp, pos) {
+  const n = ramp.length, f = clamp(pos, 0, 1) * (n - 1);
+  const i = Math.min(n - 2, Math.floor(f)), t = f - i;
+  const a = ramp[i], b = ramp[i + 1];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+function buildSky(lut) {
+  if (!skyCanvas) { skyCanvas = document.createElement('canvas'); skyCanvas.width = W; skyCanvas.height = H; }
+  const c = skyCanvas.getContext('2d');
+  const img = c.createImageData(W, H), o = img.data;
+  for (let y = 0; y < H; y++) {
+    const t = y / (H - 1);
+    const pos = t > 0.62 ? 0.16 * (1 - (t - 0.62) / 0.38) : 0.16 + (0.62 - t) / 0.62 * 0.78;
+    const col = lerpRamp(SKY_RAMP, pos);
+    for (let x = 0; x < W; x++) {
+      const thr = bayer(x, y) * 46;              // 与 Go 端 QuantizeAmp(...,46) 同幅度
+      const idx = palIdxOf(col[0] + thr, col[1] + thr, col[2] + thr);
+      const cc = PALETTE[lut[idx]];
+      const i = (y * W + x) * 4;
+      o[i] = cc[0]; o[i + 1] = cc[1]; o[i + 2] = cc[2]; o[i + 3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 0);
+}
+
+/* ───────────────── 2. 精灵取名 / 静态层（画家算法） ───────────────── */
+/* 精灵有三套命名规则（Go 侧导出契约）：
+ *   建筑/道具  base_变体号    at.pm -> at.pm_0 / _1 / _2
+ *   角色       base_f帧号     npc.pm -> npc.pm_f0 … f15（帧号 = 方向*4 + 步态）
+ *   季节资产   base_季节_摇摆帧 at.tree.oak -> at.tree.oak_winter_1
+ *   另外 at.snow -> at.snow_<季节>，只有冬季存在，取不到就跳过。
+ * 统一回退：先试精确名，再试 _0 / _f0 / _<季节>_0，最后试原型名。 */
+const SEASONAL_SHAPE = new Set(['at.tree.oak', 'at.tree.pine', 'at.bush', 'at.flower', 'at.water']);
+const has = (n) => !!(n && SPRITES.sprites[n]);
+/* 取名失败记录：at.snow 只有冬季存在，其余季节取不到是设计如此，不算缺图 */
+const MISSING = new Set();
+
+function pickSprite(base, opt) {
+  opt = opt || {};
+  const cands = [];
+  if (base === 'at.snow') {
+    cands.push('at.snow_' + opt.season, 'at.snow');
+  } else if (SEASONAL_SHAPE.has(base)) {
+    const sway = opt.sway | 0;
+    cands.push(base + '_' + opt.season + '_' + sway, base + '_' + opt.season + '_0', base + '_0', base);
+  } else if (opt.frame != null) {
+    cands.push(base + '_f' + opt.frame, base + '_f0', base);
+  } else {
+    const v = opt.variant | 0;
+    cands.push(base + '_' + v, base + '_0', base);
+    if (v !== 0) cands.push(base + '_1', base + '_2');
+  }
+  for (let i = 0; i < cands.length; i++) if (has(cands[i])) return cands[i];
+  if (base !== 'at.snow') MISSING.add(base);   // at.snow 非冬季缺席是设计如此
+  return null;
+}
+/* 取绘制矩形：夜晚用烘焙的 #n 夜间档（窗户自发光），其余时段用日间档。
+ * #n 条目只换图集坐标，宽高与锚点与日间档相同。 */
+function rectOf(name) {
+  const s = SPRITES.sprites[name];
+  if (!s) return null;
+  let x = s.r[1], y = s.r[2];
+  if (env.tod === 'night') { const n = SPRITES.sprites[name + '#n']; if (n) { x = n.r[1]; y = n.r[2]; } }
+  return { x: x, y: y, w: s.wh[0], h: s.wh[1], ax: s.ax, ay: s.ay };
+}
+
+const CLIFF = ['cliff.soil.e', 'cliff.soil.s', 'cliff.soil.w', 'cliff.soil.n'];
+const heightAt = (x, y) => (x >= 0 && y >= 0 && x < GW && y < GH) ? TOWN.height[y * GW + x] : -1;
+
+let STATIC = null;   // 按深度分桶的静态绘制指令：STATIC.byD[d] = [{x,y,w,h,dx,dy}]
+function buildStatic() {
+  const season = env.season;
+  const byD = []; for (let d = 0; d <= GW + GH; d++) byD.push([]);
+  const push = (d, name, x, y, z) => {
+    if (!name) return;
+    const r = rectOf(name); if (!r) return;
+    byD[d].push({
+      x: r.x, y: r.y, w: r.w, h: r.h,
+      dx: Math.round(OX + (x - y) * (TW / 2) - r.ax),
+      dy: Math.round(OY + (x + y) * (TH / 2) - z * TZ - r.ay),
+    });
+  };
+  // 单体按「占地东南角」入桶，与 Go 侧一致
+  const objsByD = [];
+  for (let d = 0; d <= GW + GH; d++) objsByD.push([]);
+  for (const o of STATIC_OBJ) {
+    const d = o.x + o.fw - 1 + o.y + o.fh - 1;
+    if (d >= 0 && d < objsByD.length) objsByD[d].push(o);
+  }
+  for (let d = 0; d <= GW + GH - 2; d++) {
+    for (let x = 0; x < GW; x++) {
+      const y = d - x;
+      if (y < 0 || y >= GH) continue;
+      const i = y * GW + x, z = TOWN.height[i];
+      const ter = TOWN.terrainTable[TOWN.terrain[i]];
+      if (z < 0) {
+        // 水面：按季节换形（夏液态 / 冬结冰），每格固定一个摇摆帧
+        push(d, pickSprite('at.water', { season: season, sway: (x * 7 + y * 13) % 3 }) || 'terrain.water_f0', x, y, z);
+      } else {
+        push(d, pickSprite(ter, { variant: (x * 7 + y * 13) % 3 }), x, y, z);
+        // 冬季积雪：叠一层覆盖瓦片（at.snow_<季节> 只有冬季存在，其余季节取不到即跳过）
+        if (season === 'winter') push(d, pickSprite('at.snow', { season: season }), x, y, z);
+      }
+      // 侧壁：只画比邻居高的那几层
+      for (let k = 0; k < 4; k++) {
+        const nx = x + [1, 0, -1, 0][k], ny = y + [0, 1, 0, -1][k];
+        const nh = heightAt(nx, ny);
+        for (let l = 0; l < z - nh; l++) push(d, pickSprite(CLIFF[k], { variant: (x * 7 + y * 13 + l) % 2 }), x, y, z - l);
+      }
+      // 道路：掩码本身 0..15，直接做十六进制后缀（road.street.3 / road.street.d）
+      const mask = TOWN.road[i];
+      if (mask >= 0) push(d, pickSprite('road.street.' + mask.toString(16), { variant: 0 }), x, y, z);
+    }
+    for (const o of objsByD[d]) {
+      push(d, pickSprite(o.name, { season: season, sway: (o.x * 7 + o.y * 13) % 3, variant: 0 }), o.x, o.y, heightAt(o.x, o.y));
+    }
+  }
+  STATIC = { byD: byD };
+}
+
+/* ─────────────────────────────── 3. 寻路 A* ─────────────────────────────── */
+/* 可通行 = 陆地（height >= 0）且不被建筑/道具/树占用。
+ * 角色（npc./spirit./animal.）与岗位格不算障碍，否则居民会站在不可达的格子上。 */
+const WALK = new Uint8Array(GW * GH);
+const DECOR = [];        // 小精灵 / 动物：动态层，带帧动画
+const STATIC_OBJ = [];   // 建筑 / 道具 / 树：静态层，同时作为障碍
+function buildWalkGrid() {
+  for (let i = 0; i < GW * GH; i++) WALK[i] = TOWN.height[i] >= 0 ? 1 : 0;
+  for (const o of TOWN.objects) {
+    if (/^npc\./.test(o.name)) continue;                       // 岗位居民：站位可通行
+    if (/^(spirit|animal)\./.test(o.name)) { DECOR.push(o); continue; }
+    STATIC_OBJ.push(o);
+    for (let dy = 0; dy < o.fh; dy++) for (let dx = 0; dx < o.fw; dx++) {
+      const x = o.x + dx, y = o.y + dy;
+      if (x >= 0 && y >= 0 && x < GW && y < GH) WALK[y * GW + x] = 0;
+    }
+  }
+}
+function isWalk(x, y) { return x >= 0 && y >= 0 && x < GW && y < GH && WALK[y * GW + x] === 1; }
+function nearestWalkable(x, y) {
+  x = clamp(Math.round(x), 0, GW - 1); y = clamp(Math.round(y), 0, GH - 1);
+  if (isWalk(x, y)) return { x: x, y: y };
+  for (let r = 1; r < GW + GH; r++) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+      if (isWalk(x + dx, y + dy)) return { x: x + dx, y: y + dy };
+    }
+  }
+  return { x: 15, y: 15 };
+}
+/* 二进制最小堆：A* 的 open list */
+class MinHeap {
+  constructor() { this.a = []; }
+  get size() { return this.a.length; }
+  push(n) {
+    const a = this.a; a.push(n); let i = a.length - 1;
+    while (i > 0) { const p = (i - 1) >> 1; if (a[p].f <= a[i].f) break; const t = a[p]; a[p] = a[i]; a[i] = t; i = p; }
+  }
+  pop() {
+    const a = this.a, top = a[0], last = a.pop();
+    if (a.length && last !== top) {
+      a[0] = last; let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1; let m = i;
+        if (l < a.length && a[l].f < a[m].f) m = l;
+        if (r < a.length && a[r].f < a[m].f) m = r;
+        if (m === i) break;
+        const t = a[m]; a[m] = a[i]; a[i] = t; i = m;
+      }
+    }
+    return top;
+  }
+}
+const A_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+function findPath(sx, sy, tx, ty) {
+  const s = nearestWalkable(sx, sy), t = nearestWalkable(tx, ty);
+  if (s.x === t.x && s.y === t.y) return [];
+  const key = (x, y) => y * GW + x;
+  const came = new Int32Array(GW * GH).fill(-1);
+  const g = new Float64Array(GW * GH).fill(Infinity);
+  const closed = new Uint8Array(GW * GH);
+  const open = new MinHeap();
+  g[key(s.x, s.y)] = 0;
+  open.push({ x: s.x, y: s.y, k: key(s.x, s.y), f: Math.abs(t.x - s.x) + Math.abs(t.y - s.y) });
+  let iter = 0;
+  while (open.size && iter++ < 20000) {
+    const cur = open.pop();
+    if (closed[cur.k]) continue;
+    if (cur.x === t.x && cur.y === t.y) break;
+    closed[cur.k] = 1;
+    for (const dd of A_DIRS) {
+      const nx = cur.x + dd[0], ny = cur.y + dd[1];
+      if (!isWalk(nx, ny)) continue;
+      const nk = key(nx, ny);
+      if (closed[nk]) continue;
+      // 不允许贴角穿越
+      if (dd[0] !== 0 && dd[1] !== 0 && (!isWalk(cur.x + dd[0], cur.y) || !isWalk(cur.x, cur.y + dd[1]))) continue;
+      const ng = g[cur.k] + (dd[0] !== 0 && dd[1] !== 0 ? 1.414 : 1);
+      if (ng < g[nk]) {
+        came[nk] = cur.k; g[nk] = ng;
+        open.push({ x: nx, y: ny, k: nk, f: ng + Math.abs(t.x - nx) + Math.abs(t.y - ny) });
+      }
+    }
+  }
+  if (came[key(t.x, t.y)] === -1) return [];
+  const out = [];
+  let ck = key(t.x, t.y);
+  while (ck !== -1) {
+    const cx = ck % GW, cy = (ck / GW) | 0;
+    out.push({ x: cx, y: cy });
+    if (cx === s.x && cy === s.y) break;
+    ck = came[ck];
+  }
+  out.reverse();
+  return out;
+}
+
+/* ─────────────────── 4. 居民 / agent / 装饰物状态机 ─────────────────── */
+/* 21 个岗位居民默认站在各自岗位楼前（数据来自 town.json stations）。
+ * 当某个 stage 有真实 agent 上工时，该岗位的默认居民让位，由 agent 走到岗位。 */
+const STATION = TOWN.stations.map((s, i) => ({ stage: s.stage, base: s.sprite, x: s.x, y: s.y, dir: s.dir, idleFrame: s.dir * 4 + (i % 4) }));
+const STATION_BY_STAGE = new Map(STATION.map(s => [s.stage, s]));
+const stationTaken = new Map();      // stage -> 该岗位上的 agent 数
+const residents = [];                // 默认居民（渲染用）
+const decor = [];                    // 小精灵/动物（静态位置 + 帧动画）
+const agents = new Map();            // sid -> agent 运行时对象（数据契约不变）
+const lastStage = new Map();
+let finishedCount = 0;
+let selectedId = null;
+let agentsConnected = false;
+let toastTimer = null;
+
+/* 角色帧名解析缓存：base + '|' + frame -> 绘制矩形（含日/夜两档），避免每帧查字符串 */
+const FRAME_CACHE = new Map();
+function frameRect(base, frame) {
+  const k = base + '|' + frame;
+  let r = FRAME_CACHE.get(k);
+  if (r === undefined) { r = rectOf(pickSprite(base, { frame: frame })); FRAME_CACHE.set(k, r); }
+  return r;
+}
+/* #n 夜间档与日间档的图集坐标不同，换昼夜时清空帧缓存 */
+function clearFrameCache() { FRAME_CACHE.clear(); }
+
+function initResidents() {
+  for (const s of STATION) {
+    const m = STAGE[s.stage] || STAGE.working;
+    residents.push({
+      kind: 'default', stage: s.stage, base: s.base, meta: m,
+      x: s.x, y: s.y, sx: s.x, sy: s.y, dir: s.dir, frame: s.idleFrame,
+      depth: s.x + s.y,
+    });
+  }
+  for (const o of DECOR) {
+    const mm = /^(.*)_f(\d+)$/.exec(o.name);
+    const base = mm ? mm[1] : o.name;
+    const f0 = mm ? parseInt(mm[2], 10) : 0;
+    const dir = Math.floor(f0 / 4);
+    const frames = [];
+    for (let g = 0; g < 4; g++) if (has(base + '_f' + (dir * 4 + g))) frames.push(dir * 4 + g);
+    if (!frames.length) frames.push(f0);
+    decor.push({ base: base, frames: frames, f: 0, x: o.x, y: o.y, dir: dir, depth: o.x + o.y, phase: (o.x * 7 + o.y * 13) % frames.length });
+  }
+}
+
+function stageKey(a) {
+  const ts = String(a.taskStatus || '').trim();
+  const ph = String(a.phase || '').trim();
+  const map = { 'round1': 'planning', 'round2': 'implementing', 'plan_review': 'plan-review' };
+  if (ts) { if (map[ts]) return map[ts]; if (STAGE[ts]) return ts; }
+  if (ph) { if (map[ph]) return map[ph]; if (STAGE[ph]) return ph; }
+  return a.status === 'idle' ? 'idle' : 'working';
+}
+function agentName(a) {
+  const d = a && a.data || {};
+  const label = String(d.label || '').trim();
+  if (label) return label;
+  const task = String(d.task || '').split('\n')[0].trim();
+  if (task) return task.length > 26 ? task.slice(0, 26) + '…' : task;
+  return shortSession(d.sessionId);
+}
+function agentRootInfo(a) {
+  const seen = new Set();
+  let cur = a;
+  while (cur && cur.data) {
+    const d = cur.data;
+    if (d.taskId) return { sessionId: d.sessionId, taskId: d.taskId, task: String(d.task || '').split('\n')[0], project: d.project || '' };
+    const pid = d.parentSessionId;
+    if (!pid || seen.has(pid)) break;
+    seen.add(pid);
+    cur = agents.get(pid);
+  }
+  return null;
+}
+function agentParentName(a) {
+  const pid = a && a.data && a.data.parentSessionId;
+  if (!pid) return '';
+  const p = agents.get(pid);
+  return p ? agentName(p) : shortSession(pid);
+}
+
+/* 由格步长推方向：0=+X 1=+Y 2=-X 3=-Y（取屏幕位移较大的那个轴） */
+function dirOfStep(dx, dy) {
+  const sdx = (dx - dy) * (TW / 2), sdy = (dx + dy) * (TH / 2);
+  if (Math.abs(sdx) >= Math.abs(sdy)) return sdx > 0 ? 0 : 2;
+  return sdy > 0 ? 1 : 3;
+}
+/* 沿路径推进（tile 空间匀速 ≈ 30 逻辑像素/秒） */
+function followPath(e, dt) {
+  if (!e.path || !e.path.length) return false;
+  const step = SPEED_TILES * dt;
+  let remain = step;
+  while (remain > 0 && e.path.length) {
+    const n = e.path[0];
+    const ddx = n.x - e.x, ddy = n.y - e.y;
+    const dist = Math.abs(ddx) + Math.abs(ddy);   // 路径是四/八向格步，单步距离 ≤2
+    if (dist < 1e-4) { e.x = n.x; e.y = n.y; e.path.shift(); continue; }
+    e.dir = dirOfStep(ddx, ddy);
+    if (dist <= remain) { e.x = n.x; e.y = n.y; remain -= dist; e.path.shift(); }
+    else { e.x += (ddx / dist) * remain; e.y += (ddy / dist) * remain; remain = 0; }
+    e.gait += step;
+  }
+  return e.path.length === 0;
+}
+function pickTownPoint() {
+  for (let i = 0; i < 40; i++) {
+    const x = 8 + Math.floor(Math.random() * 14), y = 8 + Math.floor(Math.random() * 14);
+    if (isWalk(x, y)) return { x: x, y: y };
+  }
+  return { x: 15, y: 15 };
+}
+function updateAgent(a, dt) {
+  a.working = a.data.status !== 'idle' && a.key !== 'idle' && a.key !== 'done';
+  const st = STATION_BY_STAGE.get(a.key) || STATION_BY_STAGE.get('working');
+  if (a.working) {
+    if (!a.assigned) {
+      const target = st ? { x: st.x, y: st.y } : pickTownPoint();
+      a.path = findPath(Math.round(a.x), Math.round(a.y), target.x, target.y);
+      a.tx = target.x; a.ty = target.y;
+      a.assigned = true; a.state = 'toWork'; a.home = st;
+      if (!a.path.length) { a.state = 'working'; a.moving = false; }
+    }
+    if (a.state !== 'working') {
+      if (followPath(a, dt)) { a.state = 'working'; a.moving = false; if (a.home) a.dir = a.home.dir; }
+      else a.moving = true;
+    } else { a.moving = false; if (a.home) a.dir = a.home.dir; }
+  } else {
+    a.assigned = false; a.moving = false;
+    a.stateT -= dt;
+    if (a.state === 'toWork' || a.state === 'working') { a.state = 'idle'; a.stateT = 1 + Math.random() * 2; }
+    if (a.state === 'idle' && a.stateT <= 0) {
+      const t = pickTownPoint();
+      a.path = findPath(Math.round(a.x), Math.round(a.y), t.x, t.y);
+      if (a.path.length) { a.state = 'walk'; a.stateT = 5 + Math.random() * 4; }
+      else a.stateT = 1 + Math.random() * 2;
+    } else if (a.state === 'walk') {
+      a.moving = true;
+      if (followPath(a, dt)) { a.state = 'idle'; a.stateT = 1.5 + Math.random() * 3; a.moving = false; }
+    }
+  }
+  if (a.moving) a.gait = (a.gait || 0) + dt * 6;
+  else a.gait = 0;
+  a.frame = a.moving ? (a.dir * 4 + (Math.floor(a.gait || 0) % 4)) : (a.dir * 4);
+  a.depth = Math.floor(a.x) + Math.floor(a.y);
+}
+function agentScreen(a) {
+  const z = heightAt(Math.round(a.x), Math.round(a.y));
+  return { sx: OX + (a.x - a.y) * (TW / 2), sy: OY + (a.x + a.y) * (TH / 2) - z * TZ };
+}
+
+/* ────────────────────────────── 5. 天气粒子 ────────────────────────────── */
+/* 先重映射（改全图色温）再画粒子 —— 粒子不该被重映射改色 */
+const particles = [];
+function rebuildParticles() {
+  particles.length = 0;
+  if (reducedMotion) return;
+  const wx = env.weather;
+  const isNight = env.tod === 'night';
+  if (wx === 'rain') {
+    for (let i = 0; i < 220; i++) particles.push({ t: 'rain', x: Math.random() * (W + 200) - 100, y: Math.random() * H, s: 0.7 + Math.random() * 0.9 });
+  } else if (wx === 'snow') {
+    for (let i = 0; i < 150; i++) {
+      const big = Math.random() < 0.35;
+      particles.push({ t: big ? 'snow2' : 'snow1', x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - 0.5) * 0.25, vy: 0.25 + Math.random() * 0.4, tw: Math.random() * 6.28 });
+    }
+  } else if (wx === 'fog') {
+    for (let i = 0; i < 3; i++) particles.push({ t: 'fog', cy: 90 + i * 115, sp: 0.15 + i * 0.05, ph: Math.random() * 6.28 });
+  } else if (wx === 'petals') {
+    for (let i = 0; i < 60; i++) {
+      particles.push({ t: 'petal', x: Math.random() * W, y: Math.random() * H, vx: 0.35 + Math.random() * 0.5, vy: 0.35 + Math.random() * 0.5, tw: Math.random() * 6.28 });
+    }
+  }
+  void isNight;
+}
+function drawParticles(dt, now) {
+  if (reducedMotion || !particles.length) return;
+  const t = now / 1000;
+  for (const p of particles) {
+    if (p.t === 'rain') {
+      p.y += (7.5 + p.s * 4) * dt * 60; p.x += 2.4 * dt * 60;
+      // 越靠下越长（近大远小）
+      const len = 5 + p.s * 7 + (p.y / H) * 6;
+      if (p.y > H + 20) { p.y = -20; p.x = Math.random() * (W + 200) - 100; }
+      if (p.x > W + 40) p.x = -40;
+      ctx.strokeStyle = 'rgba(190,220,240,.55)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - len * 0.28, p.y + len); ctx.stroke();
+    } else if (p.t === 'snow1' || p.t === 'snow2') {
+      p.y += p.vy * dt * 60; p.x += (p.vx + Math.sin(t * 1.3 + p.tw) * 0.25) * dt * 60;
+      if (p.y > H) { p.y = -4; p.x = Math.random() * W; }
+      if (p.x < -4) p.x = W + 4; if (p.x > W + 4) p.x = -4;
+      ctx.fillStyle = p.t === 'snow2' ? 'rgba(255,255,255,.95)' : 'rgba(226,236,246,.7)';
+      const s = p.t === 'snow2' ? 2 : 1;
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), s, s);
+    } else if (p.t === 'fog') {
+      p.ph += dt * p.sp;
+      const cy = p.cy + Math.sin(p.ph) * 22;
+      for (let y = Math.round(cy - 52); y < cy + 52; y++) {
+        if (y < 0 || y >= H) continue;
+        const q = 1 - Math.abs(y - cy) / 52;
+        const a = (p.cy < 160 ? 0.045 : 0.03) + 0.14 * q * q;   // 中上部更浓
+        ctx.fillStyle = 'rgba(206,214,222,' + a.toFixed(3) + ')';
+        ctx.fillRect(0, y, W, 1);
+      }
+    } else if (p.t === 'petal') {
+      p.y += p.vy * dt * 60; p.x += (p.vx + Math.sin(t * 1.1 + p.tw) * 0.5) * dt * 60;
+      if (p.y > H + 4) { p.y = -4; p.x = Math.random() * W; }
+      if (p.x > W + 4) p.x = -4;
+      ctx.fillStyle = (p.tw | 0) % 2 ? 'rgba(255,220,236,.9)' : 'rgba(244,143,176,.9)';
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 1);
+    }
+  }
+}
+
+/* ───────────────────────────── 6. 渲染主循环 ───────────────────────────── */
+let lastT = 0;
+const agentsByDepth = new Map();   // depth -> [agent]
+const outImage = ctx.createImageData(W, H);
+
+function drawChar(name, fx, fy, depth, frame) {
+  const r = frameRect(name, frame);
+  if (!r) return;
+  const z = heightAt(Math.floor(fx), Math.floor(fy));
+  ctx.drawImage(stageCanvas, r.x, r.y, r.w, r.h,
+    Math.round(OX + (fx - fy) * (TW / 2) - r.ax), Math.round(OY + (fx + fy) * (TH / 2) - z * TZ - r.ay), r.w, r.h);
+  void depth;
+}
+function drawDecor(d, frame) {
+  const x = d.x, y = d.y, r = frameRect(d.base, frame);
+  if (!r) return;
+  const z = heightAt(x, y);
+  ctx.drawImage(stageCanvas, r.x, r.y, r.w, r.h,
+    Math.round(OX + (x - y) * (TW / 2) - r.ax), Math.round(OY + (x + y) * (TH / 2) - z * TZ - r.ay), r.w, r.h);
+}
+const decorByDepth = new Map();
+
+function render(now, dt) {
+  ctx.imageSmoothingEnabled = false;
+  if (skyCanvas) ctx.drawImage(skyCanvas, 0, 0);
+  else { ctx.fillStyle = '#0a0f16'; ctx.fillRect(0, 0, W, H); }
+  if (!STATIC) return;
+
+  // 动态层按深度分桶（居民 / agent / 小精灵 / 动物）
+  for (const m of agentsByDepth.values()) m.length = 0;
+  for (const a of agents.values()) {
+    if (!agentsByDepth.has(a.depth)) agentsByDepth.set(a.depth, []);
+    agentsByDepth.get(a.depth).push(a);
+  }
+  for (const m of decorByDepth.values()) m.length = 0;
+  for (const d of decor) {
+    if (!decorByDepth.has(d.depth)) decorByDepth.set(d.depth, []);
+    decorByDepth.get(d.depth).push(d);
+  }
+  const taken = new Set();
+  for (const a of agents.values()) if (a.working && a.home) taken.add(a.home.stage);
+
+  const maxD = GW + GH;
+  for (let d = 0; d <= maxD; d++) {
+    const ops = STATIC.byD[d];
+    if (ops) for (let i = 0; i < ops.length; i++) {
+      const o = ops[i];
+      ctx.drawImage(stageCanvas, o.x, o.y, o.w, o.h, o.dx, o.dy, o.w, o.h);
+    }
+    const dec = decorByDepth.get(d);
+    if (dec) for (const dd of dec) {
+      const f = dd.frames[(Math.floor(now / 180) + dd.phase) % dd.frames.length];
+      drawDecor(dd, f);
+    }
+    // 默认居民：岗位被 agent 占用时让位（「默认站在岗位楼前」）
+    for (const r of residents) {
+      if (r.depth !== d || taken.has(r.stage)) continue;
+      drawChar(r.base, r.x, r.y, d, r.frame);
+    }
+    const ags = agentsByDepth.get(d);
+    if (ags) for (const a of ags) drawChar(a.base, a.x, a.y, d, a.frame || (a.dir * 4));
+  }
+  drawLocateFx(now);
+  drawParticles(dt, now);
+  void outImage;
+}
+/* 定位高亮：点击「📍 定位」后在居民脚下画一个闪烁的菱形轮廓（不移动相机） */
+let locateFx = null;
+function drawLocateFx(now) {
+  if (!locateFx) return;
+  const el = (now - locateFx.t0) / 1500;
+  if (el >= 1) { locateFx = null; return; }
+  const e = locateFx.e;
+  if (!e) { locateFx = null; return; }
+  const x = Math.round(OX + (e.x - e.y) * (TW / 2)), y = Math.round(OY + (e.x + e.y) * (TH / 2) - heightAt(Math.floor(e.x), Math.floor(e.y)) * TZ);
+  ctx.fillStyle = (now % 600 < 300) ? 'rgba(94,234,212,.95)' : 'rgba(255,255,255,.95)';
+  const hw = TW / 2 + 2, hh = TH / 2 + 1;
+  for (let i = 0; i <= TH + 2; i++) {
+    const k = i <= (TH + 2) / 2 ? i / ((TH + 2) / 2) : ((TH + 2) - i) / ((TH + 2) / 2);
+    const off = Math.round(k * hw);
+    ctx.fillRect(x - off, y + i, 1, 1);
+    ctx.fillRect(x + off, y + i, 1, 1);
+  }
+}
+
+/* ───────────────────────── 7. 拾取（等距逆变换） ───────────────────────── */
+function canvasPos(ev) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) / r.width * W, y: (ev.clientY - r.top) / r.height * H };
+}
+/* 屏幕 → 格：x-y = sx/16，x+y-z = sy/8；沿 z 从高到低找最近的实心柱。
+ * 与 isocity98 web 端 view.js pickCache 同一套推导。 */
+function pickTile(mx, my) {
+  const A = (mx - OX) / (TW / 2), B = (my - OY) / (TH / 2);
+  for (let z = MAXH + 1; z >= -1; z--) {
+    const s = B + z;
+    const x = Math.floor((s + A) / 2), y = Math.floor((s - A) / 2);
+    if (x < 0 || y < 0 || x >= GW || y >= GH) continue;
+    if (heightAt(x, y) >= z) return { x: x, y: y, z: z };
+  }
+  return null;
+}
+/* 按深度从上往下找居民（后画的优先），命中精灵包围盒即算中 */
+function charBox(e) {
+  const r = frameRect(e.base, e.frame || (e.dir * 4));
+  if (!r) return null;
+  const z = heightAt(Math.floor(e.x), Math.floor(e.y));
+  return {
+    x: OX + (e.x - e.y) * (TW / 2) - r.ax,
+    y: OY + (e.x + e.y) * (TH / 2) - z * TZ - r.ay,
+    w: r.w, h: r.h,
+  };
+}
+function pickResident(mx, my) {
+  const cands = [];
+  for (const a of agents.values()) cands.push(a);
+  const taken = new Set();
+  for (const a of agents.values()) if (a.working && a.home) taken.add(a.home.stage);
+  for (const r of residents) if (!taken.has(r.stage)) cands.push(r);
+  cands.sort((p, q) => (q.x + q.y) - (p.x + p.y));   // 深度大者优先
+  for (const e of cands) {
+    const b = charBox(e);
+    if (!b) continue;
+    if (mx >= b.x && mx < b.x + b.w && my >= b.y && my < b.y + b.h) return e;
+  }
+  return null;
+}
+
+/* ─────────────── 8. 环境（季节 / 时段 / 天气）与重映射 ─────────────── */
+const env = { season: 'summer', tod: 'day', weather: 'clear' };
+let autoEnv = true;
+let lastLutKey = '';
+
+function decodeLut(key) {
+  const b = TOWN.remaps[key];
+  if (!b) return null;
+  return b64ToU8(b);
+}
+function envKey() { return env.season + '|' + env.tod + '|' + env.weather; }
+/* 应用环境：解 LUT → 重着色图集 → 重烘天空 → 重建静态层与粒子。只在换档时调用。 */
+function applyEnv() {
+  const key = envKey();
+  if (key === lastLutKey) return;
+  const lut = decodeLut(key);
+  if (!lut) { console.warn('缺少色板查表', key); return; }
+  lastLutKey = key;
+  clearFrameCache();
+  recolorAtlas(lut);
+  buildSky(lut);
+  buildStatic();
+  rebuildParticles();
+  $('#season').textContent = SEASON_LABEL[env.season];
+  $('#period').textContent = TOD_LABEL[env.tod] + ' · ' + WEATHER_LABEL[env.weather];
+  $('#selSeason').value = env.season;
+  $('#selTod').value = env.tod;
+  $('#selWeather').value = env.weather;
+}
+/* 自动推进：季节/时段跟随真实时间，天气跟随季节（与旧面板的 DAY_MS/SEASON_DAYS 一致） */
+function envFromClock(now) {
+  const t = now + TIME_OFFSET;
+  const day = Math.floor(t / DAY_MS);
+  const season = SEASON_KEYS[Math.floor(day / SEASON_DAYS) % SEASON_KEYS.length];
+  const min = ((t % DAY_MS) / DAY_MS) * 1440;
+  const tod = (min < 300 || min >= 1170) ? 'night' : min < 450 ? 'dawn' : min < 1020 ? 'day' : 'dusk';
+  return { season: season, tod: tod, weather: SEASON_WEATHER[season], min: min };
+}
+function setAuto(on) {
+  autoEnv = on;
+  $('#autoBtn').classList.toggle('on', on);
+  $('#autoBtn').textContent = on ? '⏩ 自动' : '⏸ 手动';
+}
+
+/* ───────────────────────────── 9. API 轮询 ───────────────────────────── */
+/* /agents 健康时固定 2s 轮询（既有契约）；连续失败则指数退避（最长 30s），
+ * 避免面板被放在没有 agent-server 的静态服务上时每 2s 刷一次 404。 */
+let pollTimer = null, pollFails = 0, kbTimer = null, kbFails = 0;
+function schedulePoll(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+function scheduleKB(ms) { clearTimeout(kbTimer); kbTimer = setTimeout(pollKBStats, ms); }
+async function poll() {
+  try {
+    const resp = await fetch(api('/agents'));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    finishedCount = parseInt(resp.headers.get('x-agents-finished') || '0', 10) || 0;
+    const list = await resp.json();
+    pollFails = 0;
+    agentsConnected = true;
+    updateEmpty();
+    const seen = new Set();
+    for (const d of Array.isArray(list) ? list : []) {
+      seen.add(d.sessionId);
+      const key = stageKey(d);
+      let a = agents.get(d.sessionId);
+      if (!a) {
+        const st = STATION_BY_STAGE.get(key) || STATION_BY_STAGE.get('working');
+        const base = st ? st.base : 'npc.worker';
+        const spawn = nearestWalkable(15, 15);
+        a = {
+          kind: 'agent', sid: d.sessionId, data: d, key: key, base: base,
+          x: spawn.x, y: spawn.y, tx: spawn.x, ty: spawn.y, depth: spawn.x + spawn.y,
+          dir: 3, frame: 12, gait: 0, moving: false, working: false, assigned: false,
+          state: 'idle', stateT: 0, path: [], home: null, cheering: false, hit: null,
+        };
+        agents.set(d.sessionId, a);
+        lastStage.set(d.sessionId, key);
+        logEvent('👋', d, '进入小镇');
+      } else {
+        a.data = d;
+        const prev = lastStage.get(d.sessionId);
+        if (prev !== key) {
+          lastStage.set(d.sessionId, key);
+          if (prev) logEvent('🔀', d, (STAGE[prev] ? STAGE[prev].label : prev) + ' → ' + (STAGE[key] ? STAGE[key].label : key));
+          a.assigned = false; a.home = null; a.path = [];
+          const st = STATION_BY_STAGE.get(key);
+          if (st) a.base = st.base;
+        }
+        a.key = key;
+      }
+    }
+    for (const sid of Array.from(agents.keys())) if (!seen.has(sid)) removeAgent(sid);
+    $('#count').textContent = String(agents.size);
+    $('#finished').textContent = String(finishedCount);
+    renderRoster();
+    schedulePoll(POLL_MS);
+  } catch (e) {
+    agentsConnected = false;
+    updateEmpty();
+    pollFails++;
+    schedulePoll(Math.min(POLL_MS * Math.pow(2, pollFails - 1), 30000));
+  }
+}
+
+/* ───────────── KB 预检索小图（/kb-stats） ───────────── */
+function renderKBStats(s) {
+  const el = $('#kbStats');
+  if (!s || !s.totals) { el.innerHTML = '<div class="empty">暂无统计</div>'; return; }
+  const t = s.totals;
+  const total = t.hits + t.misses;
+  const ratio = total > 0 ? Math.round(t.hits / total * 100) : 0;
+  const counts = t.hist.counts;
+  const max = Math.max.apply(null, counts);
+  const bars = counts.map((c, i) => {
+    const h = c > 0 ? Math.max(3, Math.round(c / max * 30)) : 2;
+    return '<div class="kb-bar' + (c > 0 ? '' : ' dim') + '" style="height:' + h + 'px" title="' + t.hist.boundaries[i] + 'ms: ' + c + '">' +
+      (c > 0 ? '<span class="v">' + c + '</span>' : '') + '</div>';
+  }).join('');
+  const labels = t.hist.boundaries.map((b, i) => '<span title="' + b + 'ms">' + (i === 0 ? '&lt;' + t.hist.boundaries[1] : i === t.hist.boundaries.length - 1 ? '&gt;=' + b : b) + '</span>').join('');
+  el.innerHTML =
+    '<div class="kb-summary"><span>命中 <b>' + t.hits + '</b>/' + total + '</span><span>命中率 <b>' + ratio + '%</b></span><span>均耗 <b>' + t.avgMs + 'ms</b></span><span>检索 <b>' + t.searches + '</b>次</span></div>' +
+    '<div class="kb-bars">' + bars + '</div>' +
+    '<div class="kb-x">' + labels + '</div>' +
+    '<div class="kb-note">累计' + (s.restored ? '（已恢复上次数据）' : '') + ' · 跨重启持久化 · 单位 ms · 命中=缓存命中 · 空/失败不计入命中</div>';
+}
+async function pollKBStats() {
+  try {
+    const resp = await fetch(api('/kb-stats'));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    renderKBStats(await resp.json());
+    kbFails = 0;
+    scheduleKB(KB_POLL_MS);
+  } catch (e) {
+    const el = $('#kbStats');
+    if (el && el.querySelector('.empty')) el.innerHTML = '<div class="empty">agent-server 无 /kb-stats</div>';
+    kbFails++;
+    scheduleKB(Math.min(KB_POLL_MS * Math.pow(2, kbFails - 1), 120000));
+  }
+}
+
+/* ─────────────────── 10. UI：roster / log / 详情 / 交互 ─────────────────── */
+function renderRoster() {
+  const items = Array.from(agents.values()).sort((a, b) => a.key.localeCompare(b.key));
+  if (!items.length) { rosterEl.innerHTML = '<div class="empty">暂无 agent</div>'; return; }
+  rosterEl.innerHTML = items.map((a) => {
+    const meta = STAGE[a.key] || STAGE.working;
+    const root = agentRootInfo(a);
+    const ownTask = String(a.data.task || '').split('\n')[0].trim();
+    const task = root ? root.task : (ownTask || '未知任务');
+    const proj = root && root.project ? root.project : (a.data.project || '');
+    return '<div class="roster-item" onclick="showDetail(\'' + esc(a.sid) + '\')">' +
+      '<div class="ava">' + meta.emoji + '</div>' +
+      '<div class="info"><div class="name"><span class="dot" style="background:' + meta.color + '"></span>' + esc(agentName(a)) + (a.data.delegationDepth ? '<span class="rel">#' + a.data.delegationDepth + '</span>' : '') + '</div>' +
+      '<div class="task">' + esc(task) + (proj ? ' · ' + esc(proj) : '') + '</div>' +
+      '<div class="meta">' + esc(meta.label) + ' · ' + esc(a.data.status === 'idle' ? '休息中' : '工作中') + ' · ' + esc(fmtElapsed(a.data.elapsed)) + '</div></div></div>';
+  }).join('');
+}
+function logEvent(icon, data, text) {
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const div = document.createElement('div');
+  div.className = 'log-item';
+  div.innerHTML = '<span class="time">' + time + '</span>' + icon + ' <b>' + esc(shortSession(data.sessionId)) + '</b> ' + esc(text);
+  logEl.prepend(div);
+  while (logEl.children.length > 30) logEl.lastChild.remove();
+  if (logEl.querySelector('.empty')) logEl.querySelector('.empty').remove();
+}
+function updateEmpty() {
+  if (agents.size > 0) { emptyEl.style.display = 'none'; return; }
+  emptyEl.style.display = '';
+  emptyEl.textContent = agentsConnected ? '🌆 小镇空闲 — 等待 agent 上工…' : '📡 Agent server 未连接，请确认 dsh-agent-server 正在运行';
+}
+function showToast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800); }
+function showDetail(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  selectedId = sid;
+  const meta = STAGE[a.key] || STAGE.working;
+  const task = String(a.data.task || '').split('\n')[0] || '未知任务';
+  const root = agentRootInfo(a);
+  const parentName = agentParentName(a);
+  $('#dAva').textContent = meta.emoji;
+  $('#dTitle').textContent = (agentName(a) || meta.label) + ' · ' + meta.label;
+  $('#dSub').textContent = a.data.sessionId || '';
+  const bname = meta.building || '—';
+  const occ = meta.occupation || meta.label;
+  const zone = meta.zone || '—';
+  const ownerTask = root ? root.task + (root.project ? ' · ' + root.project : '') : '';
+  $('#dKv').innerHTML =
+    '<dt>名称</dt><dd>' + esc(agentName(a)) + '</dd>' +
+    '<dt>阶段</dt><dd>' + esc(meta.label) + ' ' + meta.emoji + ' ' + esc(a.data.phase || '') + '</dd>' +
+    '<dt>归属任务</dt><dd>' + esc(ownerTask || task) + '</dd>' +
+    (a.data.delegationDepth ? '<dt>层级</dt><dd>子会话 #' + a.data.delegationDepth + '</dd>' : '<dt>层级</dt><dd>主会话</dd>') +
+    (a.data.parentSessionId ? '<dt>上级</dt><dd>' + esc(parentName || a.data.parentSessionId) + '</dd>' : '') +
+    '<dt>职业</dt><dd>' + esc(occ) + '</dd>' +
+    '<dt>工位</dt><dd>' + esc(bname) + '</dd>' +
+    '<dt>分区</dt><dd>' + esc(zone) + '</dd>' +
+    '<dt>项目</dt><dd>' + esc(root && root.project ? root.project : (a.data.project || '—')) + '</dd>' +
+    (a.data.model ? '<dt>模型</dt><dd>' + esc(a.data.model) + '</dd>' : '') +
+    '<dt>状态</dt><dd>' + esc(a.data.status === 'idle' ? '休息' : '工作中') + '</dd>' +
+    '<dt>动作</dt><dd>' + esc(a.state === 'working' ? '正在工位' : (a.state === 'toWork' ? '前往工位' : (a.state === 'walk' ? '小镇游走' : '空闲'))) + '</dd>' +
+    '<dt>时长</dt><dd>' + esc(fmtElapsed(a.data.elapsed)) + '</dd>';
+  $('#detail').classList.add('show');
+}
+function closeDetail() { selectedId = null; $('#detail').classList.remove('show'); }
+function cheer(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  a.cheering = true; setTimeout(() => { a.cheering = false; }, 900);
+  if (a.hit) { const h = a.hit.querySelector('.heart'); if (h) { h.classList.remove('show'); void h.offsetWidth; h.classList.add('show'); } }
+  showToast('💗 已给 ' + shortSession(sid) + ' 加油！');
+}
+function locate(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  closeDetail();
+  locateFx = { e: a, t0: performance.now() };
+  showToast('📍 ' + agentName(a) + ' 在格子 (' + Math.round(a.x) + ',' + Math.round(a.y) + ')');
+}
+/* ── 问答（/agent/chat，KB-first + 项目上下文自动注入） ── */
+const CHAT_DEFAULT_PROVIDER = '';
+const CHAT_DEFAULT_MODEL = '';
+const chatState = new Map();
+let chatCurrentSid = null;
+function appendChatMsg(st, who, text) {
+  st.msgs.push({ who: who, text: text });
+  const body = $('#cBody');
+  if (body.querySelector('.empty')) body.querySelector('.empty').remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + who;
+  div.textContent = text;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+function openChat(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  chatCurrentSid = sid;
+  let st = chatState.get(sid);
+  if (!st) { st = { sessionId: '', provider: CHAT_DEFAULT_PROVIDER, model: CHAT_DEFAULT_MODEL, msgs: [] }; chatState.set(sid, st); }
+  const task = String(a.data.task || '').split('\n')[0] || '';
+  $('#cSub').textContent = (a.data.project ? a.data.project + ' · ' : '') + (task || shortSession(sid)) + (st.sessionId ? '（多轮）' : '（新会话）');
+  $('#cProvider').value = st.provider;
+  $('#cModel').value = st.model;
+  $('#cBody').innerHTML = st.msgs.length ? '' : '<div class="empty">向该 agent 发起提问。首问会自动注入<b>项目上下文</b>与<b>全局知识库预检索</b>。</div>';
+  for (const m of st.msgs) appendChatMsg(st, m.who, m.text);
+  $('#chat').classList.remove('hidden');
+  $('#cInput').focus();
+}
+function closeChat() { $('#chat').classList.add('hidden'); $('#cSending').classList.remove('show'); chatCurrentSid = null; }
+function chatBusy() { return $('#cSending').classList.contains('show'); }
+async function sendChat() {
+  if (chatBusy() || !chatCurrentSid) return;
+  const a = agents.get(chatCurrentSid);
+  if (!a) return;
+  const st = chatState.get(chatCurrentSid);
+  const text = $('#cInput').value.trim();
+  if (!text) return;
+  st.provider = $('#cProvider').value.trim();
+  st.model = $('#cModel').value.trim();
+  if (!st.provider || !st.model) { appendChatMsg(st, 'system', '请先填写 provider 与 model（面板不内置默认路由）'); return; }
+  $('#cInput').value = '';
+  appendChatMsg(st, 'user', text);
+  $('#cSending').classList.add('show');
+  try {
+    const body = {
+      message: text, provider: st.provider, model: st.model, reasoningEffort: 'medium',
+      sessionId: st.sessionId || undefined,
+      project: a.data.project || undefined,
+      kbQuery: st.sessionId ? undefined : (String(a.data.task || '').split('\n')[0] || undefined),
+    };
+    const resp = await fetch(api('/agent/chat'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!resp.ok) { const t = await resp.text().catch(() => ''); throw new Error('HTTP ' + resp.status + (t ? ': ' + t.slice(0, 200) : '')); }
+    const out = await resp.json();
+    if (out.sessionId) st.sessionId = out.sessionId;
+    appendChatMsg(st, 'ai', out.text || '(无回复)');
+    if (out.error) appendChatMsg(st, 'err', '⚠️ ' + out.error);
+    $('#cSub').textContent = (a.data.project ? a.data.project + ' · ' : '') + (String(a.data.task || '').split('\n')[0] || shortSession(chatCurrentSid)) + '（多轮）';
+  } catch (e) {
+    appendChatMsg(st, 'err', '❌ 发送失败：' + e.message + '（确认 dsh-agent-server 运行中）');
+  }
+  $('#cSending').classList.remove('show');
+  chatState.set(chatCurrentSid, st);
+}
+function grill(sid) { openChat(sid); }
+
+/* ── 覆盖层：真实 agent 的气泡/名字/爱心 ── */
+function ensureHit(a) {
+  if (a.hit) return;
+  const hit = document.createElement('div');
+  hit.className = 'agent-hit';
+  hit.innerHTML = '<div class="ab"></div><div class="at"></div><div class="heart">💗</div>';
+  agentsLayer.appendChild(hit);
+  a.hit = hit;
+}
+function syncOverlay(force) {
+  for (const a of agents.values()) {
+    ensureHit(a);
+    const s = agentScreen(a);
+    const left = (s.sx / W * 100), top = ((s.sy - 16) / H * 100);
+    if (force || a._l !== left || a._t !== top) { a.hit.style.left = left + '%'; a.hit.style.top = top + '%'; a._l = left; a._t = top; }
+    const meta = STAGE[a.key] || STAGE.working;
+    const bubble = a.hit.querySelector('.ab');
+    const tag = a.hit.querySelector('.at');
+    if (bubble) bubble.textContent = meta.bubble + ' ' + meta.symbol;
+    if (tag) tag.textContent = (a.data.status === 'idle' ? '☕ ' : '') + (agentName(a) || meta.label).slice(0, 22);
+    const root = agentRootInfo(a);
+    a.hit.title = (root ? '[' + root.task + '] ' : '') + agentName(a) + ' · ' + meta.label;
+  }
+}
+function removeAgent(sid) {
+  const a = agents.get(sid);
+  if (!a) return;
+  if (a.hit) a.hit.remove();
+  agents.delete(sid);
+  lastStage.delete(sid);
+  if (selectedId === sid) closeDetail();
+}
+
+/* ── 画布交互：悬停气泡 / 点击详情（等距拾取，深度从上往下） ── */
+let hovered = null;
+canvas.addEventListener('mousemove', (ev) => {
+  const p = canvasPos(ev);
+  const e = pickResident(p.x, p.y);
+  if (hovered && hovered !== e && hovered.kind === 'agent' && hovered.hit) hovered.hit.classList.remove('visible');
+  hovered = e;
+  if (!e) { hintEl.classList.remove('show'); return; }
+  if (e.kind === 'agent') {
+    hintEl.classList.remove('show');
+    if (e.hit) e.hit.classList.add('visible');
+  } else {
+    const r = canvas.getBoundingClientRect();
+    hintEl.textContent = (e.meta.emoji || '') + ' ' + e.meta.occupation + ' · ' + e.meta.building;
+    hintEl.style.left = ((ev.clientX - r.left) / r.width * 100) + '%';
+    hintEl.style.top = ((ev.clientY - r.top) / r.height * 100 - 2) + '%';
+    hintEl.classList.add('show');
+  }
+});
+canvas.addEventListener('mouseleave', () => {
+  if (hovered && hovered.kind === 'agent' && hovered.hit) hovered.hit.classList.remove('visible');
+  hovered = null; hintEl.classList.remove('show');
+});
+canvas.addEventListener('click', (ev) => {
+  const p = canvasPos(ev);
+  const e = pickResident(p.x, p.y);
+  if (e && e.kind === 'agent') showDetail(e.sid);
+  else if (e) showToast((e.meta.emoji || '') + ' ' + e.meta.occupation + ' 正在 ' + e.meta.building + ' 值班');
+  else {
+    const t = pickTile(p.x, p.y);
+    if (t) showToast('📍 格子 (' + t.x + ',' + t.y + ')' + (TOWN.road[t.y * GW + t.x] >= 0 ? ' · 街道' : ''));
+  }
+});
+
+/* ── 图例 / 时钟 / 全屏 ── */
+function initLegend() {
+  const legendEl = $('#legend');
+  if (!legendEl) return;
+  legendEl.innerHTML = STATION.map((s) => {
+    const meta = STAGE[s.stage] || STAGE.working;
+    return '<span>' + (meta.emoji || meta.symbol || '🏠') + ' ' + esc(meta.label || '') + '</span>';
+  }).join('') + '<span><b>💡 点击居民查看任务</b></span>';
+}
+function clock() {
+  const d = new Date();
+  $('#clock').textContent = d.toLocaleTimeString('zh-CN', { hour12: false });
+  $('#date').textContent = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function toggleNight() {
+  const next = env.tod === 'night' ? 'day' : 'night';
+  setAuto(false); env.tod = next; applyEnv();
+  $('#nightBtn').textContent = env.tod === 'night' ? '☀️ 昼' : '🌙 夜';
+}
+function toggleRain() {
+  const next = env.weather === 'rain' ? 'clear' : 'rain';
+  setAuto(false); env.weather = next; applyEnv();
+  $('#rainBtn').textContent = env.weather === 'rain' ? '☀️ 晴' : '🌧️ 雨';
+}
+function toggleFullscreen() { const t = $('#town'); if (document.fullscreenElement) { document.exitFullscreen(); return; } if (t && t.requestFullscreen) t.requestFullscreen(); }
+
+/* ─────────────────────────────── 主循环 ─────────────────────────────── */
+function tick(now) {
+  const dt = Math.min(0.05, (now - lastT) / 1000 || 0.016);
+  lastT = now;
+  if (autoEnv) {
+    const c = envFromClock(now);
+    if (c.season !== env.season || c.tod !== env.tod || c.weather !== env.weather) {
+      env.season = c.season; env.tod = c.tod; env.weather = c.weather;
+      applyEnv();
+    }
+    const el = $('#period');
+    if (el && el.dataset.k !== envKey()) { el.dataset.k = envKey(); el.textContent = TOD_LABEL[env.tod] + ' · ' + WEATHER_LABEL[env.weather]; }
+  }
+  for (const a of agents.values()) updateAgent(a, dt);
+  render(now, dt);
+  syncOverlay(false);
+  requestAnimationFrame(tick);
+}
+
+/* ─────────────────────────────── 启动 ─────────────────────────────── */
+function initSelectors() {
+  const fill = (sel, keys, labels) => {
+    sel.innerHTML = keys.map(k => '<option value="' + k + '">' + labels[k] + '</option>').join('');
+  };
+  fill($('#selSeason'), SEASON_KEYS, SEASON_LABEL);
+  fill($('#selTod'), TOD_KEYS, TOD_LABEL);
+  fill($('#selWeather'), WEATHER_KEYS, WEATHER_LABEL);
+  $('#selSeason').addEventListener('change', (e) => { setAuto(false); env.season = e.target.value; applyEnv(); });
+  $('#selTod').addEventListener('change', (e) => { setAuto(false); env.tod = e.target.value; applyEnv(); });
+  $('#selWeather').addEventListener('change', (e) => { setAuto(false); env.weather = e.target.value; applyEnv(); });
+}
+async function boot() {
+  initSelectors();
+  clock(); setInterval(clock, 1000);
+  initLegend();
+  buildWalkGrid();
+  initResidents();
+  await loadAtlas();
+  const c = envFromClock(performance.now());
+  env.season = c.season; env.tod = c.tod; env.weather = c.weather;
+  applyEnv();
+  if (API_BASE) { const el = $('#apiInfo'); el.style.display = ''; el.textContent = 'API ' + API_BASE; el.title = '数据源：' + API_BASE; }
+  poll(); pollKBStats();
+  requestAnimationFrame(tick);
+}
+/* 调试/验证接口：仅暴露只读状态与纯函数，方便无头脚本断言（不参与渲染） */
+window.AGENT_TOWN = {
+  env: env, applyEnv: applyEnv, pickTile: pickTile, pickResident: pickResident,
+  residents: residents, agents: agents, decor: decor,
+  counts: { sprites: Object.keys(SPRITES.sprites).length, stations: STATION.length, objects: TOWN.objects.length, remaps: Object.keys(TOWN.remaps).length, palette: PALETTE.length },
+  tile: SPRITES.tile, atlasSize: function () { return [atlasW, atlasH]; }, lutKey: function () { return lastLutKey; },
+  heightAt: heightAt, missing: function () { return Array.from(MISSING); },
+  envKey: envKey, roadMasks: (function () { const m = {}; for (const v of TOWN.road) m[v] = (m[v] || 0) + 1; return m; })(),
+};
+/* 事件绑定 */
+$('#nightBtn').addEventListener('click', toggleNight);
+$('#rainBtn').addEventListener('click', toggleRain);
+$('#autoBtn').addEventListener('click', () => { setAuto(!autoEnv); if (autoEnv) { const c = envFromClock(performance.now()); env.season = c.season; env.tod = c.tod; env.weather = c.weather; applyEnv(); } });
+$('#fullscreenBtn').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', () => { $('#fullscreenBtn').textContent = document.fullscreenElement ? '✕' : '⛶'; });
+$('#dCheer').addEventListener('click', () => { if (selectedId) cheer(selectedId); });
+$('#dGrill').addEventListener('click', () => { if (selectedId) grill(selectedId); });
+$('#dLocate').addEventListener('click', () => { if (selectedId) locate(selectedId); });
+$('#dClose').addEventListener('click', closeDetail);
+$('#cClose').addEventListener('click', closeChat);
+$('#cSend').addEventListener('click', sendChat);
+$('#cInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendChat(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('#chat').classList.contains('hidden')) closeChat(); else closeDetail(); } });
+window.showDetail = showDetail;   // roster 内联 onclick 需要
+boot();
+</script>
+</body>
+</html>
