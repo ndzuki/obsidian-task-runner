@@ -1,16 +1,24 @@
 # Roadmap
 
-> 现状：核心流水线（v0.51）已完整跑通自己的开发全流程（本仓库的 90 余个 tag
-> 即历史证据）。以下为公开路线，欢迎 issue 提案与 PR。
+> ## 已冻结 — 2026-09-14
+>
+> 本项目**已归档**，路线图不再推进：daemon 与阶段流水线已停用，同类工作改由交互式
+> agent 会话完成。以下条目保留作为工程记录，不再接受认领。
+>
+> 归档说明见 [README](README.md) 顶部；从流水线中提炼出的通用 skill 见
+> [`skills-standalone/`](skills-standalone/README.md)。
 
-## 近期（进行中）
+> 归档前现状：核心流水线（v0.51）已跑通自身的开发全流程（本仓库的 90 余个 tag
+> 即历史证据）。
+
+## 归档时点的状态
 
 | 项 | 说明 |
 | --- | --- |
 | 文档门面 | ✅ 已完成：README 重写、quickstart/ops-manual/CHANGELOG/ROADMAP/CONTRIBUTING/ADR 目录 |
 | 历史文档归档 | ✅ 已完成：迁移期文档合并为单一现势 `docs/architecture.md`，旧文入 `docs/archive/` |
 
-## 计划（欢迎认领）
+## 未推进（归档时点，仅作记录）
 
 | 项 | 说明 |
 | --- | --- |

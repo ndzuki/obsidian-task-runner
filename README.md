@@ -1,5 +1,29 @@
 # Obsidian Task Runner
 
+> ## ⚠️ 已归档 — 2026-09-14
+>
+> 本项目**停止开发，自动化流水线不再运行**。原先由 daemon 驱动的阶段流水线
+> （refining → planning → implementing → review → merge）已被放弃；同类工作改由
+> **交互式 agent 会话逐屏完成**——判断留在人手里，只在真正需要的地方付 token。
+>
+> **仍然有效的部分**：
+>
+> - **Obsidian Vault 的 `Projects/` 结构**是上下文与任务记录的**第一者**：
+>   `Notes/CONTEXT.md`（领域语言）、`Notes/adr/`（架构决策）、
+>   `Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束）、`Tasks/TASK-*.md`（交付记录）
+>   继续沿用原格式，只是由人在交互会话里维护。
+> - **`otg` CLI 的知识库子命令**（`otg kb search` / `absorb` / `hit`）仍是日常依赖：
+>   它是本地优先检索与经验沉淀的入口。
+> - 从流水线中提炼出的通用 skill 见 [`skills-standalone/`](skills-standalone/README.md)
+>   ——它们不依赖 daemon，在任意交互会话中可用。
+>
+> **已停用的部分**：`otg-task-watcher.service`（daemon）、与其配套的 headless
+> 执行服务、9 个阶段 skill、以及依赖 daemon 的监控/看板插件。
+>
+> 归档理由（简述）：流水线的验收只能覆盖「仓库内可自动验证」的工作；对观感、交互、
+> 实机协议这类必须由人当场判断的工作，它倾向于产出"全部绿灯但方向错误"的结果。
+> 下面描述的是**归档前**的设计，保留作为工程记录。
+
 > **你的第二大脑会写代码了。** 在 Obsidian 写需求，AI Agent 在真实 Git 仓库里
 > 规划、实现、测试、开 PR、合并——你只做两件事：**定方向，验收产品**。
 

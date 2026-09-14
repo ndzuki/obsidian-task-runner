@@ -737,11 +737,15 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// validateRequiredSkills checks that the five mandatory external skills exist
+// validateRequiredSkills checks that the mandatory external skills exist
 // on disk. Returns the list of missing skill names.
+//
+// requirement-elaborator 已退役（2026-09-14）：它的职责由 grilling 承担，且内含
+// OMP 时代的 hub/CAS 死命令。此处不再要求——否则 skill 移除后 otg install 会
+// 以 "missing required external skills" 硬失败。流水线若要复活，应把 refining/
+// split/pm 里对它的指向改为 grilling，而不是恢复这个 skill。
 func validateRequiredSkills() ([]string, error) {
 	required := []string{
-		"requirement-elaborator",
 		"grilling",
 		"domain-modeling",
 		"diagnosing-bugs",

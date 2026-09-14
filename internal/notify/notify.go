@@ -434,7 +434,7 @@ func tryKittyTab(taskID, taskTitle, reqDoc, vaultPath, addr, provider, model str
 ║
 ║  需求文档: %s
 ║
-║  DSH 正在加载 requirement-elaborator 并主动向你提问…
+║  DSH 正在加载 grilling 并主动向你提问…
 ╚══════════════════════════════════════════════════════════════╝
 
 GRILLING_EOF

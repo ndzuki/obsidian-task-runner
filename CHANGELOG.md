@@ -3,6 +3,11 @@
 
 > 从 git tag 自动生成（内部任务编号等私有语境已剔除）。格式参考 Keep a Changelog。
 
+> ## ⚠️ 已归档 — 2026-09-14
+>
+> daemon 与阶段流水线已停用，本文件不再更新。归档说明见 [README](README.md) 顶部；
+> 从流水线中提炼出的通用 skill 见 [`skills-standalone/`](skills-standalone/README.md)。
+
 
 ## 2026
 

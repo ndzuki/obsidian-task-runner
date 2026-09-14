@@ -584,7 +584,8 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 
 **Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 到 `~/.dsh/skills/`（`kulala-http` 已移出：通用 HTTP 调试技能，独立维护）。
 
-外部依赖缺失必须 fail-fast：requirement-elaborator、grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
+外部依赖缺失必须 fail-fast：grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
+（`requirement-elaborator` 已于 2026-09-14 退役——职责由 `grilling` 承担，`validateRequiredSkills` 不再要求它；流水线若复活，应把 refining/split/pm 里对它的指向改为 `grilling`。）
 
 ## 10. 故障排查
 

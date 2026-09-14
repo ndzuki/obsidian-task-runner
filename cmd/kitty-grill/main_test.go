@@ -123,7 +123,7 @@ func TestParseQuestionnaireRejectsUnparseable(t *testing.T) {
 }
 
 func TestParseQuestionnaireEmptyDecisionsOK(t *testing.T) {
-	// decisions:[] 是合法空问卷（requirement-elaborator 的
+	// decisions:[] 是合法空问卷（grilling 的
 	// fully_mature 形态）→ ok=true 且 len==0，repl 走 noPendingScreen。
 	q, ok := parseQuestionnaire(`{"requirement":"REQ-065","maturity":"fully_mature","decisions":[]}`)
 	if !ok {

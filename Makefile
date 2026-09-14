@@ -1,4 +1,4 @@
-.PHONY: build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover wait-grilling-writebacks sync-docs sync-plugins sync-registry verify-install
+.PHONY: _archive-guard build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover wait-grilling-writebacks sync-docs install-standalone sync-plugins sync-registry verify-install
 
 BINARY := otg
 GRILL  := kitty-grill
@@ -14,6 +14,29 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 # 目标在任何 shell 下都能正确操控 user systemd。
 USER_BUS_ENV := XDG_RUNTIME_DIR=/run/user/$(shell id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(shell id -u)/bus
 SCTL := $(USER_BUS_ENV) systemctl --user
+
+# ---------------------------------------------------------------------------
+# 归档守卫（2026-09-14）
+#
+# 本仓库已归档：daemon 与阶段流水线不再使用。但下列目标会把它们**整套装回来**——
+# deploy 会 restart otg-task-watcher.service、sync-docs 装回 9 个阶段 skill、
+# sync-plugins 装回 agent-server.mjs / agent-monitor.html、deploy 还会重建 service
+# drop-in 与 reload。换言之：**一次 `make deploy` 就能撤销归档**。
+#
+# 所以这些目标默认拒绝执行。确需在本地重建旧流水线时显式覆盖：
+#     make deploy FORCE_ARCHIVED=1
+# 归档后仍受支持的目标：`make install-standalone`（只装交互式 skill）、
+# build / test / lint / clean（不受影响）。
+# ---------------------------------------------------------------------------
+_archive-guard:
+	@if [ "$${FORCE_ARCHIVED:-0}" != "1" ]; then \
+		echo "本仓库已归档（2026-09-14）：daemon 与阶段流水线已停用。"; \
+		echo "  install / deploy / sync-docs / sync-plugins / daemon-recover 会重新启用服务"; \
+		echo "  并装回阶段 skill，因此默认拒绝执行。"; \
+		echo "  · 只安装交互式 skill：make install-standalone"; \
+		echo "  · 确需重建旧流水线：make <目标> FORCE_ARCHIVED=1"; \
+		exit 1; \
+	fi
 
 build:
 	go build -tags sqlite_fts5 $(LDFLAGS) -o $(BINARY) ./cmd/otg/
@@ -58,7 +81,7 @@ clean:
 # 的 `done` 掩掉，deploy 全程"成功"却留下旧二进制。mv 备份 + rm 兜底 + cp
 # 之后必须跑 verify-install（cmp 逐字节比对两处安装目标），不一致立即失败
 # 并打印修复提示——安装绝不静默降级。
-install: build sync-docs
+install: _archive-guard build sync-docs
 	@echo "=== Installing $(BINARY) + $(GRILL) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	@for b in $(BINARY) $(GRILL); do \
@@ -95,7 +118,7 @@ verify-install:
 	fi; \
 	echo "verified: $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL) $(GOBIN)/$(BINARY) $(GOBIN)/$(GRILL)"
 
-sync-docs:
+sync-docs: _archive-guard
 	@echo "=== Syncing skill docs to ~/.dsh/skills/obsidian-task-runner/ ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		mkdir -p "$$SKILL_DIR"; \
@@ -146,12 +169,50 @@ sync-docs:
 	@find $(HOME)/.dsh/skills/obsidian-task-runner* -name '*.old' -delete 2>/dev/null || true
 	@echo "=== Done ==="
 
+# install-standalone: 把 skills-standalone/ 下的通用 skill 装到 ~/.dsh/skills/<name>。
+#
+# 与 sync-docs 的分工：sync-docs 装 obsidian-task-runner 阶段 skill（服务任务流水线，
+# 需要 daemon/TASK frontmatter 语境）；本目标只装**与流水线无关**的日常 skill
+# （项目基线 / 风险感知计划 / 逐 AC 交付 / 设计两次），它们在任何交互会话里都能用。
+#
+# 显式 opt-in：**不**挂在 install / deploy / sync-docs 上——跑不跑、什么时候跑由用户决定，
+# 停止自动化后这几个 skill 依然可用。
+#
+# 安全边界（遵循 CONTRIBUTING「用户资产所有权」）：
+#   1. 只写 skills-standalone/<name>/SKILL.md 对应的 ~/.dsh/skills/<name>/SKILL.md；
+#   2. 只覆盖本目录清单内的这几个名字，用户自装 skill 与其它通道的 skill 一律不碰；
+#   3. 不删除、不清理——卸载由用户显式 `rm -rf ~/.dsh/skills/<name>`。
+#
+# 用法：make install-standalone            正式安装
+#       make install-standalone DRY_RUN=1  只打印将写哪些文件
+install-standalone:
+	@echo "=== Installing standalone skills to $(HOME)/.dsh/skills/ ==="
+	@installed=0; \
+	for d in skills-standalone/*/; do \
+		[ -f "$$d/SKILL.md" ] || continue; \
+		name=$$(basename "$$d"); \
+		dest="$(HOME)/.dsh/skills/$$name"; \
+		if [ "$${DRY_RUN:-0}" = "1" ]; then \
+			echo "  [dry-run] would install: $$name → $$dest/SKILL.md"; \
+			continue; \
+		fi; \
+		mkdir -p "$$dest"; \
+		cp "$$d/SKILL.md" "$$dest/SKILL.md"; \
+		echo "  install: $$name → $$dest/SKILL.md"; \
+		installed=$$((installed+1)); \
+	done; \
+	if [ "$${DRY_RUN:-0}" != "1" ]; then \
+		echo "  → 已安装 $$installed 个（chezmoi 若纳管 ~/.dsh/skills 会自动收编）"; \
+		echo "  → 卸载：rm -rf $(HOME)/.dsh/skills/<name>"; \
+	fi
+	@echo "=== Done ==="
+
 # sync-plugins: 把 deploy/dsh-plugins/ 下的 DSH 插件同步到 ~/.dsh/plugins/
 #（dsh profile 按绝对路径加载）。busy-safe 替换；agent-server.mjs 变更需
 # 重启 agent-server 才生效（managed=true 由重启后的 daemon 拉起）。*.test.mjs
 # 是 repo 单测（make test-node），不复制到运行时目录。同步后清理 repo 已删除
 # 的残留插件（~/.dsh/plugins 是受管目录）。
-sync-plugins:
+sync-plugins: _archive-guard
 	@echo "=== Syncing dsh plugins to ~/.dsh/plugins/ ==="
 	mkdir -p $(HOME)/.dsh/plugins
 	@for f in deploy/dsh-plugins/*; do \
@@ -199,7 +260,7 @@ sync-registry:
 #   → kb-preflight 变更且 dsh-web 在跑时重启 dsh-web（[5c/6]）
 # 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
 # ===========================================================================
-deploy: build test
+deploy: _archive-guard build test
 	@echo "=== [1/6] busy-safe install $(BINARY) + $(GRILL) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
 	@for b in $(BINARY) $(GRILL); do \
@@ -376,7 +437,7 @@ wait-grilling-writebacks:
 # agent-server 收回 8799，再拉起 otg-task-watcher。恢复命令同样**绝不编辑
 # 用户 systemd 单元、绝不 pkill 无关进程**：发现遗留单元把 dsh-agent-server
 # 钉进 watcher 依赖时，打印显式指引并退出（run: otg install-systemd）。
-daemon-recover:
+daemon-recover: _archive-guard
 	@echo "=== daemon-recover: 等待在途 grilling 写回 ==="
 	@$(MAKE) --no-print-directory wait-grilling-writebacks
 	@echo "=== daemon-recover: agent-server 所有权收敛 ==="
@@ -414,7 +475,7 @@ daemon-recover:
 # deploy-dryrun: 安全预演——只打印 make deploy 会覆盖/清理哪些文件，不实际改动。
 # 误删兜底的第一道防线：跑它确认没有意外删除目标，再跑真正 deploy。
 # 用法：make deploy-dryrun
-deploy-dryrun:
+deploy-dryrun: _archive-guard
 	@echo "=== [dry-run] sync-docs 将清理的受管残留 ==="
 	@DRY_RUN=1 $(MAKE) -s sync-docs 2>&1 | grep -E "\[dry-run\]|无受管残留|prune stale|回收" || true
 	@echo "=== [dry-run] sync-plugins 将清理的 .old ==="

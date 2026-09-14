@@ -1,7 +1,7 @@
 // Command kitty-grill is the interactive grilling client the daemon launches
 // inside a new Kitty tab. It connects to the long-lived agent-server
 // (/agent/chat) and drives a one-question-at-a-time requirements interview:
-// it injects the requirement-elaborator prompt, shows each model question,
+// it injects the grilling questionnaire prompt, shows each model question,
 // reads the human answer from stdin, and relays it back — preserving the
 // conversation through the returned sessionId.
 //
@@ -60,7 +60,7 @@ func main() {
 		provider  = flag.String("provider", "", "DSH provider (required)")
 		model     = flag.String("model", "", "DSH model (required)")
 		effort    = flag.String("effort", "low", "reasoning effort for questionnaire generation (off/low/high/max)")
-		custom    = flag.String("prompt", "", "custom initial prompt (overrides requirement-elaborator)")
+		custom    = flag.String("prompt", "", "custom initial prompt (overrides the grilling questionnaire)")
 		promptEnv = flag.String("prompt-env", "", "read the prompt from this env var (avoids shell quoting)")
 		// 内部模式：异步写回。问卷提交后主进程立即退出（tab 关闭），由
 		// detached 子进程携带 --writeback 完成写回，避免 tab 卡在「写回中」。
@@ -207,7 +207,7 @@ func buildGrillingPrompt(taskID, taskTitle, reqDoc, vaultPath string) string {
 	case taskTitle != "":
 		target = fmt.Sprintf("我要实现「%s」，请补充技术细节", taskTitle)
 	}
-	body := fmt.Sprintf(`%s（遵循 skill://requirement-elaborator 的方法论：事实从环境查，决策由用户定）。
+	body := fmt.Sprintf(`%s（遵循 skill://grilling 的方法论：事实从环境查，决策由用户定）。
 
 交互方式改为「批量问卷」，不要逐问：
 1. 勘察（精简）：读需求文档正文；仅当需求正文明确引用某 ADR / 契约 / 上游 REQ 时，再读那些被引用的文件。不要遍历 CONTEXT.md 全量术语、不要读代码实现——它们会在实现阶段按需加载。

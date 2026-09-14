@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,6 +63,18 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	if v := os.Getenv("SYSTEMD_ENABLED"); v != "" {
 		installSystemd, _ = strconv.ParseBool(v)
+	}
+
+	// 归档守卫（2026-09-14）：本仓库已归档，daemon 与阶段流水线不再使用。
+	// `otg install` 会 enable+start otg-task-watcher.service 并装回阶段 skill——
+	// 即撤销归档。默认拒绝；确需在本地重建旧流水线时显式覆盖。
+	// 放在 CLI 边界而非 install.Run 内部：策略在入口，机制保持可测。
+	// Makefile 侧同一守卫见 `_archive-guard`（覆盖 make deploy / install / sync-docs）。
+	if os.Getenv("OTG_ALLOW_ARCHIVED_INSTALL") != "1" {
+		return fmt.Errorf("本仓库已归档（2026-09-14）：daemon 与阶段流水线已停用，otg install 默认拒绝执行\n" +
+			"  · 它会把 otg-task-watcher.service 重新 enable+start 并装回阶段 skill（撤销归档）\n" +
+			"  · 归档后仍受支持：otg kb search / otg kb absorb（知识库 CLI）\n" +
+			"  · 确需重建旧流水线：OTG_ALLOW_ARCHIVED_INSTALL=1 otg install")
 	}
 
 	opts := install.Options{

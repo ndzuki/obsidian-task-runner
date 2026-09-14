@@ -23,8 +23,7 @@ description: "Manual entry and reference router for the Obsidian task lifecycle.
 
 外部依赖：
 
-- `skill://requirement-elaborator`
-- `skill://grilling`
+- `skill://grilling`（需求细化；接手已退役的 requirement-elaborator 的职责）
 - `skill://domain-modeling`
 - `skill://diagnosing-bugs`
 - `skill://test-quality`
