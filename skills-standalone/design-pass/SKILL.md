@@ -36,7 +36,7 @@ touch "$target_dir/.design-probe" && rm "$target_dir/.design-probe"
 动设计之前读完：
 
 1. **需求本身**，以及**双向**核对关联需求：上游承诺给这块什么、下游要求这块交付什么。只读一边必然写出未来会冲突的契约。
-2. **既有决策**（**vault 优先**）— `<vault>/Projects/<项目>/Notes/adr/`、`Notes/CONTEXT.md`；仓库侧 `docs/adr/`、`docs/architecture.md` 作为补充。已接受的决策是**约束**，不是建议；要改就得显式 supersede。
+2. **既有决策**（**vault 优先**）— `<vault>/Projects/<项目>/Notes/decisions/`、`Notes/CONTEXT.md`；仓库侧 `docs/adr/`、`docs/architecture.md` 作为补充。已接受的决策是**约束**，不是建议；要改就得显式 supersede。
 3. **目标区域的代码证据** — 现有接口形状、调用方、数据流。设计脱离代码现状就是纸上谈兵。
 4. **硬约束 vs 偏好 vs 未决歧义** 分三类列清。歧义多到无法安全设计时走 `skill://grilling` 跟用户对齐，**不要用假设填**。
 

@@ -4,7 +4,7 @@
 
 ## 为什么需要它
 
-`tdd` / `grilling` / `diagnosing-bugs` / `knowledge-base` 这四个日常 skill 里有若干段落
+`tdd` / `grilling` / `diagnosing-bugs` 这三个日常 skill 里有若干段落
 引用已停用的任务流水线。流水线停掉后，这些引用要么指向废弃命令，要么让 agent 误以为
 有后台进程在跑：
 
@@ -14,15 +14,10 @@
 | `grilling` | 开头整段讲 `requirement-elaborator` 的 `grill_owner` CAS 锁 | 整段删除（单用户交互没有并发问题） |
 | `grilling` | 调用方举例点名 `requirement-elaborator` | 改成通用的"规划/设计/评审类 skill" |
 | `diagnosing-bugs` | description 与正文都指向 `requirement-elaborator` | 改指 `grilling`；适用门里的 `Task-runner Round 2 pause` 语境去掉 |
-| `knowledge-base` | 三段写死 daemon 自动触发（`OTR_KB_VAULT`、`daemon MUST invoke on Merge`、`task-verifier`） | **不删**——daemon 若重启这些描述依然正确——而是加「运行前提」章节，并用 **〔需 daemon〕** 标出哪些段落依赖后台进程，同时给出手动等价路径 |
-
-`knowledge-base` 额外补了一条实测结论：`enable WAL: unable to open database file`
-**不是知识库损坏**，是 home 只读（沙箱）导致的写失败；把 `kb.sqlite` 拷到可写路径再用
-`--db` 指过去即可正常检索。
 
 ## 为什么要用脚本而不是手改
 
-这四个 skill 由 **chezmoi 纳管**：
+这三个 skill 由 **chezmoi 纳管**：
 
 - 事实源：`~/.local/share/chezmoi/dot_dsh/skills/`
 - 运行副本：`~/.dsh/skills/`
@@ -84,13 +79,13 @@ python3 skills-standalone/local-fixes/retire-local-skill.py
 |---|---|---|
 | `internal/install/install.go` | `validateRequiredSkills()` 去掉该条目 | 原本缺失即 `otg install` **硬失败**（`make deploy` 连带失败） |
 | `internal/notify/notify.go` | grilling 通知文案改指 `grilling` | 那是**用户可见**的提示，会显示一个不存在的 skill |
-| `cmd/kitty-grill/main.go` | 注入的 prompt 改指 `skill://grilling`；doc/flag 文案同步 | 那是**运行期 prompt**，会让模型去遵循已退役 skill 的方法论 |
+| ~~`cmd/kitty-grill/main.go`~~ | （文件已于 2026-09-29 随 kitty-grill 退役删除）注入的 prompt 改指 `skill://grilling`；doc/flag 文案同步 | 历史记录：那是**运行期 prompt**，会让模型去遵循已退役 skill 的方法论 |
 | `obsidian-task-runner/reference.md` | fail-fast 依赖清单 | 文档与代码 1:1 对齐 |
 | `obsidian-task-runner/SKILL.md` | 外部依赖清单 | 同上 |
-| `cmd/kitty-grill/main_test.go` | 测试注释里的旧名 | 注释漂移 |
+| ~~`cmd/kitty-grill/main_test.go`~~ | （文件已删除）测试注释里的旧名 | 历史记录：注释漂移 |
 
 验证：`go build -tags sqlite_fts5 ./...` 通过；全量 `go test -race -tags sqlite_fts5 ./...`
-通过（16 包 ok，0 失败）；`internal/{install,notify}`、`cmd/kitty-grill` 单包均绿。
+通过（16 包 ok，0 失败）；`internal/{install,notify}` 单包均绿（`cmd/kitty-grill` 已于 2026-09-29 删除）。
 
 > **沙箱注意**：在只读沙箱里跑测试会假失败——任务锁目录是 `~/.cache/otg/locks/`，
 > 只读时 59 个测试报 `read-only file system`。加
@@ -192,7 +187,7 @@ const DEFAULT_MAP_FILE = join(homedir(), ".dsh", "skills", "obsidian-task-runner
 | `otg install` | CLI 边界守卫（`internal/cli/install.go`），打印归档说明并退出 1 | `OTG_ALLOW_ARCHIVED_INSTALL=1 otg install` |
 
 不受影响：`make install-standalone`（唯一仍受支持的安装目标）、`build` / `test` / `lint` /
-`clean`、`otg kb *`（知识库 CLI）。
+`clean`。（`otg kb *` 知识库 CLI 已于 2026-09-29 退役。）
 
 > 守卫只加在 **CLI/Makefile 边界**，不放进 `install.Run` / `ConfigureSystemd` 内部——
 > 策略在入口，机制保持可测（`internal/install` 的既有测试不受影响）。
@@ -226,13 +221,13 @@ mv ~/.dsh/plugins/agent-monitor*.html ~/.dsh/trash/   # Agent Town 面板
 
 | 留什么 | 为什么 |
 |---|---|
-| `otg` 二进制（`~/.local/bin/otg`） | `otg kb search`/`absorb` 是日常检索与沉淀入口，`kb-distill.mjs` 靠 `spawn('otg', …)`。**归档的是 daemon，不是 CLI。** |
+| `otg` 二进制（`~/.local/bin/otg`） | 保留：`write-adr`/`validate-doc`/`build-adr-index` 等结构化 vault 写入仍可用。（原 `otg kb search`/`absorb` 已于 2026-09-29 随知识库退役。） |
 | `kb-preflight.mjs` | daemon 之外的自动上下文注入主力（web profile 注册） |
 | `kb-distill.mjs` / `dsh-commands.mjs` / `fallback.mjs` | 会话沉淀、斜杠命令、模型降级 |
 | `dsh-web` / `dsh-web-token-bridge` / `dsh-model-watch` | dsh web GUI 本体 |
 | `chezmoi-apply-watch` | 配置同步（`~/.dsh/skills` 靠它收编） |
 | `dsh-session-repair.service` + `.timer` | 会话健康修复，与 otg 无关 |
-| `~/.dsh/storages/otg/kb.sqlite` + `<vault>/References/` | 知识库本体 |
+| `~/.dsh/storages/otg/kb.sqlite` | 知识库本体遗留数据（`<vault>/References/` 已退役）|
 | `<vault>/Projects/` 全部 | **上下文与任务记录的第一者**，改由交互会话维护 |
 
 **流水线 skill 的退役由 teardown 脚本第 5 步调用**（白名单含 router + 9 个阶段 skill +
@@ -250,7 +245,7 @@ mv ~/.dsh/plugins/agent-monitor*.html ~/.dsh/trash/   # Agent Town 面板
 
 - 决策：停止 daemon 与阶段流水线；所有工作改由 dsh web 交互会话完成。
 - vault 的 `Projects/` 结构保留，继续作为上下文与任务记录的第一者。
-- 保留：`otg` CLI 的 kb 子命令、`kb-preflight`/`kb-distill` 插件、全部 vault 内容。
+- 保留：`otg` CLI（`write-adr`/`validate-doc`/`build-adr-index` 等结构化 vault 写入；原 kb 子命令已于 2026-09-29 随知识库退役）、全部 vault 内容。
 - 停用：`otg-task-watcher.service`、`dsh-agent-server.service`、9 个阶段 skill。
 - 提炼：通用方法移出为独立 skill（project-baseline-audit / risk-aware-planning /
   design-pass / incremental-delivery），不依赖 daemon，见仓库 `skills-standalone/`。
@@ -270,7 +265,7 @@ cp ~/.dsh/trash/local-skill-fixes-<ts>/tdd/SKILL.md.runtime \
 
 ## 演练记录
 
-脚本在交付前已在工作区对四个 skill 的**真实副本**完整演练过：dry-run → 应用
+脚本在交付前已在工作区对三个 skill 的**真实副本**完整演练过：dry-run → 应用
 （12 处）→ 幂等重跑 → 死引用清零（`requirement-elaborator` / `grill_owner` = 0）
 → 双写一致 → frontmatter 合法 → 备份落盘。演练中还修掉了两个自身缺陷：
 
@@ -284,5 +279,5 @@ cp ~/.dsh/trash/local-skill-fixes-<ts>/tdd/SKILL.md.runtime \
 
 > 修复脚本已于 2026-09-14 在宿主执行完毕（备份
 > `~/.dsh/trash/local-skill-fixes-20260914-111018`）：四个文件的
-> `requirement-elaborator` 与 `grill_owner` 引用均归零，`knowledge-base` 落下
+> `requirement-elaborator` 与 `grill_owner` 引用均归零，`knowledge-base`（已于 2026-09-29 退役，本脚本不再处理）原落下
 > 6 处 〔需 daemon〕 标记。本文档保留作为改动依据与回滚索引。

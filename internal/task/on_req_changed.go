@@ -438,18 +438,13 @@ func generationResetUpdates(fm *yamlfrontmatter.Frontmatter) map[string]interfac
 		gen = 1 // 兼容从未经 normalize 的旧文档
 	}
 	return map[string]interface{}{
-		"generation":          gen + 1,
-		"merge_approved":      false,
-		"reopen_count":        fm.ReopenCount + 1,
-		"target_branch":       "",
-		"pr_url":              "",
-		"merge_status":        "",
-		"completed":           "",
-		"knowledge_extracted": false,
-		// 新交付代际不得继承上一代的知识提炼退避（retry_count/retry_until），
-		// 否则重开后的正常提炼可能被旧 backoff 挡住。
-		"knowledge_extract_retry_count": 0,
-		"knowledge_extract_retry_until": "",
+		"generation":     gen + 1,
+		"merge_approved": false,
+		"reopen_count":   fm.ReopenCount + 1,
+		"target_branch":  "",
+		"pr_url":         "",
+		"merge_status":   "",
+		"completed":      "",
 	}
 }
 

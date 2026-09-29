@@ -1,7 +1,6 @@
-.PHONY: _archive-guard build test test-node test-cover bench lint clean install install-force deploy deploy-dryrun deploy-status rollback daemon-recover wait-grilling-writebacks sync-docs install-standalone sync-plugins sync-registry verify-install
+.PHONY: _archive-guard build test test-node test-cover bench lint clean deploy deploy-dryrun deploy-status rollback sync-docs install-standalone sync-plugins sync-registry verify-install check-routes
 
 BINARY := otg
-GRILL  := kitty-grill
 GOBIN  := $(or $(shell go env GOBIN 2>/dev/null),$(HOME)/go/bin)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -28,6 +27,10 @@ SCTL := $(USER_BUS_ENV) systemctl --user
 # 归档后仍受支持的目标：`make install-standalone`（只装交互式 skill）、
 # build / test / lint / clean（不受影响）。
 # ---------------------------------------------------------------------------
+# ⚠️ otg daemon 与阶段流水线已于 2026-09-14 归档、2026-09-29 彻底删除代码。
+# 本 Makefile 只保留构建 / 测试 / skill 同步 / otg CLI 安装检查相关目标；
+# install / install-force / daemon-recover 已随 daemon 删除。
+
 _archive-guard:
 	@if [ "$${FORCE_ARCHIVED:-0}" != "1" ]; then \
 		echo "本仓库已归档（2026-09-14）：daemon 与阶段流水线已停用。"; \
@@ -40,7 +43,6 @@ _archive-guard:
 
 build:
 	go build -tags sqlite_fts5 $(LDFLAGS) -o $(BINARY) ./cmd/otg/
-	go build -o $(GRILL) ./cmd/kitty-grill/
 
 # test/test-cover/bench：加 GIT_TERMINAL_PROMPT=0（任何泄漏到网络 git 的调用
 # 快速失败而非在终端卡死）与 -timeout 5m（单个包测试挂起时自行超时并打印
@@ -51,14 +53,14 @@ test:
 	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -cover -p 4 -timeout 5m ./...
 	@$(MAKE) test-node
 
-# test-node: agent-server / kb-preflight 纯函数单测。
+# test-node: （已无 JS 单测）
+# 2026-09-23：otg 项目归档，daemon 侧 DSH 插件全部移出 deploy/ ——
+#   kb-preflight.mjs / kb-distill 随 KB 面归档；agent-server.mjs + agent-server.kb.test.mjs
+#   随 daemon 组件归档（服务 dsh-agent-server 已 inactive+disabled、8799 未监听、插件从未部署）。
+#   均见 ~/.dsh/archive/kb-20260922-1709/otg-repo-source/。deploy/dsh-plugins/ 现仅剩
+#   daemon 时代的监控 HTML（无 JS 单测）。
 test-node:
-	@if command -v node >/dev/null 2>&1; then \
-		node deploy/dsh-plugins/agent-server.kb.test.mjs && \
-		node deploy/dsh-plugins/kb-preflight.test.mjs; \
-	else \
-		echo "  (node not found — skipping agent-server JS unit tests)"; \
-	fi
+	@echo "  (no JS unit tests left — daemon-era DSH plugins archived 2026-09-23)"
 
 test-cover:
 	GIT_TERMINAL_PROMPT=0 go test -race -tags sqlite_fts5 -coverprofile=coverage.out -p 4 -timeout 5m ./...
@@ -71,68 +73,39 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm -f $(BINARY) $(GRILL) coverage.out coverage.html
+	rm -f $(BINARY) coverage.out coverage.html
 
-# busy-safe install: 运行中的二进制（otg daemon / grilling tab 的
-# kitty-grill）不允许原地覆盖（Text file busy），先 mv 到 .old 再 cp。
-# 强制覆盖兜底：历史容器以 nobody 属主写入的二进制会让 cp 直接 EACCES
-#（非属主无写权限）——2026-09-02 实测 ~/.local/bin/otg 因此停在 v0.44.0
-# 而 ~/go/bin 已更新：mv/rm 的失败被 `-` 前缀吞掉、cp 的失败又被 for 循环
-# 的 `done` 掩掉，deploy 全程"成功"却留下旧二进制。mv 备份 + rm 兜底 + cp
-# 之后必须跑 verify-install（cmp 逐字节比对两处安装目标），不一致立即失败
-# 并打印修复提示——安装绝不静默降级。
-install: _archive-guard build sync-docs
-	@echo "=== Installing $(BINARY) + $(GRILL) ==="
-	mkdir -p $(HOME)/.local/bin $(GOBIN)
-	@for b in $(BINARY) $(GRILL); do \
-		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
-		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
-		-rm -f $(HOME)/.local/bin/$$b $(GOBIN)/$$b 2>/dev/null || true; \
-		cp $$b $(HOME)/.local/bin/$$b; \
-		chmod 755 $(HOME)/.local/bin/$$b; \
-		cp $$b $(GOBIN)/$$b; \
-		chmod 755 $(GOBIN)/$$b; \
-	done
-	@$(MAKE) verify-install
-	@echo "Installed to $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"
 
 # verify-install: 逐字节比对 repo 二进制与两处安装目标（~/.local/bin、
 # $(GOBIN)）。任一处是旧版本/缺失 → 打印原因与修复命令并 exit 1，
 # 让 deploy/install 在静默降级前叫停。
 verify-install:
 	@fail=""; \
-	for b in $(BINARY) $(GRILL); do \
+	for b in $(BINARY); do \
 		cmp -s "$$b" "$(HOME)/.local/bin/$$b" || fail="$$fail $(HOME)/.local/bin/$$b"; \
 		cmp -s "$$b" "$(GOBIN)/$$b" || fail="$$fail $(GOBIN)/$$b"; \
 	done; \
 	if [ -n "$$fail" ]; then \
 		echo "ERROR: 二进制安装不一致（旧版本残留或缺失）：$$fail"; \
-		ls -l $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL) $(GOBIN)/$(BINARY) $(GOBIN)/$(GRILL) 2>/dev/null || true; \
+		ls -l $(HOME)/.local/bin/$(BINARY) $(GOBIN)/$(BINARY)  2>/dev/null || true; \
 		echo "修复："; \
 		echo "  1) 目标文件属主异常（历史容器以 nobody 写入）→"; \
-		echo "     sudo chown $$(id -un):$$(id -gn) $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL)"; \
+		echo "     sudo chown $$(id -un):$$(id -gn) $(HOME)/.local/bin/$(BINARY) $(GOBIN)/$(BINARY)"; \
 		echo "     然后重跑 make deploy"; \
 		echo "  2) ~/.local 或 ~/go/bin 只读挂载 → mount | grep -i '\.local\|go/bin' 检查并恢复可写"; \
 		echo "  3) 目录不可写 → chmod u+w $(HOME)/.local/bin"; \
 		exit 1; \
 	fi; \
-	echo "verified: $(HOME)/.local/bin/$(BINARY) $(HOME)/.local/bin/$(GRILL) $(GOBIN)/$(BINARY) $(GOBIN)/$(GRILL)"
+	echo "verified: $(HOME)/.local/bin/$(BINARY) $(GOBIN)/$(BINARY)"
 
 sync-docs: _archive-guard
 	@echo "=== Syncing skill docs to ~/.dsh/skills/obsidian-task-runner/ ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		mkdir -p "$$SKILL_DIR"; \
-		cp -r obsidian-task-runner/*.md "$$SKILL_DIR/"; \
-		cp -r obsidian-task-runner/skills/ "$$SKILL_DIR/"
+		cp -r obsidian-task-runner/*.md "$$SKILL_DIR/"
 	@# workflow.md is the repo design doc; not shipped with the runtime skill
 	@# package (runtime = SKILL.md + reference.md; full spec stays in repo).
-	@# knowledge-base is an external skill; repo copy is the versioned source
-	@# for rollback. Only the installed file is overwritten, never vault data.
-	cp obsidian-task-runner/skills/knowledge-base/SKILL.md $(HOME)/.dsh/skills/knowledge-base/SKILL.md
-	@for s in $$(grep -v '^#' obsidian-task-runner/skills/manifest | grep -v '^$$'); do \
-		mkdir -p $(HOME)/.dsh/skills/obsidian-task-runner-$$s; \
-		cp obsidian-task-runner/skills/$$s/SKILL.md $(HOME)/.dsh/skills/obsidian-task-runner-$$s/SKILL.md; \
-	done
+	@# 2026-09-29：阶段 skill（manifest 曾列 9 个）已彻底退役，不再安装。
 	@echo "=== Pruning stale managed docs/skills (仅清单内、且 repo 已移除的) ==="
 	@# 安全兜底（2026-08-31 误删 dsh home patch 插件教训）：
 	@#   1. 只清理受管目录内、且 repo 曾经管理、现已在清单中消失的文件；
@@ -236,7 +209,7 @@ sync-plugins: _archive-guard
 	[ "$$cleaned" -gt 0 ] && echo "  → 已回收 $$cleaned 个 .old 到 $$TRASH" || echo "  无旧版 .old 需要清理"
 	@echo "=== Done ==="
 	@echo "  ⚠ ~/.dsh/plugins/ 还可能有 dsh home patch（cordis.patch.yml）手工引用的插件"
-	@echo "    （fallback/dsh-commands/kb-distill/vault 等）——它们不在受管清单，deploy 绝不删除。"
+	@echo "    （fallback/dsh-commands 等）——它们不在受管清单，deploy 绝不删除。"
 
 
 # sync-registry: 把 skill-registry.json（技能安装源清单）同步到 ~/.dsh/config/。
@@ -257,13 +230,13 @@ sync-registry:
 #   → agent-server 所有权收敛（managed=true 停 systemd/清孤儿，防 8799 冲突）
 #   → daemon-reload → 重启 watcher
 #   → managed=false 时按 checksum 判断是否重启 dsh-agent-server
-#   → kb-preflight 变更且 dsh-web 在跑时重启 dsh-web（[5c/6]）
+#   → （已退役）kb-preflight 变更重启 dsh-web：KB 面归档后此步不再执行
 # 幂等、可随时重跑；日常用 `make deploy` 即可，不再需要 install-force。
 # ===========================================================================
 deploy: _archive-guard build test
-	@echo "=== [1/6] busy-safe install $(BINARY) + $(GRILL) ==="
+	@echo "=== [1/6] busy-safe install $(BINARY) ==="
 	mkdir -p $(HOME)/.local/bin $(GOBIN)
-	@for b in $(BINARY) $(GRILL); do \
+	@for b in $(BINARY); do \
 		-rm -f $(HOME)/.local/bin/$$b.old $(GOBIN)/$$b.old 2>/dev/null || true; \
 		-mv $(HOME)/.local/bin/$$b $(HOME)/.local/bin/$$b.old 2>/dev/null || true; \
 		-rm -f $(HOME)/.local/bin/$$b $(GOBIN)/$$b 2>/dev/null || true; \
@@ -289,8 +262,7 @@ deploy: _archive-guard build test
 	@echo "=== [3/6] systemd drop-in override (daemon -> repo otg) ==="
 	@mkdir -p $(HOME)/.config/systemd/user/otg-task-watcher.service.d
 	@printf '[Service]\n# deploy: daemon loads the latest repo-built otg on every restart.\nExecStart=\nExecStart=%s/otg daemon\n' "$$(pwd)" > $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-override.conf
-	@echo "=== [4a/6] wait for in-flight grilling writebacks ==="
-	@$(MAKE) --no-print-directory wait-grilling-writebacks
+	@echo "=== [4a/6] (grilling writeback wait removed: kitty-grill retired) ==="
 	@echo "=== [4/6] agent-server ownership reconcile (detect-only) ==="
 	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
 		CFG="$$SKILL_DIR/config/vault-map.json"; \
@@ -339,24 +311,13 @@ deploy: _archive-guard build test
 		else \
 			echo "  (agent_server_managed=true — daemon 已拉起新 agent-server，无需 systemd 重启)"; \
 		fi
-	@echo "=== [5c/6] dsh-web: restart if kb-preflight changed ==="
-	@if [ -f "$(HOME)/.dsh/plugins/kb-preflight.mjs" ] && [ -f "$(HOME)/.dsh/plugins/kb-preflight.mjs.old" ]; then \
-		cmp -s "$(HOME)/.dsh/plugins/kb-preflight.mjs" "$(HOME)/.dsh/plugins/kb-preflight.mjs.old" 2>/dev/null && changed="" || changed="yes"; \
-	else \
-		changed="yes"; \
-	fi; \
-	if [ -n "$$changed" ]; then \
-		if $(SCTL) -q is-active dsh-web.service 2>/dev/null; then \
-			echo "  kb-preflight changed — restarting dsh-web"; \
-			$(SCTL) restart dsh-web 2>/dev/null || echo "  (dsh-web restart failed — run: systemctl --user restart dsh-web)"; \
-		else \
-			echo "  (dsh-web not active — kb-preflight 将在下次启动时加载)"; \
-		fi; \
-	else \
-		echo "  kb-preflight unchanged — dsh-web 无需重启"; \
-	fi
+	@echo "=== [5c/6] dsh-web: 已退役（kb-preflight 随 KB 面归档移除） ==="
+	@echo "  KB 注入插件已归档，dsh-web 不再因其变更而重启。"
+	@echo "  若改了 ~/.dsh/plugins/ 下其它插件需重启，手工执行：systemctl --user restart dsh-web"
+	@echo "  ⚠️ 2026-09-23 修正：原实现用「文件不存在 ⇒ changed=yes」的兜底，导致"
+	@echo "     kb-preflight 归档后**每次 make deploy 都无条件重启 dsh-web**。"
 	@echo "=== [5d/6] 会话提炼扩展：已退役（旧执行器时代结束） ==="
-	@echo "  会话蒸馏现由独立工作区维护的 dsh 插件 kb-distill.mjs 承载"
+	@echo "  会话蒸馏原由 kb-distill.mjs 承载，该插件已随 KB 面归档移除。"
 	@echo "  （~/.dsh/plugins/，非本仓库部署——deploy 只同步仓库自有插件，不触碰它）"
 	@echo "=== [6/6] done (daemon now runs repo otg) ==="
 	@echo "  verify:   make deploy-status"
@@ -414,63 +375,6 @@ rollback:
 	-$(SCTL) restart otg-task-watcher.service 2>/dev/null || true
 	@echo "=== Rolled back (daemon now uses $(HOME)/.local/bin/otg) ==="
 
-# wait-grilling-writebacks — deploy/daemon-recover 重启 daemon 与 agent-server
-# 之前，给 kitty-grill 异步决策写回一个排空窗口。写回子进程（detached setsid）
-# 连本地 agent-server 的 /agent/chat；重启会 pkill agent-server 硬切断请求，
-# 用户刚提交的决策写回失败并弹「Grilling 决策写回失败」（观测：2026-08-22
-# 08:04 / 2026-09-01 11:45 写回 EOF/TIMEOUT，均撞上 make deploy 的重启窗口）。
-# pgrep 模式用 [k] 防自匹配：配方 shell 自身命令行含 "kitty-grill --writeback"
-# 字面量，但正则 [k] 只匹配 "k" 不匹配 "[k]"，故不会把 shell 自己算作在途写回。
-wait-grilling-writebacks:
-	@i=0; \
-	while pgrep -f '$(GRILL) --writebac[k]' >/dev/null 2>&1 && [ "$$i" -lt 300 ]; do \
-		if [ $$((i % 10)) -eq 0 ]; then echo "  在途 grilling 写回（已等 $$i/300s）…"; fi; \
-		sleep 1; i=$$((i+1)); \
-	done; \
-	if pgrep -f '$(GRILL) --writebac[k]' >/dev/null 2>&1; then \
-		echo "  ⚠ 在途 grilling 写回 300s 后仍未结束，继续重启（该写回可能被打断，失败会弹提醒可重试）"; \
-	else \
-		echo "  无在途 grilling 写回"; \
-	fi
-
-# daemon-recover: 流水线停摆恢复（显式手动命令）。停止 systemd 版
-# agent-server 收回 8799，再拉起 otg-task-watcher。恢复命令同样**绝不编辑
-# 用户 systemd 单元、绝不 pkill 无关进程**：发现遗留单元把 dsh-agent-server
-# 钉进 watcher 依赖时，打印显式指引并退出（run: otg install-systemd）。
-daemon-recover: _archive-guard
-	@echo "=== daemon-recover: 等待在途 grilling 写回 ==="
-	@$(MAKE) --no-print-directory wait-grilling-writebacks
-	@echo "=== daemon-recover: agent-server 所有权收敛 ==="
-	@SKILL_DIR="$${SKILL_INSTALL_DIR:-$(HOME)/.dsh/skills/obsidian-task-runner}"; \
-		CFG="$$SKILL_DIR/config/vault-map.json"; \
-		managed=$$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("agent_server_managed", True) else "false")' "$$CFG" 2>/dev/null || echo true); \
-		legacy=""; \
-		if [ "$$managed" = "true" ]; then \
-			echo "  agent_server_managed=true → 停 systemd 实例（本项目的 dsh-agent-server）"; \
-			if ! $(SCTL) disable --now dsh-agent-server 2>/dev/null; then echo "  ⚠ 无法停用 systemd dsh-agent-server，8799 可能仍被占用"; fi; \
-			rm -f $(HOME)/.config/systemd/user/otg-task-watcher.service.d/deploy-agent-managed.conf; \
-			if grep -qE '^(After|Requires)=dsh-agent-server\.service' $(HOME)/.config/systemd/user/otg-task-watcher.service 2>/dev/null; then \
-				echo "  ⚠ legacy watcher unit pins dsh-agent-server — recover never edits unit files."; \
-				echo "    → run: otg install-systemd, then make daemon-recover again."; \
-				legacy=1; \
-			fi; \
-		else \
-			echo "  agent_server_managed=false → 由 systemd 管理，跳过所有权收敛"; \
-		fi; \
-		if [ -n "$$legacy" ]; then exit 2; fi
-	@echo "=== 拉起 otg-task-watcher ==="
-	@$(SCTL) daemon-reload
-	@-$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true
-	@-$(SCTL) start otg-task-watcher.service 2>/dev/null || true
-	@sleep 2
-	@if ! $(SCTL) -q is-active otg-task-watcher.service; then \
-		echo "  watcher 未启动，重试一次..."; \
-		$(SCTL) reset-failed otg-task-watcher.service 2>/dev/null || true; \
-		$(SCTL) start otg-task-watcher.service 2>/dev/null || true; \
-	fi
-	@echo "=== 验证 ==="
-	@echo "  tail -20 ~/.dsh/logs/otg-daemon.log   # 应看到 agent-server starting → healthy → daemon started"
-	@echo "  ss -tlnp | grep 8799                  # daemon 自管的 agent-server"
 
 # deploy-dryrun: 安全预演——只打印 make deploy 会覆盖/清理哪些文件，不实际改动。
 # 误删兜底的第一道防线：跑它确认没有意外删除目标，再跑真正 deploy。
@@ -482,5 +386,17 @@ deploy-dryrun: _archive-guard
 	@DRY_RUN=1 $(MAKE) -s sync-plugins 2>&1 | grep -E "\[dry-run\]|无旧版|回收" || true
 	@echo "=== [dry-run] 完成：以上即会删除/回收的内容；无输出=无删除。正式运行：make deploy ==="
 
-# install-force 保留为 deploy 的别名（旧肌肉记忆兼容），不再有独立逻辑。
-install-force: deploy
+
+# ---------------------------------------------------------------------------
+# check-routes —— ROUTES.md 体积门禁（M11 其二，2026-09-25）
+#
+# `project-context.mjs` 把每个项目的 Notes/ROUTES.md 当作常驻指针注入，硬上限
+# PROJECT_ROUTES_MAX（UTF-8 字节）。超限 ⇒ routesDigest() 按行边界截断 ⇒ **超出的指针
+# 从注入面消失**（实测：001 的 ## 基线三件套曾被整段吞掉）。故 ROUTES 改动前后都应跑本门禁。
+#
+# 上限不硬编码：由脚本从插件源码读出（单一事实源），插件改上限这里自动跟随。
+# 不受 _archive-guard 约束：它只读 vault、不装任何东西。
+# 用法：make check-routes
+# ---------------------------------------------------------------------------
+check-routes:
+	@python3 scripts/check-routes.py

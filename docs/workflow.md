@@ -1,5 +1,15 @@
 # Obsidian Task Runner — 目标业务流程
 
+> ⚠️ **otg daemon 与阶段流水线已退役（2026-09-14，阶段 skill 于 2026-09-29 彻底删除）**：本文描述的 13 阶段自动化（conventions → refining → round1 → round2 → merge → …）及其 `/obsidian-task-runner-<phase>` skill 均不再存在。文中相关流程仅作历史参考；当前交互式流程见 `skills-standalone/`（risk-aware-planning / incremental-delivery / design-pass / project-baseline-audit）与 `~/.dsh/skills/`。
+
+> ⚠️ **KB 面已退役（2026-09-23）**：本文中出现的 `otg kb`（`search`/`absorb`/`hit`）、
+> `skill://knowledge-base`、`kb-preflight`/`kb-distill` 插件、ollama/reranker 服务
+> **全部停用并归档**（`~/.dsh/archive/kb-20260922-1709/`）。
+> **仍有效**的是读 `vault-map.json` 的文档/任务/ADR/REQ 管理命令
+> （`config`/`find-ready`/`write-adr`/`validate-*`/`ensure-context-term`/`update-status`/`build-adr-index`/`stage-plan`/`unregister-project`），
+> 它们不依赖 KB。凡本文指示你调用 `otg kb` 或探测 ollama 之处，**一律作废**。
+
+
 > **架构现状**：当前实现以 DSH 为执行后端（agent-server + 操作者配置的模型路由），
 > 见 [docs/architecture.md](architecture.md)。本文为规范性设计；文中早期执行器描述为历史
 > 规划残留，执行器相关以 architecture.md 为准。
@@ -35,7 +45,7 @@ flowchart TD
     CONV -->|失败/产物缺失| BLK
     SM -->|ready| REFINE[refining<br/>/obsidian-task-runner-refining]
     REFINE -->|fact/auto 采纳后成熟| PLAN
-    REFINE -->|仅剩 dispute| GRILL[needs-grilling<br/>Kitty + requirement-elaborator]
+    REFINE -->|仅剩 dispute| GRILL[needs-grilling<br/>DSH 会话内 grilling]
     REFINE -->|dispute 重复 grill_repeat≥2| PARK[park 升级<br/>→ 项目级 Grilling-Decisions.md]
     GRILL -->|grill_resolution=resume| REFINE
     GRILL -->|replan| REFINE
@@ -91,7 +101,7 @@ flowchart TD
 | 3 | 依赖链恢复 | scan 开始 | `resolveBlockedDependencies`：blocked_by 上游是阶段失败（MODEL_FAILED/PHASE_TIMEOUT/PHASE_INTERRUPTED 等）→ 自动 `resume_approved=true`（上限 2 次、防循环） | 无 | `resume_approved=true, auto_resume_pending=true` | 下一轮 scan |
 | 4 | priority 评估 | scan 末尾（与 refining 并行） | `FindPriorityTasks`（Priority 为空 + pending）；running 超 10min 接管；每轮 ≤2 个；API key 不可用则跳过 | `/obsidian-task-runner-priority <req_doc>`（models.default，5min 超时，2 次尝试后 fallback） | `priority_assessment_status=pending→running→completed/failed`，`priority/impact/urgency/…` | 结果用于 dashboard 排序 |
 | 5 | refining | `status=ready` 被拾取（**`blocked_by` 上游未 done 不调度——依赖门禁前置**） | `nextLocalTransition` 转 refining；**REQ hash 由 daemon 预写 `refine_req_hash`（零 token）**；DSH 阶段会话（models.default，thinking medium）；**会话成功后 daemon 按当前 REQ bytes 兜底重写 `refine_req_hash`** | `/obsidian-task-runner-refining <task>`：六项成熟度检查 + ADR/CONTEXT 一致性；**REQ 分段读取（章节 grep + selector，禁止全文加载 >20KB）**；**细化后增量重关联（新术语 → CONTEXT 回写 + 知识库检索注入 grill_context）**；failed 项三分类：fact（自修正 REQ）/ auto（采纳建议写 REQ + `auto_accepted` 审计）/ dispute（进 grilling） | `maturity`、`refine_req_hash`、`refine_version`、`auto_accepted`、`grill_repeat` | fully_mature 且 hash 未变 → 直接 planning（early-out）；fact/auto 处置后成熟 → planning；仅剩 dispute → needs-grilling；dispute 重复（grill_repeat≥2）→ park 升级 |
-| 6 | grilling | `status=needs-grilling` | 检查 owner/超时；创建 Kitty tab（+ 桌面通知兜底）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | Kitty 内 requirement-elaborator / grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
+| 6 | grilling | `status=needs-grilling` | 检查 owner/超时；桌面通知提醒用户在 DSH 会话中对齐（原 Kitty tab 已退役）；`grill_continue=true`（用户离线填答）→ 自动重置 refining 复验（异步 Grilling）；`grill_done` 后按 resolution 恢复；`grill_parked=true` → 静默等待项目级清单 | DSH 会话内 grilling；parked 由 PM 统筹 | `grill_done/grill_resolution/grill_context`，原子清理（含 `grill_continue`） | resume → 恢复 prev status；replan → refining+pending_req；grill_continue → refining 复验；parked → `Notes/Grilling-Decisions.md` 回答后 PM distribute 回 refining |
 | 6.5 | PM 统筹 | scan 末尾（`processGrillingConsolidation`，每轮 ≤1 个） | 同步 DSH 阶段会话（models.default，refining 超时） | consolidate：共享 REQ 组去重 + fact/auto 处置 + dispute 写入 `Notes/Grilling-Decisions.md` + 任务 `grill_parked=true`；**单任务触发扩展：`grill_repeat≥2` 或 `plan_version≥3`（反复 replan）也进统筹**；**新项目/大 REQ 附加拆分建议（split skill）与技术栈建议**；distribute：清单答案写回 REQ + 拆分落地（子 REQ 创建）+ 任务重置 refining | `grill_parked/grill_repeat/plan_version`、清单 `grill_continue` | 用户一次性回答全部争议点；分发后任务各自重跑 maturity gate |
 | 6.6 | 自动阶段化 | scan 开始（每轮，PM 统筹前） | `processAutoStaging`：未分阶段（stage 空）的进行中任务按 `blocked_by` 拓扑确定性分层 → 合并为阶段（`stage_min_per_phase`/`stage_max_phases`）→ Stage-Plan.md 追加 + 批量写 `stage` 字段。秒级幂等，编号接续，零 LLM 会话 | 无（纯 Go） | `stage: "P{N}"`、`Notes/Stage-Plan.md` | 已分阶段任务从 PM 输入中消失，PM 只剩真争议 |
 | 7 | planning | maturity 成熟 | DSH 阶段会话（assignee 模型，thinking max）；**REQ hash 由 daemon 预写（`refine_req_hash`）** | `/obsidian-task-runner-round1 <task>`：Step -1 知识图谱 → 版本化计划 + Prototype 建议；**命中的知识文档写入 `knowledge_refs`（引用链）**；**成功完成后 daemon 自动折叠 `## 实现计划` 历史（keep=3，防文档膨胀）** | `plan_version`、`status=plan-review`、`plan_approved=false`（批准由 daemon 按 auto_approve 决定）、`adr_proposed`、`knowledge_refs` | plan-review；auto_approve（默认 true）时 daemon 同轮直接转 implementing |
@@ -118,7 +128,7 @@ flowchart TD
     Watch[fsnotify Projects/**] --> Daemon[otg daemon]
     Timer[systemd timer] --> Daemon
     Daemon --> Refine[obsidian-task-runner-refining]
-    Daemon --> Grill[requirement-elaborator in Kitty]
+    Daemon --> Grill[grilling in DSH session]
     Daemon --> Plan[obsidian-task-runner-round1]
     Daemon --> Implement[obsidian-task-runner-round2]
     Daemon --> Merge[obsidian-task-runner-merge]
@@ -167,7 +177,7 @@ Daemon 直接调用阶段 Skill，不通过核心 Skill 二次路由：
 
 外部依赖 Skill：
 
-- `requirement-elaborator`
+- `grilling`
 - `grilling`
 - `domain-modeling`
 - `diagnosing-bugs`
@@ -194,7 +204,7 @@ stateDiagram-v2
     refining --> needs-grilling: dispute 重复 grill_repeat≥2 → grill_parked=true（并入项目级 Grilling-Decisions.md）
     refining --> blocked: 自动恢复一次后再次失败
 
-    needs-grilling --> needs-grilling: owner 有效 / Kitty 不可用 / resolution 为空 / grill_parked=true 等清单回答
+    needs-grilling --> needs-grilling: owner 有效 / resolution 为空 / grill_parked=true 等清单回答
     needs-grilling --> implementing: grill_done=true and grill_resolution=resume
     needs-grilling --> refining: grill_done=true and grill_resolution=replan
     needs-grilling --> refining: PM distribute 分发清单答案（grill_parked=false, grill_repeat=0）
@@ -240,7 +250,7 @@ stateDiagram-v2
 | `blocked` | 缺字段、依赖未完成，或阶段连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | `ready`、`refining`、`planning` 或 `implementing` |
 | `ready` | 可以开始规格成熟度检查 | daemon | `refining` |
 | `refining` | 正在执行 headless maturity gate | default model | `planning` 或 `needs-grilling` |
-| `needs-grilling` | 等待用户交互补充规格或解决实现阻塞 | Kitty + requirement-elaborator/用户 | `refining` 或恢复 `grill_prev_status` |
+| `needs-grilling` | 等待用户交互补充规格或解决实现阻塞 | DSH 会话 + grilling/用户（原 Kitty tab 已退役） | `refining` 或恢复 `grill_prev_status` |
 | `planning` | 规格已成熟，正在生成版本化实现计划 | Round 1 Skill | `plan-review` |
 | `plan-review` | 具体 `plan_version` 已存在，等待或已获得批准 | 人工 Gate | `implementing` 或 `closed` |
 | `implementing` | 在任务 worktree 执行已批准计划（含 Prototype Gate） | Round 2 Skill | `review`、`refining` 或 `needs-grilling` |
@@ -283,8 +293,7 @@ flowchart TD
     Hash --> Gate{Maturity Gate}
     Gate -->|fully_mature| Planning[status=planning]
     Gate -->|mostly_mature or immature| Grilling[status=needs-grilling]
-    Grilling --> Kitty[自动创建 Kitty tab]
-    Kitty --> Spec[requirement-elaborator 写回详细规格]
+    Grilling --> Spec[grilling 在 DSH 会话写回详细规格]
     Spec --> Done[grill_done=true，释放 owner]
     Done --> Refining
 ```
@@ -344,7 +353,7 @@ resume_approved: false
 ### 5.1 双重检查
 
 - daemon：发送通知、重复提醒和状态迁移前检查 owner/timeout。
-- requirement-elaborator：获取、持有和释放 owner。
+- grilling：获取、持有和释放 owner。
 
 TASK frontmatter：
 
@@ -374,17 +383,14 @@ ${用户缓存目录}/otg/locks/otg-task-<task-path-sha256>.lock
 `notifications.desktop` 只控制 `notify-send` 系统桌面通知。
 
 - `desktop=false`：不发送系统桌面通知，包括最终状态通知。
-- Kitty Grilling tab 是核心交互入口，始终尝试创建，不受 `desktop` 控制。
-- 同一 TASK 在全部 Kitty OS window 中最多保留一个活跃 Grilling tab。Daemon 在创建前解析 `kitty @ ls` JSON，并按稳定前缀 `Grilling <task-id>` 检查 tab title 与 window title；标题变化和 JSON Unicode 转义不得绕过去重。
-- tab 检查和创建受 per-task 文件锁保护；每次尝试前写入 5 分钟 debounce 时间戳，避免并发扫描或 daemon 重启重复创建。
-- `kitty @ ls` 不可执行时按本次尝试写入的 debounce 判断近期会话并停止创建；JSON 无法解析时 fail closed，不创建 tab，并保留 `notify-send` fallback。后续扫描继续重试 Kitty。
-- Kitty 不可用：保持 `needs-grilling`，记录日志，后续扫描按 debounce 周期重试 Kitty；不得转 `blocked`，不得调用普通终端 fallback。
+- **（已退役 2026-09-29）** 原 Kitty Grilling tab 是核心交互入口，始终尝试创建，不受 `desktop` 控制；kitty-grill 与 agent-server 退役后，需求对齐改在 **DSH 会话内**完成，提醒只走桌面通知。
+- （Kitty tab 的 per-task 文件锁 + 5 分钟 debounce 去重逻辑已随 kitty-grill 退役删除。）
 
 需求细化型 Grilling 完成后必须回到 `refining` 复验；实现阻塞型 Grilling 按 `grill_resolution=resume|replan` 分流。
 
 ### 5.4 实现阻塞的 Grilling 回流
 
-Round 2 阻塞进入 Grilling 时，requirement-elaborator/用户必须写结构化结果：
+Round 2 阻塞进入 Grilling 时，grilling/用户必须写结构化结果：
 
 ```yaml
 grill_resolution: resume # resume | replan | ""
@@ -403,7 +409,7 @@ Daemon 消费完成结果时，优先级为：
 3. 否则 `grill_resolution=replan` → 转 refining。
 4. 否则保持 needs-grilling。
 
-成功路由后必须原子清理：`grill_done=false`、`grill_resolution=""`、`grill_context=""`、`grill_prev_status=""`；owner/started_at 已由 requirement-elaborator 释放。
+成功路由后必须原子清理：`grill_done=false`、`grill_resolution=""`、`grill_context=""`、`grill_prev_status=""`；owner/started_at 已由 grilling 释放。
 
 ### 5.5 Grilling 期间 REQ WRITE
 
@@ -411,10 +417,9 @@ Daemon 消费完成结果时，优先级为：
 
 - 不清 owner。
 - 不修改 status。
-- 不重开 Kitty tab。
 - 当前 Grilling 完成后按 `grill_resolution` 路由。
 
-这样 requirement-elaborator 自己写回 REQ 不会被 watcher 当成外部取消事件。
+这样 grilling 自己写回 REQ 不会被 watcher 当成外部取消事件。
 
 ### 5.6 refining/planning 期间 REQ WRITE
 
@@ -429,7 +434,7 @@ Daemon 消费完成结果时，优先级为：
 1. **refining 三分类**（`/obsidian-task-runner-refining`）：failed 项按 fact（环境事实可证，自修正 REQ）/ auto（有明确建议且低风险可逆，采纳写 REQ + `auto_accepted` 审计）/ dispute（真争议）分类。fact/auto 处置后成熟 → 直接 planning，不再问用户。
 2. **重复检测**：dispute 与上一版 `## Grilling 待回答` 相同 → `grill_repeat+1`；`grill_repeat≥2` 且 REQ hash 未变 → **park 升级**（`grill_parked=true`），不再逐任务重复追问。
 3. **PM consolidate**（`processGrillingConsolidation`，scan 末尾每轮 ≤1）：按 req_doc 分组去重 → fact/auto 处置同步到所有相关任务 → dispute 写入 `Notes/Grilling-Decisions.md` 决策点（含来源任务、冲突引用、建议方向、决策空位）→ 任务 `grill_parked=true`。
-4. **一次性回答**：用户在清单中填「决策:」，置 frontmatter `grill_continue=true`。parked 任务不创建 Kitty、不提醒。
+4. **一次性回答**：用户在清单中填「决策:」，置 frontmatter `grill_continue=true`。parked 任务不提醒。
 5. **PM distribute**：检测到清单 answered → 读答案写回各 REQ（标注 `[决策: <清单 D-n>]`）→ 任务重置 `grill_parked=false / grill_repeat=0 / status=refining` → 各自重跑 maturity gate。清单 `status=paused` 时 daemon **不派发 distribute**（填答案也不写回），见 5.8。
 
 **审计与推翻**：`auto_accepted` 保留每次自动采纳记录（版本、时间、摘要）；用户可推翻自动采纳后重跑 refining，REQ 中的 `[采纳建议 auto]` 标注会被后续决策标注覆盖。
@@ -448,8 +453,8 @@ stateDiagram-v2
     answered --> [*]
 ```
 
-- **`open`**：有待答决策点 → 每个 parked 任务创建/聚焦一个 Kitty 决策 tab（每项目一个、5 分钟 debounce）；`grill_continue=true` 或全部填完 → distribute 分发 → `status=answered`。
-- **`paused`**（需求未想好，项目级暂停开关）：该项目的 grilling 流程任务**整体暂停**——不创建 Kitty tab、不提醒、grill_continue 不重置 refining、**PM 不分发/不 consolidate**（填答案也不写回任务）、parked 任务不解除。consolidate 不得再向 paused 清单追加决策点。
+- **`open`**：有待答决策点 → 在 DSH 会话中回答项目级决策清单（原 Kitty 决策 tab 已退役）；`grill_continue=true` 或全部填完 → distribute 分发 → `status=answered`。
+- **`paused`**（需求未想好，项目级暂停开关）：该项目的 grilling 流程任务**整体暂停**——不提醒、grill_continue 不重置 refining、**PM 不分发/不 consolidate**（填答案也不写回任务）、parked 任务不解除。consolidate 不得再向 paused 清单追加决策点。
 - **恢复**：① 用户手动把清单 frontmatter `status` 改为 `open`；② **关联 REQ 更新时 daemon 自动激活回 `open`**（用户/团队主动补充需求 = 恢复信号）并通知——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程。激活后下一轮 scan 起提醒/分发/派发全部恢复（已填答案的清单在 open 后自动分发）。
 - **失败/切换通知按任务防抖**（`notifyFailure`）：主模型失败（⏰ 超时 / 💥 进程异常 / 💰 Token 不足）、🔄 模型切换、❌ 全部失败、🚫 阶段失败通知按任务 5 分钟窗口去重——**同级/低级别事件窗口内抑制**，**更高级别事件升级后再发**（失败原因 < 模型切换 < 全部失败/阶段阻塞），保证终态必达：主失败 + fallback 失败最多 2 条（🔄 切换 + ❌ 全部失败）、反复失败到阻塞最多 2 条（⏰/💥 + 🚫），同级反复 5 分钟最多 1 条。有 fallback 时失败原因与切换合并为单条通知。
 - **通知风暴抑制**：API key 故障等批量失败场景，桌面提醒按 5 分钟窗口全局去重（`notifyKeyUnavailable`），不再每任务一条；调度前 `apiKeyAvailable()` 预检让任务保持状态等待（不启动 DSH 阶段会话、不消耗重试预算、无逐任务通知）。
@@ -513,8 +518,8 @@ Round 2 首次调度（`resolveRepo` new 分支）自动完成项目初始化：
 - **自动注册 vault-map.json**：`name`/`path` 按解析结果写入，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`）——后续扫描以 `existing` 解析，无需手动配置。
 - **REQ 出现即注册**：目录已存在但 vault-map 未登记的项目（如手工创建的 `Projects/010-demo/`），首个 REQ 文件出现时由 `ensureProjectRegistered` 自动补登记（事件与每轮 scan 双通道；name 去数字前缀，path 优先 `new_project_root/<name>` 的约定 checkout，不存在则回退 vault 项目目录），随后正常建 TASK 走细化——新项目无需任何手工配置。
 - **vault 回退项目自动提升（`ensureProjectCheckout`）**：已注册项目若 path 是 vault 项目目录（非 git 根）且配置了 `git_remote`，`resolveRepo` 自动创建 `new_project_root/<name>` 独立 checkout（README 初始提交，供 worktree 分支），vault-map `path` 更新指向 checkout，远端仓库缺失时自动 `gh repo create`（private，description 从 REQ 蒸馏）并补 origin。不提升的话 worktree 与 merge 会静默落入外层 Vault 仓库——错误仓库合并。提升对任意阶段生效（refining 扫描也可能触发，README-only 仓库无副作用）；提升失败仅记日志、回退原路径，由 merge 守卫兜底。
-- **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns` / `## Reference Map`），由首轮 agent 填充。
-- 新项目首个 REQ 由 PM 统筹触发 `skill://obsidian-task-runner-split` 拆分建议（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
+- **播种 `Notes/CONTEXT.md` 骨架**（`## Language` / `## Development Constraints` / `## Anti-patterns`），由首轮 agent 填充。
+- 新项目首个 REQ 由 PM 统筹触发拆分建议（原 `skill://obsidian-task-runner-split` 已于 2026-09-29 退役）（并入 Grilling-Decisions 一次性对齐），确认后 distribute 创建子 REQ（`OnReqChanged` 自动生成 canonical TASK）。
 
 ### 6.5.1 团队已有项目（`project_type: team`）
 
@@ -609,7 +614,7 @@ merge_approved: false
 若 `adr_approved=true` 且 `adr_proposed` 非空，Round 2 在全部 AC 完成后写入 ADR（`adr_approved` 由 daemon 在 plan-review→implementing 时自动设置，无需人工干预）：
 
 1. 幂等检查：`adr_written` 中已有的文件不重写。
-2. 逐个调用 `otg write-adr` 原子写入 `Notes/adr/ADR-<id>-<slug>.md`。
+2. 逐个调用 `otg write-adr` 原子写入 `Notes/decisions/ADR-<id>-<slug>.md`。
 3. 写入后 `otg validate-adr` 双重确认。
 4. 全部成功后一次 `otg update-status` 更新 `adr_written`、清 `adr_proposed` 和 `adr_approved`。
 
@@ -804,7 +809,7 @@ flowchart TD
 
 - **动机**：一轮 scan 可能同时拉起 20+ 个 DSH 会话（线上实测），造成 token 快速消耗、API 限速、会话启动互相拖慢与 CPU/内存抢占。
 - **机制**：调度循环对每个待调度任务按阶段 tryAcquire 非阻塞槽位（`phaseGate`）；满员任务留在 pending，等其它任务完成（runTask → requestScan）后下一轮自动调度，与 implementationGate 同语义。
-- **范围**：`refining`/`planning` 按任务状态映射；`priority` 映射到 ready+priority pending；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。`needs-grilling`（Kitty 交互）不限。
+- **范围**：`refining`/`planning` 按任务状态映射；`priority` 映射到 ready+priority pending；`audit` 映射到 review + auto_merge + 未授权（`processReviewAudit` 并发审计会话上限，满员留待下一轮 scan）；`merge` 在 merge 分支（review/conflict + merge_approved 提前 `continue` 处）获取/释放；`pm` 在 `runGrillingPM`（distribute/consolidate/stage-review 唯一派发点）获取并跨会话生命周期持有，满时 `errPMGateFull` 下一轮 scan 重试。`needs-grilling`（DSH 会话交互）不限。
 - **配置**：key 显式置 `0` = 该阶段不限并发（缺失 key 回填默认值，见 config-reference）；`round2` 由 `max_concurrent_tasks_per_project`（每项目上限，缺失/0 回落默认 2）+ `max_concurrent_tasks`（可选全局总封顶，0 = 不限）控制；修改后重启 daemon 生效。
 
 ```mermaid
@@ -875,7 +880,7 @@ flowchart LR
 4. **失败记录与自动补救（不静默丢失，且不无限重试）**：
    - `knowledge_extracted` 标记**仅在提炼全成功时写入**；任何错误（ADR 引用解析/扫描/写入失败，或检索库 store 同步失败）保留 `false` 并写回 `knowledge_extract_error`（失败原因，用户可见）+ 桌面通知「知识提炼失败/部分失败（自动退避重试中）」。检索库同步（`SyncKnowledgeDB`）失败同样重置 marker 为 false——「提炼成功」= 文件落盘 **且** FTS/向量库同步成功，store 陈旧不允许挂着 true marker。
    - **退避重试（防无限重试风暴）**：提炼/同步失败写 `knowledge_extract_retry_count`（连续失败计数）与 `knowledge_extract_retry_until`（下次允许重试的 RFC3339 截止）——首次失败 10 分钟后重试、逐次加倍、上限 6 小时、持久化重启不清零。**只有完整成功（提取 + store 同步）才清零**；提取成功但同步失败不清零，连续同步失败同样加倍（发版时 store 同步失败曾每轮 scan 重跑整条提取管道，无退避 → 无限重试风暴）。
-   - `adr_written` 的 Round 1 写回形态是单个逗号串且每项带 `Notes/adr/` 前缀（`Notes/adr/ADR-001-….md,Notes/adr/ADR-002-….md`）：`collectADRIDs` 按逗号拆分、剥路径前缀与 `.md` 后缀后再与 ADR 文件名匹配，否则扫描到 N 个 ADR 却提取 0 条（daemon 日志特征 `adrs=6 new=0 updated=0`）。
+   - `adr_written` 的 Round 1 写回形态是单个逗号串且每项带 `Notes/decisions/` 前缀（`Notes/decisions/ADR-001-….md,Notes/decisions/ADR-002-….md`）：`collectADRIDs` 按逗号拆分、剥路径前缀与 `.md` 后缀后再与 ADR 文件名匹配，否则扫描到 N 个 ADR 却提取 0 条（daemon 日志特征 `adrs=6 new=0 updated=0`）。
    - **自动补救扫描**（`recoverUnExtractedKnowledge`，每轮 scan 执行）：`status=done` + `merge_status=merged` + `knowledge_extracted=false` + `pending_req=false` 且**已过 `knowledge_extract_retry_until`** 的任务——即 PR 已合入但提炼未落地的交付——自动重新提炼。覆盖强杀场景（daemon 在 merge 写回与提炼 goroutine 之间被 SIGKILL/断电，此前静默永久丢失）、部分失败场景与 store 同步失败。幂等：marker 短路 + ADR 实践条目按来源链接去重 + 踩坑按标题/失败方案去重。
    - **优雅停机保障**：提炼 goroutine 计入 `activeTasks`，shutdown 等待其落地（`waitForScanExit` 窗口内），不再被停机截断。
 5. `RebuildINDEX`：摘要列（H1 后 blockquote）、噪音检测（AI 聊天链接/文件清单/项目结构 → “含噪音待清理”标记）、缺失 ⚠️。

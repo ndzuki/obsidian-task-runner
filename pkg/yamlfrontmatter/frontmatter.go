@@ -91,33 +91,22 @@ type Frontmatter struct {
 	AdrApproved         bool   `yaml:"adr_approved"`
 	AdrProposed         any    `yaml:"adr_proposed"`
 	AdrWritten          any    `yaml:"adr_written"`
-	KnowledgeExtracted  bool   `yaml:"knowledge_extracted"`
-	KnowledgeExtractErr string `yaml:"knowledge_extract_error"`
-	// Knowledge-extraction retry backoff for done+merged tasks whose
-	// extraction or store sync keeps failing (release-time retry storm
-	// lesson: without a deadline the recovery scan re-ran the full pipeline
-	// every scan forever). Count = consecutive failures; until = next
-	// allowed retry (RFC3339, daemon-maintained).
-	KnowledgeExtractRetryCount int      `yaml:"knowledge_extract_retry_count"`
-	KnowledgeExtractRetryUntil string   `yaml:"knowledge_extract_retry_until"`
-	KnowledgeRefs              []string `yaml:"knowledge_refs"`
-	KnowledgeApplied           string   `yaml:"knowledge_applied"`
-	GrillOwner                 string   `yaml:"grill_owner"`
-	GrillStartedAt             string   `yaml:"grill_started_at"`
-	GrillHeartbeatAt           string   `yaml:"grill_heartbeat_at"`
-	GrillTimeoutMinutes        int      `yaml:"grill_timeout_minutes"`
-	GrillDone                  bool     `yaml:"grill_done"`
-	GrillResolution            string   `yaml:"grill_resolution"`
-	GrillContext               string   `yaml:"grill_context"`
-	GrillContinue              bool     `yaml:"grill_continue"`
-	GrillPrevStatus            string   `yaml:"grill_prev_status"`
-	GrillParked                bool     `yaml:"grill_parked"`
-	GrillRepeat                int      `yaml:"grill_repeat"`
-	AutoAccepted               string   `yaml:"auto_accepted"`
-	ReqRefineCount             int      `yaml:"req_refine_count"`
-	TaskSchemaVersion          int      `yaml:"task_schema_version"`
-	Round2StallUntil           string   `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
-	Round2StallLevel           int      `yaml:"round2_stall_level"` // consecutive no-progress round2 completions (restart-safe; caps at block level)
+	GrillOwner          string `yaml:"grill_owner"`
+	GrillStartedAt      string `yaml:"grill_started_at"`
+	GrillHeartbeatAt    string `yaml:"grill_heartbeat_at"`
+	GrillTimeoutMinutes int    `yaml:"grill_timeout_minutes"`
+	GrillDone           bool   `yaml:"grill_done"`
+	GrillResolution     string `yaml:"grill_resolution"`
+	GrillContext        string `yaml:"grill_context"`
+	GrillContinue       bool   `yaml:"grill_continue"`
+	GrillPrevStatus     string `yaml:"grill_prev_status"`
+	GrillParked         bool   `yaml:"grill_parked"`
+	GrillRepeat         int    `yaml:"grill_repeat"`
+	AutoAccepted        string `yaml:"auto_accepted"`
+	ReqRefineCount      int    `yaml:"req_refine_count"`
+	TaskSchemaVersion   int    `yaml:"task_schema_version"`
+	Round2StallUntil    string `yaml:"round2_stall_until"` // RFC3339; no-progress round2 cooldown deadline (daemon-maintained, survives restarts)
+	Round2StallLevel    int    `yaml:"round2_stall_level"` // consecutive no-progress round2 completions (restart-safe; caps at block level)
 	// Completion audit (independent verification, daemon-maintained).
 	AuditStatus    string `yaml:"audit_status"`     // "" | "pending" | "passed"
 	AuditFailCount int    `yaml:"audit_fail_count"` // consecutive failed audits before block
@@ -330,7 +319,7 @@ var taskFieldOrder = []string{
 	"scaffold", "remote_create", "github_owner", "repository_name",
 	"repository_visibility", "repository_description", "repository_url",
 	// ADR bookkeeping.
-	"adr_proposed", "adr_written", "knowledge_extracted", "knowledge_extract_error", "knowledge_extract_retry_count", "knowledge_extract_retry_until", "knowledge_refs", "knowledge_applied",
+	"adr_proposed", "adr_written",
 }
 
 // reqFieldOrder is the canonical REQ frontmatter key order, mirroring
@@ -450,12 +439,6 @@ var taskFieldDefaults = map[string]interface{}{
 	"new_project":                    false,
 	"adr_proposed":                   []interface{}{},
 	"adr_written":                    []interface{}{},
-	"knowledge_extracted":            false,
-	"knowledge_refs":                 []interface{}{},
-	"knowledge_applied":              "",
-	"knowledge_extract_error":        "",
-	"knowledge_extract_retry_count":  0,
-	"knowledge_extract_retry_until":  "",
 }
 
 // missingDefaults computes the ordered list of absent keys with their
@@ -614,7 +597,7 @@ func NormalizeReqFrontmatter(path string) (bool, error) {
 // Update/AtomicReadModifyWrite use: without it a normalizer pass that reads
 // just before a concurrent daemon/DSH session Update lands and writes just
 // after would clobber the concurrent state change (observed: the schema-defaults pass
-// rewrote a TASK and the knowledge_extracted=true write raced through it,
+// rewrote a TASK and a concurrent write raced through it,
 // flipping the marker back to false and forcing a spurious re-extraction).
 func normalizeFrontmatter(path string, order []string, defaults map[string]interface{}) (bool, error) {
 	cleanPath, err := filepath.Abs(filepath.Clean(path))

@@ -1,12 +1,20 @@
 # 贡献指南
 
+> ⚠️ **KB 面已退役（2026-09-23）**：本文中出现的 `otg kb`（`search`/`absorb`/`hit`）、
+> `skill://knowledge-base`、`kb-preflight`/`kb-distill` 插件、ollama/reranker 服务
+> **全部停用并归档**（`~/.dsh/archive/kb-20260922-1709/`）。
+> **仍有效**的是读 `vault-map.json` 的文档/任务/ADR/REQ 管理命令
+> （`config`/`find-ready`/`write-adr`/`validate-*`/`ensure-context-term`/`update-status`/`build-adr-index`/`stage-plan`/`unregister-project`），
+> 它们不依赖 KB。凡本文指示你调用 `otg kb` 或探测 ollama 之处，**一律作废**。
+
+
 欢迎 issue / PR / 讨论。这个仓库本身由本项目流水线自动开发（自举），
 你的 PR 会走同一条：需求 → 计划 → 实现 → 独立审计 → 合并。
 
 ## 开发环境
 
 - Go 1.24+
-- `make build`：构建 `otg` 与 `kitty-grill`（注意知识库需要 `-tags sqlite_fts5`）
+- `make build`：构建 `otg`（`kitty-grill` 已于 2026-09-29 随 agent-server 退役）
 - `make test`：Go 全量测试（`-tags sqlite_fts5`）+ agent-server/kb-preflight 的 node 单测
 
 ## 测试门禁

@@ -1,5 +1,7 @@
 # Obsidian Task Runner — 目标设计参考
 
+> ⚠️ **otg daemon 已彻底退役（2026-09-14 归档，2026-09-29 删除全部代码）**：`internal/daemon`/`internal/watch` 与 `otg daemon`/`install`/`install-systemd` 命令、systemd 单元均已删除，otg 现只保留 CLI（`status`/`update-status`/`write-adr`/`validate-*`/`build-adr-index`/`find-ready`/`stage-plan`/`config`/`unregister-project`/`ensure-context-term`/`repair-doc`）。阶段 skill（refining/round1/round2/merge/conventions/priority/pm/split/design）同批删除。**文中凡描述 daemon 自动派发/扫描/交付的段落均为历史参考。**
+
 > 完整设计规范与实现验收清单见仓库 `docs/workflow.md`（不随技能包安装）；本文定义状态、frontmatter schema、依赖引用和人工操作。
 >
 > 当前 Go 实现未完全满足本文；以仓库 docs/workflow.md 的实现验收清单为准。
@@ -13,7 +15,7 @@ blocked → ready → refining ─┬─ fully_mature → planning → plan-revi
                             └─ 重复争议（grill_repeat≥2 或单任务 plan_version≥3 反复 replan）→ park → 项目级 Grilling-Decisions.md → PM 分发 → refining
 
 决策清单（Notes/Grilling-Decisions.md）状态机：open ⇄ paused（用户主动或 REQ 更新自动激活）→ answered
-- paused：项目级暂停开关——该项目的 grilling 流程任务整体暂停：不提醒、不开决策 tab、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 任务不解除；填答案也不流转
+- paused：项目级暂停开关——该项目的 grilling 流程任务整体暂停：不提醒、grill_continue 不重置 refining、PM 不分发/不 consolidate、parked 任务不解除；填答案也不流转
 - 恢复：用户手动把清单 status 改为 open，或**关联 REQ 更新时 daemon 自动激活回 open**（用户/团队主动补充需求 = 恢复信号）——随后 consolidate 重新整理新需求与既有争议点、Grilling 对齐，任务重新进入自动化流程
 
 needs-refining（旧版遗留）→ 自动迁移 needs-grilling → refining
@@ -36,7 +38,7 @@ closed -- [终态，不可恢复]
 | `blocked` | 缺字段/依赖，或 refining/planning 连续失败，或 API key 不可用，或人工暂停 | daemon / 人工 | 见 §4.4（自动 unblock / resume / key 探测 / 暂停） |
 | `ready` | 可开始 priority assessment + maturity gate；**`blocked_by` 上游未 done 时不调度**（依赖门禁前置，防无效重规划） | daemon | `refining` |
 | `refining` | Headless 检查需求规格成熟度；**同样受依赖门禁约束** | `models.default` | `planning` / `needs-grilling` / `blocked` |
-| `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发；清单 `status=paused` 时该项目 grilling 流程整体暂停（不提醒/不分发/不 consolidate/不解除），手动改 `open` 或 REQ 更新自动激活后恢复 | Kitty + requirement-elaborator / PM 统筹 | `refining` |
+| `needs-grilling` | 需要用户交互补充规格；`grill_parked=true` 时问题已并入项目级决策清单，等 PM 分发；清单 `status=paused` 时该项目 grilling 流程整体暂停（不提醒/不分发/不 consolidate/不解除），手动改 `open` 或 REQ 更新自动激活后恢复 | 在 DSH 会话中与 grilling 对齐 / PM 统筹（原 Kitty tab 已退役） | `refining` |
 | `planning` | 规格成熟，正在生成版本化计划 | TASK assignee + Round 1 Skill | `plan-review` / `blocked` / `refining` |
 | `plan-review` | 具体计划已存在，等待人工批准 | 人工 | `implementing` / `closed` |
 | `implementing` | 执行已批准计划；Round 2 无进展完成（仍 implementing + 无 checkpoint_commit）进入指数退避冷却（10m→…→~10.7h），冷却期不重派；checkpoint_commit 写入或状态离开 implementing 即重置 | TASK assignee + Round 2 Skill | `review` / `refining` / `needs-grilling` |
@@ -139,19 +141,13 @@ Refining/planning/implementing 第一次失败自动恢复；再次失败转 blo
 | `grill_context` | string/YAML | `""` | 需要对齐的问题上下文 |
 | `grill_prev_status` | string | `""` | 实现阻塞前状态 |
 | `grill_continue` | bool | `false` | 用户离线填答完成标记；daemon 检测到 true 时重置 refining 复验并清字段（异步 Grilling） |
-| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不创建 Kitty、不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不开 tab/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
+| `grill_parked` | bool | `false` | 争议已并入项目级 `Notes/Grilling-Decisions.md`；parked 任务不提醒，等 PM 分发答案。清单 `status=paused` 时该项目的 grilling 流程整体暂停（不提醒/不分发/不解除），用户手动改回 `open` 或关联 REQ 更新（daemon 自动激活）后恢复 |
 | `grill_repeat` | int | `0` | 同一争议集连续未被回答的 refine 轮次；≥2 且 REQ hash 未变 → park 升级，不再逐任务重复追问 |
 | `auto_accepted` | string | `""` | refining 自动采纳建议/事实修正的审计记录（`;` 分隔追加），用户可推翻后重跑 |
-| `knowledge_extracted` | bool | `false` | 该任务 ADR + `## 踩坑记录` 已提取到知识库（`ExtractTaskKnowledge` 幂等标记）。**仅在提炼全成功时写入**（含检索库 store 同步）；失败保留 `false` → daemon 对 `done`+`merged`+未提炼任务自动重试（`recoverUnExtractedKnowledge`），**按 `knowledge_extract_retry_until` 指数退避，不再每轮 scan 无限重试**，不静默丢失。`adr_written` 的逗号串+路径前缀形态在匹配前归一化为裸 ADR id |
-| `knowledge_extract_error` | string | `""` | 最近一次知识提炼失败/部分失败的原因（用户可见，含检索库同步失败）；成功后清空。失败同时触发桌面通知「知识提炼失败/部分失败（自动退避重试中）」 |
-| `knowledge_extract_retry_count` | int | `0` | 知识提炼/检索库同步**连续**失败计数（daemon 维护）；首次失败 10m 后重试，逐次加倍，上限 6h。完整成功（提取 + store 同步）时清零——提取成功但同步失败不清零，连续同步失败同样加倍 |
-| `knowledge_extract_retry_until` | string | `""` | 下一次允许重试知识提炼的 RFC3339 截止（daemon 维护，重启不清零）；`recoverUnExtractedKnowledge` 仅在该时点之后重试，防发版时 store 同步失败引发每轮扫描无限重试风暴 |
-TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档），merge 时自动提取到 References 对应文档「踩坑实践」小节，未命中归档 `References/uncategorized/`。
-| `knowledge_refs` | list | `[]` | Round 1 计划实际引用的知识文档清单（相对 References/ 路径）；Round 2 按清单应用、merge 度量、verifier 校验 |
-| `knowledge_applied` | string | `""` | merge 时 daemon 度量的知识引用命中统计（`hit/total`，如 `2/3`） |
+TASK body `## 踩坑记录`：Round 2 实现中试错换方案的负向经验（现象/失败方案/根因/成功方案/相关文档）——merge 时**不再自动提取**（知识库与 `References/` 已于 2026-09-29 退役）。
 
 | `grill_resolution` | enum/string | `""` | `resume` 直接恢复实现；`replan` 转 refining；空值保持等待 |
-Daemon 和 requirement-elaborator 都必须检查 owner。读检查写过程使用 `${TMPDIR}/otg-grill-<task-path-sha256>.lock` flock 强化本机原子性。
+Daemon 与执行会话都必须检查 owner。读检查写过程由 `WithLockedFrontmatter` 用 `${XDG_CACHE}/otg/locks/otg-task-<sha256>.lock` flock 强化本机原子性（`pkg/yamlfrontmatter`）。
 
 需求细化完成使用 `grill_resolution=replan`，daemon 转 refining 复验。实现阻塞按 resolution 分流。`pending_req=true` 优先于 `resume`，必须重规划。
 
@@ -173,7 +169,7 @@ Daemon 成功消费后原子清 `grill_done`、`grill_resolution`、`grill_conte
 | `reopen_count` | int | `0` | 交付轮次：done 任务因 breaking 需求变更重开时 +1；0 = 首次交付 |
 | `merge_retry_count` | int | `0` | AI 合并修复预算（冲突/CI 失败共享，上限见 vault-map `max_auto_merge_fixes`）；仅在 merge 成功或**新一轮 planning 完成**时清零——replan 不继承旧交付耗尽（TASK-067 教训）；同一计划内重复授权不重置（防无限循环）。**冲突规模熔断（`max_auto_fix_conflicts`，默认 40）**：sync 冲突文件数超阈值不启动 AI 直接交还（不耗预算）；**`upstream_stall_days`（默认 3）**：blocked_by 上游非终态且 `updated` 超阈值 → 每日一次提醒 |
 
-`pending_req` 仅在新 planning 成功后清 false。**done 重开代际重置**：breaking 变更（含未标注）打回 done 任务时清 `target_branch`/`pr_url`/`merge_status`/`completed` 并置 `knowledge_extracted=false`——旧 PR 已 MERGED 时 merge 流程会提前收敛为 done，不清则新交付永远合不进去（TASK-018 实测）。
+`pending_req` 仅在新 planning 成功后清 false。**done 重开代际重置**：breaking 变更（含未标注）打回 done 任务时清 `target_branch`/`pr_url`/`merge_status`/`completed` ——旧 PR 已 MERGED 时 merge 流程会提前收敛为 done，不清则新交付永远合不进去（TASK-018 实测）。
 
 **Merge 认证契约**：Merge Phase 所有远程操作统一走 **gh CLI 认证通道**——`git push` 由 daemon 注入 `-c credential.helper='!gh auth git-credential'`（`mergePushCommand`），PR 创建/复用与合并用 `gh pr create` / `gh pr merge`；禁止裸 `git push`（无 ambient https 凭据的机器会以 `could not read Username` 烧光重试预算，TASK-004 教训）。gh 缺失或未登录（`checkGHAuth` 预检）→ 拒绝远程操作，写 `status=review` + `merge_approved=false` + `phase_error_code=GITHUB_UNAVAILABLE` + `phase_error` 附 `gh auth login` 指引 + 通知。
 
@@ -189,7 +185,7 @@ ADR 是项目的架构宪法。三个原则：
 | ------ | ------ | -------- | ------ |
 | `adr_proposed` | list | `[]` | Round 1 提议的 ADR 标题列表 |
 | `adr_approved` | bool | `false` | daemon 在 plan-review→implementing 时自动设为 true |
-| `adr_written` | list | `[]` | 已写入 `Notes/adr/` 的 ADR 文件名列表 |
+| `adr_written` | list | `[]` | 已写入 `Notes/decisions/` 的 ADR 文件名列表 |
 
 ADR 生命周期：Round 1 读取已有 ADR → 检测新架构决策 → 写入 `adr_proposed` → daemon 自动授权 `adr_approved=true` → Round 2 在实现前写入 ADR 文件 → 全部 AC 完成后更新 `adr_written` 并清 `adr_proposed`/`adr_approved`。
 
@@ -249,7 +245,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 |------|------|--------|------|
 | `scaffold` | object | `{}` | 新项目脚手架意图：`kind`（类型）、`capabilities`（能力列表）、`preferences`（键值偏好）、`notes`（自然语言说明） |
 
-`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段已移除（2026-09-04 字段清理；旧文档中的值保留在 Extra，不丢失）。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验走**知识库检索**（`otg kb search` 能力主题，注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据由知识库主题承担）。
+`scaffold` 结构化描述新项目技术栈、框架、构建系统和部署目标（代码 `ScaffoldIntent` 结构体）。原 `template` 字段已移除（2026-09-04 字段清理；旧文档中的值保留在 Extra，不丢失）。**接线状态**：frontmatter 解析已实现；Round 1 Step 2.5 的能力校验原走**知识库检索**（`otg kb search` 能力主题——该命令已于 2026-09-29 退役；注册表已废弃——`scaffold_registry`/`template_registry` 无代码消费者且自动生成噪音化，能力元数据原由知识库主题承担）。
 
 #### 4.6.8 GitHub Remote Creation（远程仓库创建）
 
@@ -294,7 +290,7 @@ Priority Assessment 由 daemon 在**每轮 scan 末尾**触发（与 refining �
 
 ### 4.7 Daemon 上下文注入
 
-Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`、`plan-review` 阶段与 **merge 冲突/CI 修复会话**时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示。merge 会话注入目的：AI 按需求意图裁决语义冲突（结合 Merge Skill 的强制需求溯源），而非纯代码结构判断。
+Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`、`plan-review` 阶段与 **merge 冲突/CI 修复会话**时，从 Vault `Notes/CONTEXT.md` 提取精简 bundle，以 `<project_context>` 标签块追加到 skill 命令之后的 prompt 尾部，并附 `skill://knowledge-base` 交叉引用提示（该 skill 与知识库已于 2026-09-29 退役）。merge 会话注入目的：AI 按需求意图裁决语义冲突（结合 Merge Skill 的强制需求溯源），而非纯代码结构判断。
 
 注入格式（技能命令后追加）：
 
@@ -302,7 +298,7 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 <skill prompt>
 
 <project_context>
-## 项目上下文（daemon 自动注入，配合 skill://knowledge-base 交叉引用 References）
+## 项目上下文（daemon 自动注入；原 `skill://knowledge-base` 与 `References/` 已退役）
 项目: <project-key>
 
 <Constraints + Anti-patterns + Domain Terms + ADR 摘要>
@@ -314,7 +310,7 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 - **Constraints**（始终注入）：`## Development Constraints` 节，截断到 100 字符/条
 - **Anti-patterns**（始终注入）：`## Anti-patterns` 节，仅保留首句
 - **Domain Terms**（动态选择）：`## Language` 节中按 REQ 关键词打分选 Top-N，无命中时 fallback 到核心术语（数量由 `dynamicTermCount` 按预算动态分配 1–6 个）；长定义截断到 80 字符
-- **ADR**（可选）：`Notes/adr/*.md` 中按 REQ 关键词匹配 Top-2，含 title + 一句 decision
+- **ADR**（可选）：`Notes/decisions/*.md` 中按 REQ 关键词匹配 Top-2，含 title + 一句 decision
 
 术语数量由 `dynamicTermCount` 按剩余 token 预算动态分配。同一项目多次调度缓存 CONTEXT.md 内容（`sync.Map`），避免重复 IO。
 
@@ -452,12 +448,6 @@ Daemon 在调度 DSH 阶段会话执行 `refining`、`planning`、`implementing`
 | `repository_url` | string | — | scaffold | 仓库 URL |
 | `adr_proposed` | json | []interface{}{} | adr-kb | Round 1 提议 ADR |
 | `adr_written` | json | []interface{}{} | adr-kb | 已写 ADR |
-| `knowledge_extracted` | bool | false | adr-kb | merge 后知识提取完成标记 |
-| `knowledge_extract_error` | string | "" | adr-kb | 提取/同步失败摘要 |
-| `knowledge_extract_retry_count` | int | 0 | adr-kb | 提取重试计数 |
-| `knowledge_extract_retry_until` | string | "" | adr-kb | 重试退避截止 |
-| `knowledge_refs` | list | []interface{}{} | adr-kb | 计划引用的知识文档路径 |
-| `knowledge_applied` | string | "" | adr-kb | merge 时命中/总数（如 2/3） |
 
 分组含义：identity=身份与必填、priority=优先级评估、gate=人工/自动门禁、metadata=推荐元数据、
 timestamps=时间戳、lifecycle=生命周期与合并、failure=失败与恢复、grilling=Grilling 租约、
@@ -490,7 +480,7 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 - plan-review：撤销 plan approval，转 refining。
 - implementing：当前 AC 后 checkpoint → refining。
 - review/conflict：清 merge approval，直接 refining（未合并交付必须在吸收变更后合入）。
-- done：按 REQ 最新变更记录 `> 变更类型:` 路由——`breaking`/未标注：清 merge approval 转 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed/knowledge_extracted）；`additive`：保持 done 终态 + 通知（建议新建 TASK 承接增量或手动重开）；`cosmetic`：忽略。
+- done：按 REQ 最新变更记录 `> 变更类型:` 路由——`breaking`/未标注：清 merge approval 转 refining + 代际重置（reopen_count+1、清 target_branch/pr_url/merge_status/completed）；`additive`：保持 done 终态 + 通知（建议新建 TASK 承接增量或手动重开）；`cosmetic`：忽略。
 - **已吸收去重**：任务 `refine_req_hash` == REQ 当前 hash 时跳过（refining/PM 写回自身记录不重复触发）。
 - 新自动创建 TASK：pending_req=false。
 
@@ -510,13 +500,10 @@ Round 2 每完成一条 AC 后重新读取 TASK。若 pending_req=true：
 `notifications.desktop` 只控制 `notify-send`：
 
 - false：关闭动作、提醒和最终状态的系统桌面通知。
-- Kitty tab 不受该字段控制，Grilling 时始终尝试创建。
-- 同一 TASK 只允许一个活跃 Grilling tab。Daemon 创建前解析 `kitty @ ls`，按 `Grilling <task-id>` 检查所有 tab/window title；任务标题变化或 Unicode JSON 转义不会触发第二个 tab。
-- per-task 文件锁和每次尝试前写入的 5 分钟 debounce 时间戳防止并发扫描或 daemon 重启重复创建。
-- **提交后异步写回 + 自动关 tab**：kitty-grill 提交答案后 spawn detached 子进程（`--writeback` 模式）重新挂接 session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，10 分钟超时），主进程 `kitty @ close-window --match id:$KITTY_WINDOW_ID` 关闭本 tab；spawn 失败回退有界同步写回。**写回守卫**：启动与写回前复查任务 status，已离开 needs-grilling 阻止写回并提示。问卷 prompt 以 `任务 TASK-<id>` 开头（监控面板按第一个 TASK-xxx 打标签）。
+- （Kitty tab / kitty-grill 已于 2026-09-29 随 agent-server 退役，改为在 DSH 会话中完成需求对齐）
+- （Kitty tab 的 per-task 文件锁 + 5 分钟 debounce 去重逻辑已随 kitty-grill 退役删除。）
+- **（已退役 2026-09-29）提交后异步写回 + 自动关 tab**：kitty-grill 已随 agent-server 退役；原行为：提交答案后 spawn detached 子进程（`--writeback` 模式）重新挂接 session 完成写回（日志 `~/.dsh/logs/kitty-grill/writeback-*.log`，10 分钟超时），主进程 `kitty @ close-window --match id:$KITTY_WINDOW_ID` 关闭本 tab；spawn 失败回退有界同步写回。**写回守卫**：启动与写回前复查任务 status，已离开 needs-grilling 阻止写回并提示。问卷 prompt 以 `任务 TASK-<id>` 开头（监控面板按第一个 TASK-xxx 打标签）。
 - **需求变更通知按 taskID+action 5 分钟防抖**（`notifyReqChanged`）：grilling 写回多次改写 REQ 时，同一任务同一 action 只发第一条「需求变更」toast。
-- Kitty 状态 JSON 无法解析时不会创建 tab，并回退到桌面通知；后续扫描继续重试。
-- Kitty 不可用：保持 needs-grilling，写日志并周期重试，不转 blocked，不启动普通终端。
 
 ## 8. Daemon 与并发
 
@@ -568,7 +555,7 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 **2026-09-04 开源化收敛**：`env_cleanup` 默认 **nil（禁用）**（删除 k3d 资源是有损操作，显式配置并声明 exclude 白名单才生效）；`memory_gate.auto_recovery` 默认 **false**、`exclude` 默认空（不再内置任何服务名）；`off_peak_windows`/`off_peak_timezone` 默认空 = **不限制**（opt-in，`off_peak_only` 恒可运行）；`merge_poll_wait_ticks` 默认 **20**（约 10min CI 轮询预算）；`upstream_stall_days` **显式 0 = 关闭告警**（缺省 3）；`notifications.sound` 从 schema 删除。完整字段与默认值以 **`docs/config-reference.md`** 为单一事实源（`otg config show --effective` 可看生效值）。
 
 
-**知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/adr/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」；完整字段表见 `docs/config-reference.md`（KB 三后端为可选配置，最小示例文件不再展开）。
+**（已退役，2026-09-29：知识库与 `References/` 均已删除；以下字段说明仅作历史参考）** **知识库字段（`kb_db` / `kb_vault` / `kb_embedding` / `kb_rerank` / `kb_chat`）**：`kb_db` 覆盖检索库路径（默认 `~/.local/share/otg/kb.sqlite`，多 vault 机器必须为每个 vault 独立配置）；`kb_vault` 指定**全局共享知识库根**（缺省回退 `obsidian_vault`）——它的 `References/` 语料由 agent-server 在普通交互会话（`/agent/chat`：grilling / web 聊天 / 临时需求解决）首条消息做 **KB-first 服务端预检索注入**（`otg kb search --json` 命中 + 深检索规则，失败回退索引摘要）；同时 `/agent/chat` 带 `project` 字段时，agent-server 命中 `<obsidian_vault>/Projects/<dir>` 会注入该项目自己的上下文（`Notes/CONTEXT.md` / `Notes/decisions/` / `PROJECT-CONVENTIONS.md` 摘要 + 路径），让已注册项目工作区的提问"先查项目上下文、不从零推理"（详见 README「交互会话本地优先」）；`kb_embedding` 启用语义混合检索（`backend`/`url`/`model`/`api_key`/`weight`/`chunk_chars`/`batch_size`/`knn_candidates`，缺省则纯 BM25）；`kb_rerank` 可选 cross-encoder 精排（`backend`/`url`/`model`/`top_n`，后端不可用自动降级）；`kb_chat` 启用 `otg kb ask` 问答生成（`backend`/`url`/`model`/`temperature`）。字段含义与部署示例见 README「知识库语义检索」「检索精排」「知识库问答」；完整字段表见 `docs/config-reference.md`（KB 三后端为可选配置，最小示例文件不再展开）。
 
 
 **团队项目字段（`projects[].project_type` / `projects[].merge_mode`）**：`project_type: team` 标记已存在的组织仓库（如私有 Gitea）——daemon 禁止自动建仓/自动注册/checkout 提升/`gh repo create`/`remote_create`，仓库归团队所有。`merge_mode` 三选一：缺省/`auto`（个人项目 gh 全自动）、`manual`（直接在团队仓库上开发：推分支 → `merge_status=pushed` → 人工在仓库 UI 合并 → daemon 远端探测自动 done）、`fork-merge`（fork 开发，`git_remote` 指向自己的 fork：本地 merge 进 fork 默认分支（冲突 AI 解决）→ push → done → 用户手动向团队项目发 PR）。两字段均由用户手工填写，daemon 注册/更新时**保留**（不覆盖）。**team 终态保护（2026-08-25 补全）**：`detectStaleDoneReopens` 与 done→review 自动重开（`DoneReopensMerge`）对 team 均跳过——done+merged 是权威交付证据，forge 生命周期完全人工；用户手动置 done 而 `merge_status=pushed`/残留 PR URL 的 team 任务不会再被拽回 review。
@@ -580,11 +567,11 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 - **新项目自动注册**：Round 2 首次调度 `new_project=true` 任务时自动写入 `projects` 条目——`name`/`path` 按解析结果，`git_remote` 从既有项目推断 owner（`github.com/<owner>/<name>`），`project_id` 自动分配（既有最大值 +1，`%03d`），并播种 `Notes/CONTEXT.md` 骨架。
 - **保序写入**：所有 daemon 维护写回（注册、默认补齐）保留用户手排的顶层字段顺序（`jsonorder` 保序解析/序列化），不按字母序重排；缺失字段按 Config 声明序追加到文件末尾，且 **`projects` 恒置末尾**（追加新项目是最频繁的手工编辑——`generateVaultMap` 新建与 `ensureVaultMapDefaults` 补齐都遵守该布局；用户可自由重排其他字段，重跑 `otg install`/默认补齐不会打乱）。
 - **缺失字段自动补齐**：写入前按 `config.Defaults()` 补齐缺失顶层字段（新功能字段自动出现，不覆盖已有值）。
-- **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回均走知识库检索（能力主题文档承担描述/冲突元数据）；存量 registries.json 文件不再被读取，可手动删除。
+- **脚手架能力（已废弃）**：`scaffold_registry`/`template_registry` 已从配置与代码移除（无消费者、自动生成噪音化）——Round 1 能力校验与 PM 技术栈写回原走知识库检索（知识库已于 2026-09-29 退役，改走项目 CONTEXT/ADR 与能力文档）；存量 registries.json 文件不再被读取，可手动删除。
 
-**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）；另同步外部源版本 `knowledge-base` 到 `~/.dsh/skills/`（`kulala-http` 已移出：通用 HTTP 调试技能，独立维护）。
+**Skill 清单**：installer 安装 9 个随包 Skill（清单见 `skills/manifest`）：refining、round1、round2、merge、**conventions**（已有项目基线审查门禁）、priority、pm、**split**（需求分解：大 REQ → 3-8 子需求建议，PM 统筹并入 Grilling-Decisions 一次性对齐）、**design**（全局设计库会话）。（`kulala-http` 已移出：通用 HTTP 调试技能，独立维护；`knowledge-base` 已于 2026-09-29 退役，不再安装。）
 
-外部依赖缺失必须 fail-fast：grilling、domain-modeling、diagnosing-bugs、test-quality、knowledge-base。
+外部依赖缺失必须 fail-fast：grilling、domain-modeling、diagnosing-bugs（即 `internal/install/install.go` 的 `required`，三者本机均已安装）。`knowledge-base` 已于 2026-09-29 连同知识库代码移除；`test-quality` 同批退役并已从 `required` 删除（原为既有技术债，已修）。
 （`requirement-elaborator` 已于 2026-09-14 退役——职责由 `grilling` 承担，`validateRequiredSkills` 不再要求它；流水线若复活，应把 refining/split/pm 里对它的指向改为 `grilling`。）
 
 ## 10. 故障排查
@@ -593,7 +580,7 @@ Installer 随包安装 8 个顶层 Skill（真实文件，非 symlink，清单�
 2. `tail -f ~/.dsh/logs/otg-daemon.log`：检查状态分派、锁和重试。
 3. `~/.dsh/logs/tasks/`：检查阶段日志（DSH 会话记录在 `~/.dsh/sessions/`）。
 4. blocked 阶段失败：检查 `blocked_phase`、`phase_error`、`phase_log`；修复后设 `resume_approved=true`。自动 resume 预算耗尽（`auto_resume_count>=2`）时会收到 🧩 桌面通知。
-5. Grilling 卡住：检查 `grill_owner`、`grill_started_at`、timeout 和 Kitty 日志。
+5. Grilling 卡住：检查 `grill_owner`、`grill_started_at`、timeout。
 6. 安装后执行 `skill-doctor check`，必须返回 0。
 
 ## 11. Skill Writing Convention（Skill 编写规范）

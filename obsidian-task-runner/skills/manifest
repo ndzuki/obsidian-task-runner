@@ -1,12 +1,10 @@
 # Phase skills installed to ~/.dsh/skills/obsidian-task-runner-<name>.
 # Single source of truth: internal/install/install.go and Makefile sync-docs
 # both read this file — add a new phase skill here only.
-refining
-round1
-round2
-merge
-conventions
-priority
-pm
-split
-design
+#
+# 2026-09-29 彻底退役：9 个阶段 skill（refining/round1/round2/merge/
+# conventions/priority/pm/split/design，共 1900 行）已删除。otg daemon 与
+# 阶段流水线于 2026-09-14 归档，`otg install` 默认被 archive guard 拒绝；
+# DSH 侧替代见 skills-standalone/（risk-aware-planning / incremental-delivery
+# / design-pass / project-baseline-audit）与 ~/.dsh/skills/。
+# 本文件保留为空清单，使 installPhaseSkills 装 0 个而不是 read 失败。

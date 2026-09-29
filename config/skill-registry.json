@@ -1,34 +1,22 @@
 {
   "version": 2,
   "description": "Maps skill:// names to install sources. Used by skill-doctor for auto-install. 当 obsidian-task-runner 的 SKILL.md 中新增 skill:// 引用时，必须同步更新此文件。skill-doctor check 会在安装后自动提示缺失依赖。",
-  "_maintenance": "此文件随 obsidian-task-runner 仓库发布。本项目的阶段 Skill 标记为 bundled（随包安装）。外部依赖需要用户通过 skill-doctor install 手动获取。",
+  "_maintenance": "此文件随 obsidian-task-runner 仓库发布。本项目的阶段 Skill 标记为 bundled（随包安装）。外部依赖需要用户通过 skill-doctor install 手动获取。2026-09-24 清理：移除已退役/未安装且无 skill:// 引用的条目（otg 9 个阶段子技能、knowledge-base、requirement-elaborator、test-quality、research、wayfinder、to-spec，以及只含未安装 skill 的 vercel-labs/skills、akin-ozer/cc-devops-skills 两个来源）。",
   "sources": {
     "obsidian-task-runner (bundled)": {
       "type": "bundled",
       "description": "随 otg install / make deploy（sync-docs）自动部署的 Skill",
       "skills": [
-        "obsidian-task-runner",
-        "obsidian-task-runner-refining",
-        "obsidian-task-runner-round1",
-        "obsidian-task-runner-round2",
-        "obsidian-task-runner-merge",
-        "obsidian-task-runner-conventions",
-        "obsidian-task-runner-priority",
-        "obsidian-task-runner-pm",
-        "obsidian-task-runner-split",
-        "obsidian-task-runner-design",
-        "knowledge-base"
+        "obsidian-task-runner"
       ]
     },
     "obsidian-task-runner (external required)": {
       "type": "local-required",
       "description": "核心依赖 Skill，缺失时任务无法执行。请通过 ~/.dsh/skills/ 手动安装或从对应仓库获取。",
       "skills": [
-        "requirement-elaborator",
         "grilling",
         "domain-modeling",
         "diagnosing-bugs",
-        "test-quality",
         "tdd",
         "prototype",
         "code-review"
@@ -71,33 +59,12 @@
         "golang-troubleshooting"
       ]
     },
-    "vercel-labs/skills": {
-      "type": "github",
-      "url": "https://github.com/vercel-labs/skills.git",
-      "skillBasePath": "skills",
-      "skills": [
-        "find-skills"
-      ]
-    },
-    "akin-ozer/cc-devops-skills": {
-      "type": "github",
-      "url": "https://github.com/akin-ozer/cc-devops-skills.git",
-      "skillBasePath": "devops-skills-plugin/skills",
-      "skills": [
-        "helm-generator"
-      ]
-    },
     "mattpocock/skills": {
       "type": "github",
       "url": "https://github.com/mattpocock/skills.git",
       "skillBasePath": "skills",
       "skills": [
-        "teach",
-        "codebase-design",
-        "improve-codebase-architecture",
-        "research",
-        "wayfinder",
-        "to-spec"
+        "codebase-design"
       ]
     }
   }

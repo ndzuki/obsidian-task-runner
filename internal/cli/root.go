@@ -50,7 +50,7 @@ func ExitCode(err error) int {
 var rootCmd = &cobra.Command{
 	Use:   "otg",
 	Short: "Obsidian Task Runner — Go edition",
-	Long:  "Task lifecycle automation for Obsidian vaults. Watches project directories, drives phase skills, and manages git worktrees.",
+	Long:  "Vault tooling for Obsidian-based delivery docs. The daemon and phase pipeline are RETIRED (2026-09-14); remaining commands are read-only inspection and structured vault writes (validate-doc / repair-doc / write-adr / find-ready / config).",
 }
 
 var versionCmd = &cobra.Command{
@@ -146,7 +146,7 @@ func runUpdateStatus(cmd *cobra.Command, args []string) error {
 // isListField returns true for frontmatter fields that accept list values.
 func isListField(key string) bool {
 	switch key {
-	case "blocked_by", "blocks", "tags", "knowledge_refs", "plan_files":
+	case "blocked_by", "blocks", "tags", "plan_files":
 		return true
 	}
 	return false

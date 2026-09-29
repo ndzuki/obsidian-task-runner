@@ -12,7 +12,7 @@ description: "Execute an approved plan acceptance-criterion by acceptance-criter
 | 红绿重构的细节、好测试的定义、mock 边界示例 | `skill://tdd`（**主动调用型**，不进 agent 目录——所以下方自带一行版） |
 | 逐条 AC 的推进节奏、写入即反馈、失败场景矩阵、阻塞证据、时间盒削 scope | 本 skill |
 | 难缠 bug 的诊断循环（先建复现再假设） | `skill://diagnosing-bugs` |
-| 测试是否值得保留（同义反复/实现耦合/缺覆盖） | `skill://test-quality` |
+| 测试是否值得保留（同义反复/实现耦合/缺覆盖） | **本 skill 第 8 步**（三类判据已内联，无需外部 skill） |
 | 规范轴 + 需求轴的双轴评审 | `skill://code-review` |
 | 一次性原型代码（跑完即弃） | `skill://prototype` |
 
@@ -42,26 +42,10 @@ description: "Execute an approved plan acceptance-criterion by acceptance-criter
 ## 先写决策，再写代码
 
 计划里标了架构决策的，**在第一条 AC 之前**落成文档
-（`<vault>/Projects/<项目>/Notes/adr/ADR-{id}-{slug}.md`），格式：
+（`<vault>/Projects/<项目>/Notes/decisions/ADR-{id}-{slug}.md`）。
 
-```markdown
-# ADR-{id}: {title}
-
-## Status
-accepted
-
-## Context
-{为什么需要这个决策？有哪些约束和力量在拉扯？}
-
-## Decision
-{具体选了哪条路}
-
-## Alternatives Considered
-{评估过哪些替代方案，为什么否掉}
-
-## Consequences
-{什么变容易了？什么变难了？风险在哪}
-```
+**ADR 的格式由 `skill://domain-modeling` 拥有，本 skill 不重复定义**——按其规则：ADR 可以只有
+一段话，价值在于记录「做了这个决定」和「为什么」，**不是填写各个小节**。
 
 **决策和依赖它的代码放进同一个 commit。** 决策是蓝图，不是脚注。
 
@@ -175,8 +159,23 @@ accepted
 5. 每个 `risk: high` Step 有原型证据（PASS 记录或 FAIL + 结论）。
 6. 跑全量测试（Go: `go test -race ./...`）。
 7. 跑 lint。
-8. 测试质量自查（细节归 `skill://test-quality`）：**同义反复**（期望值从被测代码反推，`assert.Equal(t, f(x), f(x))`）、**实现耦合**（mock 内部协作者、测私有方法）、**缺边界覆盖**（新公共 API 没有对应的失败/边界用例）。三类里命中 critical 的必须修完。
+8. 测试质量自查：**同义反复**（期望值从被测代码反推，`assert.Equal(t, f(x), f(x))`）、**实现耦合**（mock 内部协作者、测私有方法）、**缺边界覆盖**（新公共 API 没有对应的失败/边界用例）。三类里命中 critical 的必须修完。
 9. 变更自查（细节归 `skill://code-review`）：**规范轴**——是否符合本项目规范（读 vault 的 `Notes/PROJECT-CONVENTIONS.md` 或抽样既有代码）、有无 code smell；**需求轴**——实现与 AC 是否一一对应、有没有计划外的 scope creep。
+10. **独立取证（强制；替代旧 daemon 的 `merge_approved` + `audit_runner`）**：**实现者不得自证交付**。
+    上面 1–9 条全是**自证**——它们能证明"我做了"，不能证明"我的证据可信"。**声称「完成 / 已交付」之前**必须：
+    - 起一个**独立上下文**的审查会话（子代理，或 `skill://review` 的 deep 模式）：只喂**产物**
+      （TASK 路径 + AC 列表 + 命令与原始输出），**不喂**你的实现叙述与自评结论；
+    - 审查员**逐条 AC** 复核**原始证据**——自己重跑关键命令，而不是读你的摘要——并划掉无法复现的条目；
+    - 产出**可机检的产物**（逐条 ✅/❌ + 未复现项 + 复现命令），写进 TASK 的 `## 验收记录`；
+    - **❌ 未清零 ⇒ 不得宣布完成**：保持 `status: in-progress`，把 ❌ 项列进「未覆盖/存疑」。
+
+    > **为什么必须独立**：旧 otg daemon 的 `audit_runner` 就是干这件事的**独立只读会话**（受限工具面
+    > read/grep/bash，逐条 AC 复核原始证据），因为「**实现者不能自证完成**」
+    > （`obsidian-task-runner/SKILL.md` Invariant 19）。daemon 停用后这条保障**没有自动替代物**，
+    > 唯一的替代就是这一步。人工 `merge_approved` 与「不提交不推送」红线**都替代不了**它——
+    > 它们管的是"能不能动远程"，不是"证据可不可信"（见 `~/.dsh/AGENTS.md` 通用红线 7，两处措辞一致）。
+    > 参考实现：`~/.dsh/plugins/goal-auto-review.mjs`（`agent/pre-step` 边界注入）+
+    > `goal-review-gate.mjs`（可机检产物）+ `journal.jsonl`（留证）。
 
 ## 交付摘要
 
@@ -184,7 +183,7 @@ accepted
 
 ```text
 {改了 N 个文件，+A/-D 行，M 个测试通过}
-test-quality: 🔴0/🟡0/🟢N | code-review: 规范轴 N / 需求轴 N
+test-quality: 🔴0/🟡0/🟢N | code-review: 规范轴 N / 需求轴 N | 独立复核: {N}/{N} AC 可复现（❌ {N}）
 时间盒: {small|medium|large} | 降级: {N} 条 ~nice-to-have
 对比: 实现前用户怎么做，实现后改善了什么（一句话）
 风险自评: low/medium/high

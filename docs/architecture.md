@@ -1,5 +1,7 @@
 # obsidian-task-runner 架构（DSH 时代）
 
+> ⚠️ **KB 面已退役（2026-09-23，代码于 2026-09-29 移除）**：本文中的 `References/` 知识库、`otg kb`、`internal/knowledge` 已不存在；相关段落仅作历史参考。
+
 > 本文是当前实现的权威架构说明（2026-08 起，`refactor/dsh-architecture`）。
 > 早期规划文档（`phase5-executor-migration.md` / `embed-migration-plan.md` /
 > `go-rewrite-plan.md` / `refactor-architecture.md`）为历史资料，其中早期执行器
@@ -12,7 +14,6 @@
                     ┌────────────────────────── Obsidian Vault ──────────────────────────┐
                     │ Requirements/REQ-*.md   Tasks/TASK-*.md   Notes/CONTEXT.md         │
                     │ Design/（glossary · contracts · decisions · waves）                │
-                    │ References/（知识库 markdown + INDEX）                              │
                     └────────────────────────────────┬───────────────────────────────────┘
                                                      │ fsnotify watcher + scan ≥10s      │
                                                      ▼
@@ -135,7 +136,7 @@ ls ~/.dsh/sessions/                             # DSH 会话持久化（zstd jso
 | 路径 | 内容 |
 |------|------|
 | `~/.dsh/skills/obsidian-task-runner/` | 运行时 skill 包（SKILL.md/reference.md/skills/，`sync-docs` 同步） |
-| `~/.dsh/skills/…`（顶层独立 skill） | refining/round1/round2/merge/conventions/priority/pm/split/design + knowledge-base |
+| `~/.dsh/skills/…`（顶层独立 skill） | refining/round1/round2/merge/conventions/priority/pm/split/design |
 | `~/.dsh/config/` | 配置（vault-map.json 在 skill 包 `config/` 下） |
 | `~/.config/systemd/user/` | 三个 user 单元 |
 | `<repo 父目录>/.otg-worktrees/` | 任务 worktree（`worktree_base` 可覆盖） |

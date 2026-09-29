@@ -126,12 +126,6 @@ replacement_task: ""  # closure_reason=duplicate
 
 adr_proposed: []
 adr_written: []
-knowledge_extracted: false  # merge 后 ADR + 踩坑记录已提取到知识库（幂等）
-knowledge_extract_error: ""  # 提取/同步失败摘要（daemon 维护，重试退避依据）
-knowledge_extract_retry_count: 0
-knowledge_extract_retry_until: ""
-knowledge_refs: []  # Round 1 计划引用的知识文档（References/ 相对路径）
-knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---
 
 # <!-- 标题 -->
@@ -169,13 +163,13 @@ knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---
 
 ## 踩坑记录
-<!-- 🤖 Round 2 每次试错换方案后追加；merge 时自动提取到知识库 References（防重蹈覆辙）。格式：
+<!-- 🤖 Round 2 每次试错换方案后追加（知识库已退役，不再自动提取到 References/）。格式：
 ### {YYYY-MM-DD}: {现象一句话}
 - 现象: {观察到的失败行为}
 - 失败方案: {尝试过但不成立的方案与失败证据}
 - 根因: {失败原因分析}
 - 成功方案: {最终生效的方案}
-- 相关文档: {knowledge_refs 里的 References 路径，可选，帮助分类归档}
+- 相关文档: {可选，帮助分类归档}
 -->
 
 ---
@@ -186,7 +180,7 @@ knowledge_applied: ""  # merge 时度量：命中/总数（如 2/3）
 ---
 
 ## ADR 提议
-<!-- 🤖 Round 1 提议；daemon 自动授权，Round 2 写入 Notes/adr/ -->
+<!-- 🤖 Round 1 提议；daemon 自动授权，Round 2 写入 Notes/decisions/ -->
 
 ---
 

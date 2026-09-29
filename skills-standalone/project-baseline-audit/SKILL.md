@@ -47,7 +47,7 @@ description: "Read-only baseline audit of a repository: its conventions and arch
 4. **迁移机制** — 用什么做迁移（AutoMigrate / alembic / flyway / sequelize / 手写 SQL）？迁移文件放哪？新字段怎么落库？**迁移 SQL 是否绑定单一引擎方言**（MySQL 专属 `TINYINT(1)`/`DATETIME(6)`、sqlite 不支持的操作）——这直接决定新功能能否在两个引擎上都跑。
 5. **环境配置与开关** — 配置/环境变量如何区分环境（`APP_ENV`/`NODE_ENV`/`SPRING_PROFILES_ACTIVE`…），连接串从哪来。
 6. **部署目标** — 裸机/docker/k8s/serverless；CI 在哪个环境跑测试，**是否真连 test/prod 同款数据库**。
-7. **既有架构决策** — vault 侧 `<vault>/Projects/<项目>/Notes/adr/`、`Notes/CONTEXT.md`（第一者）；仓库侧 `docs/adr/` 作为补充。只引用，不改写。
+7. **既有架构决策** — vault 侧 `<vault>/Projects/<项目>/Notes/decisions/`、`Notes/CONTEXT.md`（第一者）；仓库侧 `docs/adr/` 作为补充。只引用，不改写。
 
 产出约束：`## 架构约束` 每条 ≤2 行并附证据；环境不一致、迁移方言绑定这类**高风险项**在条目内用 `⚠️` 标出，并同时进 `## 需要人工确认的事项`。
 

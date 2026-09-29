@@ -1,5 +1,7 @@
 # vault-map.json 配置参考（单一事实源）
 
+> ⚠️ **KB 面已退役（2026-09-23，代码与配置字段于 2026-09-29 移除）**：`kb_vault`/`kb_db`/`kb_embedding`/`kb_rerank`/`kb_chat` 已从 Go 结构体删除。
+
 > 代码权威：`internal/config/config.go` 的 `Defaults()` 与 `mergeDefaults()`。
 > 本文档与其保持同步；冲突时以代码为准。
 > 实时查看当前生效值：`otg config show --effective`（`--redact` 可脱敏）。
@@ -59,9 +61,6 @@ vault-map.json 也只包含最小键；示例文件
 | `off_peak_windows` | array | nil | 低峰窗口；**未配置 = 不限制**（off_peak_only 恒可运行） |
 | `memory_gate` | object | 见下 | 内存门禁（opt-in） |
 | `env_cleanup` | object | **nil（禁用）** | 环境收尾（opt-in，删除 k3d 集群/registry/网络，需自备 Exclude） |
-| `kb_embedding` / `kb_rerank` / `kb_chat` | object | nil | 知识库可选后端；nil=纯 BM25 / 无 RAG |
-| `kb_vault` | string | 回退 obsidian_vault | 全局共享知识库根 |
-| `kb_db` | string | `~/.local/share/otg/kb.sqlite` | 检索存储路径 |
 | `audit` | object | enabled / max_fixes 2 / timeout 15 | 完成审计门禁（并发由 `phase_concurrency["audit"]` 控制，默认 1） |
 
 ## 子结构

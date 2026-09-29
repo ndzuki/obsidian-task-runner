@@ -351,8 +351,8 @@ func isReadyWith(fm *yamlfrontmatter.Frontmatter, vaultPath string, lookup fmLoo
 	case "needs-refining":
 		// Legacy status from an earlier daemon version. Ready so the scan
 		// picks the task up and nextLocalTransition migrates it to
-		// needs-grilling (the current name), which then creates the Grilling
-		// tab and starts requirement alignment.
+		// needs-grilling (the current name) for requirement alignment
+		//（Kitty tab 创建已随 kitty-grill 于 2026-09-29 退役）。
 		return true
 	case "implementing":
 		return !fm.OffPeakOnly || OffPeakFn()

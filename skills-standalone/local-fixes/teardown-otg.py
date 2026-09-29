@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# ⚠️ 2026-09-23 起本脚本的 KB 断言已失效：它检查 `kb-preflight`/`kb-distill` 是否**在位**，
+#   而这两个插件已随 KB 面归档移除（~/.dsh/archive/kb-20260922-1709/），
+#   运行本脚本会给出误导性的"缺失"警告。项目已归档，本脚本不再维护。
+
 """归档 obsidian-task-runner：一条命令完成全部宿主侧拆除。
 
 把之前散在文档里的 5 步手工操作收敛成一次可预演、可回滚的执行：
@@ -16,9 +20,9 @@
 5. **退役流水线 skill**：调用同目录的 `retire-local-skill.py`（不重复实现）。
 
 **不动的东西**（归档后日常仍依赖）：`otg` 二进制（`kb-distill` 靠 `spawn('otg')`、
-`otg kb` 是检索入口）、`kb-preflight`/`kb-distill`/`dsh-commands`/`fallback` 插件、
+`otg kb` 原为检索入口——该命令已于 2026-09-29 随知识库退役）、`kb-preflight`/`kb-distill`/`dsh-commands`/`fallback` 插件、
 `dsh-web`/`dsh-web-token-bridge`/`dsh-model-watch`/`chezmoi-apply-watch`/
-`dsh-session-repair` 等 dsh 自身服务、`~/.dsh/storages/otg/kb.sqlite`、整个 vault。
+`dsh-session-repair` 等 dsh 自身服务、`~/.dsh/storages/otg/kb.sqlite`（知识库遗留数据，其功能已于 2026-09-29 退役）、整个 vault。
 
 用法：
     python3 teardown-otg.py --dry-run

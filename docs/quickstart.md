@@ -1,5 +1,13 @@
 # 快速上手（Quickstart）
 
+> ⚠️ **KB 面已退役（2026-09-23）**：本文中出现的 `otg kb`（`search`/`absorb`/`hit`）、
+> `skill://knowledge-base`、`kb-preflight`/`kb-distill` 插件、ollama/reranker 服务
+> **全部停用并归档**（`~/.dsh/archive/kb-20260922-1709/`）。
+> **仍有效**的是读 `vault-map.json` 的文档/任务/ADR/REQ 管理命令
+> （`config`/`find-ready`/`write-adr`/`validate-*`/`ensure-context-term`/`update-status`/`build-adr-index`/`stage-plan`/`unregister-project`），
+> 它们不依赖 KB。凡本文指示你调用 `otg kb` 或探测 ollama 之处，**一律作废**。
+
+
 > ## ⚠️ 已归档 — 2026-09-14
 >
 > 本项目已归档，daemon 与阶段流水线不再运行。**本文描述的安装与使用流程已不适用**：
@@ -15,7 +23,7 @@
 - `git`
 - `dsh` 命令，并已配置可用模型
 - Linux 建议 `systemd --user`（其他平台可单次运行）
-- 可选：Kitty 终端（`allow_remote_control yes`）——Grilling 交互时自动开新 tab
+- ~~可选：Kitty 终端（`allow_remote_control yes`）——Grilling 交互时自动开新 tab~~（kitty-grill 已于 2026-09-29 退役，改用 DSH 会话内对齐）
 - 可选：`notify-send` + 通知服务——桌面提醒
 
 ## 2. 构建并安装
@@ -133,7 +141,7 @@ assignee: acme
 | `blocked` | 缺字段或缺依赖 | 补 `project` / `assignee`，检查 `blocked_by` |
 | `ready` | 就绪，等待优先级评估 | 无需操作，自动转入 `refining` |
 | `refining` | 检查需求成熟度 | 无需操作；只有真争议才进 `needs-grilling` |
-| `needs-grilling` | 等待你交互式对齐需求 | 在 Kitty tab 里回答问卷，提交后自动写回并关 tab |
+| `needs-grilling` | 等待你交互式对齐需求 | 在 DSH 会话里完成需求对齐（原 Kitty 问卷已退役） |
 | `planning` | 生成版本化实现计划 | 无需操作 |
 | `plan-review` | 计划已生成 | `auto_approve: true`（默认）自动批准；否则审阅计划并设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支 |

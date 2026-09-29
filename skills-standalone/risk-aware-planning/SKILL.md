@@ -11,7 +11,7 @@ description: "Turn a non-trivial change into a reviewable plan before writing co
 
 **既有决策是这个项目的架构宪法。** 新计划若与一条已接受的决策冲突，而没有显式声明取代它，就是计划失败。
 
-1. 找决策目录（**vault 优先**）：`<vault>/Projects/<项目>/Notes/adr/`、`Notes/CONTEXT.md`；仓库侧 `docs/adr/`、`docs/architecture.md` 作为补充（`glob` 兜一遍）。
+1. 找决策目录（**vault 优先**）：`<vault>/Projects/<项目>/Notes/decisions/`、`Notes/CONTEXT.md`；仓库侧 `docs/adr/`、`docs/architecture.md` 作为补充（`glob` 兜一遍）。
 2. 每条提取：**标题**、**状态**（accepted/superseded/deprecated）、它施加的**硬约束**。
 3. 计划中引用：`遵循 ADR-001（<决策摘要>）`。
 4. 冲突 → 在计划里标 `⚠️ ADR 冲突`，**必须**提出一条取代它的新决策。
@@ -119,16 +119,21 @@ description: "Turn a non-trivial change into a reviewable plan before writing co
 - **落点是 vault 的任务记录**：计划写进 TASK 文件
   `<vault>/Projects/<项目>/Tasks/TASK-<id>-<slug>.md` 的 `## 实现计划` 小节。
 - **追加而不覆盖**：每次重出追加 `### vN · <YYYY-MM-DD>`，历史版本保留；同步把
-  frontmatter 的 `plan_version` 更新为 N、`updated` 刷新为当前时间。
+  frontmatter 的 `updated` 刷新为当前时间。
+  > **版本号只写在 `### vN` 标题上**（2026-09-25 修正）：`plan_version` / `plan_files` / `stage`
+  > 三个字段已随 daemon 停用删除（`Projects/*/Tasks/` 189 篇实测 **0 命中**），**不要再写**。
+  > 在正文标题里版本化已经完整，frontmatter 再存一份只会与历史卡片对不上。
 - **没有 CLI 写回通道**（daemon 已停用）：frontmatter 直接编辑，但只动必要的键，
-  并保持既有字段命名（`id/title/project/status/priority/stage/plan_version/plan_files/
-  pr_url/merge_status/updated`）不变——记录必须和历史上的 TASK 可比。
+  并保持既有字段命名——**以 vault 实测存在的字段为准**（`id/title/project/req_doc/status/
+  priority/tags/blocks/blocked_by/reviewer/author/created/updated/pr_url/target_branch/
+  merge_status/completed/…`）不变，记录必须和历史上的 TASK 可比。
+  **禁止发明新字段**：写不存在的键会让这张卡脱离历史序列（daemon 停用后已清掉 95 个字段）。
 - TASK 不存在时**先与用户确认**：新建一个（沿用既有 frontmatter 字段与 `## 实现计划`
   结构），还是把计划写到别处；不擅自造任务记录。
 - 版本化的是**计划**，不是决策记录；被取代的决策要显式标 superseded，不静默改写。
 - `## 执行摘要` 给一段摘要：改什么、为什么、风险最高在哪、需要用户拍板的点有几个。
 - 验收标准写在同一 TASK 的 `## 验收标准`（或 REQ 的 `## 验收标准`），每个 Step 引用其 AC 编号。
-- 计划里**引用的知识来源要标路径**（`Notes/adr/ADR-003`、`References/core/go/connect-rpc.md`），让实现阶段能按文献办事。
+- 计划里**引用的知识来源要标路径**（如 `Notes/decisions/ADR-003`、`Notes/CONTEXT.md`），让实现阶段能按文献办事。
 
 ## 完成判据
 
@@ -136,5 +141,5 @@ description: "Turn a non-trivial change into a reviewable plan before writing co
 - 每个 Step 都有测试 Seam 和风险等级；`risk: high` 的都有 Prototype 建议。
 - 既有决策冲突项已显式标注（或明确写出"无 ADR"）。
 - 清理 Step 已就位（若计划会创建临时资源）。
-- 计划已落到 vault 的 TASK `## 实现计划`（`### vN`），`plan_version` 与 `updated` 已同步。
+- 计划已落到 vault 的 TASK `## 实现计划`（`### vN`），`updated` 已刷新（**版本号以 `### vN` 标题为准**）。
 - 需要用户拍板的点**集中列出**，不散落在正文里等人自己发现。

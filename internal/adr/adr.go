@@ -23,7 +23,7 @@ var requiredSections = []string{
 }
 
 func Write(projectDir, taskID, title, body string) (string, error) {
-	adrDir := filepath.Join(projectDir, "Notes", "adr")
+	adrDir := filepath.Join(projectDir, "Notes", "decisions")
 	if err := os.MkdirAll(adrDir, 0o755); err != nil {
 		return "", fmt.Errorf("create ADR directory: %w", err)
 	}
@@ -79,7 +79,7 @@ func Validate(path string) error {
 }
 
 func BuildIndex(projectDir string) error {
-	adrDir := filepath.Join(projectDir, "Notes", "adr")
+	adrDir := filepath.Join(projectDir, "Notes", "decisions")
 	entries, err := os.ReadDir(adrDir)
 	if err != nil {
 		return err
@@ -104,7 +104,7 @@ func BuildIndex(projectDir string) error {
 }
 
 func BuildCoverage(projectDir string) error {
-	adrDir := filepath.Join(projectDir, "Notes", "adr")
+	adrDir := filepath.Join(projectDir, "Notes", "decisions")
 	entries, err := os.ReadDir(adrDir)
 	if err != nil {
 		return err

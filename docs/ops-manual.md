@@ -1,5 +1,13 @@
 # 运维手册（Ops Manual）
 
+> ⚠️ **KB 面已退役（2026-09-23）**：本文中出现的 `otg kb`（`search`/`absorb`/`hit`）、
+> `skill://knowledge-base`、`kb-preflight`/`kb-distill` 插件、ollama/reranker 服务
+> **全部停用并归档**（`~/.dsh/archive/kb-20260922-1709/`）。
+> **仍有效**的是读 `vault-map.json` 的文档/任务/ADR/REQ 管理命令
+> （`config`/`find-ready`/`write-adr`/`validate-*`/`ensure-context-term`/`update-status`/`build-adr-index`/`stage-plan`/`unregister-project`），
+> 它们不依赖 KB。凡本文指示你调用 `otg kb` 或探测 ollama 之处，**一律作废**。
+
+
 > ## ⚠️ 已归档 — 2026-09-14
 >
 > 本项目已归档，daemon 与阶段流水线不再运行。**本文的部署、重启、排障命令均已失效**：
@@ -128,9 +136,9 @@ flowchart LR
 
 - 为空时回退 `obsidian_vault`；两者皆空则交互会话跳过注入（agent-server 仍可独立运行）。
 - daemon 拉起 agent-server 时经 `OTR_KB_VAULT` / `OTR_KB_DB` / `OTR_PROJECT_VAULT` 传入。**每个全新交互会话首条消息**，agent-server 注入两块：
-  1. **项目工作区上下文**（`/agent/chat` 带 `project` 字段，命中 `<vault>/Projects/<dir>` **已注册项目**时——vault-map 可读则仅注册项目放行，map 缺失/不可解析保持旧行为按目录匹配）：注入该项目 `Notes/CONTEXT.md`（约束/反模式/语言术语——小节标题按别名容错匹配，中英文/大小写变体均可命中；无已知小节时回退注入 CONTEXT 概览，内容不整块丢失）、`Notes/adr/`（架构决策：按 mtime 倒序取最近 8 条，附 status 与决策一行）、`Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束，最高优先）的紧凑摘要 + 文件路径，并明确"涉及项目本身的问题先据此回答、不要从零推理，需要细节用 read 读全文"。kitty-grill 会自动从任务文件推导项目名并传递。
+  1. **项目工作区上下文**（`/agent/chat` 带 `project` 字段，命中 `<vault>/Projects/<dir>` **已注册项目**时——vault-map 可读则仅注册项目放行，map 缺失/不可解析保持旧行为按目录匹配）：注入该项目 `Notes/CONTEXT.md`（约束/反模式/语言术语——小节标题按别名容错匹配，中英文/大小写变体均可命中；无已知小节时回退注入 CONTEXT 概览，内容不整块丢失）、`Notes/decisions/`（架构决策：按 mtime 倒序取最近 8 条，附 status 与决策一行）、`Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束，最高优先）的紧凑摘要 + 文件路径，并明确"涉及项目本身的问题先据此回答、不要从零推理，需要细节用 read 读全文"。（原由 kitty-grill 从任务文件推导项目名；该客户端已退役。）
   2. **KB-first 全局预检索**：首问**非阻塞注入**——命中缓存时注入 top-3 命中（来源/标题/摘要），未命中则先注入毫秒级 `References/INDEX.md` 索引摘要（按查询词相关性排序——相关行排前，零分行保持原序殿后），并在后台异步预热缓存；完整检索走 hybrid-only 快路径（`rerank=false` / `--no-rerank`，FTS5 BM25 + embedding 混合，后端不可用回退 BM25），避免首问和 reranker CPU 延迟挂钩。命中不足时模型可再 `otg kb search` 深挖。
-- 客户端可带 `kbQuery` 字段提供更精准的全局检索查询词（kitty-grill 传任务标题）；否则服务端从首条消息派生。
+- **（已退役）** 客户端可带 `kbQuery` 字段提供更精准的全局检索查询词（原 kitty-grill 传任务标题）；agent-server 与 kitty-grill 均已退役。
 - **预检索缓存与超时**（只注入新会话首条，多轮不重复膨胀；`/agent/run` 不受影响）：
   - 命中缓存：key = vault+库+embedding/rerank 配置指纹+**归一化查询词**（全角转半角/lowercase/去标点——"如何部署 OTG？"与"如何部署otg"共享缓存），TTL 10 分钟，带 TTL 的 LRU（超限逐最旧，不清空热数据）；**检索失败短缓存 30 秒**（瞬时故障不毒化 10 分钟），真无命中才按满 TTL 缓存。
   - 超时自适应：首次/空闲超 5 分钟（embedding 模型卸载冷）/上次慢或超时 → 15s 全预算；上次 ≤3s 完成 → 4s 快预算；超时自动回退 INDEX 摘要，不卡聊天会话。
@@ -286,7 +294,7 @@ DeepSeek-V4 系列支持思考模式（chain-of-thought）。daemon 按阶段自
 | merge（阶段本体） | `low` | 编排确定性为主；AI 冲突/CI 修复会话单独用 `high` |
 | design（全局设计库） | `max` | 跨需求架构决策 |
 
-模型声明 `low/medium/high/xhigh`（DSH 的 wire 值 `xhigh→max`）。**模型渠道由 vault-map.json 的 `models` 与 `fallback` 字段配置**（仓库无内置渠道偏好）：`fallback` 链由 daemon 在每次 dsh-embed `/agent/run` 时随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型。配额耗尽与渠道不可用时 daemon 按指数退避不盲目重试，并通知你更换 assignee 或调整 models 配置。grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`（kitty-grill `--effort`）。
+模型声明 `low/medium/high/xhigh`（DSH 的 wire 值 `xhigh→max`）。**模型渠道由 vault-map.json 的 `models` 与 `fallback` 字段配置**（仓库无内置渠道偏好）：`fallback` 链由 daemon 在每次 dsh-embed `/agent/run` 时随请求下发给 `headless-agent-server`（该 profile 的 `cordis.patch.yml` 只加载 fallback.mjs 的动态配置、无静态链），仅对自动化阶段生效。**dsh web / dsh-tui 交互会话不加载 fallback**，也不受 vault-map 影响：用户自己在会话里选模型（或 `~/.dsh/settings.yaml` 的 `agent-default-model`），失败时不会自动切模型。配额耗尽与渠道不可用时 daemon 按指数退避不盲目重试，并通知你更换 assignee 或调整 models 配置。（原 grilling 交互的推理强度单独分级：需求详细化 `high`、决策清单 `low`，经 kitty-grill `--effort` 传递；该客户端已退役。）
 
 ### 阻塞依赖自动恢复
 
@@ -422,7 +430,7 @@ Dataview 的安装、字段格式、查询解释和常见问题见：[`dataview.
 | `ready` | 已就绪，等待 priority assessment 完成 | daemon 自动转入 `refining` |
 | `refining` | 正在 headless 检查需求成熟度 | 无需操作；fact/auto 自动收敛，成熟后自动进入 planning，仅真争议进 needs-grilling |
 | `needs-refining` | 旧版状态（已废弃） | daemon 自动迁移为 needs-grilling 后正常处理 |
-| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | 在 Kitty 新 tab 中与 DSH 光标问卷交互，`q` 提交后**后台异步写回并自动关闭 tab**（进度见 `~/.dsh/logs/kitty-grill/writeback-*.log`），完成后自动恢复；`grill_parked=true` 时静默等待项目级清单回答；清单 `status=paused` 是项目级暂停开关——该项目的 grilling 流程整体暂停（不提醒、不分发、不 consolidate、parked 不解除），仅你手动改回 `open` 或关联 REQ 更新（daemon 自动激活）才恢复 |
+| `needs-grilling` | 等待你交互式对话对齐需求或解决阻塞 | **在 DSH 会话中完成需求对齐**（原 Kitty 光标问卷 + 异步写回已随 kitty-grill 于 2026-09-29 退役）；`grill_parked=true` 时静默等待项目级清单回答；`grill_continue` 支持异步 Grilling — 其余语义不变 |
 | `planning` | 正在生成版本化实现计划 | 无需操作；成功后进入 plan-review |
 | `plan-review` | 计划已生成 | auto_approve 默认 true → 自动批准进入实现；`auto_approve: false` 时需审阅计划 + ADR 提议，设 `plan_approved: true` |
 | `implementing` | Agent 正在改代码 | 不要同时手改同一分支；可能卡住回到 `needs-grilling` |

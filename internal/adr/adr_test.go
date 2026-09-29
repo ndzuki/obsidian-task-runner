@@ -35,7 +35,7 @@ accepted
 	if err := BuildIndex(projectDir); err != nil {
 		t.Fatalf("BuildIndex: %v", err)
 	}
-	index, err := os.ReadFile(filepath.Join(projectDir, "Notes", "adr", "ADR-INDEX.md"))
+	index, err := os.ReadFile(filepath.Join(projectDir, "Notes", "decisions", "ADR-INDEX.md"))
 	if err != nil {
 		t.Fatalf("read index: %v", err)
 	}

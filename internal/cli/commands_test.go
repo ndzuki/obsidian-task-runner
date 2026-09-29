@@ -29,15 +29,15 @@ func TestConfigShowEffectiveRedactsModels(t *testing.T) {
 }
 
 // TestConfigMigrateAppendsMissingDefaultsOnly guards `config migrate --write`:
-// it must APPEND missing schema fields (kb_vault, env_cleanup, …) to an
+// it must APPEND missing schema fields (env_cleanup, …) to an
 // existing vault-map.json while NEVER overwriting user-set values — the
 // vault-map.json protection clause. This is what `make deploy` uses to bring
 // an older config up to date with new capability fields.
 func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
 	dir := t.TempDir()
 	mapFile := filepath.Join(dir, "vault-map.json")
-	// 旧版 config：无 kb_vault / env_cleanup，且 obsidian_vault/kb_db/projects 为用户自定义值。
-	old := `{"obsidian_vault":"/my/vault","kb_db":"/my/custom.sqlite","projects":[{"name":"p","path":"/p"}]}`
+	// 旧版 config：无 env_cleanup，且 obsidian_vault/new_project_root/projects 为用户自定义值。
+	old := `{"obsidian_vault":"/my/vault","new_project_root":"/my/src","projects":[{"name":"p","path":"/p"}]}`
 	if err := os.WriteFile(mapFile, []byte(old), 0o644); err != nil {
 		t.Fatalf("write old config: %v", err)
 	}
@@ -61,11 +61,7 @@ func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
 		t.Fatalf("migrated config not valid JSON: %v", err)
 	}
 
-	// 新字段已补齐（空 kb_vault 也可见，便于用户填写）。
-	// 零值默认（空字符串）不落盘：kb_vault/dsh_profile 留待用户显式设置。
-	if _, ok := got["kb_vault"]; ok {
-		t.Fatalf("kb_vault empty default must not be written by migrate, got %v", got["kb_vault"])
-	}
+	// 零值默认（空字符串）不落盘：dsh_profile 留待用户显式设置。
 	if _, ok := got["dsh_profile"]; ok {
 		t.Fatalf("dsh_profile empty default must not be written by migrate, got %v", got["dsh_profile"])
 	}
@@ -77,8 +73,8 @@ func TestConfigMigrateAppendsMissingDefaultsOnly(t *testing.T) {
 	if got["obsidian_vault"] != "/my/vault" {
 		t.Fatalf("obsidian_vault overwritten: %v", got["obsidian_vault"])
 	}
-	if got["kb_db"] != "/my/custom.sqlite" {
-		t.Fatalf("kb_db overwritten: %v", got["kb_db"])
+	if got["new_project_root"] != "/my/src" {
+		t.Fatalf("new_project_root overwritten: %v", got["new_project_root"])
 	}
 	projs, ok := got["projects"].([]interface{})
 	if !ok || len(projs) != 1 {

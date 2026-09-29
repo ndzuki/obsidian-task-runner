@@ -3,20 +3,7 @@
 # 每行相对路径，相对 repo 根
 # --- dsh plugins (repo 管理的) ---
 deploy/dsh-plugins/agent-monitor.html
-deploy/dsh-plugins/agent-server.kb.test.mjs
-deploy/dsh-plugins/agent-server.mjs
 # --- skills: 顶层 md ---
 obsidian-task-runner/reference.md
 obsidian-task-runner/SKILL.md
 # --- skills: skills/ 子目录 ---
-obsidian-task-runner/skills/conventions/SKILL.md
-obsidian-task-runner/skills/design/SKILL.md
-obsidian-task-runner/skills/knowledge-base/SKILL.md
-obsidian-task-runner/skills/kulala-http/SKILL.md
-obsidian-task-runner/skills/merge/SKILL.md
-obsidian-task-runner/skills/pm/SKILL.md
-obsidian-task-runner/skills/priority/SKILL.md
-obsidian-task-runner/skills/refining/SKILL.md
-obsidian-task-runner/skills/round1/SKILL.md
-obsidian-task-runner/skills/round2/SKILL.md
-obsidian-task-runner/skills/split/SKILL.md

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """修掉 obsidian-task-runner 停用后遗留在通用 skill 里的跨技能死引用。
 
-背景：`tdd` / `grilling` / `diagnosing-bugs` / `knowledge-base` 四个日常 skill 里
+背景：`tdd` / `grilling` / `diagnosing-bugs` 三个日常 skill 里
 有若干段落引用已停用的任务流水线（`requirement-elaborator` 的 `grill_owner` CAS 锁、
 daemon 自动触发、`task-verifier` 门禁）。流水线停掉后这些引用要么指向废弃命令，
 要么让 agent 误以为有后台进程在跑。
 
 为什么是脚本而不是手改：
 
-- **要改两份**：这四个 skill 由 chezmoi 纳管，源在
+- **要改两份**：这三个 skill 由 chezmoi 纳管，源在
   `~/.local/share/chezmoi/dot_dsh/skills/`，运行副本在 `~/.dsh/skills/`。
   只改一份会被反向收编覆盖回旧内容。本脚本**双写**并事后校验两份一致。
 - **内容寻址**：每处改动声明一对 `before`/`after` 状态串（各自唯一），据此判定
@@ -77,6 +77,8 @@ EDITS: list[dict] = [
     ),
     # ============ grilling：调用方举例去掉已停用技能
     dict(
+        # ⚠️ 已知遗留（2026-09-29）：本条的 before/after 均不匹配当前 grilling/SKILL.md
+        # ⇒ --dry-run 会报本条失败并 EXIT=1；属既有问题（HEAD 版本同样失败），不影响其余编辑。
         path="grilling/SKILL.md",
         before="requirement-elaborator, triage, code review",
         after="a planning, design, or review skill",
@@ -106,75 +108,6 @@ EDITS: list[dict] = [
         after="- 阻塞类型 =「代码逻辑错误」",
         old="- Task-runner Round 2 pause: 阻塞类型 =「代码逻辑错误」(root cause is NOT a requirement gap)",
         new="- 阻塞类型 =「代码逻辑错误」(root cause is NOT a requirement gap)",
-    ),
-    # ============ knowledge-base：加「运行前提」，标出哪些段落需要 daemon
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="工程实践资产。\n\n## 双向知识流",
-        after="工程实践资产。\n\n## 运行前提（先读）",
-        old="工程实践资产。\n\n## 双向知识流",
-        new="""工程实践资产。
-
-## 运行前提（先读）
-
-本 skill 分两半，**可用性不同**：
-
-- **检索半**（Step 1 及检索类步骤）：**任何会话都能用**，不依赖后台进程。
-  `otg kb search` 或直接读 `References/` 均可。故障排查：若报
-  `enable WAL: unable to open database file`，那是 home 只读（沙箱）导致的写失败，
-  **不是知识库损坏**——把 `kb.sqlite` 拷到可写路径，再用 `--db` 指过去即可正常检索。
-- **沉淀半**（Step 0 / Step 6 的自动机制）：由 otg daemon 与 agent-server 实现。
-  **daemon 未运行时这些自动触发不会发生**，需走手动路径：踩坑 → `otg kb absorb`；
-  结论/架构决策 → 追加对应文档的「实践经验」小节；热度 → `otg kb hit`。
-
-下文凡标 **〔需 daemon〕** 的段落都属第二类。
-
-## 双向知识流""",
-    ),
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="`otg kb search`。\n\n- 技术名词",
-        after="**〔需 daemon〕** 上两段注入由 daemon 自管的 agent-server 完成",
-        old="`otg kb search`。\n\n",
-        new="`otg kb search`。\n"
-        "> **〔需 daemon〕** 上两段注入由 daemon 自管的 agent-server 完成；"
-        "daemon 未运行时注入不发生，靠 Step 1 的人工检索路径。\n\n",
-    ),
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="> **触发方**：daemon MUST invoke this skill on Merge 成功",
-        after="**这条路径不依赖 daemon**",
-        old='> **触发方**：daemon MUST invoke this skill on Merge 成功（PR 合入后状态转 `done`）。'
-        'Agent MAY also execute on user request ("沉淀项目经验").',
-        new='> **触发方**：**〔需 daemon〕** 流水线入口——daemon 在 Merge 成功'
-        '（PR 合入后状态转 `done`）时调用本 skill。Agent 也可在用户要求时执行'
-        '（"沉淀项目经验"），**这条路径不依赖 daemon**。',
-    ),
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="**自动机制（daemon 代码实现，零人工）**：\n\n- **按任务提取**",
-        after="以下四条由 daemon 在 merge 后自动执行",
-        old="**自动机制（daemon 代码实现，零人工）**：\n\n- **按任务提取**",
-        new="**自动机制（daemon 代码实现，零人工）**：\n\n"
-        "> **〔需 daemon〕** 以下四条由 daemon 在 merge 后自动执行；daemon 未运行时"
-        "改走「运行前提」里的手动路径。\n\n- **按任务提取**",
-    ),
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="**触发时机**：\n",
-        after="**触发时机**（第 1 条 **〔需 daemon〕**）：",
-        old="**触发时机**：",
-        new="**触发时机**（第 1 条 **〔需 daemon〕**）：",
-    ),
-    dict(
-        path="knowledge-base/SKILL.md",
-        before="- Round 2 验收通过（task-verifier 全部 AC PASS）后",
-        after="daemon 未运行时，由用户显式",
-        old="- Round 2 验收通过（task-verifier 全部 AC PASS）后，daemon 调用本 Skill "
-        "扫描 TASK `## 验收记录`。",
-        new="- **〔需 daemon〕** Round 2 验收通过（task-verifier 全部 AC PASS）后，"
-        "daemon 调用本 Skill 扫描 TASK `## 验收记录`。daemon 未运行时，由用户显式"
-        '要求"标记已验证"，并人工核对验收记录后再翻转。',
     ),
 ]
 

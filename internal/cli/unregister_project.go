@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ndzuki/obsidian-task-runner/internal/config"
-	"github.com/ndzuki/obsidian-task-runner/internal/daemon"
 	"github.com/ndzuki/obsidian-task-runner/internal/project"
 	"github.com/spf13/cobra"
 )
@@ -13,11 +12,10 @@ var unregisterMapFile string
 
 var unregisterProjectCmd = &cobra.Command{
 	Use:   "unregister-project <name>",
-	Short: "Remove a project from vault-map and clean up its task worktrees",
-	Long: `Removes the project entry from vault-map.json and deletes its task
-worktrees. Must be run while the entry still exists — its checkout path is
-needed to locate the worktrees. The project's checkout directory and remote
-repository are left untouched.`,
+	Short: "Remove a project from vault-map",
+	Long: `Removes the project entry from vault-map.json. The project's checkout
+directory and remote repository are left untouched. (Task-worktree cleanup was
+removed on 2026-09-29 together with the otg daemon.)`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -37,13 +35,9 @@ repository are left untouched.`,
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (no path recorded; worktree cleanup skipped)\n", name)
 			return nil
 		}
-		if err := daemon.RemoveProjectWorktrees(cfg.WorktreeBase, removedPath); err != nil {
-			// 清理失败必须返回非零退出码：此时条目已删、无法重跑，静默会让
-			// 残留 worktree 重新落入永久孤儿状态。
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "unregistered project %q (checkout %s left in place), but worktree cleanup reported: %v\n", name, removedPath, err)
-			return fmt.Errorf("unregistered project %q but worktree cleanup failed: %w", name, err)
-		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (checkout %s left in place, worktrees removed)\n", name, removedPath)
+		// worktree 清理随 daemon 于 2026-09-29 退役：原 daemon.RemoveProjectWorktrees
+		// 已不存在。残留 worktree 需人工清理（git worktree remove / prune）。
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unregistered project %q (checkout %s left in place; task worktrees are no longer cleaned up — the daemon that owned them was retired 2026-09-29)\n", name, removedPath)
 		return nil
 	},
 }

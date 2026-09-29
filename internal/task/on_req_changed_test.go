@@ -60,19 +60,14 @@ func writeReqTask(t *testing.T, reqBody string, taskYAML map[string]string) (vau
 func TestOnReqChanged_DoneBreakingReopens(t *testing.T) {
 	reqBody, _ := reqContentWithType(ReqChangeBreaking)
 	vault, taskPath := writeReqTask(t, reqBody, map[string]string{
-		"status":              "done",
-		"pending_req":         "false",
-		"merge_approved":      "true",
-		"reopen_count":        "1",
-		"target_branch":       "task/099-values",
-		"pr_url":              "https://github.com/x/y/pull/9",
-		"merge_status":        "merged",
-		"completed":           "2026-07-16T18:20:16+08:00",
-		"knowledge_extracted": "true",
-		// 上一代交付遗留的提炼退避必须在重开时清零，否则新交付的
-		// 首次正常提炼会被旧 backoff 挡住。
-		"knowledge_extract_retry_count": "3",
-		"knowledge_extract_retry_until": "2026-08-25T12:00:00Z",
+		"status":         "done",
+		"pending_req":    "false",
+		"merge_approved": "true",
+		"reopen_count":   "1",
+		"target_branch":  "task/099-values",
+		"pr_url":         "https://github.com/x/y/pull/9",
+		"merge_status":   "merged",
+		"completed":      "2026-07-16T18:20:16+08:00",
 	})
 
 	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
@@ -93,13 +88,6 @@ func TestOnReqChanged_DoneBreakingReopens(t *testing.T) {
 	if fm.TargetBranch != "" || fm.PRURL != "" || fm.MergeStatus != "" || fm.Completed != "" {
 		t.Fatalf("generation not reset: target_branch=%q pr_url=%q merge_status=%q completed=%q",
 			fm.TargetBranch, fm.PRURL, fm.MergeStatus, fm.Completed)
-	}
-	if fm.KnowledgeExtracted {
-		t.Fatal("knowledge_extracted should reset so the second delivery re-extracts")
-	}
-	if fm.KnowledgeExtractRetryCount != 0 || fm.KnowledgeExtractRetryUntil != "" {
-		t.Fatalf("reopen must clear the previous delivery's extraction backoff, got count=%d until=%q",
-			fm.KnowledgeExtractRetryCount, fm.KnowledgeExtractRetryUntil)
 	}
 }
 
@@ -173,14 +161,13 @@ func TestOnReqChanged_DoneCosmeticIgnored(t *testing.T) {
 func TestOnReqChanged_AbsorbedChangeSkipped(t *testing.T) {
 	reqBody, reqHash := reqContentWithType(ReqChangeBreaking)
 	vault, taskPath := writeReqTask(t, reqBody, map[string]string{
-		"status":              "done",
-		"pending_req":         "false",
-		"refine_req_hash":     reqHash,
-		"target_branch":       "task/099-values",
-		"pr_url":              "https://github.com/x/y/pull/9",
-		"merge_status":        "merged",
-		"completed":           "2026-07-16T18:20:16+08:00",
-		"knowledge_extracted": "true",
+		"status":          "done",
+		"pending_req":     "false",
+		"refine_req_hash": reqHash,
+		"target_branch":   "task/099-values",
+		"pr_url":          "https://github.com/x/y/pull/9",
+		"merge_status":    "merged",
+		"completed":       "2026-07-16T18:20:16+08:00",
 	})
 
 	results := OnReqChanged(vault, "Projects/001-test/Requirements/REQ-099-test-req.md", "")
@@ -256,7 +243,6 @@ target_branch: task/099-values
 pr_url: https://github.com/x/y/pull/9
 merge_status: merged
 completed: 2026-07-16T18:20:16+08:00
-knowledge_extracted: true
 req_doc: Projects/001-test/Requirements/REQ-099-test-req.md
 ---
 # TASK-099
@@ -273,9 +259,9 @@ req_doc: Projects/001-test/Requirements/REQ-099-test-req.md
 	if fm.Status != "refining" || !fm.PendingReq {
 		t.Fatalf("renamed done task not reopened: status=%q pending_req=%v", fm.Status, fm.PendingReq)
 	}
-	if fm.ReopenCount != 2 || fm.TargetBranch != "" || fm.PRURL != "" || fm.MergeStatus != "" || fm.Completed != "" || fm.KnowledgeExtracted {
-		t.Fatalf("rename reopen skipped generation reset: reopen_count=%d target_branch=%q pr_url=%q merge_status=%q completed=%q extracted=%v",
-			fm.ReopenCount, fm.TargetBranch, fm.PRURL, fm.MergeStatus, fm.Completed, fm.KnowledgeExtracted)
+	if fm.ReopenCount != 2 || fm.TargetBranch != "" || fm.PRURL != "" || fm.MergeStatus != "" || fm.Completed != "" {
+		t.Fatalf("rename reopen skipped generation reset: reopen_count=%d target_branch=%q pr_url=%q merge_status=%q completed=%q",
+			fm.ReopenCount, fm.TargetBranch, fm.PRURL, fm.MergeStatus, fm.Completed)
 	}
 	if fm.ReqDoc != "Projects/001-test/Requirements/REQ-099-test-req2.md" {
 		t.Fatalf("req_doc not updated: %q", fm.ReqDoc)

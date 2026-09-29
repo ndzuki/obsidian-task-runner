@@ -9,11 +9,17 @@
 > **仍然有效的部分**：
 >
 > - **Obsidian Vault 的 `Projects/` 结构**是上下文与任务记录的**第一者**：
->   `Notes/CONTEXT.md`（领域语言）、`Notes/adr/`（架构决策）、
+>   `Notes/CONTEXT.md`（领域语言）、`Notes/decisions/`（架构决策）、
 >   `Notes/PROJECT-CONVENTIONS.md`（规范 + 架构约束）、`Tasks/TASK-*.md`（交付记录）
 >   继续沿用原格式，只是由人在交互会话里维护。
-> - **`otg` CLI 的知识库子命令**（`otg kb search` / `absorb` / `hit`）仍是日常依赖：
->   它是本地优先检索与经验沉淀的入口。
+> - **`otg` CLI 的 vault-map 相关子命令**仍是日常依赖（读 `vault-map.json` 的文档/任务/ADR/REQ
+>   管理）：`config` / `find-ready` / `write-adr` / `validate-doc` / `validate-adr` /
+>   `ensure-context-term` / `update-status` / `build-adr-index` / `stage-plan` /
+>   `unregister-project` 等。这些命令**不依赖 KB、不需要 ollama**（2026-09-23 实测）。
+> - ~~**`otg` CLI 的知识库子命令**（`otg kb search` / `absorb` / `hit`）仍是日常依赖~~ → **已退役（2026-09-23）**：
+>   `otg kb` 子命令、`skill://knowledge-base`、`kb-preflight`/`kb-distill` 插件与
+>   ollama/reranker 服务**全部停用并归档**（`~/.dsh/archive/kb-20260922-1709/`）。
+>   DSH 侧的项目上下文注入改由插件 `project-context` 承担（读 vault-map → 注入 `<project_context>`，无 KB 检索）。
 > - 从流水线中提炼出的通用 skill 见 [`skills-standalone/`](skills-standalone/README.md)
 >   ——它们不依赖 daemon，在任意交互会话中可用。
 >
@@ -29,7 +35,7 @@
 
 <p align="center">
   <img src="docs/assets/agent-town.gif" width="46%" alt="Agent Town：960×540 像素小镇实时监控并发会话（四季/昼夜/寻路）"/>
-  <img src="docs/assets/grilling-tab.gif" width="46%" alt="Kitty Grilling tab：需求对齐光标问卷（↑↓ 选择、Enter 确认、一轮完成）"/>
+  <img src="docs/assets/grilling-tab.gif" width="46%" alt="Grilling 需求对齐问卷（历史截图：原 Kitty Grilling tab，已于 2026-09-29 退役）"/>
 </p>
 
 Obsidian Task Runner（命令 `otg`）把 Obsidian Vault 当作需求入口，把代码仓库
@@ -57,8 +63,8 @@ TASK ── 优先级评估 ──► refining ──► grilling（有争议才
 
 - 需求变更天然可追踪（保存即触发重排，变更分级 routing）
 - 架构决策 ADR 化，自动维护索引与覆盖报告
-- 每次试错自动沉淀为知识库条目，下一个任务先查再动手
-- 全流程可检索：`otg kb search` 随时找回任何历史决策
+- 每次试错自动沉淀为知识库条目，下一个任务先查再动手（~~KB 自动沉淀~~ **已退役 2026-09-23**，现为人工维护踩坑小节）
+- 全流程可检索：~~`otg kb search` 随时找回任何历史决策~~ → 改用 `grep`/`read` 直接检索 vault 文档（KB 检索已归档）
 
 ## 只有两扇人门
 
@@ -67,7 +73,7 @@ TASK ── 优先级评估 ──► refining ──► grilling（有争议才
 | ① 计划批准 | 自动（可关） | 计划产出后可设人工审阅 |
 | ② 产品验收 | 自动 | 合并前由**独立只读审计**逐条 AC 复核证据——实现者不能自证完成 |
 
-中间所有环节——需求细化、追问对齐（Kitty tab 里一问一答）、实现（逐条 AC 红绿重构）、
+中间所有环节——需求细化、追问对齐（DSH 会话中一问一答）、实现（逐条 AC 红绿重构）、
 测试、PR、冲突处理、合并——全部自动。你只需在 grilling 弹出来时回答问题。
 
 ## 功能矩阵

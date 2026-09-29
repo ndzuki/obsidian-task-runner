@@ -70,12 +70,12 @@ make install-standalone DRY_RUN=1  # 只打印会写哪些文件
 | 产物 | 落点 |
 |---|---|
 | 规范 + 架构约束基线 | `Notes/PROJECT-CONVENTIONS.md` |
-| 架构决策 | `Notes/adr/ADR-*.md` |
+| 架构决策 | `Notes/decisions/ADR-*.md` |
 | 实现计划 | `Tasks/TASK-*.md` → `## 实现计划` → `### vN · <日期>` |
 | 逐条验收结论 | 同上 → `## 验收记录` → `### Round N · <日期>` |
 | 试错换方案的负向经验 | 同上 → `## 踩坑记录` → `### <日期>: <现象>` |
 | 设计档案 | `Projects/<项目>/Design/{glossary.md,contracts/,decisions/,waves/}` |
-| 可复用技术知识 | `<vault>/References/` |
+| 可复用技术知识 | 已退役（原 `<vault>/References/`）|
 
 这样新记录与历史上已有的 110 个 TASK **可比、可连续检索**——记录形态的断裂比少写几个字贵得多。
 
@@ -91,11 +91,11 @@ make install-standalone DRY_RUN=1  # 只打印会写哪些文件
 | 通道 | 谁决定触发 | 适合放什么 | 本机现状 |
 |---|---|---|---|
 | **插件 seam**（`agent/pre-step`、会话生命周期） | 确定性，与模型判断无关 | 每次都必须有的上下文 | `kb-preflight`（会话内自动注入 vault 上下文 + KB 预检）、`kb-distill`（会话结束自动沉淀）、`dsh-commands`（注册斜杠命令） |
-| **skill description**（model-invoked） | agent 按场景自己判断 | 需要判断"该不该展开"的方法论 | 本目录 4 个 + `grilling` / `diagnosing-bugs` / `knowledge-base` / `code-review` 等 |
+| **skill description**（model-invoked） | agent 按场景自己判断 | 需要判断"该不该展开"的方法论 | 本目录 3 个 + `grilling` / `diagnosing-bugs` / `code-review` 等 |
 | **显式调用**（user-invoked） | 人 | 低频，或你想自己控制时机 | `tdd` / `test-quality` / `handoff` / `dsh-upgrade` / `model-catalog` |
 
 **关键点**：vault 上下文的自动注入**不经过 daemon**——`kb-preflight` 挂在 DSH 原生
-`agent/pre-step` seam 上，读的就是 `Notes/CONTEXT.md`、`Notes/adr/`、
+`agent/pre-step` seam 上，读的就是 `Notes/CONTEXT.md`、`Notes/decisions/`、
 **`Notes/PROJECT-CONVENTIONS.md`（其注释写明"最高优先"）**。所以 daemon 归档后
 "进项目就自动有上下文"**照旧成立**；而 `project-baseline-audit` 的产物正好落在这个
 注入点上——审计一次，之后每个会话自动受益。
